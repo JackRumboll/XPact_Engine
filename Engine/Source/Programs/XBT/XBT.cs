@@ -27,13 +27,7 @@ namespace XBT
 		public static async Task<int> Main(string[] args)
 		{
 			ArgumentNullException.ThrowIfNull(args);
-			// Workaround for a Task 0.1 logger bug: WriteLinePrivate uses
-			// "verbosity > OutputLevel" to suppress, but the integer scale runs
-			// least-verbose-high. With OutputLevel=Log(1), Error(4) is suppressed.
-			// Set to the highest value so nothing is gated out. Tracked as a
-			// deviation in the Task 0.2 report; the real fix is a Task 0.1 edit
-			// which the manager explicitly seals.
-			Log.OutputLevel = LogEventType.Fatal;
+			Log.OutputLevel = LogEventType.Log;
 
 			try
 			{

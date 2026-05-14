@@ -102,9 +102,12 @@ namespace XPact.Core.Logging
 		[StringFormatMethod("format")]
 		private static void WriteLinePrivate(LogEventType verbosity, LogFormatOptions formatOptions, string format, params object?[] args)
 		{
-			if (verbosity > OutputLevel)
+			// Print iff message importance >= threshold (note: enum ordering mirrors
+			// Microsoft.Extensions.Logging.LogLevel, so Trace=0 is the MOST verbose / LEAST
+			// important and Critical=5 is the LEAST verbose / MOST important; suppress when
+			// the message's level is below the configured threshold).
+			if (verbosity < OutputLevel)
 			{
-				// suppressed (Trace=0 is the most verbose, Critical=5 the least; we compare on enum-int)
 				return;
 			}
 

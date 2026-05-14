@@ -110,6 +110,17 @@ namespace XBT.Modes
 			Directory.CreateDirectory(intermediateRoot.FullName);
 			Directory.CreateDirectory(binariesDir.FullName);
 
+			// 5b) Run XHT (Phase 0 Task 0.3 seam). Writes xht-input-manifest.json
+			// at <intermediateRoot>/xht-input-manifest.json and shells out to
+			// XHT.exe -manifest=<path> -target=<name>. Phase 0 XHT is a skeleton:
+			// it logs which modules it would scan and exits 0. The point here is
+			// the XBT -> XHT contract; Phase 1 Task 1.9 swaps in the real parser.
+			bool xhtOk = await XHTExecution.RunAsync(engineDir, targetRules, modules, intermediateRoot).ConfigureAwait(false);
+			if (!xhtOk)
+			{
+				return 1;
+			}
+
 			// 6) Build a TargetMakefile and append actions
 			TargetMakefile makefile = new(options.TargetName, options.Platform, options.Configuration, options.Architecture)
 			{
