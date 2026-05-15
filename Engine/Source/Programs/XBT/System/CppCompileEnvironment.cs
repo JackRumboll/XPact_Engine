@@ -79,6 +79,31 @@ namespace XBT.BuildSystem
 		/// <summary>Whether to use the AutoRTFM Clang compiler (Phase 1 Task 1.0a wires the flag through).</summary>
 		public bool bUseAutoRTFMCompiler { get; set; } = true;
 
+		/// <summary>
+		/// Effective AutoRTFM compiler usage after vendoring detection. Computed by
+		/// BuildMode as <c>bUseAutoRTFMCompiler &amp;&amp; !bForceNoAutoRTFMCompiler &amp;&amp;
+		/// VCEnvironment.TryGetAutoRTFMCompilerPath()</c>. When false, MSVC is used and
+		/// the XAutoRTFM runtime falls back to inline no-op semantics from its public
+		/// headers. When true, the toolchain swap engages and per-module
+		/// <see cref="AutoRTFMExternalMappingFiles"/> are emitted to clang via
+		/// <c>-Xclang -autortfm-mappings</c>.
+		/// </summary>
+		public bool bUseAutoRTFMCompilerEffective { get; set; }
+
+		/// <summary>
+		/// Resolved AutoRTFM compiler path. Non-null iff <see cref="bUseAutoRTFMCompilerEffective"/>
+		/// is true. Points to <c>verse-clang-cl.exe</c> when vendored.
+		/// </summary>
+		public FileReference? AutoRTFMCompilerPath { get; set; }
+
+		/// <summary>
+		/// External AutoRTFM mapping files (.aem) emitted via <c>-Xclang -autortfm-mappings</c>
+		/// per module when <see cref="bUseAutoRTFMCompilerEffective"/> is true. Populated from
+		/// the source module's ModuleRules.AutoRTFMExternalMappingFiles. Under MSVC fallback
+		/// these are logged but otherwise ignored.
+		/// </summary>
+		public List<string> AutoRTFMExternalMappingFiles { get; } = [];
+
 		/// <summary>Whether to link against the static CRT.</summary>
 		public bool bUseStaticCRT { get; set; }
 
@@ -109,6 +134,9 @@ namespace XBT.BuildSystem
 			bUseSharedPCHs = other.bUseSharedPCHs;
 			bUsePDBFiles = other.bUsePDBFiles;
 			bUseAutoRTFMCompiler = other.bUseAutoRTFMCompiler;
+			bUseAutoRTFMCompilerEffective = other.bUseAutoRTFMCompilerEffective;
+			AutoRTFMCompilerPath = other.AutoRTFMCompilerPath;
+			AutoRTFMExternalMappingFiles.AddRange(other.AutoRTFMExternalMappingFiles);
 			bUseStaticCRT = other.bUseStaticCRT;
 			bUseDebugCRT = other.bUseDebugCRT;
 		}

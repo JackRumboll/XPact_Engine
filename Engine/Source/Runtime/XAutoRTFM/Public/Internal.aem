@@ -1,0 +1,8 @@
+# Copyright Epic Games, Inc. All Rights Reserved.
+# Modified by Simgenics for XPact Engine.
+
+# AutoRTFM internal mappings.
+# See Engine/Source/Runtime/AutoRTFM/Documentation/ExternalMappings.md
+# for syntax and more information.
+
+same autortfm_lookup_function

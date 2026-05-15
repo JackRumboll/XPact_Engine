@@ -140,6 +140,16 @@ namespace XBT.Configuration.Rules
 		/// <summary>Runtime dependencies (files staged alongside the build product).</summary>
 		public List<string> RuntimeDependencies { get; } = [];
 
+		/// <summary>
+		/// AutoRTFM external mapping (.aem) files that the AutoRTFM clang fork should
+		/// consume via <c>-Xclang -autortfm-mappings</c>. Paths are relative to the
+		/// Engine source root (e.g. <c>Runtime/XAutoRTFM/Public/StdLib.Common.aem</c>)
+		/// or absolute. Honoured by VCToolChain only when an AutoRTFM-capable
+		/// <c>verse-clang-cl.exe</c> is detected; under MSVC fallback these entries
+		/// are logged and ignored. Surface mirrors UnrealBuildTool ModuleRules.cs.
+		/// </summary>
+		public List<string> AutoRTFMExternalMappingFiles { get; } = [];
+
 		// -------------------------------------------------------------------------
 		// Optional override for which directory contains the .cpp/.h files. Phase 0
 		// uses Directory only.

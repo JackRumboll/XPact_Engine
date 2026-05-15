@@ -83,6 +83,26 @@ namespace XBT.Platform.Windows
 		}
 
 		/// <summary>
+		/// Build lib.exe arguments for archiving the given object files into a
+		/// static library. Mirrors UnrealBuildTool's VCToolChain.GetLibFlags surface
+		/// trimmed to the switches XBT needs.
+		/// </summary>
+		public static string MakeLibArgs(IReadOnlyList<FileReference> objects, FileReference outputLib)
+		{
+			System.ArgumentNullException.ThrowIfNull(objects);
+			System.ArgumentNullException.ThrowIfNull(outputLib);
+
+			StringBuilder sb = new();
+			sb.Append("/NOLOGO /MACHINE:X64 ");
+			sb.Append("/OUT:\"").Append(outputLib.FullName).Append("\" ");
+			foreach (FileReference obj in objects)
+			{
+				sb.Append('"').Append(obj.FullName).Append("\" ");
+			}
+			return sb.ToString().TrimEnd();
+		}
+
+		/// <summary>
 		/// Build link.exe arguments for the final binary.
 		/// </summary>
 		public static string MakeLinkArgs(LinkEnvironment env)
@@ -197,12 +217,26 @@ namespace XBT.Platform.Windows
 			}
 
 			// The AutoRTFM compiler flag is exposed but no clang-fork toolchain is
-			// wired up in Task 0.2. Phase 1 Task 1.0a will gate /D and a path switch
-			// here. For now we expose a sentinel define so callers can detect that
-			// the flag was honoured.
+			// wired up in Task 0.2. Phase 1 Task 1.0a wires the propagation chain
+			// end-to-end: the sentinel define survives, and when an AutoRTFM-capable
+			// verse-clang-cl.exe is vendored, BuildMode flips bUseAutoRTFMCompilerEffective
+			// and the -Xclang -autortfm-mappings flags below are emitted (replicating
+			// UBT's VCToolChain.cs:2422 pattern).
 			if (env.bUseAutoRTFMCompiler)
 			{
 				sb.Append("/DXPACT_AUTORTFM_COMPILER_FLAG_SET=1 ");
+			}
+
+			if (env.bUseAutoRTFMCompilerEffective)
+			{
+				foreach (string mapping in env.AutoRTFMExternalMappingFiles)
+				{
+					// Path may be relative-to-engine-source or absolute. We pass through
+					// what was supplied: BuildMode resolves the absolute path when
+					// populating CppCompileEnvironment.AutoRTFMExternalMappingFiles.
+					sb.Append("-Xclang -autortfm-mappings -Xclang ");
+					sb.Append('"').Append(mapping).Append("\" ");
+				}
 			}
 
 			sb.Length--; // strip trailing space - we'll re-add specifics from callers

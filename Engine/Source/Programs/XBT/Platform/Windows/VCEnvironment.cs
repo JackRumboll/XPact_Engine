@@ -44,6 +44,9 @@ namespace XBT.Platform.Windows
 		/// <summary>Path to link.exe.</summary>
 		public FileReference LinkExe { get; }
 
+		/// <summary>Path to lib.exe (static-library archiver).</summary>
+		public FileReference LibExe { get; }
+
 		/// <summary>Windows SDK install root.</summary>
 		public DirectoryReference WindowsSdkRoot { get; }
 
@@ -56,13 +59,14 @@ namespace XBT.Platform.Windows
 		/// <summary>LIB paths to add (MSVC + UCRT + UM, all x64).</summary>
 		public IReadOnlyList<DirectoryReference> LibraryPaths { get; }
 
-		private VCEnvironment(DirectoryReference vsInstallDir, DirectoryReference vcToolChainDir, string vcToolChainVersion, FileReference clExe, FileReference linkExe, DirectoryReference winSdkRoot, string winSdkVersion, IReadOnlyList<DirectoryReference> includePaths, IReadOnlyList<DirectoryReference> libraryPaths)
+		private VCEnvironment(DirectoryReference vsInstallDir, DirectoryReference vcToolChainDir, string vcToolChainVersion, FileReference clExe, FileReference linkExe, FileReference libExe, DirectoryReference winSdkRoot, string winSdkVersion, IReadOnlyList<DirectoryReference> includePaths, IReadOnlyList<DirectoryReference> libraryPaths)
 		{
 			VisualStudioInstallDir = vsInstallDir;
 			VCToolChainDir = vcToolChainDir;
 			VCToolChainVersion = vcToolChainVersion;
 			ClExe = clExe;
 			LinkExe = linkExe;
+			LibExe = libExe;
 			WindowsSdkRoot = winSdkRoot;
 			WindowsSdkVersion = winSdkVersion;
 			IncludePaths = includePaths;
@@ -77,6 +81,7 @@ namespace XBT.Platform.Windows
 			(DirectoryReference vcToolChainDir, string vcToolChainVersion) = FindMSVCToolchain(vsInstallDir);
 			FileReference clExe = FileReference.Combine(vcToolChainDir, "bin", "Hostx64", "x64", "cl.exe");
 			FileReference linkExe = FileReference.Combine(vcToolChainDir, "bin", "Hostx64", "x64", "link.exe");
+			FileReference libExe = FileReference.Combine(vcToolChainDir, "bin", "Hostx64", "x64", "lib.exe");
 			if (!File.Exists(clExe.FullName))
 			{
 				throw new BuildException("Expected cl.exe at '{0}' but it does not exist.", clExe.FullName);
@@ -84,6 +89,10 @@ namespace XBT.Platform.Windows
 			if (!File.Exists(linkExe.FullName))
 			{
 				throw new BuildException("Expected link.exe at '{0}' but it does not exist.", linkExe.FullName);
+			}
+			if (!File.Exists(libExe.FullName))
+			{
+				throw new BuildException("Expected lib.exe at '{0}' but it does not exist.", libExe.FullName);
 			}
 
 			(DirectoryReference winSdkRoot, string winSdkVersion) = FindWindowsSdk();
@@ -110,7 +119,41 @@ namespace XBT.Platform.Windows
 				DirectoryReference.Combine(sdkLib, "um", "x64"),
 			];
 
-			return new VCEnvironment(vsInstallDir, vcToolChainDir, vcToolChainVersion, clExe, linkExe, winSdkRoot, winSdkVersion, includes, libs);
+			return new VCEnvironment(vsInstallDir, vcToolChainDir, vcToolChainVersion, clExe, linkExe, libExe, winSdkRoot, winSdkVersion, includes, libs);
+		}
+
+		/// <summary>
+		/// Attempts to locate the AutoRTFM-capable Clang driver (verse-clang-cl.exe).
+		/// UE 5.9's WindowsCompiler.ClangRTFM maps to <c>verse-clang-cl.exe</c>; that
+		/// binary is part of Epic's Verse/AutoRTFM distribution and is NOT present in
+		/// our UE 5.9 a79fff49 source checkout (verified by exhaustive search).
+		/// </summary>
+		/// <remarks>
+		/// Vendoring contract: drop the AutoRTFM clang fork as
+		/// <c>Engine/Source/ThirdParty/UnrealInstrumentation/bin/verse-clang-cl.exe</c>
+		/// (alongside <c>verse-link.exe</c> if a paired linker is shipped) and this
+		/// method will flip to returning <c>true</c>. The corresponding mapping-file
+		/// emission at <see cref="XBTWindows.MakeClCompileArgs"/> (gated on
+		/// <see cref="BuildSystem.CppCompileEnvironment.bUseAutoRTFMCompilerEffective"/>)
+		/// will then activate. No XBT changes are required when the binary lands —
+		/// the toolchain swap is purely a presence check.
+		/// </remarks>
+		/// <param name="engineDir">Engine root (the directory containing Source/).</param>
+		/// <param name="autoRTFMClangPath">The resolved compiler path, when found.</param>
+		/// <returns>True if an AutoRTFM-capable compiler binary is vendored.</returns>
+		public static bool TryGetAutoRTFMCompilerPath(DirectoryReference engineDir, out FileReference? autoRTFMClangPath)
+		{
+			System.ArgumentNullException.ThrowIfNull(engineDir);
+			autoRTFMClangPath = null;
+
+			FileReference candidate = FileReference.Combine(
+				engineDir, "Source", "ThirdParty", "UnrealInstrumentation", "bin", "verse-clang-cl.exe");
+			if (File.Exists(candidate.FullName))
+			{
+				autoRTFMClangPath = candidate;
+				return true;
+			}
+			return false;
 		}
 
 		private static DirectoryReference FindVisualStudioInstallation()

@@ -4,9 +4,23 @@ Manager-maintained status of the build. Updated at every milestone.
 
 ## Current Phase
 
-**Phase 0 — Tooling Bootstrap: COMPLETE** ✅
+**Phase 1 — Foundation Bootstrap (in progress)**
 
-Next: Phase 1 — Foundation Bootstrap.
+Phase 0 complete (commits 91d81e5 + 40ca09b + 1553f0c).
+
+## Phase 1 Task Status
+
+| Task | Status | Notes |
+|---|---|---|
+| 1.0a Path 2 — XAutoRTFM runtime port + XBT bUseAutoRTFMCompiler infrastructure + AutoRTFMTests fallback semantics + AUTORTFM_INTEGRATION.md | ✅ | Runtime (78 files) ports as no-op fallback under MSVC; `verse-clang-cl.exe` not in UE 5.9 checkout (investigation report logged); drop-in vendoring contract documented. 5/5 fallback-semantics tests pass. |
+| 1.0a.A — -Xclang flag pair fix + compile-action prerequisites + stray test.obj cleanup | ✅ | Code-review MUST-FIX from 1.0a — addresses drop-in contract gap that would have surfaced once verse-clang-cl.exe is vendored. |
+| 1.0b — DETERMINISM.md full design | ⏳ Pending | |
+| 1.1–1.18 — XCore bootstrap, XHT full port, CoreXObject, XPactBindingGen, XScripting, XCoreEndToEnd | ⏳ Pending | |
+
+## Open Items from Task 1.0a (deferred to later phases)
+
+- **Acquire `verse-clang-cl.exe`** (Simgenics manager action; not a coding subagent task). Likely lives on a Restricted/NotForLicensees Epic distribution channel. When obtained, drop into `Engine/Source/ThirdParty/UnrealInstrumentation/bin/verse-clang-cl.exe`; `VCEnvironment.TryGetAutoRTFMCompilerPath()` auto-detects, toolchain swap engages, `XAutoRTFMTests` fallback tests can be revised to real transactional rollback tests. See `Engine/Documentation/AUTORTFM_INTEGRATION.md`.
+- **CppCompileWarningSettings full port** (deferred to Phase 1.2 per Task 1.0a deviation #3). XBT's ModuleRules doesn't yet surface the WarningSettings field. XAutoRTFM.Build.cs has a clearly-annotated TODO marker.
 
 ## Pre-Phase-0 Manager Actions
 

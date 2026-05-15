@@ -79,21 +79,86 @@ namespace XBT.Modes
 			Log.TraceInformation("[XBT] Target type: {0}, LaunchModule: {1}, bUseSharedPCHs: {2}, bUseAutoRTFMCompiler: {3}",
 				targetRules.Type, targetRules.LaunchModuleName, targetRules.bUseSharedPCHs, targetRules.bUseAutoRTFMCompiler);
 
-			// 3) Resolve modules
-			List<string> moduleNames = new();
+			// 3) Resolve modules: launch + extras are "primary" modules whose obj
+			// files go into the .exe link; their PublicDependencyModuleNames are
+			// resolved transitively into "dependency" modules that compile to
+			// separate static libraries and link into the final exe via .lib.
+			List<string> primaryNames = new();
 			if (!String.IsNullOrEmpty(targetRules.LaunchModuleName))
 			{
-				moduleNames.Add(targetRules.LaunchModuleName!);
+				primaryNames.Add(targetRules.LaunchModuleName!);
 			}
-			moduleNames.AddRange(targetRules.ExtraModuleNames);
+			primaryNames.AddRange(targetRules.ExtraModuleNames);
 
-			List<ModuleRules> modules = moduleNames
+			List<ModuleRules> primaryModules = primaryNames
 				.Select(n => rules.CreateModuleRules(n, targetRules))
 				.ToList();
+
+			// Walk PublicDependencyModuleNames and PrivateDependencyModuleNames transitively.
+			List<ModuleRules> dependencyModules = new();
+			HashSet<string> seen = new(primaryNames, StringComparer.OrdinalIgnoreCase);
+			Queue<ModuleRules> work = new(primaryModules);
+			while (work.Count > 0)
+			{
+				ModuleRules current = work.Dequeue();
+				foreach (string dep in current.PublicDependencyModuleNames.Concat(current.PrivateDependencyModuleNames))
+				{
+					if (!seen.Add(dep))
+					{
+						continue;
+					}
+					ModuleRules depRules = rules.CreateModuleRules(dep, targetRules);
+					dependencyModules.Add(depRules);
+					work.Enqueue(depRules);
+				}
+			}
+
+			// All modules collected in compile-order: dependencies first (.lib outputs
+			// must exist before final link), primary modules last.
+			List<ModuleRules> modules = new();
+			modules.AddRange(dependencyModules);
+			modules.AddRange(primaryModules);
+			HashSet<string> primarySet = new(primaryNames, StringComparer.OrdinalIgnoreCase);
 
 			// 4) Resolve toolchain
 			VCEnvironment vc = VCEnvironment.Discover();
 			Log.TraceInformation("[XBT] MSVC {0} | Windows SDK {1}", vc.VCToolChainVersion, vc.WindowsSdkVersion);
+
+			// 4a) AutoRTFM toolchain detection. The AutoRTFM clang fork (verse-clang-cl.exe)
+			// ships separately from the Unreal source tree. When present, we swap MSVC out
+			// and emit -Xclang -autortfm-mappings flags from per-module
+			// AutoRTFMExternalMappingFiles. When absent (the current Path-2 state), MSVC
+			// is used and the XAutoRTFM runtime falls back to inline no-op semantics from
+			// its public headers.
+			bool autoRTFMCompilerRequested = targetRules.bUseAutoRTFMCompiler;
+			bool autoRTFMCompilerVendored = VCEnvironment.TryGetAutoRTFMCompilerPath(engineDir, out FileReference? autoRTFMCompilerPath);
+			bool autoRTFMCompilerEffective = autoRTFMCompilerRequested && autoRTFMCompilerVendored;
+			if (autoRTFMCompilerRequested && !autoRTFMCompilerVendored)
+			{
+				Log.TraceInformation("[XBT] Toolchain: cl.exe (bUseAutoRTFMCompiler=true requested, but verse-clang-cl.exe not vendored at '{0}' — using MSVC; XAutoRTFM compiles to no-op fallback)",
+					System.IO.Path.Combine(engineDir.FullName, "Source", "ThirdParty", "UnrealInstrumentation", "bin", "verse-clang-cl.exe"));
+			}
+			else if (autoRTFMCompilerEffective && autoRTFMCompilerPath is not null)
+			{
+				Log.TraceInformation("[XBT] Toolchain: {0} (AutoRTFM compiler active)", autoRTFMCompilerPath.FullName);
+			}
+			else if (!autoRTFMCompilerRequested)
+			{
+				Log.TraceInformation("[XBT] Toolchain: cl.exe (bUseAutoRTFMCompiler=false)");
+			}
+
+			// Per-module AutoRTFM mapping-file accounting. Always logged so the
+			// information is visible even under MSVC fallback (acceptance #5).
+			foreach (ModuleRules m in modules)
+			{
+				if (m.AutoRTFMExternalMappingFiles.Count > 0)
+				{
+					Log.TraceInformation("[XBT] {0} has {1} AutoRTFM mapping file(s): {2}",
+						m.Name,
+						m.AutoRTFMExternalMappingFiles.Count,
+						String.Join(", ", m.AutoRTFMExternalMappingFiles.Select(System.IO.Path.GetFileName)));
+				}
+			}
 
 			// 5) Compute output directories
 			DirectoryReference intermediateRoot = DirectoryReference.Combine(
@@ -158,12 +223,16 @@ namespace XBT.Modes
 				makefile.Actions.Add(pchAction);
 			}
 
-			// 6b) For each module, emit one CompileAction per .cpp
-			List<FileReference> allObjects = new();
+			// 6b) For each module, emit one CompileAction per .cpp. Dependency
+			// modules also produce a per-module .lib via lib.exe; primary modules
+			// (launch + extras) contribute their .obj files directly to the final
+			// .exe link.
+			List<FileReference> primaryObjects = new();
 			if (sharedPCHEnabled && sharedPCHObj is not null)
 			{
-				allObjects.Add(sharedPCHObj);
+				primaryObjects.Add(sharedPCHObj);
 			}
+			List<FileReference> dependencyLibs = new();
 
 			foreach (ModuleRules module in modules)
 			{
@@ -178,32 +247,63 @@ namespace XBT.Modes
 				List<FileReference> sources = Directory.EnumerateFiles(module.Directory.FullName, "*.cpp", SearchOption.AllDirectories)
 					.Select(p => new FileReference(p))
 					.ToList();
+
+				bool isPrimary = primarySet.Contains(module.Name);
+
 				if (sources.Count == 0)
 				{
-					Log.TraceWarning("Module '{0}': no .cpp files found under {1}", module.Name, module.Directory.FullName);
+					if (isPrimary)
+					{
+						Log.TraceWarning("Module '{0}': no .cpp files found under {1}", module.Name, module.Directory.FullName);
+					}
+					else
+					{
+						// A header-only dependency module is legal (no .obj => no .lib).
+						Log.TraceLog("[XBT] Module '{0}': header-only (no .cpp files); skipping lib step.", module.Name);
+					}
 					continue;
 				}
 
-				bool moduleUsesPCH = sharedPCHEnabled && (module.PCHUsage == ModuleRules.PCHUsageMode.UseSharedPCHs || module.PCHUsage == ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs);
+				bool moduleUsesPCH = sharedPCHEnabled
+					&& (module.PCHUsage == ModuleRules.PCHUsageMode.UseSharedPCHs
+						|| module.PCHUsage == ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs);
 
+				List<FileReference> moduleObjects = new();
 				foreach (FileReference src in sources)
 				{
 					FileReference obj = FileReference.Combine(moduleIntermediateDir, Path.GetFileNameWithoutExtension(src.FullName) + ".obj");
 					CompileAction ca = CreateCompileAction(engineDir, vc, includeEnv, libEnv, src, obj, targetRules, module, options, moduleIntermediateDir,
 						pchHeader: moduleUsesPCH ? sharedPCHHeader : null,
-						pchFile: moduleUsesPCH ? sharedPCHFile : null);
+						pchFile: moduleUsesPCH ? sharedPCHFile : null,
+						modules: modules,
+						autoRTFMCompilerEffective: autoRTFMCompilerEffective,
+						autoRTFMCompilerPath: autoRTFMCompilerPath);
 					if (moduleUsesPCH && sharedPCHFile is not null)
 					{
 						// Add PCH file as prerequisite so we cannot compile until PCH is generated.
 						ca.Prerequisites.Add(sharedPCHFile);
 					}
 					makefile.Actions.Add(ca);
-					allObjects.Add(obj);
+					moduleObjects.Add(obj);
+				}
+
+				if (isPrimary)
+				{
+					primaryObjects.AddRange(moduleObjects);
+				}
+				else
+				{
+					// Archive this dependency module's objs into <Name>.lib.
+					FileReference moduleLib = FileReference.Combine(moduleIntermediateDir, module.Name + ".lib");
+					LibAction lib = CreateLibAction(vc, includeEnv, libEnv, moduleObjects, moduleLib);
+					makefile.Actions.Add(lib);
+					dependencyLibs.Add(moduleLib);
+					Log.TraceInformation("[XBT] Will archive {0} object(s) into {1}", moduleObjects.Count, moduleLib.FullName);
 				}
 			}
 
-			// 6c) Link
-			LinkAction link = CreateLinkAction(vc, includeEnv, libEnv, allObjects, makefile.OutputFile!, targetRules);
+			// 6c) Link the final exe: primary .obj files + dependency .lib files.
+			LinkAction link = CreateLinkAction(vc, includeEnv, libEnv, primaryObjects, dependencyLibs, makefile.OutputFile!, targetRules);
 			makefile.Actions.Add(link);
 
 			// 7) Execute
@@ -294,7 +394,10 @@ namespace XBT.Modes
 			BuildOptions options,
 			DirectoryReference moduleIntermediateDir,
 			FileReference? pchHeader,
-			FileReference? pchFile)
+			FileReference? pchFile,
+			IReadOnlyList<ModuleRules> modules,
+			bool autoRTFMCompilerEffective,
+			FileReference? autoRTFMCompilerPath)
 		{
 			CppCompileEnvironment env = new()
 			{
@@ -305,6 +408,8 @@ namespace XBT.Modes
 				OutputDirectory = moduleIntermediateDir,
 				bUseSharedPCHs = target.bUseSharedPCHs,
 				bUseAutoRTFMCompiler = target.bUseAutoRTFMCompiler,
+				bUseAutoRTFMCompilerEffective = autoRTFMCompilerEffective,
+				AutoRTFMCompilerPath = autoRTFMCompilerPath,
 				bUseStaticCRT = target.bUseStaticCRT,
 				bUseDebugCRT = target.bDebugBuildsActuallyUseDebugCRT && options.Configuration == UnrealTargetConfiguration.Debug,
 				bUsePDBFiles = target.bUsePDBFiles,
@@ -315,6 +420,16 @@ namespace XBT.Modes
 			// Module-private definitions
 			env.Definitions.AddRange(module.PrivateDefinitions);
 			env.Definitions.AddRange(module.PublicDefinitions);
+
+			// Dependency-module public definitions are visible.
+			HashSet<string> moduleDeps = new(module.PublicDependencyModuleNames.Concat(module.PrivateDependencyModuleNames), StringComparer.OrdinalIgnoreCase);
+			foreach (ModuleRules other in modules)
+			{
+				if (moduleDeps.Contains(other.Name))
+				{
+					env.Definitions.AddRange(other.PublicDefinitions);
+				}
+			}
 
 			// Module include paths
 			if (module.Directory is not null)
@@ -337,17 +452,60 @@ namespace XBT.Modes
 				env.IncludePaths.Add(combined);
 			}
 
+			// Dependency-module public include paths
+			foreach (ModuleRules other in modules)
+			{
+				if (!moduleDeps.Contains(other.Name) || other.Directory is null)
+				{
+					continue;
+				}
+				env.IncludePaths.Add(other.Directory);
+				foreach (string p in other.PublicIncludePaths)
+				{
+					DirectoryReference combined;
+					try
+					{
+						combined = Path.IsPathRooted(p)
+							? new DirectoryReference(p)
+							: DirectoryReference.Combine(other.Directory!, p);
+					}
+					catch (Exception)
+					{
+						continue;
+					}
+					env.IncludePaths.Add(combined);
+				}
+			}
+
 			// Always allow the PCH header's directory on the include path (for #include "XCorePCH.Stub.h").
 			if (pchHeader is not null)
 			{
 				env.IncludePaths.Add(pchHeader.Directory);
 			}
 
+			// AutoRTFM mapping files: under effective mode these flow to clang via
+			// -Xclang -autortfm-mappings. Resolved to absolute paths so the compile
+			// action can run from any working directory. Under MSVC fallback the
+			// list is still populated (so XBTWindows could log it), but
+			// bUseAutoRTFMCompilerEffective is false so no flags are emitted.
+			foreach (string mapping in module.AutoRTFMExternalMappingFiles)
+			{
+				string absolute = Path.IsPathRooted(mapping)
+					? mapping
+					: Path.GetFullPath(Path.Combine(engineDir.FullName, "Source", mapping));
+				env.AutoRTFMExternalMappingFiles.Add(absolute);
+			}
+
 			string args = XBTWindows.MakeClCompileArgs(env, source, obj);
+
+			// Toolchain swap: under effective AutoRTFM mode the compiler is verse-clang-cl.exe.
+			FileReference compilerPath = autoRTFMCompilerEffective && autoRTFMCompilerPath is not null
+				? autoRTFMCompilerPath
+				: vc.ClExe;
 
 			CompileAction action = new()
 			{
-				CommandPath = vc.ClExe,
+				CommandPath = compilerPath,
 				CommandArguments = args,
 				WorkingDirectory = XBTWindows.GetWorkingDirectory(vc),
 				StatusDescription = $"Compile {source.GetFileName()}",
@@ -357,12 +515,40 @@ namespace XBT.Modes
 			action.EnvironmentVariables["INCLUDE"] = includeEnv;
 			action.EnvironmentVariables["LIB"] = libEnv;
 			action.Prerequisites.Add(source);
+			if (env.bUseAutoRTFMCompilerEffective && env.AutoRTFMCompilerPath is not null)
+			{
+				action.Prerequisites.Add(env.AutoRTFMCompilerPath);
+				foreach (string mappingFile in env.AutoRTFMExternalMappingFiles)
+				{
+					action.Prerequisites.Add(new FileReference(mappingFile));
+				}
+			}
 			action.ProducedItems.Add(obj);
-			_ = engineDir;
 			return action;
 		}
 
-		private static LinkAction CreateLinkAction(VCEnvironment vc, string includeEnv, string libEnv, IReadOnlyList<FileReference> objects, FileReference outputFile, TargetRules target)
+		private static LibAction CreateLibAction(VCEnvironment vc, string includeEnv, string libEnv, IReadOnlyList<FileReference> objects, FileReference outputLib)
+		{
+			string args = XBTWindows.MakeLibArgs(objects, outputLib);
+			LibAction action = new()
+			{
+				CommandPath = vc.LibExe,
+				CommandArguments = args,
+				WorkingDirectory = XBTWindows.GetWorkingDirectory(vc),
+				StatusDescription = $"Lib {outputLib.GetFileName()}",
+				OutputFile = outputLib,
+			};
+			action.EnvironmentVariables["INCLUDE"] = includeEnv;
+			action.EnvironmentVariables["LIB"] = libEnv;
+			foreach (FileReference o in objects)
+			{
+				action.Prerequisites.Add(o);
+			}
+			action.ProducedItems.Add(outputLib);
+			return action;
+		}
+
+		private static LinkAction CreateLinkAction(VCEnvironment vc, string includeEnv, string libEnv, IReadOnlyList<FileReference> objects, IReadOnlyList<FileReference> dependencyLibs, FileReference outputFile, TargetRules target)
 		{
 			LinkEnvironment env = new()
 			{
@@ -373,6 +559,7 @@ namespace XBT.Modes
 				bUseIncrementalLinking = target.bUseIncrementalLinking,
 			};
 			env.InputFiles.AddRange(objects);
+			env.AdditionalLibraries.AddRange(dependencyLibs);
 			foreach (DirectoryReference lp in vc.LibraryPaths)
 			{
 				env.LibraryPaths.Add(lp);
@@ -394,6 +581,10 @@ namespace XBT.Modes
 			foreach (FileReference o in objects)
 			{
 				la.Prerequisites.Add(o);
+			}
+			foreach (FileReference lib in dependencyLibs)
+			{
+				la.Prerequisites.Add(lib);
 			}
 			la.ProducedItems.Add(outputFile);
 			return la;
