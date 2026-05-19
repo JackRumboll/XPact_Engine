@@ -3,12 +3,18 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 12</title>
+<title>XPact Toolchain Contract &mdash; Rev 13</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 12</h1>
+<h1>XPact Toolchain Contract &mdash; Rev 13</h1>
 <p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
+
+<p><strong>Rev 13 (small audit-flagged fixes):</strong></p>
+<ul>
+  <li><strong>FBS schema <code>ModuleType</code> enum now includes <code>Programs</code>.</strong> Section 10.2. Required for XBT itself + other Layer-0 standalone tools (XHT, XIL2CPP, XAutomationTool, etc.) which live in <code>/Engine/Source/Programs/</code>. Appended under append-only discipline; ordinal 4 added after <code>ThirdParty</code> (ordinal 3) leaves prior ordinals stable.</li>
+</ul>
+<p>The remaining audit items from the Rev 12 follow-up audit (ModuleRules dep-list typing reconciliation, XBT-side <code>SimdLevel</code> value list to include <code>None</code>, <code>Tier2WholeProgramPass</code> action-type slot reservation, patch-DLL <code>&lt;gen&gt;</code> counter persistence) are XBT.html-internal and are addressed in XBT.html Rev 4 (companion revision).</p>
 
 <p><strong>Rev 12 (reconciliation pass:</strong> contradiction resolution with XBT.html Rev 2 [SimdLevel enum + values, IBuildHook signature, Roslyn escape hatch retained], plus N1 GC span hot-reload protocol, N2 Tier 2 cross-module sequencing, N3 Starlark grammar pinned, N4 FlatBuffers schema inlined, N5 IXModule dynamic-load protocol, M1 container move-only, M2 XResult exception destructor, M3 banned-API on preprocessed text, plus minor<strong>).</strong></p>
 
@@ -1606,7 +1612,8 @@ enum ModuleType : ubyte {
     Runtime = 0,
     Editor,
     Developer,
-    ThirdParty
+    ThirdParty,
+    Programs   // (Rev 13) appended under append-only discipline; required for XBT itself + other Layer-0 standalone tools
 }
 
 enum Languages : ubyte (bit_flags) {

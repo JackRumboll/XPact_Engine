@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 3)</title>
+<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 4)</title>
 </head>
 <body>
 
@@ -14,10 +14,19 @@
   <strong>Layer:</strong> 0 (Build &amp; Tooling) &nbsp;|&nbsp;
   <strong>Tier:</strong> Engine &nbsp;|&nbsp;
   <strong>Language:</strong> C# (.NET 8 standalone) &nbsp;|&nbsp;
-  <strong>Revision:</strong> Rev 3 &nbsp;|&nbsp;
+  <strong>Revision:</strong> Rev 4 &nbsp;|&nbsp;
   <strong>Plan reference:</strong> <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10 &nbsp;|&nbsp;
-  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 12 (Stage A).
+  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 13 (Stage A).
 </p>
+
+<p><strong>Rev 4 (small audit-flagged fixes):</strong></p>
+<ul>
+  <li><strong>ModuleRules dep-list type now <code>List&lt;ModuleDep&gt;</code></strong> (matching Contract Section 9.1) &mdash; <code>ModuleDep</code> is a struct <code>{ string Name; bool InterfaceModule; }</code>. Per-dep <code>InterfaceModule</code> flag replaces the prior per-module representation. TOML descriptors accept both <code>"XCore"</code> (bare-string shorthand) and <code>{ name = "XCore", interface_module = false }</code> (full form). Section 4.2 + Section 3.2 examples updated.</li>
+  <li><strong>Per-module manifest <code>SimdLevel</code> value list now includes <code>None</code></strong> (was omitted in error). Section 8.3 documented value set: <code>"None" | "Default" | "SSE2" | "SSE42" | "AVX" | "AVX2" | "AVX512"</code>.</li>
+  <li><strong><code>Tier2WholeProgramPass</code> assigned an <code>XActionType</code> enum slot</strong> (was unassigned in Rev 3). Slot 13 (first unnamed entry in the Phase 2 reserved range 9-15) is now <code>Tier2WholeProgramPass</code>. Pre-existing slot assignments (9-12) preserved. Section 5.1 enum updated; Section 10.7 references the slot.</li>
+  <li><strong>Patch-DLL <code>&lt;gen&gt;</code> counter persistence specified</strong> &mdash; at XBT startup, the counter for each <code>(Target, Module)</code> pair is initialized by scanning <code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.*.dll</code> and starting from <code>max(observed) + 1</code>. No separate persistence file. Repeated invocations within the same physical directory monotonically advance. Section 16.7 updated.</li>
+  <li><strong>Contract reference</strong> bumped to Rev 13 (adds <code>Programs</code> to FBS <code>ModuleType</code> enum). XBT itself, XHT, XIL2CPP, XAutomationTool all serialize with <code>ModuleType = Programs</code>.</li>
+</ul>
 
 <p><strong>Rev 3 (alignment with Contract Rev 12:</strong> SimdLevel enum union, IBuildHook signature matches contract, ModuleRules hook fields added, exit codes via contract Section 13 reference, Roslyn escape hatch retained Phase 1; plus QuiescePriority fix, FBS verifier limits pinned, MinimumToolchainVersion exit code 23, RunPostBuildAction removed in favor of IBuildHook, StationRole compile-define propagation, plus reflection of Contract N1-N5 + M1-M3 additions<strong>).</strong></p>
 
@@ -378,23 +387,26 @@ public enum SimdLevel { None, Default, SSE2, SSE42, AVX, AVX2, AVX512 }</code></
     // None / SSE2 / SSE42, with Default accepted and resolving to SSE42).
     public SimdLevel SimdLevel { get; set; } = SimdLevel.Default;
 
-    // === Dependencies (Contract Section 9.1) ===
-    public List&lt;string&gt; PublicDependencyModuleNames { get; } = new();
-    public List&lt;string&gt; PrivateDependencyModuleNames { get; } = new();
-    public List&lt;string&gt; DynamicallyLoadedModuleNames { get; } = new();
-    // NOTE Rev 2: PublicIncludePathModuleNames DROPPED. Use `InterfaceModule = true` on the providing module instead.
+    // === Dependencies (Contract Section 9.1 &mdash; REVISED Rev 4) ===
+    // ModuleDep is a value-type struct { string Name; bool InterfaceModule; }
+    // declared in Contract Section 9.1. Per-dep InterfaceModule flag (not a
+    // separate per-module property) lets a consumer mark a specific dependency
+    // as include-only at the use site, without changing what kind of module
+    // the target is. Implicit string-to-ModuleDep conversion exists for the
+    // common case where InterfaceModule = false (plain link dependency).
+    public List&lt;ModuleDep&gt; PublicDependencyModuleNames { get; } = new();
+    public List&lt;ModuleDep&gt; PrivateDependencyModuleNames { get; } = new();
+    public List&lt;ModuleDep&gt; DynamicallyLoadedModuleNames { get; } = new();
+    // NOTE Rev 2: the bare PublicIncludePathModuleNames field is dropped;
+    // per-dep `InterfaceModule = true` (in a ModuleDep entry) replaces it.
     // NOTE: CircularlyReferencedDependentModules deliberately absent &mdash;
     // banned outright per Contract Section 9.2.
 
     public List&lt;string&gt; PublicIncludePaths { get; } = new();
     public List&lt;string&gt; PrivateIncludePaths { get; } = new();
-
-    // === Module-surface flag (NEW Rev 2 &mdash; replaces PublicIncludePathModuleNames) ===
-    // A module marked `InterfaceModule = true` advertises its public include paths
-    // to dependents *without* requiring a link dependency. Engine modules that
-    // export pure-header interfaces (no .cpp; or .cpp that compiles into
-    // dependents' link line) use this flag.
-    public bool InterfaceModule { get; set; } = false;
+    // Note: the prior Rev 2 `InterfaceModule` property on ModuleRules itself
+    // has been removed in Rev 4 &mdash; the flag now lives per-dep inside
+    // ModuleDep entries above (matches Contract Section 9.1 typed surface).
 
     // === Preprocessor (Contract Section 9.1) ===
     public List&lt;string&gt; PublicDefinitions { get; } = new();
@@ -602,7 +614,7 @@ allow = false                      # SimPath; default-disable hot-reload
     Reserved_DerivedDataFetch      = 10,
     Reserved_LiveCodingCascade     = 11,
     Reserved_PatchDllEmit          = 12,
-    Reserved_Phase2_E              = 13,
+    Tier2WholeProgramPass          = 13,  // (Rev 4) post-MVP whole-program XIL2CPP Tier 2 promotion pass; Contract Rev 12 Section 5.2 Pass 2
     Reserved_Phase2_F              = 14,
     Reserved_Phase2_G              = 15,
 
@@ -967,7 +979,7 @@ extern "C" float  XSleef_cosf  (float);
     <tr><td><code>ModuleType</code></td><td>string</td><td><code>"Runtime"|"Editor"|"Developer"|"Programs"|"ThirdParty"</code>.</td></tr>
     <tr><td><code>Languages</code></td><td>string[]</td><td>Subset of <code>["Cpp","CSharp"]</code>.</td></tr>
     <tr><td><code>SimPath</code></td><td>bool</td><td></td></tr>
-    <tr><td><code>SimdLevel</code></td><td>string</td><td>NEW Rev 2. <code>"Default"|"SSE2"|"SSE42"|"AVX"|"AVX2"|"AVX512"</code>.</td></tr>
+    <tr><td><code>SimdLevel</code></td><td>string</td><td>NEW Rev 2 / corrected Rev 4. <code>"None"|"Default"|"SSE2"|"SSE42"|"AVX"|"AVX2"|"AVX512"</code> (Rev 3 omitted <code>"None"</code> in error; the enum has always included it per Contract Section 9.1).</td></tr>
     <tr><td><code>InterfaceModule</code></td><td>bool</td><td>NEW Rev 2. Replaces <code>PublicIncludePathModuleNames</code>.</td></tr>
     <tr><td><code>IsTestModule</code></td><td>bool</td><td>NEW Rev 2.</td></tr>
     <tr><td><code>DeprecationMessage</code></td><td>string?</td><td>NEW Rev 2.</td></tr>
@@ -1490,7 +1502,9 @@ public enum QuiescePriority
 
 <pre><code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.&lt;gen&gt;.dll</code></pre>
 
-<p><strong>&lt;gen&gt; scope (Rev 3 clarification): per-(Target, Module).</strong> A global counter for each <code>(Target, Module)</code> pair, incrementing monotonically per the pair within a session. Two concurrent patches to <em>different</em> modules in the same target use independent counters; two concurrent patches to the <em>same</em> module in different targets likewise use independent counters; only sequential patches to the same module in the same target share a counter sequence. This guarantees collision-free naming under concurrent patching across modules and across targets without requiring inter-target coordination.</p>
+<p><strong>&lt;gen&gt; scope (Rev 3 clarification): per-(Target, Module).</strong> A counter for each <code>(Target, Module)</code> pair, incrementing monotonically per the pair within a session. Two concurrent patches to <em>different</em> modules in the same target use independent counters; two concurrent patches to the <em>same</em> module in different targets likewise use independent counters; only sequential patches to the same module in the same target share a counter sequence. This guarantees collision-free naming under concurrent patching across modules and across targets without requiring inter-target coordination.</p>
+
+<p><strong>Counter persistence across XBT invocations (NEW Rev 4 &mdash; closes the "second invocation collides with first" gap).</strong> The counter is <em>not</em> kept in a separate persistence file. At XBT startup, when XLiveCoding requests a patch-DLL write for <code>(Target, Module)</code>, XBT scans <code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.*.dll</code>, parses the integer suffix from every match, takes <code>max(observed)</code>, and starts at <code>max + 1</code> &mdash; or at <code>0</code> if no prior patch-DLLs exist. This means: repeated XBT invocations in the same physical directory monotonically advance the counter without any external state; a fresh CI agent (with no prior <code>LiveCoding/</code> directory) starts at <code>0</code>; deleting old patch-DLLs by hand resets the high-water mark naturally. The scan is O(n) in the number of prior patch-DLLs for that <code>(Target, Module)</code> pair &mdash; typically &lt; 100 in a long session; near-zero on a clean checkout. <code>xbt clean-livecoding</code> (Section 1.4) removes the directory for opt-in reset.</p>
 
 <p>Phase 1 XBT does not write to this location; it does not even create the directory. Phase 2 XLiveCoding writes here; XBT's subset-build action graph outputs to this path when invoked with <code>-LiveCoding=true</code>. The path is reserved &mdash; nothing else writes to <code>LiveCoding/</code> &mdash; so Phase 2 can rely on the per-(Target, Module) naming discipline.</p>
 
