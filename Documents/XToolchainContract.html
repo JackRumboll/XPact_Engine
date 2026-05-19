@@ -13,6 +13,7 @@
 <p><strong>Rev 13 (small audit-flagged fixes):</strong></p>
 <ul>
   <li><strong>FBS schema <code>ModuleType</code> enum now includes <code>Programs</code>.</strong> Section 10.2. Required for XBT itself + other Layer-0 standalone tools (XHT, XIL2CPP, XAutomationTool, etc.) which live in <code>/Engine/Source/Programs/</code>. Appended under append-only discipline; ordinal 4 added after <code>ThirdParty</code> (ordinal 3) leaves prior ordinals stable.</li>
+  <li><strong><code>DynamicallyLoadedModuleNames</code> typed as <code>List&lt;ModuleDep&gt;</code></strong> (was <code>List&lt;string&gt;</code>) in Section 9.1, matching the other two dependency lists. Uniform typed surface; the per-dep <code>InterfaceModule</code> flag is meaningless for dynamic deps and is always false. The FBS <code>table ModuleDep</code>'s <code>is_dynamic</code> field is populated by XBT's <code>WriteManifestAction</code> from which list the dep was sourced &mdash; the C# side does not need an <code>is_dynamic</code> field since the source list disambiguates.</li>
 </ul>
 <p>The remaining audit items from the Rev 12 follow-up audit (ModuleRules dep-list typing reconciliation, XBT-side <code>SimdLevel</code> value list to include <code>None</code>, <code>Tier2WholeProgramPass</code> action-type slot reservation, patch-DLL <code>&lt;gen&gt;</code> counter persistence) are XBT.html-internal and are addressed in XBT.html Rev 4 (companion revision).</p>
 
@@ -1104,7 +1105,7 @@ public abstract class ModuleRules
 
     public List&lt;ModuleDep&gt; PublicDependencyModuleNames { get; } = new();
     public List&lt;ModuleDep&gt; PrivateDependencyModuleNames { get; } = new();
-    public List&lt;string&gt; DynamicallyLoadedModuleNames { get; } = new();
+    public List&lt;ModuleDep&gt; DynamicallyLoadedModuleNames { get; } = new();   // (Rev 13) typed-struct uniform with the other two dep lists; the per-dep InterfaceModule flag is meaningless for dynamic deps and is always false. The FBS schema's table ModuleDep includes is_dynamic, populated by XBT's WriteManifestAction from which list a dep was sourced.
 
     // === Include paths ===
 

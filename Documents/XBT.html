@@ -25,7 +25,8 @@
   <li><strong>Per-module manifest <code>SimdLevel</code> value list now includes <code>None</code></strong> (was omitted in error). Section 8.3 documented value set: <code>"None" | "Default" | "SSE2" | "SSE42" | "AVX" | "AVX2" | "AVX512"</code>.</li>
   <li><strong><code>Tier2WholeProgramPass</code> assigned an <code>XActionType</code> enum slot</strong> (was unassigned in Rev 3). Slot 13 (first unnamed entry in the Phase 2 reserved range 9-15) is now <code>Tier2WholeProgramPass</code>. Pre-existing slot assignments (9-12) preserved. Section 5.1 enum updated; Section 10.7 references the slot.</li>
   <li><strong>Patch-DLL <code>&lt;gen&gt;</code> counter persistence specified</strong> &mdash; at XBT startup, the counter for each <code>(Target, Module)</code> pair is initialized by scanning <code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.*.dll</code> and starting from <code>max(observed) + 1</code>. No separate persistence file. Repeated invocations within the same physical directory monotonically advance. Section 16.7 updated.</li>
-  <li><strong>Contract reference</strong> bumped to Rev 13 (adds <code>Programs</code> to FBS <code>ModuleType</code> enum). XBT itself, XHT, XIL2CPP, XAutomationTool all serialize with <code>ModuleType = Programs</code>.</li>
+  <li><strong>Contract reference</strong> bumped to Rev 13 (adds <code>Programs</code> to FBS <code>ModuleType</code> enum + types <code>DynamicallyLoadedModuleNames</code> as <code>List&lt;ModuleDep&gt;</code>). XBT itself, XHT, XIL2CPP, XAutomationTool all serialize with <code>ModuleType = Programs</code>.</li>
+  <li><strong>C# <code>ModuleType</code> enum order corrected</strong> to <code>{ Runtime, Editor, Developer, ThirdParty, Programs }</code> matching the FBS schema's append-only ordinals (Runtime=0, Editor=1, Developer=2, ThirdParty=3, Programs=4). Rev 3 had <code>Programs</code> at ordinal 3 and <code>ThirdParty</code> at ordinal 4 &mdash; FBS round-trips would have silently misclassified the two values. Section 4.1.</li>
 </ul>
 
 <p><strong>Rev 3 (alignment with Contract Rev 12:</strong> SimdLevel enum union, IBuildHook signature matches contract, ModuleRules hook fields added, exit codes via contract Section 13 reference, Roslyn escape hatch retained Phase 1; plus QuiescePriority fix, FBS verifier limits pinned, MinimumToolchainVersion exit code 23, RunPostBuildAction removed in favor of IBuildHook, StationRole compile-define propagation, plus reflection of Contract N1-N5 + M1-M3 additions<strong>).</strong></p>
@@ -347,7 +348,7 @@ allow = false                      # SimPath module; default-disable hot-reload 
 <pre><code>// XBT.Configuration
 
 public enum ModuleTier { Engine, Studio, Project }
-public enum ModuleType { Runtime, Editor, Developer, Programs, ThirdParty }
+public enum ModuleType { Runtime, Editor, Developer, ThirdParty, Programs }   // (Rev 4) order matches Contract Rev 13 FBS ordinals: Runtime=0, Editor=1, Developer=2, ThirdParty=3, Programs=4. Append-only discipline; Programs added at the end.
 public enum Languages { Cpp, CSharp, Both }
 public enum PCHUsageMode { Default, NoPCHs, NoSharedPCHs, UseSharedPCHs, UseExplicitOrSharedPCHs }
 public enum FPSemantics { Default, Precise, Imprecise }
