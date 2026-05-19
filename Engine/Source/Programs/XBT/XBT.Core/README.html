@@ -1,0 +1,45 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Core</title>
+</head>
+<body>
+
+<h1>XBT.Core</h1>
+
+<p>Primitives shared across the other XBT modules. No build semantics
+live here &mdash; ActionGraph, descriptor parsing, toolchain abstraction
+all sit in higher-layer XBT modules that depend on XBT.Core.</p>
+
+<p>Per <code>/Documents/XBT.html</code> Section 2:
+"FileItems, content-hashing (BLAKE3 via vendored library), atomic file
+IO with pinned temp-file naming, sorted-set utilities, structured
+logging helpers, streaming JSON channel writer. No knowledge of build
+semantics."</p>
+
+<p>Phase 1 surface (this commit):</p>
+<ul>
+  <li><code>IoHash</code> &mdash; 32-byte BLAKE3 content-addressable
+  digest. Mirrors UE's <code>IoHash.cs</code> in shape but is a
+  XPact-original implementation.</li>
+  <li><code>FileItem</code> &mdash; cached descriptor for a tracked
+  file: path, length, modification timestamp (informational only),
+  lazy content hash.</li>
+  <li><code>Logger</code> &mdash; minimal stderr+stdout sink with a
+  reservation for the streaming JSON channel of
+  <code>/Documents/XBT.html</code> Section 21.2 (Phase 1.1 work).</li>
+  <li><code>CancellationExt</code> &mdash; helpers for the
+  <code>CancellationToken</code> propagation contract of
+  <code>/Documents/XBT.html</code> Section 20.3.</li>
+</ul>
+
+<p>Atomic file IO with pinned temp-file naming
+(<code>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</code>) is a
+later add &mdash; that surface lands when XBT.ActionGraph appears in
+Phase 1.2. The shape is foreseen in this README so the API can be
+introduced without restructuring the module.</p>
+
+</body>
+</html>

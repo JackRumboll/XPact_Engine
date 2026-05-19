@@ -1,0 +1,19 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.Core</RootNamespace>
+    <AssemblyName>XBT.Core</AssemblyName>
+    <Description>XBT primitives: IoHash (BLAKE3), FileItem, structured logging, cancellation extensions. No build semantics.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      BLAKE3 NuGet package per /Documents/XBT.html Section 15.5:
+      "XBT uses BLAKE3 as its content-hash algorithm for all three cache
+      layers." Stable 1.x line.
+    -->
+    <PackageReference Include="Blake3" Version="1.1.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,47 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Entry</title>
+</head>
+<body>
+
+<h1>XBT.Entry</h1>
+
+<p>The XBT executable. Owns <code>Main</code>, the CLI parser, the
+mode dispatcher, and the built-in modes. Implements UnrealBuildTool's
+<code>IToolMode&lt;T&gt;</code> pattern with C# 12 static-abstract
+members.</p>
+
+<p>Phase 1 modes (this commit):</p>
+<ul>
+  <li><strong>Help</strong> &mdash; lists all registered modes. Always
+  works even if other modes fail; exit 0.</li>
+  <li><strong>Version</strong> &mdash; prints XBT version, .NET runtime
+  version, BLAKE3 library version, and
+  <code>ContractVersion.Current</code>; exit 0.</li>
+  <li><strong>Build</strong> &mdash; stub. Prints "BuildMode is not yet
+  implemented" and exits 1. Phase 1.2 work lands the action graph,
+  toolchain abstraction, descriptor evaluator, and the actual build
+  pipeline.</li>
+  <li><strong>QueryTargets</strong> &mdash; emits a hard-coded JSON
+  document listing the three default targets (Editor / Game / Server)
+  and the five build configurations from
+  <code>XBT.Manifest.Enums</code>. Useful smoke test for the manifest
+  types.</li>
+</ul>
+
+<p>Cancellation is honored via <code>Console.CancelKeyPress</code>:
+Ctrl-C signals a <code>CancellationTokenSource</code> passed to every
+mode's <code>ExecuteAsync</code> entry. Exit code 130 on cancel per
+Toolchain Contract Rev 13 Section 13 (SIGINT convention).</p>
+
+<p>All <code>Console.Out</code> / <code>Console.Error</code> writes
+go through <code>Simgenics.XPact.XBT.Core.Logger</code> so the
+streaming JSON channel hook
+(<code>/Documents/XBT.html</code> Section 21.2) can mirror every
+record into the IDE-subscriber stream at Phase 1.1.</p>
+
+</body>
+</html>

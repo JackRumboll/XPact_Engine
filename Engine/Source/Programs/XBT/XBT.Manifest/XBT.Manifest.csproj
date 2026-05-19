@@ -1,0 +1,29 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.Manifest</RootNamespace>
+    <AssemblyName>XBT.Manifest</AssemblyName>
+    <Description>JSON DTOs for the Toolchain Contract manifest (XToolchainContract.html Rev 13 Section 10.2). The FlatBuffers binary sidecar (Manifest.fbs) and its generated reader are added by Subagent B.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Subagent B FlatBuffers integration. Manifest.fbs is the normative
+    Toolchain Contract Rev 13 Section 10.2 schema. FlatSharp's MSBuild
+    compiler generates C# bindings during the build and places them in
+    obj/$(Configuration)/$(TargetFramework)/FlatSharp/.
+
+    FlatSharp.Compiler is private (PrivateAssets=all) so downstream
+    consumers of this project (XHT, XIL2CPP, XBT.Tests) link only against
+    the runtime. We pin to 7.9.0; the same major version is required
+    across all consumers because FlatBuffers' on-wire format is stable
+    but the in-process Serializer surface is not. PRIORITY: this version
+    must be upgraded in lockstep across all XPact projects.
+  -->
+  <Import Project="FlatSharp.targets" />
+
+</Project>

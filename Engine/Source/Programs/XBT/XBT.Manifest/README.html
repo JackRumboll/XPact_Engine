@@ -1,0 +1,39 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Manifest</title>
+</head>
+<body>
+
+<h1>XBT.Manifest</h1>
+
+<p>Manifest DTO types shared between XBT (writer) and XHT / XIL2CPP
+(readers). Per <code>/Documents/XToolchainContract.html</code> Rev 13
+Section 10.2, every XBT build emits the manifest in two forms in lockstep:</p>
+
+<ul>
+  <li><strong>JSON</strong> (this Phase 1 commit) &mdash; human-readable,
+  diffable in version control, parsed via <code>System.Text.Json</code>
+  with hardened reader options per <code>/Documents/XBT.html</code>
+  Section 8.4 (max depth 64, max bytes 100 MB, max array 65,536, max
+  string 16 KB).</li>
+  <li><strong>FlatBuffers binary sidecar</strong> &mdash; added by
+  Subagent B alongside <code>Manifest.fbs</code>. Loaded zero-copy by
+  XHT and XIL2CPP at run time.</li>
+</ul>
+
+<p>The C# DTOs here (<code>ManifestSchema.cs</code>) mirror the FBS
+schema field-by-field; Subagent B's tests verify enum ordinal alignment
+between the C# enums in <code>Enums.cs</code> and the FBS append-only
+enum ordinals in <code>Manifest.fbs</code>.</p>
+
+<p>Per Toolchain Contract Rev 13 Section 10.2 the FBS <code>ModuleType</code>
+enum is <strong>append-only</strong> and Rev 13 appended <code>Programs</code>
+at ordinal 4 after <code>ThirdParty</code> (ordinal 3). The C# enum in
+this module preserves the same ordering so default JSON serialization
+round-trips against FBS without re-ordering surprises.</p>
+
+</body>
+</html>

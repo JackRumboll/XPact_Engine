@@ -1,0 +1,139 @@
+// Copyright Simgenics. All Rights Reserved.
+// XPact Build Tool - Manifest schema, normative per Toolchain Contract Rev 13 Section 10.2.
+// Append-only versioning: new fields appended, never reordered, never deleted.
+
+namespace XPact.Build.Manifest;
+
+attribute "fs_serializer";
+
+file_identifier "XMFT";
+
+enum ModuleTier : ubyte {
+    Engine = 0,
+    Studio,
+    Project
+}
+
+// Append-only. Programs (ordinal 4) added under Rev 13 after ThirdParty (ordinal 3);
+// prior ordinals stable. Required for Layer-0 standalone tools (XBT, XHT, XIL2CPP, XAutomationTool).
+enum ModuleType : ubyte {
+    Runtime = 0,
+    Editor,
+    Developer,
+    ThirdParty,
+    Programs
+}
+
+// bit_flags: the integer values below are bit POSITIONS, not flag values.
+// Cpp occupies bit 0 (=1), CSharp occupies bit 1 (=2). FlatSharp emits [Flags].
+enum Languages : ubyte (bit_flags) {
+    Cpp = 0,
+    CSharp = 1
+}
+
+enum SimdLevel : ubyte {
+    None = 0,
+    Default,
+    SSE2,
+    SSE42,
+    AVX,
+    AVX2,
+    AVX512
+}
+
+enum Configuration : ubyte {
+    Debug = 0,
+    DebugGame,
+    Development,
+    Test,
+    Shipping
+}
+
+enum TargetType : ubyte {
+    Editor = 0,
+    Game,
+    Server
+}
+
+enum Platform : ubyte {
+    Win64 = 0,
+    Linux,
+    Android
+}
+
+enum StationRole : ubyte {
+    None = 0,
+    Engineer,
+    Instructor,
+    Trainee
+}
+
+enum PCHUsageMode : ubyte {
+    Default = 0,
+    NoPCHs,
+    NoSharedPCHs,
+    UseSharedPCHs,
+    UseExplicitOrSharedPCHs
+}
+
+table TargetInfo {
+    name: string;
+    target_type: TargetType;
+    configuration: Configuration;
+    platform: Platform;
+    architecture: string;     // "x86_64" or "aarch64"
+    station_role: StationRole = None;
+    simd_level_default: SimdLevel = SSE42;
+    fips_mode: bool = false;
+    sim_path_conservative_roots_allowed: bool = false;
+}
+
+table ModuleDep {
+    name: string;
+    interface_module: bool = false;
+    is_dynamic: bool = false;   // populated by XBT WriteManifestAction from source list
+}
+
+table SourceFile {
+    relative_path: string;
+    is_csharp: bool = false;
+    is_header: bool = false;
+    is_test_only: bool = false;
+}
+
+table Module {
+    name: string;
+    tier: ModuleTier;
+    module_type: ModuleType;
+    languages: Languages;
+    base_directory: string;
+    source_files: [SourceFile];
+    public_headers: [string];
+    private_headers: [string];
+    internal_headers: [string];
+    csharp_sources: [string];
+    include_paths: [string];
+    public_defines: [string];
+    module_dependencies: [ModuleDep];
+    generated_cpp_filename_base: string;
+    sim_path: bool = false;
+    simd_level: SimdLevel = Default;
+    pch_usage: PCHUsageMode = Default;
+    b_exclude_from_shared_pch: bool = false;
+    b_allow_hot_reload: bool = false;
+    b_is_test_module: bool = false;
+    deprecation_message: string;
+    minimum_toolchain_version: string;
+    engine_version_compat: string;
+}
+
+table Manifest (fs_serializer) {
+    contract_version: string;
+    engine_version: string;
+    root_local_path: string;
+    external_dependencies_file: string;
+    target: TargetInfo;
+    modules: [Module];
+}
+
+root_type Manifest;

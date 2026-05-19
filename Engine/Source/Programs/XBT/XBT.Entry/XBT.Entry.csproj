@@ -1,0 +1,34 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.Entry</RootNamespace>
+    <AssemblyName>XBT</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <RootDocumentation>true</RootDocumentation>
+    <Description>XBT executable: CLI dispatcher and mode registry. The Build mode is a stub at Phase 1; build orchestration lands in Phase 1.2.</Description>
+
+    <!--
+      Release-time single-file publish properties. PublishSingleFile and
+      SelfContained are only honored at `dotnet publish` time, not at
+      `dotnet build`. The properties are declared here so a release pipeline
+      can publish without further configuration.
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!--
+      RuntimeIdentifier is intentionally NOT set in the csproj per the
+      Toolchain Contract envelope. The publish RID is picked at the
+      publish command line so the same source tree publishes for Win64,
+      Linux, and Android-host-x86_64 deterministically.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+    <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+  </ItemGroup>
+
+</Project>

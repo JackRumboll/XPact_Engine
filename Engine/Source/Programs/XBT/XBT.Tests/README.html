@@ -1,0 +1,106 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Tests</title>
+</head>
+<body>
+
+<h1>XBT.Tests</h1>
+
+<p>xUnit test harness for XBT's Phase 1 modules per
+<code>/Documents/XBT.html</code> Rev 4 Section 22. Owned by Subagent B.</p>
+
+<h2>Layout</h2>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr><th>Path</th><th>Scope</th><th>Section reference</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>Tests/Core/IoHashTests.cs</code></td>
+      <td>BLAKE3 vectors; span vs stream parity; equality and hex roundtrip.</td>
+      <td>XBT.html Section 15.5; Toolchain Contract Section 2.1.</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Core/FileItemTests.cs</code></td>
+      <td>
+        <code>GetItemByPath</code> caching; lazy content hash; the
+        cache-invariant test that <strong>mtime change does NOT</strong>
+        change <code>ContentHash</code> (Toolchain Contract bans
+        mtime-based invalidation).
+      </td>
+      <td>Toolchain Contract Section 2.1; XBT.html Section 15.</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Manifest/EnumOrdinalAlignmentTests.cs</code></td>
+      <td>
+        Canary against the Rev 13 ordinal-mismatch class of bug.
+        Reflection-driven equality check: every named value in every
+        C# enum has the same ordinal as the FlatSharp-generated FBS
+        enum value of the same name.
+      </td>
+      <td>Toolchain Contract Section 10.2 (append-only versioning).</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Manifest/JsonRoundTripTests.cs</code></td>
+      <td>
+        JSON serialize / deserialize / re-serialize equality;
+        determinism (byte-identical re-emit); JSON
+        <code>MaxDepth = 64</code> enforcement at parse.
+      </td>
+      <td>XBT.html Section 8.4.</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Manifest/FbsRoundTripTests.cs</code></td>
+      <td>
+        FBS serialize / deserialize equality; <code>XMFT</code>
+        file_identifier prefix; verifier rejection of malformed buffers.
+      </td>
+      <td>Toolchain Contract Section 10.2; XBT.html Section 8.4 / 8.5.</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Manifest/JsonFbsCrossTests.cs</code></td>
+      <td>
+        JSON-to-FBS-to-POCO round trip equality. Validates that the
+        two on-disk forms (JSON, FBS sidecar) come out of the same
+        in-memory POCO with no field drift.
+      </td>
+      <td>Toolchain Contract Section 10.2; XBT.html Section 8.5.</td>
+    </tr>
+    <tr>
+      <td><code>Tests/Copyright/CopyrightHeaderTests.cs</code></td>
+      <td>
+        Walk every authored source file under
+        <code>/Engine/Source/Programs/XBT/</code> and assert the first
+        non-empty line is the Simgenics copyright header. Mirrors
+        XBT's ValidateCopyrightAction at the test layer.
+      </td>
+      <td>Toolchain Contract Section 10.1 step 6; XBT.html Section 22.1.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>How to run</h2>
+
+<p>From the repo root:</p>
+<pre><code>dotnet test Engine/Source/Programs/XBT/XBT.Tests/XBT.Tests.csproj</code></pre>
+
+<p>The test project depends on <code>XBT.Core</code> and
+<code>XBT.Manifest</code> via <code>ProjectReference</code>. Building the
+solution (<code>dotnet build Engine/Source/Programs/XBT/XBT.sln</code>)
+builds the test project and its dependencies in one shot.</p>
+
+<h2>Why no fixtures yet</h2>
+
+<p>Phase 1 ships unit tests only -- the integration / reproducibility /
+tier-enforcement / IBuildHook fixture suites in XBT.html Sections 22.2
+through 22.7 require <code>ModuleRules</code>, <code>ActionGraph</code>,
+and <code>WriteManifestAction</code> implementations that arrive in
+Phases 1.1 -- 1.3. The xUnit harness here is the seed: future fixtures
+slot into <code>XBT.Tests/Fixtures/</code> as their owning systems land.</p>
+
+</body>
+</html>

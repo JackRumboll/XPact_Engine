@@ -1,0 +1,70 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT &mdash; XPact Build Tool</title>
+</head>
+<body>
+
+<h1>XBT &mdash; XPact Build Tool</h1>
+
+<p>XBT is the build orchestrator for every XPact build &mdash; the C# .NET 8
+standalone executable that discovers modules, builds the dependency graph,
+invokes XHT (reflection extraction) and XIL2CPP (C# transpilation), schedules
+compile and link actions, and emits the JSON + FlatBuffers manifest that
+downstream tools consume. It is Layer 0 (Build &amp; Tooling), tier Engine,
+and the first system implemented after the Toolchain Contract. Reference
+spec: <code>/Documents/XBT.html</code> Rev 4; interface contract:
+<code>/Documents/XToolchainContract.html</code> Rev 13.</p>
+
+<h2>Module layout</h2>
+
+<p>XBT itself is a multi-project C# solution living under this directory.
+Each sub-project has a small, named purpose so subagent work can be split
+cleanly per <code>/Documents/XBT.html</code> Section 2:</p>
+
+<ul>
+  <li><strong>XBT.Core</strong> &mdash; primitives shared across the other XBT
+  modules: content-addressable <code>IoHash</code> (BLAKE3), tracked
+  <code>FileItem</code>, structured logging, cancellation extensions.
+  No build semantics.</li>
+  <li><strong>XBT.Manifest</strong> &mdash; manifest DTO types serialisable
+  both as JSON (System.Text.Json) and as the FlatBuffers binary sidecar
+  defined in Toolchain Contract Section 10.2. Referenced by XHT and
+  XIL2CPP at their build time so all three tools share one set of DTOs.
+  The FlatBuffers schema (<code>Manifest.fbs</code>) and the contract
+  version derivation are owned by this module.</li>
+  <li><strong>XBT.Entry</strong> &mdash; the executable. Owns
+  <code>Main</code>, the CLI parser, the mode dispatcher, and the
+  built-in modes (Help, Version, Build, QueryTargets, &hellip;).
+  Implements UBT's <code>IToolMode&lt;T&gt;</code> pattern with C# 12
+  static-abstract members.</li>
+  <li><strong>XBT.Tests</strong> &mdash; sibling test module covering all
+  of the above (added by Subagent B; see <code>/Documents/XBT.html</code>
+  Section 22).</li>
+</ul>
+
+<p>Three further sub-modules called out in
+<code>/Documents/XBT.html</code> Section 2 (<code>XBT.Configuration</code>,
+<code>XBT.ActionGraph</code>, <code>XBT.Executor</code>,
+<code>XBT.Toolchain</code>, <code>XBT.ProjectFiles</code>,
+<code>XBT.LiveCoding</code>, <code>XBT.Discovery</code>) are Phase 1.2 work
+&mdash; the bare-bones foundation in this Phase 1 deliverable does not
+need them to produce a working <code>XBT.exe Version</code> /
+<code>XBT.exe Help</code> binary.</p>
+
+<h2>How to build</h2>
+
+<p>Per the master plan's auto-memory reference to the build system:
+production XBT builds go through <code>XBT.Build</code> bat scripts once
+they exist. Until then, the .csproj solution at
+<code>XBT.sln</code> is a stand-alone <code>dotnet</code>-buildable unit:
+<code>dotnet build Engine/Source/Programs/XBT/XBT.sln</code> from the repo
+root produces the XBT.Entry executable plus the two class-library
+dependencies. The build is deterministic (warnings-as-errors,
+<code>&lt;Deterministic&gt;true&lt;/Deterministic&gt;</code>, embedded
+sources) per Toolchain Contract Rev 13 Section 2.1.</p>
+
+</body>
+</html>

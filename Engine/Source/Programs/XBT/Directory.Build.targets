@@ -1,0 +1,16 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Shared MSBuild targets for every XBT project.
+
+    Placeholder: Toolchain Contract Section 10.1 step 6 mandates that XBT
+    validate the Simgenics copyright header on every authored source file
+    in a build it drives. Validating XBT's OWN source files is a logical
+    fit for an MSBuild target inside this tree, but Subagent B's
+    XBT.Tests project will exercise the real ValidateCopyrightAction
+    against fixture data. For now this targets file is empty so the
+    plumbing exists and can be extended without restructuring the tree.
+  -->
+
+</Project>

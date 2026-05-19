@@ -1,0 +1,47 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    FlatSharp integration for XBT.Manifest.
+
+    XBT.Manifest.csproj must import this file with:
+        <Import Project="FlatSharp.targets" />
+
+    Owned by subagent B (Toolchain Contract Rev 13 Section 10.2 binary sidecar).
+
+    Manifest.fbs is the normative FlatBuffers schema. FlatSharp's MSBuild
+    compiler reads it, generates C# bindings during the build, and links
+    them into XBT.Manifest.dll. Downstream tools (XHT, XIL2CPP) consume
+    the generated readers transitively through this DLL.
+
+    Why FlatSharp instead of Google.FlatBuffers + flatc.exe? FlatSharp's
+    compiler is a NuGet-shipped MSBuild task; no external native binary
+    needs to be installed on the build agent or in CI. The output is
+    fully deterministic when Deterministic=true is set on the project
+    (inherited from /Engine/Source/Programs/XBT/Directory.Build.props).
+  -->
+
+  <ItemGroup>
+    <PackageReference Include="FlatSharp.Runtime" Version="7.9.0" />
+    <PackageReference Include="FlatSharp.Compiler" Version="7.9.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FlatSharpSchema Include="$(MSBuildThisFileDirectory)Manifest.fbs" />
+  </ItemGroup>
+
+  <!--
+    The FlatSharp compiler emits C# into obj/$(Configuration)/$(TargetFramework)/
+    by default; the files participate in the regular compile via the Compile
+    item group FlatSharp's targets populate. We do not need to add anything
+    to Compile manually.
+
+    Treat warnings as errors is on at the project level. FlatSharp 7.9 generates
+    code that passes -warnaserror with C# 12 + Nullable=enable; suppress any
+    legitimately-needed warnings here on a per-warning basis only, never globally.
+  -->
+
+</Project>
