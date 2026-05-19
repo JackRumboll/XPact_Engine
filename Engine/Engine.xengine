@@ -1,0 +1,27 @@
+{
+	"_comment": "Engine descriptor for XPact. Mirrors Unreal's .uproject/.uplugin JSON style. Source of truth: C:/Users/benne/.claude/plans/unreal-engine-source-code-lively-pillow.md (Rev 10). EngineVersion 0.1.0 carries Rev-9 compatibility guarantees from this first tagged build forward (Section 2 Plugin Versioning row).",
+	"FileVersion": 1,
+	"EngineName": "XPact",
+	"EngineVersion": "0.1.0",
+	"Copyright": "Copyright Simgenics. All Rights Reserved.",
+	"Description": "Simgenics's specialized C++/C# game engine for industrial training and simulation on PC and VR.",
+	"MinSupportedPlatforms": [
+		"Win64",
+		"Linux",
+		"Android"
+	],
+	"RenderAPI": "Vulkan",
+	"VRBackend": "OpenXR",
+	"BuildTargets": [
+		"Editor",
+		"Game",
+		"Server"
+	],
+	"BuildConfigurations": [
+		"Debug",
+		"DebugGame",
+		"Development",
+		"Test",
+		"Shipping"
+	]
+}

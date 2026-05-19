@@ -1,0 +1,58 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XToolchainContract &mdash; XPact Engine</title>
+</head>
+<body>
+<h1>XToolchainContract</h1>
+<p><em>Stub. This is the Step 0 deliverable per master-plan Section 4. It is an interfaces-only contract for the three toolchain systems &mdash; <strong>XBT</strong>, <strong>XHT</strong>, <strong>XIL2CPP</strong> &mdash; designed jointly before any of them gets its own spec. The contract locks interfaces; internals are deferred to each tool's own spec. Section bodies below are empty and will be filled in by the Step 0 design task.</em></p>
+
+<hr>
+
+<h2>1. Reflection Schema</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>Name table, marker macros, surface vocabulary. Full binary schema (FName / FClass / FProperty / FField layout including all replication slots) is deferred to a versioned addendum locked at XCore-4b. XHT's parser ships at step 2; XHT's emit format is frozen at the addendum.</em></p>
+
+<h2>2. Hot-Reload Symbol Naming</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>Stable exported names for hot-patchable functions, versioned vtable layout, patch-DLL discovery protocol.</em></p>
+
+<h2>3. GC Root-Registration ABI</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>What the IL2CPP transpiler emits for non-GC containers holding XObjects; the runtime ABI for register / de-register; handling of <code>List&lt;object&gt;</code> and other non-statically-typed containers (conservative full-slot registration).</em></p>
+
+<h2>4. Determinism Flag Propagation</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>How a module declares "this TU is sim-path"; how XBT translates that to <code>/fp:precise</code> + <code>-ffp-contract=off</code> + transcendental-library substitution at compile time.</em></p>
+
+<h2>5. Exception Codegen Switch</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>The ABI-stable boundary layer that gives transpiled C# functions identical external signatures across Dev (native exceptions) and Shipping (<code>Result&lt;T,E&gt;</code>); internal-only differences in lowering.</em></p>
+
+<h2>6. C# String &harr; FString Mapping</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>C# <code>string</code> transpiles to an immutable string handle wrapping <code>FString</code> (UTF-8); literal C# strings emit as UTF-8 byte arrays at transpile time (no runtime conversion); <code>foreach</code> over a C# string iterates code points, not bytes.</em></p>
+
+<hr>
+
+<h2>XHT Emit-Format Freeze &mdash; Two-Stage</h2>
+<p><em>XHT's emit format is frozen in two stages. Step 0 (this document) locks the interface; the binary schema is frozen later at the Contract addendum that lands when XCore-4b ships at Step 4.</em></p>
+
+<h3>Stage A &mdash; Step 0 (this document): Interface Freeze</h3>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>Locks file naming, invocation protocol, marker macros, and surface vocabulary. XBT consumes XHT output opaquely &mdash; XBT does not parse XHT's binary struct layouts &mdash; so XBT at Step 1 is decoupled from the binary-schema finalization in Stage B.</em></p>
+
+<h3>Stage B &mdash; Step 4 Contract Addendum: Binary-Schema Freeze</h3>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>Lands when XCore-4b ships. Freezes the concrete output struct layouts (FName / FClass / FProperty / FField including all replication-metadata slots). XHT Step 2 ships parser-complete + emitter-provisional; XHT's emitter finalizes its concrete output struct layouts here.</em></p>
+
+<hr>
+
+<h2>Pending: Per-File Dependency Model (TBD at XBT Implementation)</h2>
+<!-- TBD: Step 0 design will fill this -->
+<p><em>Per master-plan Section 4: the contract carries explicit "TBD at XBT implementation" markers for the per-file dependency model, which can only be hardened once XBT is built. The Step 0.5 addendum (descriptive) will document the per-file dependency model that XBT actually implements, rather than prescribing one ahead of time. The Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it.</em></p>
+
+</body>
+</html>

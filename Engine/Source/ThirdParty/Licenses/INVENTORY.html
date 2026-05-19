@@ -1,0 +1,136 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>XPact Engine &mdash; Third-Party License Inventory</title>
+</head>
+<body>
+
+<h1>Third-Party License Inventory</h1>
+
+<p>Every third-party dependency vendored under <code>/Engine/Source/ThirdParty/</code> is enumerated below per Section 2 of the Rev 10 master plan. Full upstream license text for each dependency lands as <code>Licenses/&lt;Name&gt;.txt</code> at the moment the dependency is actually integrated &mdash; those <code>.txt</code> files do not yet exist; the path column shows where each will be placed. XAutomationTool's release pipeline aggregates the full set into a <code>NOTICES.html</code> bundle attached to every signed shipping build.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Version</th>
+      <th>Source URL</th>
+      <th>License type</th>
+      <th>License file path</th>
+      <th>Intended use</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Jolt Physics</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/jrouwe/JoltPhysics</td>
+      <td>MIT</td>
+      <td><code>Licenses/Jolt.txt</code></td>
+      <td>XPhysics &mdash; deterministic rigid-body simulation in lockstep mode</td>
+    </tr>
+    <tr>
+      <td>Sleef</td>
+      <td>TBD at integration</td>
+      <td>https://sleef.org/</td>
+      <td>BSL-1.0</td>
+      <td><code>Licenses/Sleef.txt</code></td>
+      <td>Deterministic transcendental math substitution on sim-path TUs</td>
+    </tr>
+    <tr>
+      <td>Vulkan-Headers</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/KhronosGroup/Vulkan-Headers</td>
+      <td>Apache-2.0</td>
+      <td><code>Licenses/Vulkan-Headers.txt</code></td>
+      <td>XVulkanRHI &mdash; Vulkan API headers</td>
+    </tr>
+    <tr>
+      <td>Vulkan-Loader</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/KhronosGroup/Vulkan-Loader</td>
+      <td>Apache-2.0</td>
+      <td><code>Licenses/Vulkan-Loader.txt</code></td>
+      <td>XVulkanRHI &mdash; runtime Vulkan loader</td>
+    </tr>
+    <tr>
+      <td>VulkanMemoryAllocator</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator</td>
+      <td>MIT</td>
+      <td><code>Licenses/VulkanMemoryAllocator.txt</code></td>
+      <td>XVulkanRHI &mdash; GPU memory allocation</td>
+    </tr>
+    <tr>
+      <td>OpenXR-SDK</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/KhronosGroup/OpenXR-SDK</td>
+      <td>Apache-2.0</td>
+      <td><code>Licenses/OpenXR-SDK.txt</code></td>
+      <td>XOpenXR &mdash; VR/AR runtime integration (Quest 3-class HMDs)</td>
+    </tr>
+    <tr>
+      <td>Recast/Detour</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/recastnavigation/recastnavigation</td>
+      <td>ZLib</td>
+      <td><code>Licenses/Recast.txt</code></td>
+      <td>XNavigation &mdash; navmesh generation and pathfinding</td>
+    </tr>
+    <tr>
+      <td>CPython</td>
+      <td>TBD at integration</td>
+      <td>https://www.python.org/</td>
+      <td>PSF</td>
+      <td><code>Licenses/CPython.txt</code></td>
+      <td>XPython &mdash; embedded scripting (post-MVP)</td>
+    </tr>
+    <tr>
+      <td>Roslyn</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/dotnet/roslyn</td>
+      <td>MIT</td>
+      <td><code>Licenses/Roslyn.txt</code></td>
+      <td>XHT parser reference only &mdash; not embedded in shipping builds</td>
+    </tr>
+    <tr>
+      <td>MikkTSpace</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/mmikk/MikkTSpace</td>
+      <td>ZLib</td>
+      <td><code>Licenses/MikkTSpace.txt</code></td>
+      <td>XMaterials &mdash; tangent-space calculation</td>
+    </tr>
+    <tr>
+      <td>ICU</td>
+      <td>TBD at integration</td>
+      <td>https://icu.unicode.org/</td>
+      <td>Unicode License</td>
+      <td><code>Licenses/ICU.txt</code></td>
+      <td>XLocalization runtime &mdash; Unicode handling, collation, locales</td>
+    </tr>
+    <tr>
+      <td>zstd</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/facebook/zstd</td>
+      <td>BSD-3-Clause</td>
+      <td><code>Licenses/zstd.txt</code></td>
+      <td>XSerialization &mdash; binary compression</td>
+    </tr>
+    <tr>
+      <td>Brotli</td>
+      <td>TBD at integration</td>
+      <td>https://github.com/google/brotli</td>
+      <td>MIT</td>
+      <td><code>Licenses/Brotli.txt</code></td>
+      <td>XPak &mdash; package compression</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><em>Notes.</em> Versions are marked "TBD at integration" because the engine is in pre-bootstrap scaffold phase; each version will be pinned the moment the dependency is actually integrated into its consuming system. The cryptographic library backing XSecurity (Section 2 Network security row &mdash; OpenSSL / BoringSSL or a FIPS-140-3 validated provider) is not in this initial inventory because its selection is deployment-time configurable and lands when XSecurity is implemented at Layer 13.</p>
+
+</body>
+</html>

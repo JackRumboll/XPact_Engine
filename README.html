@@ -1,0 +1,32 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XPact Engine</title>
+</head>
+<body>
+<h1>XPact Engine</h1>
+<p><strong>XPact</strong> is <strong>Simgenics</strong>'s specialized C++/C# game engine, purpose-built for industrial training and simulation. Simgenics delivers high-fidelity training products to regulated industries &mdash; mining, nuclear, power, and adjacent verticals &mdash; where deterministic simulation, hot-reloadable gameplay code, and immersive presentation are first-class engineering concerns rather than afterthoughts.</p>
+
+<p>Engineering constants:</p>
+<ul>
+  <li><strong>Languages:</strong> C++ for the engine; C# for gameplay and tooling, transpiled to C++ via XIL2CPP.</li>
+  <li><strong>Graphics API:</strong> Vulkan-only.</li>
+  <li><strong>XR API:</strong> OpenXR-only.</li>
+</ul>
+
+<h2>Three-Tier Reusability Model</h2>
+<p>The repository is organized into three reusability tiers (master-plan Section 2). Each tier follows an Unreal-mirror layout. Lower tiers may depend on higher tiers, never the reverse, and tier membership is enforced by XBT at module-resolution time.</p>
+<ol>
+  <li><strong><code>/Engine/</code></strong> &mdash; The XPact engine itself. Universal across every Simgenics training product. Unreal-mirror <code>Source/{Runtime,Editor,Developer,Programs,ThirdParty}</code>, <code>Plugins/</code>, <code>Content/</code>, <code>Config/</code>, <code>Build/</code>, <code>Shaders/</code>. <code>Binaries/</code> and <code>Intermediate/</code> gitignored.</li>
+  <li><strong><code>/Studio/</code></strong> &mdash; Simgenics-internal shared code, content, and plugins reused across <em>multiple</em> training products. <code>Source/</code>, <code>Plugins/</code>, <code>Content/</code>.</li>
+  <li><strong><code>/Projects/&lt;ProductName&gt;/</code></strong> &mdash; Per-product training applications (e.g. <code>Mining-Training</code>, <code>Nuclear-Operator-Cert</code>). Each project's <code>.xproject</code> descriptor declares which Engine and Studio plugins it enables.</li>
+</ol>
+<p><strong>Hoisting:</strong> When a behavior is used by a second product it is hoisted from <code>/Projects/&lt;A&gt;/</code> into <code>/Studio/</code>; when something in <code>/Studio/</code> proves universally applicable it is hoisted into <code>/Engine/</code>. Hoisting is a deliberate design action with cross-system review, not an automatic process.</p>
+
+<h2>Documentation</h2>
+<p>System specifications are HTML, one file per system, under <a href="Documents/"><code>/Documents/</code></a>. <strong>No markdown is permitted anywhere in this repository.</strong> Plan and meta-design files live outside the repo at <code>C:\Users\benne\.claude\plans\</code>.</p>
+
+</body>
+</html>

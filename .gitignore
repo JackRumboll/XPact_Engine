@@ -1,0 +1,73 @@
+# Copyright Simgenics. All Rights Reserved.
+
+# ---------------------------------------------------------------------------
+# XPact build output (any tier, any nesting level)
+# ---------------------------------------------------------------------------
+Binaries/
+Intermediate/
+
+# ---------------------------------------------------------------------------
+# Compiled native artifacts (anywhere in the tree)
+# ---------------------------------------------------------------------------
+*.pdb
+*.obj
+*.o
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.exp
+*.ilk
+*.idb
+*.map
+
+# Allow committed third-party prebuilt binaries to override above
+# (third-party libraries explicitly checked in under Engine/Source/ThirdParty/
+# should add a !path negation here once such directories exist).
+
+# ---------------------------------------------------------------------------
+# IDE / editor metadata
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.opendb
+*.vcxproj.filters.user
+*.csproj.user
+*.DotSettings.user
+
+# ---------------------------------------------------------------------------
+# .NET / C# build artifacts (XBT, XHT, XIL2CPP and other C# tools)
+# ---------------------------------------------------------------------------
+bin/
+obj/
+*.nupkg
+*.snupkg
+project.lock.json
+project.assets.json
+
+# ---------------------------------------------------------------------------
+# Generated / temporary build artifacts
+# ---------------------------------------------------------------------------
+*.tlog
+*.log
+*.tmp
+*.cache
+*.bak
+*.swp
+*~
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
