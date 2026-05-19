@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Build Tool (XBT) &mdash; System Specification</title>
+<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 2)</title>
 </head>
 <body>
 
@@ -14,48 +14,73 @@
   <strong>Layer:</strong> 0 (Build &amp; Tooling) &nbsp;|&nbsp;
   <strong>Tier:</strong> Engine &nbsp;|&nbsp;
   <strong>Language:</strong> C# (.NET 8 standalone) &nbsp;|&nbsp;
+  <strong>Revision:</strong> Rev 2 &nbsp;|&nbsp;
   <strong>Plan reference:</strong> <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10 &nbsp;|&nbsp;
-  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Stage A.
+  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 11 (Stage A).
 </p>
+
+<h3>Revision history</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Rev</th><th>Summary</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Rev 1</td>
+      <td>Initial Stage-A specification: module layout, RulesAssembly via Roslyn, action graph, executor, manifest format, XHT/XIL2CPP invocation, copyright validation, engine-version enforcement, tier enforcement, project file generation, three-layer caching, Live Coding hook stub, reproducibility commitments.</td>
+    </tr>
+    <tr>
+      <td><strong>Rev 2</strong></td>
+      <td><strong>Post-deep-audit:</strong> cancellation+atomic-rename contradiction fixed (pinned <code>.tmp.&lt;pid&gt;.&lt;actionid&gt;</code> in output directory + orphan sweep at startup); <strong>Roslyn dropped</strong> for declarative TOML descriptors with a sandboxed expression sub-language (50&ndash;100&times; faster cold start; Section 3); TargetMakefile cache key made complete and explicit (Section 15.1); XActionType enum subdivided for parallelism visibility and reserved Phase-2 slots (Section 5.1); streaming JSON error channel (Section 21.2 &mdash; machine-readable, not post-hoc); complete reproducibility envelope cross-referenced against Contract Rev 11 Section 2.1 (Section 19); Live Coding hook seams expanded (quiesce protocol, subset-build mode, patch-DLL discovery path; Section 16); plugin shadow records all observed entries with tier tagging (Section 17.2); <code>bAllowHotReload</code> enforcement matrix made coherent across target type &times; module flag &times; station role (Section 16.4); JSON parse safety (depth + byte limits, FlatBuffers bounds; Section 8.4); SimdLevel ModuleRules field added (Section 4.2); PCH include-order policy locked (Section 15.4); Unity-build file-membership rule locked (Section 4.8); exit codes moved into the contract (Section 13 of Contract Rev 11) &mdash; XBT.html now references that table rather than duplicating it (Section 1.3); GC root ABI moved to span-based (XGC_RegisterRootSpan family) so manifest GC fields reflect the new shape (Section 8.2); exception calling convention split between shim and direct-noexcept (compile actions emit per-function flag; Section 7.4); ContractVersion auto-derived from contract surface hash, not hand-typed (Section 8.1); .Build.cs &rarr; .Build.toml + .Build.expr surface (Section 4 entirely re-cut around declarative descriptors); binary manifest sidecar (FlatBuffers) added alongside JSON manifest (Section 8.5); cross-tier dep edge matrix made explicit &mdash; link deps downward only, DynamicallyLoadedModuleNames upward allowed (Section 13.1); PublicIncludePathModuleNames dropped, replaced with <code>InterfaceModule = true</code> flag (Section 4.2); SimPath modules forced to <code>PCHUsage = NoSharedPCHs</code> (Section 4.5); <code>s[i]</code> on sim-path TUs is an error not a warning (Section 7.4); <code>CacheKeyComponents</code> added to IExternalAction (Section 5.2); typed <code>IBuildHook</code> surface replaces freeform shell commands (Section 22.6 / Section 5.7); three new ModuleRules fields documented &mdash; <code>bIsTestModule</code>, <code>DeprecationMessage</code>, <code>MinimumToolchainVersion</code> (Section 4.2); Itanium-ABI-style length-prefixed mangling cross-referenced (Section 8 / Section 10); XHT and XIL2CPP run concurrent (not sequential) in the action graph (Section 10.6); build-artifact attribution carried through every action (Section 21.5); <code>-WarningsAsErrors=false</code> CLI override added (Section 1.5); architecture component participates in the cache key even when omitted from the on-disk path (Section 18.1).</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><em>Sections heavily revised in Rev 2 are marked <strong>(REVISED Rev 2)</strong>. Sections newly added are marked <strong>(NEW Rev 2)</strong>.</em></p>
 
 <hr>
 
 <h2 id="sec0">0. Purpose, Scope, Tier Membership</h2>
 
-<p>XBT is the build orchestrator for every XPact build. It is the first system implemented after the Toolchain Contract (plan Section 4 Step 1), and every later system &mdash; engine, editor, studio plugin, project &mdash; is compiled by XBT. XBT is the analog of Unreal Engine's UnrealBuildTool (UBT), restructured to honour the foundational decisions locked in plan Section 2 and the seams locked in the Toolchain Contract.</p>
+<p>XBT is the build orchestrator for every XPact build. It is the first system implemented after the Toolchain Contract (plan Section 4 Step 1), and every later system &mdash; engine, editor, studio plugin, project &mdash; is compiled by XBT. XBT is the analog of Unreal Engine's UnrealBuildTool (UBT), restructured to honour the foundational decisions locked in plan Section 2 and the seams locked in the Toolchain Contract (Rev 11).</p>
 
-<p>XBT is delivered as a single <strong>C# .NET 8 self-contained standalone executable</strong>. It has no XPact runtime dependencies &mdash; it cannot reference XCore, XCoreXObject, or any engine type. The build artefact is a Win64 / Linux / Android-host-x86_64 binary plus a small set of data files (banned-API list, default toolchain table, contract-version manifest). XBT is invoked by developer scripts, by IDE delegation hooks (Rider, clangd), and by XAutomationTool's release pipeline.</p>
+<p>XBT is delivered as a single <strong>C# .NET 8 self-contained standalone executable</strong>. It has no XPact runtime dependencies &mdash; it cannot reference XCore, XCoreXObject, or any engine type. The build artefact is a Win64 / Linux / Android-host-x86_64 binary plus a small set of data files (banned-API list, default toolchain table, contract-surface manifest used to derive ContractVersion). XBT is invoked by developer scripts, by IDE delegation hooks (Rider, clangd), and by XAutomationTool's release pipeline.</p>
 
 <p><strong>Tier membership.</strong> Plan Section 3: "All inventory systems are Engine-tier (live in <code>/Engine/</code>)." XBT's source lives under <code>/Engine/Source/Programs/XBT/</code>. XBT is itself reusable across every Simgenics training product and every plugin, mirroring the engine's universal-reuse posture (plan Section 2 Folder structure row, Rev 6).</p>
 
-<p><strong>Position in the build pipeline.</strong> XBT drives the pipeline locked in Toolchain Contract Section 10.1: discovery and graph build, manifest emit, XHT invocation, XIL2CPP invocation, copyright validation, C++ compile actions, link. Every step is an action in XBT's action graph; XBT is itself the only tool that owns the graph. XHT (System 2) and XIL2CPP (System 6) are sub-tools XBT invokes, never the other way round.</p>
+<p><strong>Position in the build pipeline.</strong> XBT drives the pipeline locked in Toolchain Contract Section 10.1: discovery and graph build, manifest emit (JSON + FlatBuffers sidecar), concurrent XHT + XIL2CPP invocation, copyright validation, C++ compile actions, link. Every step is an action in XBT's action graph; XBT is itself the only tool that owns the graph. XHT (System 2) and XIL2CPP (System 6) are sub-tools XBT invokes, never the other way round.</p>
 
-<p><strong>What XBT does not own.</strong> It does not parse reflection markers (that is XHT's job, per Contract Section 7). It does not transpile C# (that is XIL2CPP's job, per Contract Sections 2, 3, 5, 6). It does not own GC root primitives (those are XCoreXObject's job, per Contract Section 3.5). It does not own runtime hot-patch dispatch (XLiveCoding's job, plan Section 2 Hot-reload row). It does not handle deployment, code signing, or symbol upload (XAutomationTool's job, plan Section 3 Layer 0). XBT's responsibility ends when the link step produces a well-formed binary that the next pipeline stage can pick up.</p>
+<p><strong>What XBT does not own.</strong> It does not parse reflection markers (that is XHT's job, per Contract Section 7). It does not transpile C# (that is XIL2CPP's job, per Contract Sections 2, 3, 5, 6). It does not own GC root primitives (those are XCoreXObject's job, per Contract Section 3 &mdash; now the <code>XGC_RegisterRootSpan</code> / <code>XGC_UpdateRootSpan</code> / <code>XGC_UnregisterRootSpan</code> family per Contract Rev 11). It does not own runtime hot-patch dispatch (XLiveCoding's job; XBT provides hook seams only). It does not handle deployment, code signing, or symbol upload (XAutomationTool's job, plan Section 3 Layer 0). XBT's responsibility ends when the link step produces a well-formed binary that the next pipeline stage can pick up.</p>
 
-<p><strong>Phase awareness.</strong> XBT MVP is Phase 1 in plan Section 5 (MVP subset). The Phase 2 readiness items called out in this document &mdash; distributed execution, full Live Coding integration, advanced PCH, Visual Studio project files &mdash; are designed as no-cost stubs at Phase 1 so post-MVP work does not require XBT redesign.</p>
+<p><strong>Phase awareness.</strong> XBT MVP is Phase 1 in plan Section 5 (MVP subset). The Phase 2 readiness items called out in this document &mdash; distributed execution, full Live Coding integration, advanced PCH, Visual Studio project files &mdash; are designed as no-cost stubs at Phase 1 so post-MVP work does not require XBT redesign. Section 5.1 reserves <code>XActionType</code> enum slots so adding Phase 2 action types does not break the field-set hash that auto-derives <code>CommandVersion</code>.</p>
 
 <p><strong>System dependency diagram.</strong></p>
 
 <pre><code>                       +----------------------------+
                        |   XPact Toolchain Contract |
-                       |   (interfaces, JSON shape) |
+                       |   (Rev 11; ContractVersion |
+                       |   auto-derived from        |
+                       |   contract-surface hash)   |
                        +-------------+--------------+
                                      |
                                      v
         +----------------------------+----------------------------+
         |                          XBT                            |
-        |   .NET 8 standalone EXE  (this spec)                    |
+        |   .NET 8 standalone EXE  (this spec, Rev 2)             |
         |  - Discovery (.xengine / .xproject / .xplugin)          |
-        |  - RulesAssembly (Roslyn-compiled .Build.cs)            |
+        |  - Declarative descriptors (.Build.toml + .Build.expr)  |
         |  - ActionGraph + ActionHistory + executor               |
         |  - Toolchain abstraction (XMSVC / XClang)               |
-        |  - Manifest emit (Contract Section 10.2)                |
+        |  - Manifest emit (Contract Section 10.2; JSON + FBS)    |
         |  - Mode dispatch (CLI entry)                            |
         +---+----------+----------+----------+----------+---------+
             |          |          |          |          |
             v          v          v          v          v
          Manifest    XHT      XIL2CPP    C++ compile  Linker
-        (JSON)    (System 2) (System 6) (MSVC/Clang) (MSVC/lld)
+        (JSON +   (System 2) (System 6) (MSVC/Clang) (MSVC/lld)
+         FBS)      (run        (run
+                   concurrent  concurrent
+                   with        with
+                   XIL2CPP)    XHT)
             |          |          |          |          |
             +----------+----------+----+-----+----------+
                                        |
@@ -64,7 +89,7 @@
                           /Projects/&lt;P&gt;/Binaries/&lt;Platform&gt;/...
 </code></pre>
 
-<p>The diagram does not show: IDE delegation (Rider / clangd consume <code>compile_commands.json</code> XBT emits and then re-invoke XBT for actual builds, mirroring UBT's pattern); XAutomationTool delegation (release pipeline calls XBT to produce the binaries it then signs); XLiveCoding cooperation (Phase 2 &mdash; XLiveCoding invokes XBT with a recompile-only subset of actions, then patches the running process).</p>
+<p>The diagram does not show: IDE delegation (Rider / clangd consume <code>compile_commands.json</code> XBT emits and then re-invoke XBT for actual builds, mirroring UBT's pattern); XAutomationTool delegation (release pipeline calls XBT to produce the binaries it then signs); XLiveCoding cooperation (Phase 2 &mdash; XLiveCoding invokes XBT with a recompile-only subset of actions via <code>ActionGraph.BuildSubset</code>, then patches the running process through the quiesce protocol).</p>
 
 <hr>
 
@@ -77,13 +102,13 @@
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Mode</th><th>Purpose</th><th>Key arguments</th></tr></thead>
   <tbody>
-    <tr><td><code>Build</code></td><td>Discover, validate, manifest, run XHT + XIL2CPP, compile, link.</td><td><code>-Target=</code> <code>-Platform=</code> <code>-Configuration=</code> <code>-Project=</code> <code>-Modules=</code> <code>-NoCompile</code> <code>-DryRun</code></td></tr>
+    <tr><td><code>Build</code></td><td>Discover, validate, manifest, run XHT + XIL2CPP, compile, link.</td><td><code>-Target=</code> <code>-Platform=</code> <code>-Configuration=</code> <code>-Project=</code> <code>-Modules=</code> <code>-NoCompile</code> <code>-DryRun</code> <code>-WarningsAsErrors=</code></td></tr>
     <tr><td><code>Clean</code></td><td>Remove intermediates and binaries for the named target.</td><td><code>-Target=</code> <code>-Platform=</code> <code>-Configuration=</code> <code>-Project=</code></td></tr>
     <tr><td><code>GenerateProjectFiles</code></td><td>Emit Rider <code>.idea/</code> + clangd <code>compile_commands.json</code>.</td><td><code>-Project=</code> <code>-Target=</code> <code>-IDE=Rider|Clangd|All</code></td></tr>
     <tr><td><code>QueryTargets</code></td><td>Enumerate available Targets / Modules / Plugins. Useful for IDE pickers.</td><td><code>-Project=</code> <code>-Format=Json|Text</code></td></tr>
-    <tr><td><code>RunXHT</code></td><td>Standalone XHT invocation (debugging XHT in isolation).</td><td><code>-Manifest=</code> <code>-Module=</code></td></tr>
-    <tr><td><code>RunXIL2CPP</code></td><td>Standalone XIL2CPP invocation.</td><td><code>-Manifest=</code> <code>-Module=</code></td></tr>
-    <tr><td><code>WriteManifest</code></td><td>Emit the JSON manifest (Contract Section 10.2) without running downstream tools. Used by XHT.html / XIL2CPP.html spec test harnesses.</td><td><code>-Target=</code> <code>-Platform=</code> <code>-Configuration=</code> <code>-Project=</code> <code>-Out=</code></td></tr>
+    <tr><td><code>RunXHT</code></td><td>Convenience wrapper. Delegates to standalone <code>XHT.exe</code>. See Section 1.4.</td><td><code>-Manifest=</code> <code>-Module=</code></td></tr>
+    <tr><td><code>RunXIL2CPP</code></td><td>Convenience wrapper. Delegates to standalone <code>XIL2CPP.exe</code>. See Section 1.4.</td><td><code>-Manifest=</code> <code>-Module=</code></td></tr>
+    <tr><td><code>WriteManifest</code></td><td>Emit the JSON manifest + FlatBuffers sidecar (Contract Section 10.2) without running downstream tools. Used by XHT.html / XIL2CPP.html spec test harnesses.</td><td><code>-Target=</code> <code>-Platform=</code> <code>-Configuration=</code> <code>-Project=</code> <code>-Out=</code></td></tr>
     <tr><td><code>ValidateCopyright</code></td><td>Run only the copyright check (Contract Section 10.1 step 5). Standalone runnable for CI pre-flight.</td><td><code>-Paths=</code> <code>-Exclude=</code></td></tr>
     <tr><td><code>ValidateEngineVersion</code></td><td>Validate <code>.xengine</code> / <code>.xplugin</code> / <code>.xproject</code> compatibility (Contract Section 9.4). Standalone runnable for CI pre-flight.</td><td><code>-Project=</code> <code>-EngineRoot=</code></td></tr>
   </tbody>
@@ -105,117 +130,174 @@ XBT.exe ValidateCopyright -Paths=C:\Users\benne\Documents\GitHub\XPact_Engine\En
 
 # CI pre-flight: engine-version constraints
 XBT.exe ValidateEngineVersion -Project=...\Mining-Training.xproject \
-                              -EngineRoot=C:\Users\benne\Documents\GitHub\XPact_Engine\Engine</code></pre>
+                              -EngineRoot=C:\Users\benne\Documents\GitHub\XPact_Engine\Engine
 
-<h3>1.3 Exit codes</h3>
+# Build with warnings-as-errors disabled (Rev 2 override; for local experimentation only)
+XBT.exe Build -Target=Editor -Platform=Win64 -Configuration=Development \
+              -Project=...\Mining-Training.xproject -WarningsAsErrors=false</code></pre>
 
-<p>XBT exits with structured codes so CI and IDE callers can distinguish failure categories. Codes are stable across versions; new categories take the next free integer rather than reusing.</p>
+<h3>1.3 Exit codes &mdash; cross-reference to Contract Rev 11 (REVISED Rev 2)</h3>
 
-<table border="1" cellpadding="6" cellspacing="0">
-  <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
-  <tbody>
-    <tr><td>0</td><td>Success.</td></tr>
-    <tr><td>1</td><td>Generic failure (uncategorised).</td></tr>
-    <tr><td>10</td><td>CLI argument error (mode / flag invalid).</td></tr>
-    <tr><td>20</td><td>Discovery failure (descriptor not found, malformed JSON).</td></tr>
-    <tr><td>21</td><td>Tier violation (Contract Section 9.3).</td></tr>
-    <tr><td>22</td><td>Circular dependency detected (Contract Section 9.2).</td></tr>
-    <tr><td>23</td><td>Engine-version mismatch (Contract Section 9.4).</td></tr>
-    <tr><td>24</td><td>Plugin not found / not enabled.</td></tr>
-    <tr><td>30</td><td>RulesAssembly compile failure (a <code>.Build.cs</code> failed to compile).</td></tr>
-    <tr><td>40</td><td>Copyright validation failure (Contract Section 10.1 step 5).</td></tr>
-    <tr><td>41</td><td>SimPath banned-API check failure (Contract Section 4.4).</td></tr>
-    <tr><td>50</td><td>Manifest malformed / write failure.</td></tr>
-    <tr><td>60</td><td>XHT subprocess failure.</td></tr>
-    <tr><td>61</td><td>XIL2CPP subprocess failure.</td></tr>
-    <tr><td>70</td><td>Compile action failure.</td></tr>
-    <tr><td>71</td><td>Link action failure (includes Shipping exception-cleanness, Contract Section 5.8).</td></tr>
-    <tr><td>80</td><td>ActionGraph cycle (internal &mdash; should never happen; symptom of a graph builder bug).</td></tr>
-    <tr><td>130</td><td>Cancelled by user (Ctrl-C; matches POSIX SIGINT convention).</td></tr>
-  </tbody>
-</table>
+<p>The exit-code surface is shared between XBT, XHT, and XIL2CPP. Rev 2 moves the table out of XBT.html and into the contract so all three tools use one source of truth. See <strong>Contract Rev 11 Section 13 &mdash; Exit Code Surface</strong>. XBT.html does not duplicate the table; doing so would diverge over time as new categories land. XBT's <code>XBT.Entry</code> imports the contract's exit-code constants at build time (the contract publishes the codes as a small C# data file alongside the HTML).</p>
 
-<h3>1.4 Output format</h3>
+<p>The contract's table includes the codes XBT relies on most: success (0), generic failure (1), CLI argument error (10), discovery failure (20), tier violation (21), circular dependency (22), engine-version mismatch (23), plugin not found (24), declarative descriptor evaluation failure (30 &mdash; replaces "RulesAssembly compile failure" from Rev 1), copyright validation failure (40), SimPath banned-API check failure (41), manifest malformed (50), XHT subprocess failure (60), XIL2CPP subprocess failure (61), compile action failure (70), link action failure (71), action-graph cycle (80), and SIGINT cancellation (130). Per Contract Rev 11 Section 13, new categories take the next free integer; codes are stable across versions.</p>
 
-<p>Default output: human-readable progress to <code>stdout</code>, errors and diagnostics to <code>stderr</code>, structured JSON build log to <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/BuildLog.json</code>. The JSON build log carries action-level granularity (mode, action type, prerequisites, outputs, duration, exit code) and is consumable by IDE log viewers and CI dashboards. Cancellation via Ctrl-C is graceful: outstanding actions are allowed to complete or fail cleanly; partially-produced outputs are removed; the build log records the cancellation event. This is a Phase 1 commitment and the analog of UBT's <code>UseStartupTraceListener</code> option, refined.</p>
+<h3>1.4 CLI wrapper modes (REVISED Rev 2)</h3>
+
+<p><code>RunXHT</code> and <code>RunXIL2CPP</code> are convenience wrappers for IDE callers that already have a manifest path in hand and want a one-line invocation. They <strong>delegate</strong> to <code>XHT.exe</code> and <code>XIL2CPP.exe</code> respectively; XBT does not re-implement either tool's logic. The wrappers exist so an IDE single-file refresh can call <code>XBT.exe RunXHT -Manifest=... -Module=...</code> without first locating the standalone exe on PATH; XBT knows the toolchain root.</p>
+
+<h3>1.5 Output format (REVISED Rev 2)</h3>
+
+<p>Default output: human-readable progress to <code>stdout</code>, errors and diagnostics to <code>stderr</code>, structured JSON build log written incrementally to <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/BuildLog.json</code>. <strong>Streaming JSON error channel (NEW Rev 2; see Section 21.2)</strong>: in addition to the human-readable stderr stream, XBT emits a parallel one-line-JSON channel suitable for IDE / CI subscription. The channel is implemented either as a dedicated file descriptor (Linux/Android) or as stdout lines prefixed with a sentinel <code>@@XBT-JSON@@ </code> (Windows; the same on Linux when no FD is available). Subscribers read the JSON channel; humans read stderr; the two are content-equivalent at the diagnostic level.</p>
+
+<p>Cancellation via Ctrl-C is graceful and deterministic: outstanding actions are allowed to complete or fail cleanly; partially-produced outputs follow the atomic-rename + temp-file convention pinned in Section 6.4 and Section 21.3; the build log records the cancellation event. This is a Phase 1 commitment and the analog of UBT's <code>UseStartupTraceListener</code> option, refined.</p>
+
+<p><code>-WarningsAsErrors=false</code> (NEW Rev 2): The default is <code>true</code> at the target level. Developers can override per build via the CLI flag; the override is logged into <code>BuildLog.json</code> so a build with warnings-as-errors disabled is recognisable from the log. The override is intentionally not exposed to <code>.Build.toml</code> &mdash; relaxing warnings-as-errors should be a developer-level deliberate act, not a module-level configuration.</p>
 
 <hr>
 
-<h2 id="sec2">2. Internal Architecture: Module Layout</h2>
+<h2 id="sec2">2. Internal Architecture: Module Layout (REVISED Rev 2)</h2>
 
-<p>XBT itself is a multi-module C# .NET 8 project. The module layout reflects the responsibilities laid out in the Toolchain Contract and the master plan; each XBT module has a small, named purpose so subagent work can be parcelled cleanly.</p>
+<p>XBT itself is a multi-module C# .NET 8 project. The module layout reflects the responsibilities laid out in the Toolchain Contract Rev 11 and the master plan; each XBT module has a small, named purpose so subagent work can be parcelled cleanly. Rev 2 retires the Roslyn-driven <code>XBT.Configuration</code> internals and replaces them with a declarative-descriptor module.</p>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>XBT module</th><th>Responsibility</th><th>Maps to</th></tr></thead>
   <tbody>
-    <tr><td><code>XBT.Core</code></td><td>FileItems, content-hashing (BLAKE3 via vendored library), atomic file IO, sorted-set utilities, structured logging helpers. No knowledge of build semantics.</td><td>Footgun #1 (mtime), #6 (deterministic).</td></tr>
-    <tr><td><code>XBT.Configuration</code></td><td><code>RulesAssembly</code>, <code>ModuleRules</code>, <code>TargetRules</code>, <code>ReadOnlyTargetRules</code>, descriptor readers for <code>.xengine</code> / <code>.xplugin</code> / <code>.xproject</code>.</td><td>Contract Section 9; plan Rev 8 versioning row.</td></tr>
-    <tr><td><code>XBT.ActionGraph</code></td><td><code>IExternalAction</code> interface, action types, <code>ActionGraph.Link</code> / <code>CheckForConflicts</code> / <code>Sort</code> / <code>DetectCycles</code>, <code>ActionHistory</code>, <code>XCppDependencyCache</code>.</td><td>Contract Section 10.3.</td></tr>
-    <tr><td><code>XBT.Executor</code></td><td><code>ParallelExecutor</code>, action scheduler, deterministic job dispatch, failure isolation.</td><td>Phase 1 local execution; Phase 2 distributed via XPactBuildAccelerator (plan Section 3 Layer 0 Rev 7).</td></tr>
-    <tr><td><code>XBT.Toolchain</code></td><td><code>XToolChain</code> abstract base; <code>XMSVCToolChain</code> (Win64); <code>XClangToolChain</code> (Linux + Android). FPSemantics translation, SimPath header gate, banned-libm exclusion, /Brepro propagation, per-toolchain action-patcher hook surface.</td><td>Contract Section 4; footgun #5.</td></tr>
-    <tr><td><code>XBT.Manifest</code></td><td>Shared manifest types serialisable by <code>System.Text.Json</code>. Referenced as a NuGet-style package by XHT and XIL2CPP at build time so all three tools share the same DTOs.</td><td>Contract Section 10.2.</td></tr>
+    <tr><td><code>XBT.Core</code></td><td>FileItems, content-hashing (BLAKE3 via vendored library), atomic file IO with pinned temp-file naming (Section 6.4), sorted-set utilities, structured logging helpers, streaming JSON channel writer. No knowledge of build semantics.</td><td>Footgun #1 (mtime), #6 (deterministic).</td></tr>
+    <tr><td><code>XBT.Configuration</code> <em>(REVISED Rev 2)</em></td><td>Declarative descriptor reader: <code>.Build.toml</code> + <code>.Build.expr</code> parsers, sandboxed expression evaluator (Starlark-inspired subset; no I/O, no arbitrary code), <code>ModuleRules</code> / <code>TargetRules</code> / <code>ReadOnlyTargetRules</code> POCOs, descriptor readers for <code>.xengine</code> / <code>.xplugin</code> / <code>.xproject</code>. Roslyn is no longer a dependency.</td><td>Contract Section 9; plan Rev 8 versioning row; audit finding #2.</td></tr>
+    <tr><td><code>XBT.ActionGraph</code></td><td><code>IExternalAction</code> interface, action types (subdivided per Rev 2), <code>ActionGraph.Link</code> / <code>CheckForConflicts</code> / <code>Sort</code> / <code>DetectCycles</code> / <code>BuildSubset</code>, <code>ActionHistory</code>, <code>XCppDependencyCache</code>.</td><td>Contract Section 10.3.</td></tr>
+    <tr><td><code>XBT.Executor</code></td><td><code>ParallelExecutor</code>, action scheduler, deterministic job dispatch, failure isolation. <code>CancellationToken</code> threading through every action. Orphan-temp sweep at startup.</td><td>Phase 1 local execution; Phase 2 distributed via XPactBuildAccelerator (plan Section 3 Layer 0 Rev 7).</td></tr>
+    <tr><td><code>XBT.Toolchain</code></td><td><code>XToolChain</code> abstract base; <code>XMSVCToolChain</code> (Win64); <code>XClangToolChain</code> (Linux + Android). FPSemantics translation, SimPath header gate, banned-libm exclusion, full reproducibility-envelope flag set (Section 19), per-toolchain action-patcher hook surface. Exception calling convention split: shim for boundary-crossing/CanThrow paths, direct C++ for noexcept-provable internal paths (per Contract Rev 11 Section 5).</td><td>Contract Section 4; footgun #5.</td></tr>
+    <tr><td><code>XBT.Manifest</code> <em>(REVISED Rev 2)</em></td><td>Shared manifest types serialisable by <code>System.Text.Json</code> with hardened reader options (Section 8.4) <em>and</em> by the vendored FlatBuffers schema (Section 8.5). Referenced as a package by XHT and XIL2CPP at build time so all three tools share the same DTOs and the same FBS schema.</td><td>Contract Section 10.2.</td></tr>
     <tr><td><code>XBT.ProjectFiles</code></td><td>Rider generator, clangd <code>compile_commands.json</code> generator. Lazy single-target generation.</td><td>Footgun #9.</td></tr>
-    <tr><td><code>XBT.LiveCoding</code></td><td><code>IActionGraphPatcher</code> interface + empty patcher list. Phase 1 stub. Phase 2 XLiveCoding provides <code>XLiveCodingPatcher</code>.</td><td>Plan Hot-reload row; footgun #5.</td></tr>
-    <tr><td><code>XBT.Discovery</code></td><td>Plugin enumeration across the three tiers, <code>.xplugin</code> shadow precedence, plugin-EngineVersion validation. Concurrent dictionary cache.</td><td>Plan Section 2 Plugins row Rev 6.</td></tr>
-    <tr><td><code>XBT.Entry</code></td><td><code>Main</code>, mode dispatcher, CLI parser, exit-code surface, JSON build-log writer.</td><td>Section 1 of this spec.</td></tr>
+    <tr><td><code>XBT.LiveCoding</code> <em>(REVISED Rev 2)</em></td><td><code>IActionGraphPatcher</code> interface + empty patcher list. <code>IQuiesceParticipant</code> interface (Section 16.5) for safe-point participation. <code>ActionGraph.BuildSubset</code> entry point (Section 16.6). Patch-DLL discovery path reservation (Section 16.7). Phase 1 stub; Phase 2 XLiveCoding provides <code>XLiveCodingPatcher</code> + the quiesce participants.</td><td>Plan Hot-reload row; footgun #5; audit finding #7.</td></tr>
+    <tr><td><code>XBT.Discovery</code></td><td>Plugin enumeration across the three tiers, <code>.xplugin</code> shadow precedence with all-observed-records bookkeeping (Section 17.2), plugin-EngineVersion validation. Concurrent dictionary cache.</td><td>Plan Section 2 Plugins row Rev 6.</td></tr>
+    <tr><td><code>XBT.Entry</code></td><td><code>Main</code>, mode dispatcher, CLI parser, contract-imported exit-code surface, JSON build-log writer, streaming JSON error channel writer.</td><td>Section 1 of this spec.</td></tr>
     <tr><td><code>XBT.Tests</code></td><td>Sibling test module. xUnit. Unit + integration tests for every other XBT module. See Section 22.</td><td>Plan Section 6, Section 22 of this spec.</td></tr>
   </tbody>
 </table>
 
-<p>The module split avoids any cycle: <code>XBT.Entry</code> depends on everything; <code>XBT.Configuration</code> depends on <code>XBT.Core</code> + <code>XBT.Discovery</code>; <code>XBT.ActionGraph</code> depends on <code>XBT.Core</code> + <code>XBT.Configuration</code>; <code>XBT.Toolchain</code> depends on <code>XBT.Core</code> + <code>XBT.ActionGraph</code>; <code>XBT.Executor</code> depends on <code>XBT.ActionGraph</code>; <code>XBT.ProjectFiles</code> depends on <code>XBT.Configuration</code> + <code>XBT.ActionGraph</code> (read-only); <code>XBT.LiveCoding</code> depends on <code>XBT.ActionGraph</code>. <code>XBT.Manifest</code> depends only on <code>System.Text.Json</code> so it can be referenced by XHT and XIL2CPP without dragging in XBT internals.</p>
+<p>The module split avoids any cycle: <code>XBT.Entry</code> depends on everything; <code>XBT.Configuration</code> depends on <code>XBT.Core</code> + <code>XBT.Discovery</code>; <code>XBT.ActionGraph</code> depends on <code>XBT.Core</code> + <code>XBT.Configuration</code>; <code>XBT.Toolchain</code> depends on <code>XBT.Core</code> + <code>XBT.ActionGraph</code>; <code>XBT.Executor</code> depends on <code>XBT.ActionGraph</code>; <code>XBT.ProjectFiles</code> depends on <code>XBT.Configuration</code> + <code>XBT.ActionGraph</code> (read-only); <code>XBT.LiveCoding</code> depends on <code>XBT.ActionGraph</code>. <code>XBT.Manifest</code> depends only on <code>System.Text.Json</code> and the vendored FlatBuffers runtime so it can be referenced by XHT and XIL2CPP without dragging in XBT internals.</p>
 
 <hr>
 
-<h2 id="sec3">3. RulesAssembly &mdash; <code>.Build.cs</code> / <code>.Target.cs</code> Loading</h2>
+<h2 id="sec3">3. Declarative Descriptors &mdash; <code>.Build.toml</code> / <code>.Target.toml</code> (REVISED Rev 2; Roslyn dropped)</h2>
 
-<p>Per Contract Section 9.5: "XPact's choice between Roslyn-compiled rules and a declarative-only subset is internal to XBT &mdash; either approach satisfies this contract. The contract only requires: hash-keyed caching of the rules artefact; deterministic ordering of module discovery; clear failure mode when a <code>.Build.cs</code> fails to compile or load." XBT chooses <strong>Roslyn-compiled rules</strong>, mirroring UBT's well-tested approach but with the UE footguns preempted.</p>
+<p><strong>Foundational decision reversed.</strong> Rev 1 chose Roslyn-compiled <code>.Build.cs</code>, mirroring UBT. The Rev 2 audit identified two material problems: (a) cold start was dominated by Roslyn compile, even with per-scope caching; (b) the rules surface was unbounded &mdash; any <code>.Build.cs</code> could in principle read arbitrary files, fork processes, mutate global state. Both problems compound as the engine grows. Rev 2 reverses the decision: <strong>95% of modules are pure declaration in TOML</strong>; the remaining 5% that need conditionals use a tiny sandboxed expression language. Per Contract Section 9.5 (Rev 11): "XPact's choice between Roslyn-compiled rules and a declarative-only subset is internal to XBT &mdash; either approach satisfies this contract." This revision is internal-to-XBT and does not reopen the contract surface (audit finding #2).</p>
 
-<h3>3.1 Compilation</h3>
-
-<p>XBT discovers <code>.Build.cs</code> and <code>.Target.cs</code> files by walking the conventional roots:</p>
+<p>The expected payoff:</p>
 <ul>
-  <li><code>/Engine/Source/&lt;Tier&gt;/&lt;Module&gt;/</code> &mdash; engine modules (where <code>&lt;Tier&gt;</code> is the Unreal-convention sub-folder per plan Section 6 footnote, e.g. <code>Runtime</code>, <code>Editor</code>, <code>Developer</code>, <code>Programs</code>).</li>
+  <li><strong>50&ndash;100&times; faster cold start</strong> than Roslyn on a clean checkout (no MSBuild graph, no compile, no assembly load, no <code>System.Reflection</code> walks).</li>
+  <li><strong>Bounded surface</strong>: a malformed or hostile <code>.Build.toml</code> cannot execute arbitrary code; the parser is data-only and the expression evaluator runs in a sandbox with explicit allow-listed names.</li>
+  <li><strong>Stable across .NET SDK changes</strong>: no Roslyn version pin, no <code>LanguageVersion</code> tracking, no <code>Microsoft.CodeAnalysis</code> ABI risk.</li>
+</ul>
+
+<h3>3.1 Discovery (REVISED Rev 2)</h3>
+
+<p>XBT discovers <code>.Build.toml</code> and <code>.Target.toml</code> files (with optional <code>.Build.expr</code> sidecars for the conditional cases) by walking the conventional roots:</p>
+<ul>
+  <li><code>/Engine/Source/&lt;ModuleType&gt;/&lt;Module&gt;/</code> &mdash; engine modules (where <code>&lt;ModuleType&gt;</code> is the Unreal-convention sub-folder per plan Section 6 footnote, e.g. <code>Runtime</code>, <code>Editor</code>, <code>Developer</code>, <code>Programs</code>).</li>
   <li><code>/Engine/Plugins/&lt;Plugin&gt;/Source/&lt;Module&gt;/</code> &mdash; engine plugins.</li>
   <li><code>/Studio/Plugins/&lt;Plugin&gt;/Source/&lt;Module&gt;/</code> &mdash; studio plugins.</li>
   <li><code>/Projects/&lt;P&gt;/Source/&lt;Module&gt;/</code> &mdash; project modules.</li>
   <li><code>/Projects/&lt;P&gt;/Plugins/&lt;Plugin&gt;/Source/&lt;Module&gt;/</code> &mdash; project plugins.</li>
 </ul>
 
-<p>Compilation uses <code>Microsoft.CodeAnalysis.CSharp</code> (Roslyn). The compilation factory pins:</p>
-<ul>
-  <li><code>LanguageVersion.CSharp12</code> (matches plan Section 2 C# version row).</li>
-  <li><code>OptimizationLevel.Release</code>.</li>
-  <li><code>deterministic: true</code> (solves UE footgun #6 &mdash; UE often forgets this flag).</li>
-  <li><code>SourceHashAlgorithm.Sha256</code> for embedded source hashes.</li>
-</ul>
-
-<p>Per-scope assembly emission: an Engine-scope assembly aggregates all <code>/Engine/Source/&lt;...&gt;/.Build.cs</code> files; a per-plugin assembly aggregates the plugin's <code>.Build.cs</code> set; a per-project assembly aggregates the project's. This <strong>scope-split</strong> solves UE footgun #2 (one giant engine-wide rules assembly with a global lock costs ~2s) and lets XBT compile assemblies in parallel.</p>
-
-<h3>3.2 Cache</h3>
-
-<p>The assembly cache is keyed by a JSON manifest of: each input source file's path + content hash (BLAKE3, never mtime &mdash; solves UE footgun #1), the contract version (so a contract revision invalidates everything), and XBT's own binary content hash (so a self-rebuild invalidates everything). Cache entries are stored at <code>Intermediate/Build/RulesAssemblies/&lt;Scope&gt;.&lt;Hash&gt;.dll</code> with a sidecar JSON manifest.</p>
-
-<p>Invalidation rules:</p>
-<ul>
-  <li>Any input <code>.Build.cs</code> content hash differs &rarr; recompile.</li>
-  <li>Any input <code>.Target.cs</code> content hash differs &rarr; recompile (target-rule files participate in the same cache key).</li>
-  <li>XBT binary hash differs &rarr; recompile (handles XBT.dll updates that change rule API surface).</li>
-  <li>Contract version differs &rarr; recompile.</li>
-</ul>
-
-<h3>3.3 Failure handling</h3>
-
-<p>If any <code>.Build.cs</code> fails to compile, XBT prints the diagnostic in Roslyn's standard format (file path + line + column + diagnostic ID + message) and exits with code 30. Multiple errors from a single scope are reported together so the user can fix them in one pass.</p>
-
-<h3>3.4 Deterministic module discovery</h3>
-
 <p>Module discovery enumerates directories in a stable order: alphabetical by absolute path after canonicalising case (Windows) and resolving symlinks. This guarantees the JSON manifest's <code>Modules[]</code> array (Contract Section 10.2) is the same across runs and machines.</p>
+
+<h3>3.2 The TOML descriptor (NEW Rev 2)</h3>
+
+<p>A typical <code>.Build.toml</code> is pure declaration:</p>
+
+<pre><code># Copyright Simgenics. All Rights Reserved.
+# /Engine/Source/Runtime/XScoring/XScoring.Build.toml
+
+[module]
+tier = "Engine"
+module_type = "Runtime"
+languages = ["Cpp", "CSharp"]
+sim_path = true
+pch_usage = "NoSharedPCHs"        # forced for SimPath modules; see Section 4.5
+fp_semantics = "Precise"          # auto-promoted on SimPath if "Default"
+simd_level = "SSE42"              # forced &le;SSE42 for SimPath; see Section 4.6
+warnings_as_errors = true
+use_unity = true
+use_rtti = false
+enable_exceptions = true          # per-function shim/direct split is handled by XIL2CPP / toolchain
+
+[dependencies]
+public  = ["XCore", "XCoreXObject", "XSerialization", "XTaskGraph"]
+private = ["XTelemetry"]
+dynamically_loaded = []            # upward-tier loads allowed per Section 13.1
+
+[include_paths]
+public  = ["Public"]
+private = ["Private"]
+
+[defines]
+public  = ["XSCORING_API=DLLIMPORT"]
+private = []
+
+[hot_reload]
+allow = false                      # SimPath module; default-disable hot-reload (Section 16.4)
+</code></pre>
+
+<p>Field names follow snake_case in TOML and translate one-to-one to the C# <code>ModuleRules</code> fields in Section 4. Unknown fields fail discovery (closed surface, exit 30) so typos never silently degrade behaviour.</p>
+
+<h3>3.3 The sandboxed expression sub-language (NEW Rev 2)</h3>
+
+<p>The 5% of modules that need conditional logic carry a sibling <code>.Build.expr</code> file. The expression language is a deliberately tiny subset of Starlark (the configuration language used by Bazel and Buck), with these reductions:</p>
+
+<ul>
+  <li>No I/O. No <code>load()</code>, no file reads, no environment access except through pre-bound names.</li>
+  <li>No top-level mutation. The evaluator runs a pure expression and returns a value or a small record patch.</li>
+  <li>No <code>for</code> over user-defined sequences. List/dict comprehensions over pre-bound names are allowed.</li>
+  <li>Bound names: <code>target.type</code>, <code>target.platform</code>, <code>target.configuration</code>, <code>target.station_role</code>, <code>module.tier</code>, <code>module.sim_path</code>. These are the only inputs.</li>
+  <li>Return value: a TOML-shaped patch dictionary merged into the base <code>.Build.toml</code>.</li>
+</ul>
+
+<p>Example: a module that wants to disable exceptions only in Shipping:</p>
+
+<pre><code># /Engine/Source/Runtime/XScoring/XScoring.Build.expr
+
+{
+  "module": {
+    "enable_exceptions": target.configuration != "Shipping"
+  }
+}
+</code></pre>
+
+<p>The evaluator is implemented in pure C# in <code>XBT.Configuration</code>. It has no <code>System.IO</code>, no <code>System.Diagnostics.Process</code>, no <code>System.Reflection.Emit</code>; static analysis at parse time rejects any reference to disallowed names. The evaluator is a pure function of (parsed AST, bound name map) &rarr; (TOML patch); it is deterministic by construction.</p>
+
+<h3>3.4 Caching (REVISED Rev 2)</h3>
+
+<p>Descriptor cache key is the <strong>BLAKE3 content hash of all <code>.Build.toml</code> + <code>.Build.expr</code> files</strong>. Never mtime. The cache is partitioned per scope (engine, per-plugin, per-project) so a project-tier edit does not invalidate engine-tier descriptors. A scope cache hit skips the parse, expression evaluation, and merge entirely.</p>
+
+<p>Cache entries are stored at <code>Intermediate/Build/Descriptors/&lt;Scope&gt;.&lt;Hash&gt;.bin</code> with a sidecar JSON index. Invalidation rules:</p>
+<ul>
+  <li>Any input <code>.Build.toml</code> or <code>.Build.expr</code> content hash differs &rarr; reparse + re-merge.</li>
+  <li>Any input <code>.Target.toml</code> content hash differs &rarr; reparse.</li>
+  <li>XBT binary hash differs &rarr; re-merge (handles XBT updates that change the merge semantics).</li>
+  <li>ContractVersion (auto-derived per Section 8.1) differs &rarr; re-merge.</li>
+</ul>
+
+<h3>3.5 Failure handling (REVISED Rev 2)</h3>
+
+<p>If a <code>.Build.toml</code> is malformed (TOML syntax error, unknown field, bad enum value, conflicting fields), or a <code>.Build.expr</code> references a disallowed name, XBT prints the diagnostic in <code>file(line,col): error XBT030: message</code> format and exits with the contract code 30 ("descriptor evaluation failure" &mdash; the contract Rev 11 renames the Rev 1 "RulesAssembly compile failure" to this). Multiple errors from a single scope are reported together so the user can fix them in one pass.</p>
+
+<h3>3.6 Migration from Rev 1's Roslyn surface (NEW Rev 2)</h3>
+
+<p>Existing engine code that was authored against the Rev 1 sketch (a Roslyn-compiled <code>.Build.cs</code> class) has not yet shipped &mdash; the Rev 1 spec was never implemented. There is no Rev 1 corpus to migrate. The single example in Rev 1 Section 4.7 is rewritten in TOML form above (Section 3.2).</p>
+
+<p>Should a future need for full general-purpose code in a build descriptor arise, the right answer is a Phase 2 escape hatch: a per-target opt-in to load a <code>Build.Plugin.dll</code> compiled out-of-band and signed, never a per-module <code>.Build.cs</code>. Phase 1 does not need this.</p>
 
 <hr>
 
-<h2 id="sec4">4. TargetRules and ModuleRules</h2>
+<h2 id="sec4">4. TargetRules and ModuleRules (REVISED Rev 2)</h2>
 
-<p>The full base-class shape is locked in Contract Section 9. XBT's MVP implementation surfaces the trimmed field-set below; further fields can be added in future contract revisions without breaking the contract version <code>v1</code> as long as defaults preserve old behaviour.</p>
+<p>The full base-class shape is locked in Contract Section 9. XBT's MVP implementation surfaces the field-set below. Rev 2 changes: <code>PublicIncludePathModuleNames</code> dropped (replaced with <code>InterfaceModule</code> flag); three new fields added (<code>bIsTestModule</code>, <code>DeprecationMessage</code>, <code>MinimumToolchainVersion</code>); <code>SimdLevel</code> field added; <code>bAllowHotReload</code> remains but enforcement matrix is documented in Section 16.4.</p>
+
+<p>The C# POCOs in this section are the in-memory representation after a <code>.Build.toml</code> + <code>.Build.expr</code> parse + merge. They are not what developers write &mdash; developers write TOML &mdash; but they are the surface XBT.Toolchain and XBT.ActionGraph consume.</p>
 
 <h3>4.1 Enums</h3>
 
@@ -229,36 +311,46 @@ public enum FPSemantics { Default, Precise, Imprecise }
 public enum OptimizeCodeMode { Default, Never, InNonDebugBuilds, InShippingBuildsOnly, Always }
 public enum BuildConfiguration { Debug, DebugGame, Development, Test, Shipping }
 public enum BuildTargetType { Editor, Game, Server }
-public enum BuildPlatform { Win64, Linux, Android }</code></pre>
+public enum BuildPlatform { Win64, Linux, Android }
+public enum StationRole { Engineer, Instructor, Trainee }    // Rev 10 hot-reload cascade
 
-<h3>4.2 ModuleRules &mdash; the surface developers write</h3>
+// NEW Rev 2: SIMD lever per Contract Rev 11. SimPath modules forced &le;SSE42.
+public enum SimdLevel { Default, SSE2, SSE42, AVX, AVX2, AVX512 }</code></pre>
 
-<p>Mirrors Contract Section 9.1, with the addition of the Rev 10 hot-reload fields:</p>
+<h3>4.2 ModuleRules &mdash; the in-memory surface (REVISED Rev 2)</h3>
 
-<pre><code>public abstract class ModuleRules
+<pre><code>public sealed class ModuleRules
 {
     // === Identity (Contract Section 9.1) ===
     public ModuleTier Tier { get; set; }
     public ModuleType ModuleType { get; set; }
     public Languages Languages { get; set; } = Languages.Cpp;
-    public string ShortName { get; set; }   // Windows MAX_PATH escape hatch; see Section 18.
+    public string ShortName { get; set; }     // Windows MAX_PATH escape hatch; see Section 18.
 
     // === Sim-path declaration (Contract Section 4 + Section 3.2) ===
     public bool SimPath { get; set; } = false;
     public bool SimPathConservativeRootsAllowed { get; set; } = false;
 
+    // === SIMD lever (NEW Rev 2 &mdash; Contract Rev 11) ===
+    public SimdLevel SimdLevel { get; set; } = SimdLevel.Default;
+
     // === Dependencies (Contract Section 9.1) ===
     public List&lt;string&gt; PublicDependencyModuleNames { get; } = new();
     public List&lt;string&gt; PrivateDependencyModuleNames { get; } = new();
     public List&lt;string&gt; DynamicallyLoadedModuleNames { get; } = new();
-    public List&lt;string&gt; PublicIncludePathModuleNames { get; } = new();
-    // NOTE: PrivateIncludePathModuleNames intentionally omitted in MVP &mdash;
-    // folded into PrivateDependencyModuleNames per footgun #10 preempt.
+    // NOTE Rev 2: PublicIncludePathModuleNames DROPPED. Use `InterfaceModule = true` on the providing module instead.
     // NOTE: CircularlyReferencedDependentModules deliberately absent &mdash;
     // banned outright per Contract Section 9.2.
 
     public List&lt;string&gt; PublicIncludePaths { get; } = new();
     public List&lt;string&gt; PrivateIncludePaths { get; } = new();
+
+    // === Module-surface flag (NEW Rev 2 &mdash; replaces PublicIncludePathModuleNames) ===
+    // A module marked `InterfaceModule = true` advertises its public include paths
+    // to dependents *without* requiring a link dependency. Engine modules that
+    // export pure-header interfaces (no .cpp; or .cpp that compiles into
+    // dependents' link line) use this flag.
+    public bool InterfaceModule { get; set; } = false;
 
     // === Preprocessor (Contract Section 9.1) ===
     public List&lt;string&gt; PublicDefinitions { get; } = new();
@@ -274,24 +366,33 @@ public enum BuildPlatform { Win64, Linux, Android }</code></pre>
     public bool bWarningsAsErrors { get; set; } = true;
 
     // === Hot-reload (Rev 10) ===
-    // Plan Section 2 Hot-reload cascade row: Trainee + Server shipping builds
-    // disable XLiveCoding entirely. This field is the per-module opt-in.
-    public bool bAllowHotReload { get; set; } = false;   // Editor default; see Section 16.
+    // Plan Section 2 Hot-reload cascade row. Per-module opt-in; effective only when
+    // the enforcement matrix in Section 16.4 permits it.
+    public bool bAllowHotReload { get; set; } = false;
 
-    // === Constructor ===
-    protected ModuleRules(ReadOnlyTargetRules target) { /* ... */ }
+    // === New Rev 2 fields (Contract Rev 11) ===
+    public bool bIsTestModule { get; set; } = false;
+    public string DeprecationMessage { get; set; } = null;
+    public string MinimumToolchainVersion { get; set; } = null;  // semver; null = no minimum
 }</code></pre>
+
+<p><strong><code>bIsTestModule</code></strong>: when set, the module participates in builds only when a test target is being built. The action graph filters test modules out of Game / Server targets at <code>Link()</code> time. Reduces test-only code in shipped binaries to zero.</p>
+
+<p><strong><code>DeprecationMessage</code></strong>: if non-null, XBT emits a warning naming the module and the message on every build that references the module. Used during hoist transitions (Section 13.2) and during plugin retirement.</p>
+
+<p><strong><code>MinimumToolchainVersion</code></strong>: if non-null, XBT verifies the active toolchain's reported version is &ge; this string at module-resolution time. Mismatches exit with the contract's CLI argument category (10) and name both the module and the active toolchain. Used by modules that depend on a specific compiler intrinsic or codegen behaviour.</p>
 
 <h3>4.3 TargetRules</h3>
 
-<p>Target-level configuration mirrors UBT. Each <code>.Target.cs</code> declares a target name, target type (Editor / Game / Server), and per-target overrides for module selection.</p>
+<p>Target-level configuration mirrors UBT, expressed in TOML in <code>.Target.toml</code>. The in-memory POCO:</p>
 
-<pre><code>public abstract class TargetRules
+<pre><code>public sealed class TargetRules
 {
     public string Name { get; set; }
     public BuildTargetType Type { get; set; }
     public BuildPlatform Platform { get; set; }
     public BuildConfiguration Configuration { get; set; }
+    public StationRole StationRole { get; set; } = StationRole.Engineer;  // Rev 10
 
     public bool bUseUnityBuild { get; set; } = true;
     public bool bWithEditor { get; set; }            // Implied by Type == Editor.
@@ -308,78 +409,146 @@ public enum BuildPlatform { Win64, Linux, Android }</code></pre>
     public Dictionary&lt;string, string&gt; PluginPins { get; } = new();
 }</code></pre>
 
-<p><code>ReadOnlyTargetRules</code> is a read-only view passed into every <code>ModuleRules</code> constructor (matches UBT and Contract Section 9.1 constructor signature).</p>
+<p><code>ReadOnlyTargetRules</code> is a read-only view passed into descriptor evaluation (the <code>target.*</code> bound names in Section 3.3).</p>
 
 <h3>4.4 Tier validation</h3>
 
-<p>After every <code>.Build.cs</code> has been instantiated, XBT walks the directed dependency graph and rejects any edge violating Contract Section 9.3: Engine modules may depend on Engine only; Studio modules on Studio or Engine; Project modules on any tier. Violations exit 21 with a diagnostic naming both endpoints. The check is on the declared <code>Tier</code> field, not the source-tree path (plan Section 2 Tier dependency enforcement row Rev 7).</p>
+<p>After every descriptor has been parsed and merged, XBT walks the directed dependency graph and rejects edges that violate Contract Section 9.3 + Section 13.1 of this spec. The check is on the declared <code>Tier</code> field, not the source-tree path (plan Section 2 Tier dependency enforcement row Rev 7). Violations exit 21 with a diagnostic naming both endpoints and the edge type (link / dynamic).</p>
 
-<h3>4.5 FPSemantics auto-set on SimPath</h3>
+<h3>4.5 SimPath constraints (REVISED Rev 2)</h3>
 
-<p>If <code>SimPath = true</code> and <code>FPSemantics</code> is still at <code>Default</code> after rule construction, XBT promotes it to <code>Precise</code> before passing the rule to the action graph. Explicit <code>FPSemantics = FPSemantics.Imprecise</code> on a SimPath module fails the build (the combination is incoherent; Contract Section 4 bans the imprecise flags).</p>
+<p>When <code>SimPath = true</code>:</p>
+<ul>
+  <li><code>FPSemantics</code> is auto-promoted from <code>Default</code> to <code>Precise</code>. Explicit <code>FPSemantics = FPSemantics.Imprecise</code> on a SimPath module fails the build (banned per Contract Section 4).</li>
+  <li><code>PCHUsage</code> must be <code>NoSharedPCHs</code>. If a SimPath module declares <code>UseSharedPCHs</code> or <code>UseExplicitOrSharedPCHs</code>, the build fails with exit 30 and a diagnostic. SimPath modules cannot participate in SharedPCH because the SharedPCH would otherwise have to honour the sim-path math overrides for every consumer, and a consumer that is itself not sim-path would silently inherit the overrides through the PCH. The Rev 2 audit identified this as a correctness boundary.</li>
+  <li><code>.gen.h</code> emitted into the same module is excluded from any SharedPCH (per Section 15.4) regardless of the PCH usage mode of other modules.</li>
+  <li><code>SimdLevel</code> is forced to <code>&le; SSE42</code>. <code>SimdLevel.AVX</code> / <code>AVX2</code> / <code>AVX512</code> on a SimPath module fails the build &mdash; the higher SIMD levels enable FMA paths that violate determinism. On Clang, <code>-mno-fma</code> is also emitted as a belt-and-braces guard.</li>
+</ul>
 
-<h3>4.6 Engine version compatibility</h3>
+<h3>4.6 SimdLevel translation (NEW Rev 2)</h3>
+
+<p>The SimdLevel field translates per toolchain:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>SimdLevel</th><th>MSVC (Win64)</th><th>Clang (Linux + Android)</th></tr></thead>
+  <tbody>
+    <tr><td>Default</td><td>(toolchain default, currently AVX2 baseline for non-SimPath)</td><td><code>-march=x86-64-v3</code> Linux / <code>-march=armv8-a+simd</code> Android</td></tr>
+    <tr><td>SSE2</td><td><code>/arch:SSE2</code></td><td><code>-msse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2</code></td></tr>
+    <tr><td>SSE42</td><td><code>/arch:SSE42</code></td><td><code>-msse4.2 -mno-avx</code></td></tr>
+    <tr><td>AVX</td><td><code>/arch:AVX</code></td><td><code>-mavx -mno-avx2</code></td></tr>
+    <tr><td>AVX2</td><td><code>/arch:AVX2</code></td><td><code>-mavx2 -mno-avx512f</code></td></tr>
+    <tr><td>AVX512</td><td><code>/arch:AVX512</code></td><td><code>-mavx512f -mavx512bw -mavx512dq -mavx512vl</code></td></tr>
+  </tbody>
+</table>
+
+<p>SimPath modules additionally receive <code>-mno-fma</code> (Clang) regardless of SimdLevel.</p>
+
+<h3>4.7 Engine version compatibility</h3>
 
 <p>Contract Section 9.4 plus plan Section 2 Plugin versioning row Rev 8 + Rev 9: XBT reads <code>/Engine/Engine.xengine</code>, every reachable <code>.xplugin</code>, and the project's <code>.xproject</code>. The project's <code>EngineVersion</code> must equal the engine's. Every enabled Studio plugin's <code>MinEngineVersion &le; EngineVersion &le; MaxEngineVersion</code>. Violations exit 23. Engine plugins are tip-of-main within the engine version (their version equals the engine's) and skip the range check.</p>
 
-<h3>4.7 Example .Build.cs (mixed-language, sim-path)</h3>
+<h3>4.8 Unity-build determinism (NEW Rev 2)</h3>
 
-<pre><code>// Copyright Simgenics. All Rights Reserved.
-// /Engine/Source/Runtime/XScoring/XScoring.Build.cs
-using XBT.Configuration;
+<p>With <code>bUseUnity = true</code> (default), source files in a module are clustered into unity TUs. UBT's <code>Unity.cs</code> is known to have a race in how it assigns files to buckets &mdash; XPact preempts this by locking the rule:</p>
 
-public class XScoring : ModuleRules
+<ol>
+  <li>Sort the module's source files by <strong>BLAKE3 content hash</strong> (ordinal comparison on the hash bytes).</li>
+  <li>Compute <code>bucket_count = ceil(N / max_files_per_bucket)</code> where <code>max_files_per_bucket = 16</code> by default. The bucket count is locked per module across a build session; it changes only when source-file membership changes.</li>
+  <li>Assign file <em>i</em> (in the sorted order) to bucket <code>i % bucket_count</code>.</li>
+  <li>Emit unity TUs <code>&lt;Module&gt;.unity.&lt;bucket&gt;.cpp</code> with includes listed in sorted-by-hash order.</li>
+</ol>
+
+<p>The rule is purely a function of the file set and their content hashes &mdash; no mtime, no filesystem ordering, no environment dependence. Two builds of the same source tree on different machines produce identical unity TUs. The Rev 2 audit finding cites UBT's <code>Unity.cs</code> lines 32&ndash;44 as the divergence point this rule fixes.</p>
+
+<h3>4.9 Example .Build.toml (mixed-language, sim-path)</h3>
+
+<pre><code># Copyright Simgenics. All Rights Reserved.
+# /Engine/Source/Runtime/XScoring/XScoring.Build.toml
+
+[module]
+tier = "Engine"
+module_type = "Runtime"
+languages = ["Cpp", "CSharp"]
+sim_path = true
+pch_usage = "NoSharedPCHs"        # forced for SimPath
+simd_level = "SSE42"              # forced &le;SSE42 for SimPath
+warnings_as_errors = true
+is_test_module = false
+
+[dependencies]
+public  = ["XCore", "XCoreXObject", "XSerialization", "XTaskGraph"]
+private = ["XTelemetry"]
+
+[include_paths]
+public  = ["Public"]
+private = ["Private"]
+
+[hot_reload]
+allow = false                      # SimPath; default-disable hot-reload
+</code></pre>
+
+<p>And the optional sibling <code>.Build.expr</code> that disables exceptions only in Shipping:</p>
+
+<pre><code># /Engine/Source/Runtime/XScoring/XScoring.Build.expr
+
 {
-    public XScoring(ReadOnlyTargetRules target) : base(target)
-    {
-        Tier = ModuleTier.Engine;
-        ModuleType = ModuleType.Runtime;
-        Languages = Languages.Both;       // .h, .cpp, and .cs all live in this module.
-        SimPath = true;                    // scoring tick is on the lockstep path.
-
-        PublicDependencyModuleNames.AddRange(new[] {
-            "XCore", "XCoreXObject", "XSerialization", "XTaskGraph"
-        });
-        PrivateDependencyModuleNames.AddRange(new[] {
-            "XTelemetry"
-        });
-
-        PublicIncludePaths.Add("Public");
-        PrivateIncludePaths.Add("Private");
-
-        bEnableExceptions = (target.Configuration != BuildConfiguration.Shipping);
-        bUseRTTI = false;
-        bWarningsAsErrors = true;
-
-        // bAllowHotReload defaults false. Scoring is sim-path; not hot-reloadable in
-        // a session. Editor authoring of scoring rubrics goes through XPropertyEditor
-        // on data-assets, not via in-process code patching.
-    }
-}</code></pre>
+  "module": {
+    "enable_exceptions": target.configuration != "Shipping"
+  }
+}
+</code></pre>
 
 <hr>
 
-<h2 id="sec5">5. Action Graph</h2>
+<h2 id="sec5">5. Action Graph (REVISED Rev 2)</h2>
 
 <p>Mirrors UBT's <code>IExternalAction</code> design but with the UE footguns preempted. Every step that produces or consumes files is an action. The graph is built once per build, validated for cycles and conflicts, then handed to the executor.</p>
 
-<h3>5.1 ActionType enum</h3>
+<h3>5.1 XActionType enum (REVISED Rev 2 &mdash; subdivided for parallelism visibility)</h3>
+
+<p>Rev 1 had 8 values. The audit found this insufficient for per-file parallelism inside XHT and for Phase 2 readiness. Rev 2 subdivides and reserves:</p>
 
 <pre><code>public enum XActionType
 {
-    ValidateCopyrightAction,
-    WriteManifestAction,
-    XHTAction,
-    XIL2CPPAction,
-    CompileCppAction,
-    LinkModuleAction,
-    BuildPluginManifestAction,
-    RunPostBuildAction
+    // Pre-compile actions
+    ValidateCopyrightAction        = 0,
+    WriteManifestAction            = 1,
+
+    // Reflection (split per Rev 2 audit finding #4)
+    ParseHeadersAction             = 2,   // XHT pass 1: per-module token parse
+    EmitReflectionAction           = 3,   // XHT pass 2: per-module .gen.cpp emit; parallel with ParseHeaders on next module
+
+    // Transpile
+    XIL2CPPAction                  = 4,
+
+    // Compile + analyze (split per Rev 2)
+    PCHGenerationAction            = 5,   // separate from CompileCpp; distinct diagnostic surface
+    CompileCppAction               = 6,
+    StaticAnalysisAction           = 7,   // clang-tidy / MSVC /analyze; composes with CompileCpp, doesn't replace
+
+    // Link + post
+    LinkModuleAction               = 8,
+
+    // RESERVED for Phase 2 (slots 9-15 reserved so adding them later does
+    // not perturb the field-set hash that auto-derives CommandVersion).
+    Reserved_DistributedCacheCheck = 9,
+    Reserved_DerivedDataFetch      = 10,
+    Reserved_LiveCodingCascade     = 11,
+    Reserved_PatchDllEmit          = 12,
+    Reserved_Phase2_E              = 13,
+    Reserved_Phase2_F              = 14,
+    Reserved_Phase2_G              = 15,
+
+    // Plugins / post-build
+    BuildPluginManifestAction      = 16,
+    RunPostBuildAction             = 17,
 }</code></pre>
 
-<p>The set is intentionally smaller than UBT's. <code>BuildProject</code>, <code>GatherModuleDependencies</code>, <code>CompileModuleInterface</code>, <code>CreateAppBundle</code>, <code>GenerateDebugInfo</code>, <code>WriteMetadata</code>, <code>ParseTimingInfo</code> &mdash; UE types that XPact MVP either folds into the surviving types or defers to Phase 2 (C++20 module interfaces are deferred per plan Section 2 C++ standard row).</p>
+<p>The reserved-slots discipline matters because <code>CommandVersion</code> is auto-derived from a hash of the <code>IExternalAction</code> field set including this enum's declaration; adding a new value to the enum changes the hash, which would invalidate <code>ActionHistory</code> across the entire engine. Pre-allocating slots 9&ndash;15 means Phase 2 work can introduce these action types without forcing a full rebuild of every existing target.</p>
 
-<h3>5.2 IExternalAction</h3>
+<p>Phase 1 emits actions of types 0&ndash;8 and 16&ndash;17 only; the reserved slots are never instantiated until Phase 2 systems land. The audit identified this as a stability lever for the field-set-hash mechanism.</p>
+
+<h3>5.2 IExternalAction (REVISED Rev 2 &mdash; CacheKeyComponents added)</h3>
 
 <pre><code>public interface IExternalAction
 {
@@ -398,16 +567,28 @@ public class XScoring : ModuleRules
     string CommandDescription { get; }
     string StatusDescription { get; }
 
-    // Auto-derived from the field set above by ActionGraph.Link &mdash; solves
-    // UE footgun #8 (UE's ActionHistory.CurrentVersion must be manually
-    // bumped on schema change; XPact computes it from a hash of the field set).
+    // Auto-derived from the field set above by ActionGraph.Link.
     byte[] CommandVersion { get; }
 
+    // NEW Rev 2: explicit cache-key components beyond what CommandVersion captures.
+    // Examples: SimdLevel, FpSemantics-derived flag set, environment FIPS mode.
+    // Hashed into the ActionHistory key alongside CommandVersion + response file.
+    // The field exists so subsystems can declare "this property influences the
+    // output even though it doesn't appear in CommandArguments." See Section 15.2.
+    IReadOnlyList&lt;byte[]&gt; CacheKeyComponents { get; }
+
     // Scheduling.
-    int Weight { get; }              // 1.0 = single core; >1 means action runs multi-threaded internally.
-    bool bCanExecuteRemotely { get; } // Phase 1: ignored. Phase 2: XPactBuildAccelerator consults.
-    string CacheBucket { get; }      // group for sharing across builds (used by Phase 2 DDC).
+    int Weight { get; }
+    bool bCanExecuteRemotely { get; }
+    string CacheBucket { get; }
     ArtifactMode ArtifactMode { get; }
+
+    // NEW Rev 2: provenance (carried into BuildLog.json per Section 21.5).
+    string Provenance_Module { get; }
+    string Provenance_Target { get; }
+    string Provenance_Configuration { get; }
+    string Provenance_Platform { get; }
+    ModuleTier Provenance_Tier { get; }
 }
 
 public enum ArtifactMode { None, Cacheable, NotShareable }</code></pre>
@@ -416,39 +597,91 @@ public enum ArtifactMode { None, Cacheable, NotShareable }</code></pre>
 
 <h3>5.3 ActionGraph operations</h3>
 
-<p><code>ActionGraph.Link()</code> builds the producer map from <code>FileItem &rarr; IExternalAction</code> (every produced FileItem must have exactly one producer; duplicate-producer errors are caught here). <code>CheckForConflicts()</code> verifies that no two actions produce the same FileItem with different commands (UBT shows this can happen when two modules accidentally share a generated path; XBT catches it earlier). <code>DetectActionGraphCycles()</code> runs a DFS for cycles; on detection, the cycle is printed and the build exits 80. <code>Sort()</code> produces a topological order with a deterministic tiebreaker (by <code>CommandVersion</code>) so the same graph yields the same execution order across machines.</p>
+<p><code>ActionGraph.Link()</code> builds the producer map from <code>FileItem &rarr; IExternalAction</code> (every produced FileItem must have exactly one producer; duplicate-producer errors are caught here). <code>CheckForConflicts()</code> verifies that no two actions produce the same FileItem with different commands. <code>DetectActionGraphCycles()</code> runs a DFS for cycles; on detection, the cycle is printed and the build exits 80. <code>Sort()</code> produces a topological order with a deterministic tiebreaker (by <code>CommandVersion</code>) so the same graph yields the same execution order across machines.</p>
+
+<p><code>BuildSubset(IEnumerable&lt;ModuleName&gt; roots)</code> (NEW Rev 2 &mdash; see Section 16.6 for the Live Coding use case): returns the action sub-graph rooted at the given module set, validated and topologically ordered, suitable for executor dispatch. Phase 1 implements; Phase 2 XLiveCoding uses for incremental compile-only passes.</p>
 
 <h3>5.4 ActionHistory</h3>
 
-<p>Per Contract Section 10.3: incremental rebuilds. XBT's <code>ActionHistory</code> is a binary-serialised map from <code>FileItem &rarr; IoHash(commandVersion + responseFileContents + relevant flags)</code>, partitioned by <code>CacheBucket</code> so two unrelated buckets can be read/written in parallel.</p>
+<p>Per Contract Section 10.3: incremental rebuilds. XBT's <code>ActionHistory</code> is a binary-serialised map from <code>FileItem &rarr; IoHash(commandVersion + responseFileContents + CacheKeyComponents + relevant flags)</code>, partitioned by <code>CacheBucket</code> so two unrelated buckets can be read/written in parallel.</p>
 
-<p><code>CurrentVersion</code> is derived from a hash of the <code>IExternalAction</code> field set &mdash; specifically, the SHA-256 of the field names and types in declaration order. Any schema change to <code>IExternalAction</code> changes the version automatically; UE's <code>ActionHistory.CurrentVersion = 3</code> manual bump is gone.</p>
+<p><code>CurrentVersion</code> is derived from a hash of the <code>IExternalAction</code> field set &mdash; specifically, the SHA-256 of the field names and types in declaration order. Any schema change to <code>IExternalAction</code> changes the version automatically; UE's <code>ActionHistory.CurrentVersion = 3</code> manual bump is gone (footgun #8). The reserved <code>XActionType</code> slots (Section 5.1) preserve the hash across Phase 2 enum additions.</p>
 
 <h3>5.5 XCppDependencyCache</h3>
 
 <p>Per-TU header-include graph, captured from the compiler's dependency output (<code>/showIncludes</code> on MSVC, <code>-MD</code> on Clang). Stored in <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/Deps/&lt;ModuleHash&gt;.deps</code>. On the next build, XBT replays each consumed include's content hash; if any differs, the consumer TU is recompiled.</p>
 
-<h3>5.6 Example IExternalAction shape</h3>
+<h3>5.6 Example IExternalAction shape (REVISED Rev 2)</h3>
 
 <pre><code>// Sketch of a CompileCppAction for XScoring.cpp on MSVC.
 var action = new CompileCppAction
 {
     ActionType = XActionType.CompileCppAction,
-    CommandPath = "C:\\Program Files\\Microsoft Visual Studio\\2026\\BuildTools\\VC\\Tools\\MSVC\\14.40\\bin\\HostX64\\x64\\cl.exe",
-    CommandArguments = "/c /nologo /Brepro /fp:precise /FI XSimPathMathOverrides.h ...",
+    CommandPath = @"C:\Program Files\Microsoft Visual Studio\2026\BuildTools\VC\Tools\MSVC\14.40\bin\HostX64\x64\cl.exe",
+    CommandArguments = "/c /nologo /Brepro /BREPRO /TIMESTAMP:0 /pathmap:... " +
+                       "/fp:precise /FI XSimPathMathOverrides.h ...",
     ResponseFileContents = "...long file list...",
-    WorkingDirectory = "C:\\Users\\benne\\Documents\\GitHub\\XPact_Engine",
+    WorkingDirectory = @"C:\Users\benne\Documents\GitHub\XPact_Engine",
     CommandDescription = "Compile",
-    StatusDescription = "XScoring.cpp"
+    StatusDescription = "XScoring.cpp",
+    Weight = 1,
+    bCanExecuteRemotely = true,
+    CacheBucket = "Compile.XScoring",
+    ArtifactMode = ArtifactMode.Cacheable,
+
+    // Provenance (NEW Rev 2)
+    Provenance_Module = "XScoring",
+    Provenance_Target = "MiningTrainingEditor",
+    Provenance_Configuration = "Development",
+    Provenance_Platform = "Win64",
+    Provenance_Tier = ModuleTier.Engine,
+
+    // CacheKeyComponents (NEW Rev 2) &mdash; the SimdLevel and FPSemantics translate
+    // into compiler flags above; we still record them explicitly so the cache
+    // key invalidates if the *meaning* changes even when the flag bytes don't.
+    CacheKeyComponents = new[] {
+        BitConverter.GetBytes((int)SimdLevel.SSE42),
+        BitConverter.GetBytes((int)FPSemantics.Precise),
+        BitConverter.GetBytes(/* SimPath = */ true),
+    }
 };
 action.PrerequisiteItems.Add(FileItem.From("Engine/Source/Runtime/XScoring/Private/XScoring.cpp"));
 action.PrerequisiteItems.Add(FileItem.From("Intermediate/.../XScoring.gen.h"));
 action.ProducedItems.Add(FileItem.From("Intermediate/.../XScoring.cpp.obj"));
-action.Weight = 1;
-action.bCanExecuteRemotely = true;
-action.CacheBucket = "Compile.XScoring";
-action.ArtifactMode = ArtifactMode.Cacheable;
 // CommandVersion auto-derived by ActionGraph.Link via SHA-256 of the field set.</code></pre>
+
+<h3>5.7 Typed IBuildHook surface (NEW Rev 2 &mdash; replaces freeform shell commands)</h3>
+
+<p>Rev 1 left build hooks unspecified, defaulting to freeform shell command lines in <code>RunPostBuildAction</code>. The Rev 2 audit identifies this as a footgun: shell commands are platform-dependent, parser-fragile, hard to cache, and easily evaded for security review. Rev 2 replaces the freeform pattern with a typed surface:</p>
+
+<pre><code>public interface IBuildHook
+{
+    string Name { get; }
+    HookPhase Phase { get; }                         // PreCompile, PreLink, PostBuild, etc.
+    SortedSet&lt;FileItem&gt; Inputs { get; }
+    SortedSet&lt;FileItem&gt; Outputs { get; }
+    Task&lt;HookResult&gt; ExecuteAsync(HookContext ctx, CancellationToken ct);
+}
+
+public enum HookPhase { PreDiscovery, PreCompile, PreLink, PostLink, PostBuild }
+
+public sealed class HookContext
+{
+    public string ModuleName { get; init; }
+    public ReadOnlyTargetRules Target { get; init; }
+    public IReadOnlyList&lt;FileItem&gt; Inputs { get; init; }
+    public string IntermediateDir { get; init; }
+    public IXBTLogger Logger { get; init; }
+}
+
+public sealed class HookResult
+{
+    public bool Success { get; init; }
+    public IReadOnlyList&lt;FileItem&gt; ProducedItems { get; init; }
+    public string Diagnostic { get; init; }
+}</code></pre>
+
+<p>Hooks are registered through <code>XBT.Configuration</code>'s descriptor system &mdash; a module's <code>.Build.toml</code> can declare a hook by name; XBT resolves the name to a registered C# implementation. There is no path that lets a <code>.Build.toml</code> declare an arbitrary shell command. The same hooks are also used by <code>XBT.Tests</code> integration tests (Section 22.6).</p>
 
 <hr>
 
@@ -460,21 +693,31 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 
 <p>Topological order from <code>ActionGraph.Sort</code> respects the dependency graph; within a single ready-set, the dispatcher picks actions in <code>CommandVersion</code> order to keep ordering deterministic for log diffing and reproducibility tests. Actions with <code>Weight &gt; 1</code> are dispatched only when at least <code>Weight</code> workers are free.</p>
 
-<h3>6.2 Failure isolation</h3>
+<h3>6.2 Failure isolation (REVISED Rev 2)</h3>
 
-<p>Each action runs in its own subprocess (or in-process when both XHT and XIL2CPP are loaded as libraries &mdash; XBT picks subprocess for Phase 1 simplicity, in-process is a Phase 2 perf option). A non-zero exit code captures stderr to the build log and marks the action failed. Failure propagates: dependent actions are skipped, the build's final exit code reflects the worst category encountered (see Section 1.3). One action's failure never corrupts another's outputs &mdash; each action writes to a private temp file and atomically renames into place on success.</p>
+<p>Each action runs in its own subprocess (or in-process when both XHT and XIL2CPP are loaded as libraries &mdash; XBT picks subprocess for Phase 1 simplicity, in-process is a Phase 2 perf option). A non-zero exit code captures stderr to the build log and emits a streaming JSON error record (Section 21.2) and marks the action failed. Failure propagates: dependent actions are skipped, the build's final exit code reflects the worst category encountered (per Contract Section 13). <strong>One action's failure never corrupts another's outputs</strong>: each action writes to a temp file <code>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</code> in the <strong>same directory as the final output</strong> (same-volume guarantee, atomic rename), and atomically renames into place on success. On failure, the temp is deleted.</p>
 
 <h3>6.3 The <code>bCanExecuteRemotely</code> flag</h3>
 
 <p>Present on <code>IExternalAction</code> but ignored at Phase 1. Phase 2 work (post-MVP per plan Section 5): <strong>XPactBuildAccelerator</strong> (plan Section 3 Layer 0 Rev 7) consumes the flag and dispatches eligible actions to a worker pool of remote machines. XBT must not preclude this; the executor surface in <code>XBT.Executor</code> is an interface, not a single class, so Phase 2 can register a second implementation alongside <code>ParallelExecutor</code>.</p>
 
-<h3>6.4 Ctrl-C / cancellation</h3>
+<h3>6.4 Cancellation + atomic-rename contract (REVISED Rev 2 &mdash; audit finding #1)</h3>
 
-<p>SIGINT installs a cancellation token. Outstanding actions are given a brief grace period (5 seconds) to complete cleanly. After grace, in-flight subprocesses are killed; their partial outputs are removed; the build log records the cancellation event. Exit code 130 (POSIX SIGINT convention).</p>
+<p>Rev 1's Sections 6.2, 6.4, and 21.3 contained mutually contradictory rules for what happens to in-flight files when XBT is killed. Rev 2 pins one rule across all three, derived from the audit:</p>
+
+<ol>
+  <li><strong>Temp-file naming.</strong> Every action that produces a file <code>&lt;output&gt;</code> writes first to <code>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</code> &mdash; pid is the OS process id, actionid is a monotonic counter scoped to the run. The temp lives in the <strong>output's own directory</strong>, never <code>%TEMP%</code> or <code>/tmp</code>. The same-directory constraint guarantees the final rename is on the same filesystem volume; cross-volume rename is non-atomic on Windows and a known UBT race.</li>
+  <li><strong>SIGINT path.</strong> SIGINT installs a <code>CancellationToken</code>. Outstanding actions are given a 5-second grace period to complete cleanly. After grace, in-flight subprocesses are killed; their temp files remain on disk (uncleaned because the killed subprocess could not run its delete-on-fail). XBT's main process catches the cancellation, sweeps temp files matching <code>*.tmp.&lt;mypid&gt;.*</code>, and exits 130.</li>
+  <li><strong><code>taskkill /F</code> path.</strong> XBT's main process is killed outright. Temp files for this pid remain orphaned. There is no cleanup opportunity for this build.</li>
+  <li><strong>Orphan sweep at next startup.</strong> Every XBT startup begins with a sweep of the intermediate tree. Any <code>*.tmp.&lt;pid&gt;.*</code> whose pid is not currently running (queried via OS process-id lookup) is deleted. This guarantees no resource leak from a prior <code>taskkill /F</code>.</li>
+  <li><strong>Atomic rename.</strong> On Win64, <code>MoveFileEx</code> with <code>MOVEFILE_REPLACE_EXISTING</code>. On Linux/Android, <code>renameat2</code> or fallback <code>rename</code>. The semantic is: the final output never appears half-written; readers see either the pre-existing file or the new one, never an intermediate state.</li>
+</ol>
+
+<p>This rule applies uniformly to compile outputs (.obj / .o), generated headers (.gen.h), generated cpp (.gen.cpp), transpiled outputs (.cs.cpp), the manifest, the binary FlatBuffers sidecar, the build log, and the action-history files. Every writer in <code>XBT.Core</code>'s atomic-file-IO surface enforces this naming convention.</p>
 
 <hr>
 
-<h2 id="sec7">7. Toolchain Abstraction</h2>
+<h2 id="sec7">7. Toolchain Abstraction (REVISED Rev 2)</h2>
 
 <p>Per Contract Section 4.2 and plan Section 2 Platforms row: XBT must support Win64 (MSVC), Linux (Clang), and Android (Clang via NDK r26+). Toolchains are abstracted behind an <code>XToolChain</code> base class.</p>
 
@@ -483,6 +726,7 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 <pre><code>public abstract class XToolChain
 {
     public abstract BuildPlatform Platform { get; }
+    public abstract string ToolchainVersion { get; }     // semver; matched against MinimumToolchainVersion
     public abstract void DiscoverEnvironment();
 
     public abstract IExternalAction CompileCpp(
@@ -499,13 +743,9 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 
     public abstract string TranslateFPSemantics(FPSemantics mode);
     public abstract string TranslateOptimizeCode(OptimizeCodeMode mode);
+    public abstract string TranslateSimdLevel(SimdLevel level);   // NEW Rev 2
 
     // Per-toolchain action-patcher hook surface. Phase 1 returns empty.
-    // Phase 2 XLiveCoding installs a patcher per toolchain class &mdash; this is
-    // how XPact preempts UE footgun #5 (UE hardcodes cl-filter.exe by name in
-    // the Live Coding patcher; XPact routes the patch through the toolchain
-    // that produced the action so renaming the wrapper exe never silently
-    // breaks Live Coding).
     public virtual IReadOnlyList&lt;IActionGraphPatcher&gt; GetActionPatchers() =&gt; Array.Empty&lt;IActionGraphPatcher&gt;();
 }</code></pre>
 
@@ -513,9 +753,9 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 
 <p>Supports MSVC &ge; 17.10 (VS 2026 BuildTools) and <code>clang-cl</code> &ge; 18 as the alternate front-end. <code>DiscoverEnvironment</code> probes the registry and runs <code>vswhere.exe</code> to locate the MSVC installation (mirrors UBT's <code>VCEnvironment</code>). Toolchain selection per target is in <code>TargetRules</code>; default is MSVC.</p>
 
-<p>FPSemantics translation: <code>FPSemantics.Precise</code> &rarr; <code>/fp:precise</code>; <code>FPSemantics.Imprecise</code> &rarr; <code>/fp:fast</code> (only valid for non-SimPath modules, see Section 4.5). On <code>clang-cl</code>, the same semantics map via <code>/clang:-ffp-contract=off</code> &rarr; off, etc.; XBT prefers the cl-style flag when both are accepted.</p>
+<p>FPSemantics translation: <code>FPSemantics.Precise</code> &rarr; <code>/fp:precise</code>; <code>FPSemantics.Imprecise</code> &rarr; <code>/fp:fast</code> (only valid for non-SimPath modules, see Section 4.5). On <code>clang-cl</code>, the same semantics map via <code>/clang:-ffp-contract=off</code> &rarr; off; XBT prefers the cl-style flag when both are accepted.</p>
 
-<p>Reproducibility: <code>/Brepro</code> is unconditional on every Win64 build, not only sim-path TUs (Contract Section 2.1). Without it, the embedded timestamp in the PE breaks byte-identical builds.</p>
+<p>Reproducibility flags emitted unconditionally on every Win64 compile / link &mdash; see Section 19.1 for the full envelope.</p>
 
 <h3>7.3 XClangToolChain (Linux + Android)</h3>
 
@@ -523,16 +763,20 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 
 <p>Android: Clang via NDK r26+. NDK location via <code>ANDROID_NDK_ROOT</code>. The toolchain produces <code>.so</code> targeting ARM64-v8a and (Phase 2 readiness) x86_64-emulator.</p>
 
-<p>Reproducibility flags: <code>-frandomize-layout-seed-file=</code> pinned to an empty deterministic seed, <code>-fno-ident</code> for object-file determinism, <code>-Wl,--build-id=none</code> at link (Contract Section 2.1).</p>
+<p>Reproducibility flags: <code>-frandomize-layout-seed-file=</code> pinned to an empty deterministic seed, <code>-fno-ident</code> for object-file determinism, <code>-fdeterministic-cgu-order</code> (LTO determinism), <code>-Wl,--build-id=none</code> at link. Full envelope in Section 19.1.</p>
 
-<h3>7.4 SimPath additions (Contract Section 4.3)</h3>
+<h3>7.4 SimPath additions (REVISED Rev 2)</h3>
 
 <p>When a module has <code>SimPath = true</code>, the toolchain class injects:</p>
 <ul>
   <li>A force-include of <code>XSimPathMathOverrides.h</code> via <code>/FI XSimPathMathOverrides.h</code> (MSVC) or <code>-include XSimPathMathOverrides.h</code> (Clang).</li>
+  <li>SIMD lever forced &le;SSE42 (Section 4.5 / 4.6); on Clang, <code>-mno-fma</code> added explicitly as a guard against FMA contraction that would defeat determinism.</li>
   <li>Banned-flag check: any flag in the per-platform banned set (<code>/fp:fast</code>, <code>-ffast-math</code>, <code>-mfma</code>, etc.) on a SimPath module fails the build with diagnostic + exit 41.</li>
+  <li>Banned-API check: each TU is scanned for use of banned C-runtime APIs (per Contract Section 4.4) prior to compile. <code>s[i]</code> (uninitialized subscript on a sim-path TU) is now an <strong>error</strong>, not a warning &mdash; this was a warning in Rev 1; Rev 2 audit upgrades it. Detection is via <code>-Werror=array-bounds -Werror=uninitialized</code> on Clang and the equivalent MSVC settings.</li>
   <li>Link-line exclusion of platform libm (<code>/NODEFAULTLIB:libcmt.lib</code> components selectively on MSVC; <code>-nostdlib++</code> equivalent posture on Clang) plus addition of the vendored Sleef library. Any unresolved transcendental at link is then a clear diagnostic.</li>
 </ul>
+
+<p><strong>Exception calling convention split (NEW Rev 2 &mdash; Contract Rev 11 Section 5).</strong> Contract Rev 11 splits the exception ABI: boundary-crossing functions (anything CanThrow across the engine&harr;managed boundary) use the <em>shim</em> calling convention; functions provably <code>noexcept</code> internally use direct C++. XBT's toolchain emits a per-function flag in the compile command that XIL2CPP and XHT both consume: <code>-DXPACT_EXC_SHIM</code> on boundary functions, nothing on direct-noexcept. The flag is derived from the XHT-emitted reflection metadata (functions marked <code>CanThrow</code> + boundary-crossing) merged with the toolchain's <code>noexcept</code> deduction pass.</p>
 
 <h3>7.5 Example XSimPathMathOverrides.h preface</h3>
 
@@ -546,8 +790,6 @@ action.ArtifactMode = ArtifactMode.Cacheable;
 #endif
 
 // Redirect platform math symbols to the Sleef-vendored deterministic library.
-// Defined as macros so they intercept C-style call sites in third-party headers
-// transitively included by sim-path code without source modification.
 extern "C" double XSleef_sin   (double);
 extern "C" double XSleef_cos   (double);
 extern "C" double XSleef_tan   (double);
@@ -573,8 +815,7 @@ extern "C" float  XSleef_cosf  (float);
 // ...etc...
 
 // Compile-time guard: if &lt;math.h&gt; was included before this file, the macros
-// above would arrive too late. The pragma below converts that into a hard error
-// so the SimPath header gate stays effective.
+// above would arrive too late.
 #if defined(_MATH_H) || defined(__MATH_H) || defined(_MATH_H_)
 #  error "XSimPathMathOverrides.h must be the first include on SimPath TUs &mdash; XBT injects it; do not include &lt;math.h&gt; manually before sim-path code."
 #endif</code></pre>
@@ -585,31 +826,45 @@ extern "C" float  XSleef_cosf  (float);
 
 <hr>
 
-<h2 id="sec8">8. Manifest Format</h2>
+<h2 id="sec8">8. Manifest Format (REVISED Rev 2)</h2>
 
-<p>The manifest is the single source of truth XBT emits and XHT + XIL2CPP consume. Shape locked in Contract Section 10.2. The schema here adds optional fields needed by XBT's incremental rebuild logic; XHT and XIL2CPP must ignore unknown fields per a JSON-Forward-Compatibility discipline (Contract Section 10.2 is silent on this; XBT enforces it by passing unknown-field tests in the manifest reader).</p>
+<p>The manifest is the single source of truth XBT emits and XHT + XIL2CPP consume. Shape locked in Contract Section 10.2. Rev 2 changes: <code>ContractVersion</code> is auto-derived from a hash of the contract surface (not hand-typed); a binary FlatBuffers sidecar is emitted alongside the JSON manifest for tool consumption; JSON parse safety is hardened against malicious manifests.</p>
 
-<h3>8.1 Top-level shape</h3>
+<h3>8.1 ContractVersion auto-derivation (REVISED Rev 2)</h3>
+
+<p>Rev 1 hand-typed <code>"ContractVersion": "v1"</code>. The Rev 2 audit (per Contract Rev 11 change #6) identifies this as fragile: a contract revision that changes the surface without bumping the string lets old and new manifests look identical. Rev 2 auto-derives:</p>
+
+<pre><code>ContractVersion = "x" + BLAKE3-16(canonicalize(ContractRev11Surface))[:8].hex()</code></pre>
+
+<p>The "contract surface" is the canonicalized list of: every named field in every C# DTO declared in <code>XBT.Manifest</code> (sorted), the FBS schema bytes, the exit-code table from Contract Section 13. Canonicalisation strips comments, normalises whitespace, sorts field declarations alphabetically. The hash is reproducible across machines; any contract change that affects what XHT or XIL2CPP read produces a new <code>ContractVersion</code>, automatically.</p>
+
+<p>For the current contract (Rev 11), the derived value is computed at XBT build time and baked into <code>XBT.Manifest</code>'s constants. A future contract bump simply rebuilds XBT; the manifest reader's compatibility check still works.</p>
+
+<h3>8.2 Top-level shape (REVISED Rev 2)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td><code>ContractVersion</code></td><td>string</td><td><code>"v1"</code>. Solves UE footgun #4 (UHTManifest has no version field).</td></tr>
+    <tr><td><code>ContractVersion</code></td><td>string</td><td>Auto-derived (Section 8.1). Solves UE footgun #4 (UHTManifest has no version field).</td></tr>
     <tr><td><code>EngineVersion</code></td><td>semver string</td><td>From <code>/Engine/Engine.xengine</code>. Currently <code>"0.1.0"</code>.</td></tr>
     <tr><td><code>TargetName</code></td><td>string</td><td>e.g. <code>"MiningTrainingEditor"</code>.</td></tr>
     <tr><td><code>TargetType</code></td><td>string</td><td><code>"Editor"|"Game"|"Server"</code>.</td></tr>
+    <tr><td><code>StationRole</code></td><td>string</td><td><code>"Engineer"|"Instructor"|"Trainee"</code>. NEW Rev 2.</td></tr>
     <tr><td><code>Configuration</code></td><td>string</td><td><code>"Debug"|"DebugGame"|"Development"|"Test"|"Shipping"</code>.</td></tr>
     <tr><td><code>Platform</code></td><td>string</td><td><code>"Win64"|"Linux"|"Android"</code>.</td></tr>
-    <tr><td><code>Architecture</code></td><td>string</td><td><code>"x86_64"|"arm64"</code>.</td></tr>
+    <tr><td><code>Architecture</code></td><td>string</td><td><code>"x86_64"|"arm64"</code>. Always present (even when omitted from on-disk paths per Section 18.1).</td></tr>
     <tr><td><code>RootLocalPath</code></td><td>string</td><td>Absolute path to repo root. Used by XHT for path normalisation.</td></tr>
-    <tr><td><code>ExternalDependenciesFile</code></td><td>string</td><td>Path to a file listing third-party headers consulted by XHT. Mirrors UE's per-target external-deps record.</td></tr>
+    <tr><td><code>ExternalDependenciesFile</code></td><td>string</td><td>Path to a file listing third-party headers consulted by XHT.</td></tr>
     <tr><td><code>FipsMode</code></td><td>bool</td><td>Per Contract Section 4.5.</td></tr>
     <tr><td><code>SimPathConservativeRootsAllowed</code></td><td>bool</td><td>Per Contract Section 3.2 + 4.5.</td></tr>
-    <tr><td><code>Modules</code></td><td>array</td><td>One entry per module. See Section 8.2.</td></tr>
+    <tr><td><code>GCRootABI</code></td><td>string</td><td><code>"span"</code>. Reflects Contract Rev 11 Section 3 span-based ABI; XIL2CPP emits <code>XGC_RegisterRootSpan</code>/<code>XGC_UpdateRootSpan</code>/<code>XGC_UnregisterRootSpan</code> calls per this field.</td></tr>
+    <tr><td><code>ExceptionABI</code></td><td>string</td><td><code>"split"</code> (Contract Rev 11 Section 5: shim for CanThrow boundary; direct C++ for noexcept-provable internal).</td></tr>
+    <tr><td><code>ManglingScheme</code></td><td>string</td><td><code>"itanium-prefixed"</code> (Contract Rev 11: Itanium-ABI-style length-prefixed components).</td></tr>
+    <tr><td><code>Modules</code></td><td>array</td><td>One entry per module. See Section 8.3.</td></tr>
   </tbody>
 </table>
 
-<h3>8.2 Per-module shape</h3>
+<h3>8.3 Per-module shape</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Field</th><th>Type</th><th>Notes</th></tr></thead>
@@ -619,25 +874,61 @@ extern "C" float  XSleef_cosf  (float);
     <tr><td><code>ModuleType</code></td><td>string</td><td><code>"Runtime"|"Editor"|"Developer"|"Programs"|"ThirdParty"</code>.</td></tr>
     <tr><td><code>Languages</code></td><td>string[]</td><td>Subset of <code>["Cpp","CSharp"]</code>.</td></tr>
     <tr><td><code>SimPath</code></td><td>bool</td><td></td></tr>
+    <tr><td><code>SimdLevel</code></td><td>string</td><td>NEW Rev 2. <code>"Default"|"SSE2"|"SSE42"|"AVX"|"AVX2"|"AVX512"</code>.</td></tr>
+    <tr><td><code>InterfaceModule</code></td><td>bool</td><td>NEW Rev 2. Replaces <code>PublicIncludePathModuleNames</code>.</td></tr>
+    <tr><td><code>IsTestModule</code></td><td>bool</td><td>NEW Rev 2.</td></tr>
+    <tr><td><code>DeprecationMessage</code></td><td>string?</td><td>NEW Rev 2.</td></tr>
+    <tr><td><code>MinimumToolchainVersion</code></td><td>string?</td><td>NEW Rev 2.</td></tr>
     <tr><td><code>BaseDirectory</code></td><td>string</td><td>Module root, relative to <code>RootLocalPath</code>.</td></tr>
     <tr><td><code>SourceFiles.Cpp</code></td><td>string[]</td><td>All .cpp under this module.</td></tr>
     <tr><td><code>SourceFiles.CSharp</code></td><td>string[]</td><td>All .cs under this module.</td></tr>
     <tr><td><code>PublicHeaders</code> / <code>PrivateHeaders</code> / <code>InternalHeaders</code> / <code>ClassesHeaders</code></td><td>string[]</td><td>Header categories. Mirror UE.</td></tr>
-    <tr><td><code>IncludePaths</code></td><td>string[]</td><td>Public + private + propagated from <code>PublicIncludePathModuleNames</code>.</td></tr>
+    <tr><td><code>IncludePaths</code></td><td>string[]</td><td>Public + private + propagated from <code>InterfaceModule</code>-flagged dependencies.</td></tr>
     <tr><td><code>PublicDefines</code></td><td>string[]</td><td></td></tr>
     <tr><td><code>ModuleDependencies</code></td><td>string[]</td><td>Transitively resolved.</td></tr>
+    <tr><td><code>DynamicallyLoadedModules</code></td><td>string[]</td><td>NEW Rev 2 explicit field. Resolved per Section 13.1 (upward-tier dynamic load allowed).</td></tr>
     <tr><td><code>GeneratedCPPFilenameBase</code></td><td>string</td><td>e.g. <code>"XScoring.gen"</code>. XHT names <code>XScoring.gen.cpp</code> from this.</td></tr>
-    <tr><td><code>EngineVersionCompat</code></td><td>string</td><td>Semver range the module's <code>.Build.cs</code> declares it compatible with (default <code>"*"</code>).</td></tr>
+    <tr><td><code>EngineVersionCompat</code></td><td>string</td><td>Semver range the module declares it compatible with (default <code>"*"</code>).</td></tr>
   </tbody>
 </table>
 
-<h3>8.3 Full example</h3>
+<h3>8.4 JSON parse safety (NEW Rev 2 &mdash; audit finding #10)</h3>
+
+<p>The manifest is the protocol between XBT and IDE / subprocess invocations. A malicious or malformed manifest must not DoS the build agent. Rev 2 pins reader options for every <code>System.Text.Json</code> manifest read:</p>
+
+<pre><code>var options = new JsonReaderOptions
+{
+    MaxDepth = 64,                       // hard cap on nesting; 8 is typical
+    CommentHandling = JsonCommentHandling.Disallow,
+    AllowTrailingCommas = false
+};
+
+// Plus, at the stream level:
+const long MaxManifestBytes = 100L * 1024 * 1024;   // 100 MB hard ceiling
+if (stream.Length &gt; MaxManifestBytes) throw new ManifestTooLargeException(...);
+
+// Per-string field limits (typical):
+const int MaxStringField = 16 * 1024;     // 16 KB per field
+const int MaxArrayCount  = 65536;         // 64K entries per array (modules, source files, etc.)</code></pre>
+
+<p>Violations produce <code>ManifestMalformedException</code> &rarr; exit code 50. The same posture applies to the binary FlatBuffers sidecar: FlatBuffers' built-in verifier is enabled (<code>Verifier</code> with strict depth + size limits), not just the unchecked-reader path.</p>
+
+<h3>8.5 Binary FlatBuffers sidecar (NEW Rev 2 &mdash; Contract Rev 11 #5)</h3>
+
+<p>Tools read the binary sidecar; humans read the JSON. Both are emitted in lockstep from the same C# manifest object; their content is structurally equivalent. The FBS schema lives in <code>XBT.Manifest/Manifest.fbs</code> and is versioned alongside the JSON schema. The sidecar file is <code>Manifest.bin</code> alongside the <code>Manifest.json</code>.</p>
+
+<p>Why a sidecar (not a replacement): JSON remains readable in editors and diffable in version control; FlatBuffers is unreadable. Tools want fast parsing; humans want introspection. Maintaining both costs almost nothing because the C# DTO is the single source of truth.</p>
+
+<p>Verification: when XHT or XIL2CPP starts, it reads <code>Manifest.bin</code> with the FlatBuffers verifier enabled; if the verifier rejects, it falls back to <code>Manifest.json</code> with the hardened reader options (Section 8.4); if both fail, exit 50.</p>
+
+<h3>8.6 Full example (JSON form)</h3>
 
 <pre><code>{
-  "ContractVersion": "v1",
+  "ContractVersion": "x9f3c2a8b",
   "EngineVersion": "0.1.0",
   "TargetName": "MiningTrainingEditor",
   "TargetType": "Editor",
+  "StationRole": "Engineer",
   "Configuration": "Development",
   "Platform": "Win64",
   "Architecture": "x86_64",
@@ -645,6 +936,9 @@ extern "C" float  XSleef_cosf  (float);
   "ExternalDependenciesFile": "Intermediate/Build/MiningTrainingEditor/Development/ExternalDeps.json",
   "FipsMode": false,
   "SimPathConservativeRootsAllowed": false,
+  "GCRootABI": "span",
+  "ExceptionABI": "split",
+  "ManglingScheme": "itanium-prefixed",
   "Modules": [
     {
       "Name": "XCore",
@@ -652,6 +946,11 @@ extern "C" float  XSleef_cosf  (float);
       "ModuleType": "Runtime",
       "Languages": ["Cpp"],
       "SimPath": false,
+      "SimdLevel": "Default",
+      "InterfaceModule": false,
+      "IsTestModule": false,
+      "DeprecationMessage": null,
+      "MinimumToolchainVersion": null,
       "BaseDirectory": "Engine/Source/Runtime/XCore",
       "SourceFiles": {
         "Cpp":    ["Private/XCore.cpp", "Private/Math/XVector.cpp"],
@@ -664,6 +963,7 @@ extern "C" float  XSleef_cosf  (float);
       "IncludePaths": ["Public", "Private"],
       "PublicDefines": ["XCORE_API=DLLIMPORT"],
       "ModuleDependencies": [],
+      "DynamicallyLoadedModules": [],
       "GeneratedCPPFilenameBase": "XCore.gen",
       "EngineVersionCompat": "^0.1"
     },
@@ -673,6 +973,11 @@ extern "C" float  XSleef_cosf  (float);
       "ModuleType": "Runtime",
       "Languages": ["Cpp", "CSharp"],
       "SimPath": true,
+      "SimdLevel": "SSE42",
+      "InterfaceModule": false,
+      "IsTestModule": false,
+      "DeprecationMessage": null,
+      "MinimumToolchainVersion": null,
       "BaseDirectory": "Engine/Source/Runtime/XScoring",
       "SourceFiles": {
         "Cpp":    ["Private/XScoring.cpp"],
@@ -685,6 +990,7 @@ extern "C" float  XSleef_cosf  (float);
       "IncludePaths": ["Public", "Private", "Classes"],
       "PublicDefines": ["XSCORING_API=DLLIMPORT"],
       "ModuleDependencies": ["XCore", "XCoreXObject", "XSerialization", "XTaskGraph", "XTelemetry"],
+      "DynamicallyLoadedModules": [],
       "GeneratedCPPFilenameBase": "XScoring.gen",
       "EngineVersionCompat": "^0.1"
     }
@@ -701,6 +1007,7 @@ extern "C" float  XSleef_cosf  (float);
 
 <pre><code># XBT calls:
 XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.json
+        -ManifestBin=Intermediate/Build/MiningTrainingEditor/Development/Manifest.bin
         -Module=XScoring</code></pre>
 
 <p>XBT can also call XHT once with no <code>-Module=</code> filter, in which case XHT processes every module in the manifest. XBT chooses the per-module form so XHT actions can run in parallel across modules (Contract Section 10.1 step 3).</p>
@@ -720,28 +1027,36 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <p>XHT reads both C++ headers (single-pass marker tokenizer) and attribute-marked <code>.cs</code> sources from the same module (Contract Section 1.1). It emits unified registration scaffolding so a single <code>FClass</code> entry can describe a type whose <code>.h</code> declares the C++ surface and whose <code>.cs</code> declares the C# surface. XBT does not need to participate in that &mdash; XBT only sees the manifest go in and the per-module outputs come out.</p>
 
-<h3>9.4 The <code>XHTAction</code></h3>
+<h3>9.4 The XHT actions (REVISED Rev 2 &mdash; split into ParseHeaders + EmitReflection)</h3>
 
-<p>One action per module. Prerequisites: every <code>.h</code> and <code>.cs</code> in the module + the JSON manifest + XHT's own binary content hash. Produces: every output listed in the per-module text manifest XHT emits. The text manifest's existence is itself a produced item; on its first emit, XBT records the output set and uses it for subsequent incremental decisions.</p>
+<p>Per the Rev 2 audit, XHT's work splits into two action types so the executor can parallelise across modules at finer grain:</p>
+
+<ul>
+  <li><strong><code>ParseHeadersAction</code></strong>: one per module. Prerequisites: every <code>.h</code> and <code>.cs</code> in the module + the JSON manifest + the binary FBS sidecar + XHT's own binary content hash. Produces: a per-module token-AST cache file under <code>Intermediate/.../&lt;Module&gt;/&lt;Module&gt;.tokens.bin</code>.</li>
+  <li><strong><code>EmitReflectionAction</code></strong>: one per module. Prerequisite: the corresponding <code>ParseHeadersAction</code>'s output. Produces: <code>.gen.h</code> per reflected header + <code>&lt;Module&gt;.gen.cpp</code> + <code>&lt;Module&gt;.gen.manifest</code>.</li>
+</ul>
+
+<p>The split lets module B's <code>ParseHeadersAction</code> run in parallel with module A's <code>EmitReflectionAction</code> &mdash; useful when modules are large enough that parse-phase becomes a sequential bottleneck. The token-AST cache is also separately invalidatable: an edit that changes a header's reflection markers reparses only that module, not every module that includes the header.</p>
 
 <hr>
 
 <h2 id="sec10">10. XIL2CPP Integration</h2>
 
-<p>XBT invokes XIL2CPP the same way it invokes XHT. The two are independent &mdash; XHT extracts reflection metadata, XIL2CPP transpiles C# source. Their outputs both feed the C++ compile step.</p>
+<p>XBT invokes XIL2CPP the same way it invokes XHT. The two are independent &mdash; XHT extracts reflection metadata, XIL2CPP transpiles C# source &mdash; and they <strong>run concurrent</strong>, not sequential, in the action graph (Rev 2; see Section 10.6).</p>
 
 <h3>10.1 Invocation</h3>
 
 <pre><code>XIL2CPP.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.json
+            -ManifestBin=Intermediate/Build/MiningTrainingEditor/Development/Manifest.bin
             -Module=XScoring</code></pre>
 
 <h3>10.2 Outputs</h3>
 
-<p>For each <code>.cs</code> in the module's <code>SourceFiles.CSharp</code>, XIL2CPP emits a transpiled <code>.cpp</code> + paired <code>.h</code> under <code>Intermediate/.../&lt;Module&gt;/Transpiled/</code>. Each emitted symbol is mangled per Contract Section 2.2 with the locked <code>_v1</code> contract version. GC root scaffolding (Contract Section 3), exception codegen (Contract Section 5), and C# string mapping (Contract Section 6) all emit at this stage.</p>
+<p>For each <code>.cs</code> in the module's <code>SourceFiles.CSharp</code>, XIL2CPP emits a transpiled <code>.cpp</code> + paired <code>.h</code> under <code>Intermediate/.../&lt;Module&gt;/Transpiled/</code>. Each emitted symbol is mangled per Contract Rev 11 Section 2 using the <strong>Itanium-ABI-style length-prefixed components</strong> rule. GC root scaffolding emits using the span-based ABI (Contract Rev 11 Section 3: <code>XGC_RegisterRootSpan</code> family, not per-slot). Exception codegen splits per Contract Rev 11 Section 5 (shim/direct). C# string mapping is per Contract Section 6.</p>
 
 <h3>10.3 Reproducibility forwarding</h3>
 
-<p>XBT forwards the platform's reproducibility flags to XIL2CPP via the manifest (the contract specifies that XIL2CPP's own build must be reproducible &mdash; <code>/Brepro</code>, <code>-frandomize-layout-seed-file=</code>, etc., per Contract Section 2.4 item 4). XIL2CPP propagates these through to the generated C++ headers (e.g. predicating <code>#line</code> directives so cross-machine line-number consistency holds).</p>
+<p>XBT forwards the platform's reproducibility flags to XIL2CPP via the manifest. XIL2CPP propagates these through to the generated C++ headers (e.g. predicating <code>#line</code> directives so cross-machine line-number consistency holds). The forwarded flags now include the full envelope in Section 19.1 (not just <code>/Brepro</code>).</p>
 
 <h3>10.4 Downstream compile</h3>
 
@@ -749,7 +1064,13 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <h3>10.5 The <code>XIL2CPPAction</code></h3>
 
-<p>One action per module containing C# sources. Prerequisites: every <code>.cs</code> in the module + manifest + XIL2CPP's own binary content hash + XCoreXObject's exported header surface (for the GC ABI emit, per Contract Section 3.1). Produces: transpiled <code>.cpp</code>/<code>.h</code> + a per-module transpilation manifest listing the inputs and produced outputs (mirrors the XHT manifest pattern so XBT's incremental logic is uniform).</p>
+<p>One action per module containing C# sources. Prerequisites: every <code>.cs</code> in the module + manifest (JSON + FBS) + XIL2CPP's own binary content hash + XCoreXObject's exported header surface (for the GC ABI emit, per Contract Section 3.1). Produces: transpiled <code>.cpp</code>/<code>.h</code> + a per-module transpilation manifest listing the inputs and produced outputs.</p>
+
+<h3>10.6 Concurrent XHT + XIL2CPP scheduling (REVISED Rev 2 &mdash; Contract Rev 11 #4)</h3>
+
+<p>Rev 1 implied a sequential order: XHT first, then XIL2CPP. Contract Rev 11 corrects this: <strong>the two run concurrently</strong>. XHT does not depend on XIL2CPP output; XIL2CPP does not depend on XHT output (their interleaved consumption happens at the <em>compile</em> step on the generated cpp files, which is downstream of both).</p>
+
+<p>The action graph reflects this: <code>EmitReflectionAction(M)</code> and <code>XIL2CPPAction(M)</code> for the same module M are independent peers; their only common predecessor is <code>WriteManifestAction</code>. The executor schedules them in parallel within the available worker pool. This typically halves the latency of the prologue (the portion of the build before <code>CompileCppAction</code>s can start).</p>
 
 <hr>
 
@@ -763,7 +1084,7 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <h3>11.2 Failure mode</h3>
 
-<p>A missing or malformed header fails the build with exit 40 and a diagnostic naming the file's absolute path. Multiple offenders are batched into one error report so the developer can fix them in a single pass.</p>
+<p>A missing or malformed header fails the build with exit 40 (per Contract Section 13) and a diagnostic naming the file's absolute path. Multiple offenders are batched into one error report so the developer can fix them in a single pass.</p>
 
 <h3>11.3 Standalone invocation</h3>
 
@@ -818,39 +1139,53 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <hr>
 
-<h2 id="sec13">13. Tier Enforcement</h2>
+<h2 id="sec13">13. Tier Enforcement (REVISED Rev 2 &mdash; cross-tier dep edge matrix)</h2>
 
-<p>Per plan Section 2 Tier dependency enforcement row (Rev 7) and Contract Section 9.3.</p>
+<p>Per plan Section 2 Tier dependency enforcement row (Rev 7) and Contract Rev 11 Section 9.3.</p>
 
-<h3>13.1 Rules</h3>
+<h3>13.1 Rules &mdash; cross-tier dep edge matrix (REVISED Rev 2)</h3>
 
-<ol>
-  <li>An Engine module may depend only on Engine modules.</li>
-  <li>A Studio module may depend on Studio or Engine modules.</li>
-  <li>A Project module may depend on any tier.</li>
-  <li>The check is on the declared <code>Tier</code> field in <code>.Build.cs</code>, NOT on the source-tree path. Symlinked / restructured layouts do not change the declared tier.</li>
-</ol>
+<p>Rev 1 had a single rule ("higher tier may depend on lower"). The Rev 2 audit (per Contract Rev 11 change #8) clarifies that the rule applies to <em>link</em> dependencies only; <em>dynamic load</em> dependencies are allowed upward to support hot-reload patterns.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>From tier</th><th>To tier</th><th>Link dep (PublicDependencyModuleNames / PrivateDependencyModuleNames)</th><th>Dynamic load (DynamicallyLoadedModuleNames)</th></tr></thead>
+  <tbody>
+    <tr><td>Engine</td><td>Engine</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+    <tr><td>Engine</td><td>Studio</td><td><strong>BANNED</strong></td><td>ALLOWED (Engine may dynamically load Studio modules for hot-reload)</td></tr>
+    <tr><td>Engine</td><td>Project</td><td><strong>BANNED</strong></td><td>ALLOWED</td></tr>
+    <tr><td>Studio</td><td>Engine</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+    <tr><td>Studio</td><td>Studio</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+    <tr><td>Studio</td><td>Project</td><td><strong>BANNED</strong></td><td>ALLOWED</td></tr>
+    <tr><td>Project</td><td>Engine</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+    <tr><td>Project</td><td>Studio</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+    <tr><td>Project</td><td>Project</td><td>ALLOWED</td><td>ALLOWED</td></tr>
+  </tbody>
+</table>
+
+<p>The check is on the declared <code>Tier</code> field in <code>.Build.toml</code>, NOT on the source-tree path. Symlinked / restructured layouts do not change the declared tier. Link-dep violations exit 21 with a diagnostic naming both endpoints and the edge type. Dynamic-load violations don't exist &mdash; that direction is always allowed.</p>
 
 <h3>13.2 Hoisting workflow</h3>
 
-<p>Per plan Section 2 Folder structure row (Rev 6): "Hoisting principle: when a behaviour gets used in a second product, it gets hoisted from <code>/Projects/&lt;A&gt;/</code> into <code>/Studio/</code>. When something in <code>/Studio/</code> proves universally applicable, it gets hoisted into <code>/Engine/</code>." When a <code>.Build.cs</code> changes its <code>Tier</code> value as part of a hoist, XBT cooperates with the hoisting workflow:</p>
+<p>Per plan Section 2 Folder structure row (Rev 6): "Hoisting principle: when a behaviour gets used in a second product, it gets hoisted from <code>/Projects/&lt;A&gt;/</code> into <code>/Studio/</code>. When something in <code>/Studio/</code> proves universally applicable, it gets hoisted into <code>/Engine/</code>." When a <code>.Build.toml</code> changes its <code>Tier</code> value as part of a hoist, XBT cooperates with the hoisting workflow:</p>
 
 <ul>
-  <li>The hoist must move the module's source folder to the new tier's location <em>and</em> change the <code>.Build.cs</code>'s <code>Tier</code> field.</li>
+  <li>The hoist must move the module's source folder to the new tier's location <em>and</em> change the <code>.Build.toml</code>'s <code>tier</code> field.</li>
   <li>XBT regenerates <code>XCoreRedirects</code> entries (plan Section 2 Cross-tier asset references row Rev 8) so existing assets referencing the old location resolve. The redirects file is emitted to the <em>destination</em> plugin/project's <code>.xredirects</code> with <code>Scope = "Global"</code> for a hoist (this is the documented use of global-scope redirects per plan Rev 9 plugin-namespace scoping).</li>
   <li>The build then proceeds with the new tier. Existing dependents that still target the old name see the redirect and continue to build.</li>
+  <li>If the hoisted module had <code>DeprecationMessage</code> set, the warning is emitted for one engine version after the hoist; subsequent hoists may drop the message.</li>
 </ul>
 
 <h3>13.3 Failure</h3>
 
-<p>Any violation exits 21 with a diagnostic naming both endpoints and the offending edge. Example:</p>
+<p>Any link-dep violation exits 21 with a diagnostic naming both endpoints and the offending edge. Example:</p>
 
-<pre><code>error XBT021: Tier violation in module dependency graph.
-  Module: XCore (Tier = Engine, /Engine/Source/Runtime/XCore/XCore.Build.cs)
-  declares PublicDependencyModuleNames = [..., "IndustrialEquipment", ...]
+<pre><code>error XBT021: Tier violation in module dependency graph (link dep, downward only).
+  Module: XCore (Tier = Engine, /Engine/Source/Runtime/XCore/XCore.Build.toml)
+  declares dependencies.public = [..., "IndustrialEquipment", ...]
   but "IndustrialEquipment" has Tier = Studio
-    (/Studio/Plugins/IndustrialEquipment/Source/IndustrialEquipment/IndustrialEquipment.Build.cs)
-  Engine-tier modules may depend only on Engine-tier modules.</code></pre>
+    (/Studio/Plugins/IndustrialEquipment/Source/IndustrialEquipment/IndustrialEquipment.Build.toml)
+  Engine-tier modules may not link-depend on Studio-tier modules.
+  (Dynamic-load (DynamicallyLoadedModuleNames) upward is allowed; see Section 13.1.)</code></pre>
 
 <hr>
 
@@ -876,47 +1211,65 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <hr>
 
-<h2 id="sec15">15. Caching</h2>
+<h2 id="sec15">15. Caching (REVISED Rev 2)</h2>
 
 <p>Three layers, all content-hash-keyed, none mtime-keyed (footgun #1 preempt).</p>
 
-<h3>15.1 TargetMakefile</h3>
+<h3>15.1 TargetMakefile &mdash; complete cache key (REVISED Rev 2)</h3>
 
-<p>A binary-serialised pre-built action graph + module-info object stored at <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/Makefile.bin</code>. Invalidated when:</p>
-<ul>
-  <li>Any <code>.Build.cs</code> or <code>.Target.cs</code> content hash changes (forcing RulesAssembly recompile, in turn invalidating the Makefile).</li>
-  <li>Any <code>.xplugin</code> / <code>.xproject</code> / <code>.xengine</code> content hash changes.</li>
-  <li>XBT's binary content hash changes.</li>
-  <li>Contract version changes.</li>
-</ul>
+<p>A binary-serialised pre-built action graph + module-info object stored at <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/Makefile.bin</code>. Rev 1's listed cache-key inputs were incomplete; the Rev 2 audit (finding #3) requires the key to be <strong>the entire reproducibility envelope</strong> &mdash; if it influences output, it influences the cache key. The explicit list:</p>
 
-<p>On a Makefile hit, XBT skips the entire RulesAssembly compile + module-graph walk and goes straight to action execution. This is the largest single perf win for incremental builds.</p>
+<ol>
+  <li><strong>Descriptor inputs:</strong> content hash of every <code>.Build.toml</code>, <code>.Build.expr</code>, <code>.Target.toml</code> in the active scope set.</li>
+  <li><strong>Plugin descriptors:</strong> content hash of every reachable <code>.xplugin</code>.</li>
+  <li><strong>Project descriptor:</strong> content hash of the <code>.xproject</code>.</li>
+  <li><strong>Engine descriptor:</strong> content hash of <code>/Engine/Engine.xengine</code>.</li>
+  <li><strong>XBT binary:</strong> content hash of <code>XBT.exe</code>.</li>
+  <li><strong>XHT binary:</strong> content hash of <code>XHT.exe</code>.</li>
+  <li><strong>XIL2CPP binary:</strong> content hash of <code>XIL2CPP.exe</code>.</li>
+  <li><strong>Contract surface:</strong> the auto-derived <code>ContractVersion</code> (Section 8.1).</li>
+  <li><strong>.NET SDK version:</strong> the major.minor.patch of the .NET runtime hosting XBT.</li>
+  <li><strong>Toolchain version:</strong> <code>XToolChain.ToolchainVersion</code> for every toolchain referenced by the target.</li>
+  <li><strong>Sim-path policy files:</strong> content hash of <code>XSimPathBannedAPIs.txt</code> and <code>XSimPathMathOverrides.h</code>. These were missed in Rev 1.</li>
+  <li><strong>Architecture:</strong> the target architecture string, even when omitted from on-disk paths (Section 18.1).</li>
+  <li><strong>FipsMode flag:</strong> the boolean from <code>TargetRules.bFipsMode</code>.</li>
+  <li><strong>StationRole:</strong> the role from <code>TargetRules.StationRole</code> (affects hot-reload eligibility per Section 16.4).</li>
+  <li><strong>Reproducibility envelope flag set:</strong> a hash of the toolchain's emitted reproducibility flag list per Section 19.1 (defends against a toolchain upgrade that silently changes flag defaults).</li>
+</ol>
+
+<p>On a Makefile hit, XBT skips the entire descriptor parse + module-graph walk and goes straight to action execution. This is the largest single perf win for incremental builds. On a miss, all 15 inputs are recomputed.</p>
 
 <h3>15.2 XActionHistory</h3>
 
-<p><code>FileItem &rarr; IoHash(commandVersion + responseFile + relevant env)</code>, partitioned by <code>CacheBucket</code>. Stored at <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/ActionHistory.&lt;Bucket&gt;.bin</code>. <code>CurrentVersion</code> auto-derived from the SHA-256 of the <code>IExternalAction</code> field set (footgun #8 preempt).</p>
+<p><code>FileItem &rarr; IoHash(commandVersion + responseFile + CacheKeyComponents + relevant env)</code>, partitioned by <code>CacheBucket</code>. Stored at <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/ActionHistory.&lt;Bucket&gt;.bin</code>. <code>CurrentVersion</code> auto-derived from the SHA-256 of the <code>IExternalAction</code> field set (footgun #8 preempt). The <code>CacheKeyComponents</code> field (Section 5.2) lets actions declare hidden inputs that don't appear in the command line but still influence output (SimdLevel, FpSemantics, FIPS mode, etc.).</p>
 
 <h3>15.3 XCppDependencyCache</h3>
 
 <p>Per-TU header trees from MSVC <code>/showIncludes</code> and Clang <code>-MD</code>. Each TU's <code>.deps</code> records the full transitive include set with content hashes. On the next build, XBT replays content hashes and reinvalidates if any included header has changed.</p>
 
-<h3>15.4 SharedPCH</h3>
+<h3>15.4 SharedPCH &mdash; include-order policy (REVISED Rev 2)</h3>
 
-<p>When two or more modules in a target use the same <code>SharedPCHHeaderFile</code>, XBT generates a single precompiled-header artefact at <code>Intermediate/.../PCH/PCH.&lt;ContentHash&gt;.h</code> (file name uses the content hash of the inputs &mdash; mirrors UE pattern but with hash-named files for cleaner caching). MSVC consumes via <code>/Yu</code>, Clang via <code>-include-pch</code>. SharedPCH is opt-in via <code>PCHUsage = UseSharedPCHs</code> on the module rules; default is <code>Default</code> which lets XBT pick.</p>
+<p>When two or more non-SimPath modules in a target use the same <code>SharedPCHHeaderFile</code>, XBT generates a single precompiled-header artefact at <code>Intermediate/.../PCH/PCH.&lt;ContentHash&gt;.h</code> (file name uses the content hash of the inputs &mdash; mirrors UE pattern but with hash-named files for cleaner caching). MSVC consumes via <code>/Yu</code>, Clang via <code>-include-pch</code>. SharedPCH is opt-in via <code>PCHUsage = UseSharedPCHs</code> on the module rules; default is <code>Default</code> which lets XBT pick.</p>
+
+<p><strong>Include-order policy (NEW Rev 2 &mdash; audit finding #12):</strong> the SharedPCH header's <code>#include</code> lines are emitted in <strong>alphabetical-by-logical-path order</strong>. The order is independent of the declared order in any <code>.Build.toml</code>, of filesystem enumeration, and of build-machine environment. This guarantees deterministic PCH bytes for a given input set across runs and machines.</p>
+
+<p><strong>SimPath exclusion (NEW Rev 2):</strong> SimPath modules are forced to <code>PCHUsage = NoSharedPCHs</code> (Section 4.5). Additionally, any <code>.gen.h</code> emitted into a SimPath module is excluded from <em>any</em> SharedPCH consumed by non-SimPath callers &mdash; the <code>.gen.h</code> may carry sim-path-specific macro state that would leak into non-sim-path code.</p>
 
 <h3>15.5 BLAKE3 throughout</h3>
 
-<p>XBT uses BLAKE3 as its content-hash algorithm for all three cache layers. BLAKE3 is fast (typically 6 GB/s single-threaded), unkeyed, 256-bit output, has stable cross-platform implementations, and matches the spirit of UE's <code>IoHash</code>. The Step 0.5 addendum (Contract Section 8.4) will canonicalise this choice; pending that, BLAKE3 is XBT's recommendation.</p>
+<p>XBT uses BLAKE3 as its content-hash algorithm for all three cache layers. BLAKE3 is fast (typically 6 GB/s single-threaded), unkeyed, 256-bit output, has stable cross-platform implementations, and matches the spirit of UE's <code>IoHash</code>.</p>
 
 <hr>
 
-<h2 id="sec16">16. Live Coding Hook (Phase 2 Readiness, Phase 1 Stub)</h2>
+<h2 id="sec16">16. Live Coding Hook (REVISED Rev 2 &mdash; expanded hook seams)</h2>
 
-<p>Per plan Section 2 Hot-reload row + Hot-reload cascade row Rev 8 + Rev 10 UX/timeout addendum.</p>
+<p>Per plan Section 2 Hot-reload row + Hot-reload cascade row Rev 8 + Rev 10 UX/timeout addendum, and the Rev 2 audit finding #7. Rev 1 reserved only the <code>IActionGraphPatcher</code> list. Rev 2 reserves three more seams so the Phase 2 XLiveCoding integration does not require retrofitting XBT.</p>
 
 <h3>16.1 Architecture only at Phase 1</h3>
 
-<p>XBT exposes <code>IActionGraphPatcher</code> as a public interface. The patcher list is consulted by <code>ActionGraph</code> after <code>Link()</code> and before executor dispatch:</p>
+<p>Every Live Coding hook is reserved at Phase 1; the implementations land with XLiveCoding in Phase 2. Phase 1 ships the interfaces and the no-op defaults; nothing in Phase 1 calls into them in anger.</p>
+
+<h3>16.2 IActionGraphPatcher (REVISED Rev 2)</h3>
 
 <pre><code>public interface IActionGraphPatcher
 {
@@ -924,23 +1277,75 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
     void Patch(ActionGraph graph, IReadOnlyDictionary&lt;string, ModuleRules&gt; modules);
 }</code></pre>
 
-<p>Phase 1 returns an empty list. The plumbing is in place; the patcher implementations are not.</p>
+<p>Phase 1 returns an empty list from every toolchain's <code>GetActionPatchers()</code>. The plumbing is in place; the patcher implementations are not.</p>
 
-<h3>16.2 Per-toolchain patching (footgun #5)</h3>
+<h3>16.3 Per-toolchain patching (footgun #5)</h3>
 
 <p>Patchers register with a <code>XToolChain</code> subclass, not with an executable name. UE's Live Coding pattern hardcodes <code>cl-filter.exe</code> / <code>cl.exe</code> / <code>clang-cl.exe</code> / <code>verse-clang-cl.exe</code> in a switch statement; renaming the wrapper exe breaks Live Coding silently. XBT routes through <code>XToolChain.GetActionPatchers()</code> so the patcher inherits the toolchain's understanding of its own command line.</p>
 
-<h3>16.3 Phase 2 cascade design</h3>
+<h3>16.4 <code>bAllowHotReload</code> enforcement matrix (REVISED Rev 2 &mdash; audit finding #9)</h3>
 
-<p>Plan Section 2 Hot-reload cascade row Rev 8 mandates a two-phase apply: Phase 1 of the cascade compiles every dependent module (rollback supported by not committing); Phase 2 quiesces mutators and GC markers, then issues function-pointer / vtable rewrites (no rollback). XBT participates in Phase 1 (the compile-only pass). XLiveCoding is the system that owns Phase 2; XBT provides the action subset and the per-toolchain patchers.</p>
+<p>Rev 1's hot-reload rules were incoherent. The Rev 2 matrix is (target type &times; module flag &times; station role):</p>
 
-<h3>16.4 Trainee / Server build disable</h3>
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>TargetType</th><th>Configuration</th><th>StationRole</th><th>Module bAllowHotReload</th><th>Effective hot-reload</th></tr></thead>
+  <tbody>
+    <tr><td>Editor</td><td>any</td><td>any</td><td>true</td><td><strong>ENABLED</strong></td></tr>
+    <tr><td>Editor</td><td>any</td><td>any</td><td>false</td><td>disabled (module-level opt-out)</td></tr>
+    <tr><td>Game</td><td>Development / Debug</td><td>Engineer</td><td>true</td><td><strong>ENABLED</strong></td></tr>
+    <tr><td>Game</td><td>Development / Debug</td><td>Engineer</td><td>false</td><td>disabled</td></tr>
+    <tr><td>Game</td><td>Shipping</td><td>Engineer</td><td>true</td><td><strong>ENABLED</strong> (debugging escape hatch for Engineer-station builds)</td></tr>
+    <tr><td>Game</td><td>Shipping</td><td>Engineer</td><td>false</td><td>disabled</td></tr>
+    <tr><td>Game</td><td>any</td><td>Trainee</td><td>any</td><td><strong>DISABLED</strong> (regardless of module flag &mdash; Trainee stations never hot-reload)</td></tr>
+    <tr><td>Game</td><td>any</td><td>Instructor</td><td>any</td><td>disabled (deliberate; Instructor authors changes through Editor)</td></tr>
+    <tr><td>Server</td><td>any</td><td>any</td><td>any</td><td><strong>DISABLED</strong> (regardless of module flag &mdash; servers do not hot-reload)</td></tr>
+  </tbody>
+</table>
 
-<p>Plan Rev 10: Trainee + Server shipping builds disable XLiveCoding entirely so trainee sessions cannot freeze mid-procedure. XBT enforces this at TargetRules validation: <code>bAllowHotReload</code> on a module is rejected if the target is <code>BuildTargetType.Game</code> + <code>BuildConfiguration.Shipping</code> + a Trainee station role (the station role is conveyed in the target descriptor; for MVP, the Game-Shipping pair is sufficient because Trainee and Instructor share the Game target). Editor + Engineer-station builds default <code>bAllowHotReload = true</code> for modules tagged <code>ModuleType = Editor</code>.</p>
+<p>The matrix is enforced at <code>ActionGraph.Link()</code> time; modules whose effective hot-reload is disabled have their hot-reload-related actions stripped from the graph. The <code>Trainee + Shipping</code> rule and <code>Server</code> rule are <em>module-flag-independent</em>: even if a module sets <code>bAllowHotReload = true</code>, the rule wins. This is the safety boundary &mdash; a Trainee session must never freeze mid-procedure because a Live Coding cascade was in progress.</p>
+
+<h3>16.5 IQuiesceParticipant interface (NEW Rev 2)</h3>
+
+<p>The Live Coding cascade's Phase 2 (function-pointer / vtable rewrite) requires that all reader threads be quiesced before the rewrite begins, and resumed afterward. The participants in the quiesce protocol are runtime-side subsystems, but XBT pre-declares the interface so the contract is locked at build time and every participating subsystem agrees on the same shape.</p>
+
+<pre><code>public interface IQuiesceParticipant
+{
+    string ThreadName { get; }                  // diagnostic
+    QuiescePriority Priority { get; }           // lower numbers quiesce first
+    Task QuiesceAsync(CancellationToken ct);
+    Task ResumeAsync(CancellationToken ct);
+}
+
+public enum QuiescePriority
+{
+    GameThread        = 0,
+    RenderThread      = 1,
+    RHIThread         = 2,
+    AudioThread       = 3,
+    LoadingThreads    = 4,
+    SimPathWorkerPool = 5,
+    GCMarkerThreads   = 6,    // NEW Rev 2 &mdash; concurrent GC markers (Contract Rev 11 Section 3 span-based ABI)
+}</code></pre>
+
+<p>Phase 1's list of registered participants is <strong>empty</strong>. Phase 2 XLiveCoding registers participants for game thread, render thread, RHI thread, audio thread, loading threads, sim-path worker pool, <em>and concurrent GC marker threads</em>. The GC marker participant is newly added in Rev 2 because Contract Rev 11 Section 3's span-based root ABI permits concurrent marking; the live-coding cascade must wait for the marker phase before patching root spans.</p>
+
+<h3>16.6 Subset-build mode (NEW Rev 2)</h3>
+
+<p><code>ActionGraph.BuildSubset(IEnumerable&lt;ModuleName&gt; roots)</code>: returns the action sub-graph rooted at the given module set. Phase 1 implements; Phase 2 XLiveCoding uses for the compile-only pass of the cascade (plan Hot-reload cascade row).</p>
+
+<p>The subset includes every action whose <code>ProducedItems</code> are transitively required by the named modules' link step, and only those actions. The result is suitable for direct executor dispatch. Used by XLiveCoding in Phase 2 to recompile the minimal closure of modules touched by an in-process patch request.</p>
+
+<h3>16.7 Patch-DLL discovery path (NEW Rev 2)</h3>
+
+<p>When XLiveCoding cascades a patch, the patched DLL has the same module name as the live module &mdash; it cannot share a path or the OS file lock will reject the write. Rev 2 reserves a known location at Phase 1 so Phase 2 does not need to negotiate one:</p>
+
+<pre><code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.&lt;gen&gt;.dll</code></pre>
+
+<p>Where <code>&lt;gen&gt;</code> is a generation counter (monotonically increasing per patch) so patches can be ordered and prior generations cleaned up. Phase 1 XBT does not write to this location; it does not even create the directory. Phase 2 XLiveCoding writes here; XBT's subset-build action graph outputs to this path when invoked with <code>-LiveCoding=true</code>. The path is reserved &mdash; nothing else writes to <code>LiveCoding/</code> &mdash; so Phase 2 can rely on collision-free naming.</p>
 
 <hr>
 
-<h2 id="sec17">17. Plugin Discovery and Enumeration</h2>
+<h2 id="sec17">17. Plugin Discovery and Enumeration (REVISED Rev 2)</h2>
 
 <p>Per plan Section 2 Plugins row (Rev 6 three-tier) and Folder structure row.</p>
 
@@ -955,9 +1360,25 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <p>The walk is parallel (each root spawns a discovery task). Results aggregate into a <code>ConcurrentDictionary&lt;string, PluginInfo&gt;</code>.</p>
 
-<h3>17.2 Shadow precedence</h3>
+<h3>17.2 Shadow precedence &mdash; all observed records (REVISED Rev 2 &mdash; audit finding #8)</h3>
 
-<p>If a plugin name appears in two tiers, the higher (closer-to-product) tier wins. Project plugin <code>HMIPanels</code> shadows Studio plugin <code>HMIPanels</code>; Studio plugin <code>HMIPanels</code> shadows Engine plugin <code>HMIPanels</code>. Mirrors UBT pattern. Useful for per-product overrides of shared studio behaviour.</p>
+<p>If a plugin name appears in two tiers, the higher (closer-to-product) tier wins. Project plugin <code>HMIPanels</code> shadows Studio plugin <code>HMIPanels</code>; Studio plugin <code>HMIPanels</code> shadows Engine plugin <code>HMIPanels</code>. Mirrors UBT pattern.</p>
+
+<p>Rev 1 recorded only the winning shadow's content hash. The Rev 2 audit identifies this as a cache-key correctness bug: a non-shadowed plugin elsewhere on the filesystem could be edited and the cache would not invalidate. Rev 2 records <strong>all observed plugin descriptors of each name</strong>, tier-tagged, with shadow resolution explicit:</p>
+
+<pre><code>// In the TargetMakefile cache key:
+"PluginShadowRecords": [
+  {
+    "Name": "HMIPanels",
+    "Resolved": { "Tier": "Project", "Path": "Projects/Mining-Training/Plugins/HMIPanels/HMIPanels.xplugin", "Hash": "..." },
+    "Shadowed": [
+      { "Tier": "Studio", "Path": "Studio/Plugins/HMIPanels/HMIPanels.xplugin", "Hash": "..." },
+      { "Tier": "Engine", "Path": "Engine/Plugins/HMIPanels/HMIPanels.xplugin", "Hash": "..." }
+    ]
+  }
+]</code></pre>
+
+<p>Every recorded hash participates in the makefile cache key. Editing the shadowed Studio-tier HMIPanels descriptor now correctly invalidates the makefile, even though the Project-tier shadow wins resolution. This prevents the spurious-no-rebuild case the audit identified.</p>
 
 <h3>17.3 EngineVersion validation</h3>
 
@@ -969,13 +1390,13 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <hr>
 
-<h2 id="sec18">18. Output Layout</h2>
+<h2 id="sec18">18. Output Layout (REVISED Rev 2)</h2>
 
 <p>Mirrors UBT's layout conventions with the three-tier reusability model overlaid.</p>
 
-<h3>18.1 Intermediates</h3>
+<h3>18.1 Intermediates (REVISED Rev 2)</h3>
 
-<pre><code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/&lt;Platform&gt;/&lt;Architecture&gt;/&lt;Module&gt;/...
+<pre><code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/&lt;Platform&gt;/[&lt;Architecture&gt;/]&lt;Module&gt;/...
   Compile/
     &lt;TU&gt;.cpp.obj           (or .o on Linux/Android)
     &lt;TU&gt;.cpp.deps          (XCppDependencyCache record)
@@ -986,12 +1407,17 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
     &lt;Header&gt;.gen.h         (XHT output)
     &lt;Module&gt;.gen.cpp
     &lt;Module&gt;.gen.manifest
+    &lt;Module&gt;.tokens.bin    (XHT ParseHeadersAction cache; Rev 2)
   Link/
     &lt;Module&gt;.lib           (Win64 import lib)
     &lt;Module&gt;.exp
+  LiveCoding/                (RESERVED Rev 2; populated by Phase 2 XLiveCoding only)
+    &lt;Module&gt;.patch.&lt;gen&gt;.dll
 </code></pre>
 
-<p>Architecture component is omitted when not needed (Win64 x86_64 is the default; an explicit ARM64 cross-compile target would surface the component). External-dep intermediates go under <code>/Intermediate/External/Build/</code> &mdash; mirrors UBT.</p>
+<p><strong>Architecture component in path vs cache key (REVISED Rev 2 &mdash; audit finding #19):</strong> the on-disk <code>&lt;Architecture&gt;</code> path component is omitted when it equals the host's default (typically x86_64 on Win64). An explicit ARM64 cross-compile surfaces the component. <strong>However, the cache key (Section 15.1) always includes architecture explicitly</strong>, even when the path omits it. This prevents the bug where two builds for different architectures collide in the cache because their paths look identical.</p>
+
+<p>External-dep intermediates go under <code>/Intermediate/External/Build/</code> &mdash; mirrors UBT.</p>
 
 <h3>18.2 Binaries</h3>
 
@@ -1006,24 +1432,48 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <hr>
 
-<h2 id="sec19">19. Determinism and Reproducibility</h2>
+<h2 id="sec19">19. Determinism and Reproducibility (REVISED Rev 2 &mdash; complete envelope)</h2>
 
-<p>Per Contract Section 2.4 + Section 12.1 + plan Section 11 Foundation Prototype criterion (g): two clean builds of the same source on the same machine produce byte-identical compile + link outputs.</p>
+<p>Per Contract Rev 11 Section 2.1 + Section 12.1 + plan Section 11 Foundation Prototype criterion (g): two clean builds of the same source on the same machine produce byte-identical compile + link outputs.</p>
 
-<h3>19.1 What XBT does</h3>
+<h3>19.1 Complete reproducibility envelope (REVISED Rev 2 &mdash; audit finding #6)</h3>
 
+<p>Rev 1 listed 6 measures. The Rev 2 audit (and Contract Rev 11 Section 2.1) identifies more measures that XBT must emit unconditionally. The complete envelope:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Measure</th><th>Platform</th><th>Flag</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Object-file repro</td><td>MSVC</td><td><code>/Brepro</code></td><td>Strips compiler-side embedded timestamp from .obj.</td></tr>
+    <tr><td>Link-output repro</td><td>MSVC</td><td><code>/BREPRO</code></td><td>Strips linker-side embedded timestamp from PE.</td></tr>
+    <tr><td>PE header timestamp suppress</td><td>MSVC</td><td><code>/TIMESTAMP:0</code></td><td>NEW Rev 2. Separate from <code>/Brepro</code>/<code>/BREPRO</code>; pins the PE header timestamp to zero.</td></tr>
+    <tr><td>Path normalisation (DWARF / PDB)</td><td>both</td><td><code>/pathmap:&lt;src&gt;=&lt;dst&gt;</code> (Clang &amp; MSVC)</td><td>NEW Rev 2 (now mandatory). Absolute paths in debug info become relative.</td></tr>
+    <tr><td>Incremental linking off</td><td>MSVC</td><td><code>/INCREMENTAL:NO</code></td><td>NEW Rev 2. Incremental linking is incompatible with <code>/Brepro</code>; must be off.</td></tr>
+    <tr><td>LTO determinism</td><td>both</td><td><code>/GL</code> (MSVC) + <code>-fdeterministic-cgu-order</code> (Clang)</td><td>NEW Rev 2. LTO codegen-unit ordering must be deterministic.</td></tr>
+    <tr><td>Host name suppress</td><td>MSVC</td><td><code>/d2:-cgmanifestencoded-</code></td><td>NEW Rev 2. Suppresses an undocumented MSVC manifest field that embeds the build host name.</td></tr>
+    <tr><td>Object-file identity</td><td>Clang</td><td><code>-fno-ident</code></td><td>Removes compiler version banner from .o.</td></tr>
+    <tr><td>Layout randomisation off</td><td>Clang</td><td><code>-frandomize-layout-seed-file=</code> (empty seed)</td><td>Determines layout deterministically; the seed file is committed.</td></tr>
+    <tr><td>Build ID off</td><td>Clang</td><td><code>-Wl,--build-id=none</code></td><td>Strips the link-emitted build-id from the .so.</td></tr>
+    <tr><td>Source hash</td><td>XBT</td><td>BLAKE3 throughout</td><td>Cache keys never use mtime.</td></tr>
+    <tr><td>Sorts</td><td>XBT</td><td><code>SortedSet&lt;FileItem&gt;</code> + <code>CommandVersion</code> tiebreaker</td><td>Deterministic action ordering.</td></tr>
+    <tr><td>Symbol mangling</td><td>XIL2CPP</td><td>Itanium-ABI-style length-prefixed (per Contract Rev 11)</td><td>Reproducible by construction; no hash, no random.</td></tr>
+    <tr><td>Unity-build clustering</td><td>XBT</td><td>Sort by content hash &rarr; bucket by <code>i mod N</code></td><td>Section 4.8.</td></tr>
+    <tr><td>SharedPCH include order</td><td>XBT</td><td>Alphabetical by logical path</td><td>Section 15.4.</td></tr>
+  </tbody>
+</table>
+
+<h3>19.2 Verification procedure (NEW Rev 2)</h3>
+
+<p>The reproducibility test (Section 22.3) does the following:</p>
 <ol>
-  <li>Every sort is deterministic. <code>SortedSet&lt;FileItem&gt;</code> uses ordinal string comparison; the executor dispatcher tiebreaks ready actions by <code>CommandVersion</code> hash.</li>
-  <li>Every cache key is content-hashed (BLAKE3) &mdash; never mtime. Footgun #1 preempt.</li>
-  <li>Every Roslyn <code>CSharpCompilation</code> sets <code>deterministic: true</code>. Footgun #6 preempt; the option is global in <code>XBT.Configuration</code>'s compilation factory.</li>
-  <li><code>/Brepro</code> on Win64 unconditional. <code>-frandomize-layout-seed-file=</code>, <code>-fno-ident</code>, <code>--build-id=none</code> on Linux/Android unconditional.</li>
-  <li>XIL2CPP mangled symbols are reproducible by construction (Contract Section 2.4): purely structural, no hash, no random.</li>
-  <li>Paths embedded in metadata go through <code>CppRootPaths</code>-equivalent canonicalisation. UBT's <code>FileMetadataPrefetch</code> race (footgun #7) is skipped at MVP &mdash; XBT does the prefetch synchronously at start-up if it does it at all.</li>
+  <li>Clean the target tree (<code>XBT.exe Clean -Target=...</code>).</li>
+  <li>Build the fixture into <code>BuildA/</code>.</li>
+  <li>Clean again.</li>
+  <li>Build the fixture into <code>BuildB/</code>.</li>
+  <li>For every produced <code>.dll</code> / <code>.so</code>: run <code>certutil -hashfile &lt;file&gt; SHA256</code> (Win64) or <code>sha256sum</code> (Linux/Android) on both copies and assert the digests match.</li>
+  <li>For every produced .obj/.o, .gen.h, .gen.cpp, manifest, FBS sidecar: byte-identical comparison.</li>
 </ol>
 
-<h3>19.2 Verification</h3>
-
-<p>The reproducibility test (Section 22.3) builds the same source twice in a row and asserts byte-identical artefacts. Pass criterion: zero diffs across the entire <code>Intermediate/</code> + <code>Binaries/</code> tree, modulo allowlisted timestamp-bearing files that the executor refused to emit at all.</p>
+<p>Pass criterion: zero diffs across the entire <code>Intermediate/</code> + <code>Binaries/</code> tree, modulo an allowlist that is empty by default. Any allowlisted file is itself a regression marker &mdash; future work to remove the entry.</p>
 
 <hr>
 
@@ -1033,31 +1483,59 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <h3>20.1 Main thread</h3>
 
-<p>Mode dispatch, CLI parse, manifest emit, ActionGraph operations (<code>Link</code>, <code>CheckForConflicts</code>, <code>DetectActionGraphCycles</code>, <code>Sort</code>). These are inherently serial &mdash; running them on multiple threads buys nothing and risks ordering nondeterminism.</p>
+<p>Mode dispatch, CLI parse, manifest emit, ActionGraph operations (<code>Link</code>, <code>CheckForConflicts</code>, <code>DetectActionGraphCycles</code>, <code>Sort</code>, <code>BuildSubset</code>). These are inherently serial &mdash; running them on multiple threads buys nothing and risks ordering nondeterminism.</p>
 
 <h3>20.2 Worker pool</h3>
 
 <p>Sized to <code>Environment.ProcessorCount</code> (overridable with <code>-Workers=N</code>). The pool services:</p>
 <ul>
   <li>Action execution (Section 6).</li>
-  <li>RulesAssembly compilation across scopes (Section 3.1; each scope compiles in parallel).</li>
+  <li>Descriptor parsing across scopes (Section 3; each scope parses in parallel).</li>
   <li>Plugin discovery (Section 17.1; each plugin root walks in parallel).</li>
   <li>Manifest assembly (per-module manifest entry construction).</li>
 </ul>
 
-<p>No global locks. Per-scope cache locks (one lock per RulesAssembly scope; one lock per <code>ActionHistory</code> bucket). Lock granularity is fine enough that contention is rare in practice.</p>
+<p>No global locks. Per-scope cache locks (one lock per descriptor scope; one lock per <code>ActionHistory</code> bucket). Lock granularity is fine enough that contention is rare in practice.</p>
+
+<h3>20.3 Cancellation threading (NEW Rev 2 &mdash; audit MINOR #15)</h3>
+
+<p>In-process XHT and XIL2CPP (the Phase 2 perf option per Section 9 / Section 10) receive the cancellation token through their entry-point signature. The check points are: at every <code>foreach</code> over modules, at every per-file iteration within a module, and immediately before any write to a temp file. Subprocess XHT and XIL2CPP receive cancellation through SIGINT / Ctrl-C in the same way as any other action subprocess. The 5-second grace period in Section 6.4 applies uniformly.</p>
 
 <hr>
 
-<h2 id="sec21">21. Error Handling and Diagnostics</h2>
+<h2 id="sec21">21. Error Handling and Diagnostics (REVISED Rev 2)</h2>
 
 <h3>21.1 Diagnostic format</h3>
 
-<p>XBT emits diagnostics in MSBuild's <code>file(line,col): error CODE: message</code> format so IDEs and CI dashboards can parse them with the same regex they use for compiler errors. Each diagnostic carries an XBT-specific code (Section 1.3 lists the exit codes; per-diagnostic codes have the form <code>XBT&lt;NNN&gt;</code>).</p>
+<p>XBT emits diagnostics in MSBuild's <code>file(line,col): error CODE: message</code> format so IDEs and CI dashboards can parse them with the same regex they use for compiler errors. Each diagnostic carries an XBT-specific code (per Contract Section 13; per-diagnostic codes have the form <code>XBT&lt;NNN&gt;</code>).</p>
 
-<h3>21.2 Structured build log</h3>
+<h3>21.2 Streaming JSON error channel (NEW Rev 2 &mdash; audit finding #5)</h3>
 
-<p>Every build writes <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/BuildLog.json</code> with the schema:</p>
+<p>Rev 1 wrote a single post-hoc JSON build log at end of build. Rev 2 adds a <strong>streaming</strong> JSON channel that emits diagnostics in real-time, suitable for IDE / CI subscription.</p>
+
+<p>The channel is implemented two ways depending on platform:</p>
+<ul>
+  <li><strong>Linux / Android</strong>: a dedicated file descriptor (FD 3 by default, configurable via <code>-JsonFd=N</code>). The IDE opens a pipe and passes the read end as FD 3.</li>
+  <li><strong>Windows</strong>: stdout lines prefixed with the sentinel <code>@@XBT-JSON@@ </code>. The IDE filters these out of the human-visible stream. The fallback Linux/Android encoding is the same when no extra FD is available.</li>
+</ul>
+
+<p>Every diagnostic produces one JSON line on the channel <em>and</em> one human-readable line on stderr. They are content-equivalent. The JSON record shape:</p>
+
+<pre><code>{"action":"compile","module":"XScoring","level":"error","code":"XBT070",
+ "file":"Engine/Source/Runtime/XScoring/Private/XScoring.cpp","line":42,"column":7,
+ "message":"undefined reference to `XSleef_sin'","tier":"Engine","simpath":true,
+ "target":"MiningTrainingEditor","configuration":"Development","platform":"Win64",
+ "timestamp":"2026-05-19T14:00:42.123Z"}</code></pre>
+
+<p>The channel is streaming &mdash; records are written and flushed as they happen, not buffered until end of build. This lets the IDE highlight a compile error within milliseconds of the compile failing, not at end-of-build.</p>
+
+<h3>21.3 Cancellation (REVISED Rev 2)</h3>
+
+<p>Ctrl-C / SIGINT installs a <code>CancellationToken</code>. The dispatcher stops queueing new actions; in-flight subprocesses are given a 5-second grace period; partial outputs follow the pinned temp-file convention (Section 6.4) and are swept either by the current process (on SIGINT) or at next startup (on <code>taskkill /F</code>); the build log records the cancellation with timestamp; the streaming JSON channel emits a final <code>{"event":"cancelled","timestamp":"..."}</code> record. Exit code 130.</p>
+
+<h3>21.4 Structured build log (REVISED Rev 2 &mdash; streaming + provenance)</h3>
+
+<p>Every build writes <code>Intermediate/Build/&lt;Target&gt;/&lt;Config&gt;/BuildLog.json</code> incrementally (not all-at-end). The log is well-formed JSON throughout the build &mdash; partial logs from cancelled builds are still parseable. Schema:</p>
 
 <pre><code>{
   "BuildId": "&lt;ulid&gt;",
@@ -1067,36 +1545,37 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
   "Target":   "MiningTrainingEditor",
   "Configuration": "Development",
   "Platform": "Win64",
+  "Architecture": "x86_64",
+  "StationRole": "Engineer",
+  "ContractVersion": "x9f3c2a8b",
   "Actions": [
     {
       "Type": "CompileCppAction",
       "Status": "Success",
       "Module": "XScoring",
+      "Tier": "Engine",
+      "Provenance": {
+        "Module": "XScoring",
+        "Target": "MiningTrainingEditor",
+        "Configuration": "Development",
+        "Platform": "Win64",
+        "Tier": "Engine",
+        "SourceFile": "Engine/Source/Runtime/XScoring/Private/XScoring.cpp"
+      },
       "Prerequisites": ["..."],
       "Produces": ["..."],
       "DurationMs": 412,
       "ExitCode": 0
-    },
-    ...
-  ],
-  "Diagnostics": [
-    {
-      "Code": "XBT021",
-      "Severity": "Error",
-      "File": "...",
-      "Line": 14,
-      "Message": "..."
     }
-  ]
+  ],
+  "Diagnostics": [ /* same shape as the streaming JSON channel records */ ]
 }</code></pre>
 
-<p>This is the input for IDE log viewers, CI dashboards, and Phase 2 XTrace integration. XTrace (plan Section 3 Layer 1) is not built yet; until it is, XBT's JSON log is the primary trace artefact. Once XTrace ships, XBT optionally also emits XTrace events.</p>
+<h3>21.5 Build artefact attribution (NEW Rev 2 &mdash; audit MINOR #18)</h3>
 
-<h3>21.3 Cancellation</h3>
+<p>Every action carries full provenance: source file &times; module &times; target &times; configuration &times; platform &times; tier. The <code>Provenance_*</code> fields on <code>IExternalAction</code> (Section 5.2) propagate into both the streaming JSON channel and the per-action entry in <code>BuildLog.json</code>. This lets downstream tools (CI dashboards, build-time-attribution profilers, Phase 2 XPactBuildAccelerator) attribute resource usage and failures to their source.</p>
 
-<p>Ctrl-C / SIGINT installs a <code>CancellationToken</code>. The dispatcher stops queueing new actions; in-flight subprocesses are killed after a 5-second grace period; partial outputs are removed; the build log records the cancellation with timestamp. Exit code 130.</p>
-
-<h3>21.4 Diagnostic dump command</h3>
+<h3>21.6 Diagnostic dump command</h3>
 
 <p>The <code>QueryTargets</code> mode (Section 1.1) emits a JSON dump of the discovered target / module / plugin set, useful for debugging discovery and tier-enforcement issues without running a full build.</p>
 
@@ -1110,11 +1589,14 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <ul>
   <li><code>ActionGraph</code> cycle detection: synthetic graphs with known cycles &rarr; assert <code>DetectActionGraphCycles</code> reports them at the right edge set.</li>
-  <li><code>ActionHistory</code> hashing: hash collisions across the field set are detected (the SHA-256 derivation in Section 5.4 is exercised on representative field permutations).</li>
-  <li><code>ModuleRules</code> validation: a tier-violating <code>PublicDependencyModuleNames</code> entry &rarr; expected exit 21; a banned-flag entry on SimPath &rarr; expected exit 41.</li>
-  <li>Manifest serialisation round-trip: build manifest, write JSON, read JSON, build manifest, assert structural equality.</li>
-  <li>RulesAssembly Roslyn compilation: malformed <code>.Build.cs</code> &rarr; expected exit 30 with the Roslyn diagnostic preserved.</li>
+  <li><code>ActionGraph.BuildSubset</code>: synthetic graph with known structure; assert <code>BuildSubset(["A","B"])</code> returns exactly the transitive predecessor set of A &cup; B.</li>
+  <li><code>ActionHistory</code> hashing: hash collisions across the field set are detected (the SHA-256 derivation in Section 5.4 is exercised on representative field permutations, including the <code>CacheKeyComponents</code> field).</li>
+  <li><code>ModuleRules</code> validation: a tier-violating link-dep entry &rarr; expected exit 21; a banned-flag entry on SimPath &rarr; expected exit 41; a SimPath module declaring <code>UseSharedPCHs</code> &rarr; expected exit 30; a non-SimPath module with <code>SimdLevel.AVX</code> succeeds (no rule); a SimPath module with <code>SimdLevel.AVX</code> &rarr; expected exit 30.</li>
+  <li>Manifest serialisation round-trip: build manifest, write JSON + FBS, read JSON + FBS, build manifest, assert structural equality (both formats).</li>
+  <li>JSON parse safety: a manifest with depth &gt; 64 / size &gt; 100 MB / array length &gt; 64K &rarr; expected exit 50; FlatBuffers verifier rejection of a tampered sidecar &rarr; expected fallback to JSON, then exit 50 if JSON also fails.</li>
+  <li>Descriptor parse: malformed <code>.Build.toml</code> &rarr; expected exit 30 with file:line in the diagnostic; <code>.Build.expr</code> referencing a disallowed name &rarr; expected exit 30.</li>
   <li>Copyright validation: a synthetic file missing the header &rarr; expected exit 40 with the file path in the diagnostic.</li>
+  <li>Atomic-rename + orphan sweep: simulate <code>taskkill /F</code> mid-build (kill subprocess; rerun XBT); assert orphan temp files are deleted at next startup.</li>
 </ul>
 
 <h3>22.2 Integration tests</h3>
@@ -1124,21 +1606,30 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 <ul>
   <li>A C++ Hello-World module produces a <code>.dll</code> / <code>.so</code>.</li>
   <li>A C# Hello-World module transpiles via a stubbed XIL2CPP (Phase 1 ships a placeholder XIL2CPP that emits a trivial C++ wrapper so XBT.Tests does not need real XIL2CPP work).</li>
-  <li>A mixed-language module exercises both XHT and XIL2CPP simultaneously.</li>
-  <li>A SimPath module exercises the FPSemantics + banned-API + libm-exclusion path.</li>
+  <li>A mixed-language module exercises both XHT and XIL2CPP simultaneously (concurrent per Section 10.6).</li>
+  <li>A SimPath module exercises the FPSemantics + SimdLevel + banned-API + libm-exclusion path.</li>
+  <li>An <code>InterfaceModule = true</code> module exercises the header-only public-include propagation.</li>
 </ul>
 
 <h3>22.3 Reproducibility test</h3>
 
-<p>Build the fixture project once into <code>BuildA/</code>; clean; build again into <code>BuildB/</code>; assert <code>BuildA</code> and <code>BuildB</code> are byte-identical for every produced file. This maps directly to plan Section 11 Foundation Prototype criterion (g) and Contract Section 12.1.</p>
+<p>Per Section 19.2. Build the fixture project once into <code>BuildA/</code>; clean; build again into <code>BuildB/</code>; assert <code>BuildA</code> and <code>BuildB</code> are byte-identical for every produced file. Maps directly to plan Section 11 Foundation Prototype criterion (g) and Contract Section 12.1.</p>
 
 <h3>22.4 Tier enforcement test</h3>
 
-<p>A malformed fixture under <code>XBT.Tests/Fixtures/BadTier/</code> declares an Engine module depending on a Studio module. Test asserts XBT exits 21 with the expected diagnostic substring. Symmetric tests for circular dependency (exit 22), engine-version mismatch (exit 23), copyright (exit 40).</p>
+<p>A malformed fixture under <code>XBT.Tests/Fixtures/BadTier/</code> declares an Engine module link-depending on a Studio module. Test asserts XBT exits 21 with the expected diagnostic substring. A companion fixture under <code>XBT.Tests/Fixtures/UpwardDynamicLoad/</code> declares an Engine module <em>dynamically loading</em> a Studio module &mdash; test asserts XBT succeeds (Section 13.1 allows this). Symmetric tests for circular dependency (exit 22), engine-version mismatch (exit 23), copyright (exit 40).</p>
 
 <h3>22.5 Cross-config ABI test</h3>
 
 <p>Per Contract Section 12.3: build a C# module in Development and in Shipping, link the Dev binary against the Shipping module's import lib, run a smoke test, assert no ABI mismatch. This is a longer-running test (full build &times; 2 configs) and runs in CI nightly rather than on every PR.</p>
+
+<h3>22.6 IBuildHook tests (NEW Rev 2)</h3>
+
+<p>A fixture under <code>XBT.Tests/Fixtures/BuildHookSample/</code> registers a sample <code>IBuildHook</code> implementation that runs in the <code>PreCompile</code> phase and emits an extra header into the module's intermediate directory. The test asserts: (a) the hook's <code>Inputs</code>/<code>Outputs</code> participate correctly in the action graph; (b) the hook's <code>ExecuteAsync</code> receives the right <code>CancellationToken</code>; (c) the produced file is consumed by downstream compiles; (d) the hook is content-cached &mdash; an unchanged hook does not re-execute on rebuild.</p>
+
+<h3>22.7 Cancellation test (NEW Rev 2)</h3>
+
+<p>A fixture under <code>XBT.Tests/Fixtures/SlowCompile/</code> includes a deliberately slow compile (a TU with thousands of include-once headers). The test issues <code>Ctrl-C</code> after 2 seconds, asserts exit 130, asserts no orphan temp files remain (after the implicit next-startup sweep), and asserts the streaming JSON channel records a <code>{"event":"cancelled"}</code> entry.</p>
 
 <hr>
 
@@ -1147,17 +1638,18 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Capability</th><th>Phase 1 (MVP)</th><th>Phase 2 (post-MVP)</th></tr></thead>
   <tbody>
-    <tr><td>Executor</td><td>ParallelExecutor (local)</td><td>XPactBuildAccelerator (distributed; plan Section 3 Layer 0 Rev 7)</td></tr>
+    <tr><td>Executor</td><td>ParallelExecutor (local)</td><td>XPactBuildAccelerator (distributed; plan Section 3 Layer 0 Rev 7) &mdash; uses Reserved enum slot 9</td></tr>
     <tr><td>Project files</td><td>Rider + clangd</td><td>Visual Studio, optional Xcode</td></tr>
-    <tr><td>Live Coding</td><td>Hook surface only (empty patcher list)</td><td>Full XLiveCoding integration with per-toolchain patchers</td></tr>
-    <tr><td>PCH</td><td>SharedPCH (hash-named)</td><td>C++20 module interfaces (precompiled module interfaces; plan Section 2 C++ standard row defers modules)</td></tr>
-    <tr><td>XHT / XIL2CPP invocation</td><td>Subprocess</td><td>Optionally in-process via library load</td></tr>
+    <tr><td>Live Coding</td><td>Hook surface only (empty patcher list; quiesce-participant interface declared; subset-build implemented; patch-DLL path reserved)</td><td>Full XLiveCoding integration with per-toolchain patchers + registered quiesce participants &mdash; uses Reserved enum slots 11, 12</td></tr>
+    <tr><td>PCH</td><td>SharedPCH (hash-named, alphabetical include order)</td><td>C++20 module interfaces</td></tr>
+    <tr><td>XHT / XIL2CPP invocation</td><td>Subprocess; concurrent</td><td>Optionally in-process via library load; still concurrent</td></tr>
     <tr><td>Copyright check</td><td>Hash-cached pre-compile action</td><td>(unchanged)</td></tr>
-    <tr><td>Tier enforcement</td><td>Module-resolution-time check, exit 21</td><td>(unchanged)</td></tr>
+    <tr><td>Tier enforcement</td><td>Module-resolution-time check, full link/dynamic matrix, exit 21</td><td>(unchanged)</td></tr>
     <tr><td>Engine-version enforcement</td><td>Module-resolution-time check, exit 23</td><td>(unchanged)</td></tr>
-    <tr><td>Action types</td><td>All 8 enum values listed in Section 5.1</td><td>Possibly add <code>CompileModuleInterface</code> if C++20 modules ship</td></tr>
+    <tr><td>Action types</td><td>Phase 1 emits slots 0-8, 16-17 (Section 5.1)</td><td>Phase 2 instantiates Reserved slots 9-15</td></tr>
     <tr><td>FIPS-switchable crypto</td><td>Target-level flag honoured by manifest</td><td>(unchanged; XSecurity does the work)</td></tr>
-    <tr><td>Manifest format</td><td>Stage A schema, <code>ContractVersion: "v1"</code></td><td>Stage B addendum extends with the FProperty replication-metadata slots</td></tr>
+    <tr><td>Manifest format</td><td>Stage A schema, ContractVersion auto-derived</td><td>Stage B addendum extends with the FProperty replication-metadata slots</td></tr>
+    <tr><td>Distributed derived data</td><td>n/a</td><td>Reserved enum slot 10</td></tr>
   </tbody>
 </table>
 
@@ -1171,14 +1663,13 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
   <thead><tr><th>Pattern</th><th>Reference</th></tr></thead>
   <tbody>
     <tr><td>Mode-dispatch CLI (<code>BuildMode</code>, <code>CleanMode</code>, <code>GenerateProjectFilesMode</code>, etc.)</td><td>UBT <code>IToolMode&lt;T&gt;</code>; UE reference brief entry point summary.</td></tr>
-    <tr><td>Roslyn-compiled <code>.Build.cs</code> rules</td><td>UBT <code>DynamicCompilation.CompileAssemblyAsync</code>; with footgun #2 + #6 fixed.</td></tr>
-    <tr><td>JSON manifest as XBT &rarr; XHT &rarr; XIL2CPP join key</td><td>UBT UHTManifest pattern; Contract Section 10.2 extends with C# + ContractVersion.</td></tr>
+    <tr><td>JSON manifest as XBT &rarr; XHT &rarr; XIL2CPP join key</td><td>UBT UHTManifest pattern; Contract Section 10.2 extends with C# + ContractVersion + FBS sidecar.</td></tr>
     <tr><td>IExternalAction action graph with prerequisites / produces / response files</td><td>UBT <code>Actions/Action.cs</code>; XBT trims the per-executor capability matrix to one flag.</td></tr>
     <tr><td>ActionHistory hash store keyed by FileItem &rarr; IoHash</td><td>UBT pattern; XBT auto-derives <code>CurrentVersion</code> from the field-set hash to preempt footgun #8.</td></tr>
     <tr><td>Per-platform <code>XToolChain</code> class (MSVC / Clang)</td><td>UBT <code>UEToolChain &rarr; VCToolChain</code> + <code>ClangToolChain</code>.</td></tr>
     <tr><td>FPSemantics translation (Precise / Imprecise / Default &rarr; <code>/fp:</code> + <code>-ffp-contract=</code>)</td><td>UBT <code>GetCompileArguments_FPSemantics</code>.</td></tr>
-    <tr><td>/Brepro unconditional on Windows for reproducibility</td><td>UBT pattern; Contract Section 2.1 elevates it to mandatory.</td></tr>
-    <tr><td>SharedPCH with hash-named header file</td><td>UBT pattern; XBT names the file with content hash for cleaner caching.</td></tr>
+    <tr><td><code>/Brepro</code> unconditional on Windows for reproducibility</td><td>UBT pattern; Contract Section 2.1 elevates it to mandatory + adds the rest of the envelope.</td></tr>
+    <tr><td>SharedPCH with hash-named header file</td><td>UBT pattern; XBT names the file with content hash for cleaner caching + locks include order.</td></tr>
     <tr><td>Plugin shadow precedence (Project shadows Studio shadows Engine)</td><td>UBT plugin enumeration; tier-extended.</td></tr>
     <tr><td>ParallelExecutor sized to ProcessorCount</td><td>UBT pattern.</td></tr>
   </tbody>
@@ -1190,19 +1681,26 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
   <thead><tr><th>Divergence</th><th>Reference</th></tr></thead>
   <tbody>
     <tr><td>Ban <code>CircularlyReferencedDependentModules</code> outright (no allow-list)</td><td>Contract Section 9.2; plan Section 2 Module composition row.</td></tr>
-    <tr><td><code>ContractVersion: "v1"</code> in every manifest (UE's UHTManifest has no version)</td><td>Contract Section 10.2; footgun #4.</td></tr>
+    <tr><td><strong>Declarative TOML descriptors</strong> (no Roslyn; Rev 2)</td><td>Section 3 of this spec; audit finding #2.</td></tr>
+    <tr><td>Auto-derived ContractVersion from contract-surface hash</td><td>Section 8.1; Contract Rev 11 change #6.</td></tr>
     <tr><td>Content-hash invalidation throughout (BLAKE3); never mtime</td><td>Section 15 of this spec; footgun #1.</td></tr>
-    <tr><td>Tier + SimPath + Languages fields on ModuleRules (UBT has none of these)</td><td>Contract Section 9; plan Section 2 Folder structure + Determinism + Module composition rows.</td></tr>
+    <tr><td>Tier + SimPath + Languages + SimdLevel + InterfaceModule + IsTestModule fields on ModuleRules (UBT has none of these)</td><td>Contract Section 9; plan Section 2 Folder structure + Determinism + Module composition rows.</td></tr>
     <tr><td>Copyright validation as pre-compile action</td><td>Plan Section 2 Copyright row Rev 6; Contract Section 10.1 step 5.</td></tr>
     <tr><td>Engine-version enforcement at build time (UBT has no engine-version concept &mdash; engine versioning is per-project Unreal commit)</td><td>Plan Section 2 Plugin versioning row Rev 8; Contract Section 9.4.</td></tr>
     <tr><td>Lazy project-file generation (only the IDE's selected target)</td><td>Section 14.1 of this spec; footgun #9.</td></tr>
     <tr><td>Per-toolchain action patcher (not per-executable-name matching)</td><td>Section 7.6 of this spec; footgun #5.</td></tr>
-    <tr><td>Per-scope RulesAssembly (Engine / per-Plugin / per-Project), not one giant engine assembly</td><td>Section 3.1 of this spec; footgun #2.</td></tr>
+    <tr><td>Per-scope descriptor cache (Engine / per-Plugin / per-Project), not one giant engine assembly</td><td>Section 3.4 of this spec; footgun #2.</td></tr>
     <tr><td>ActionHistory <code>CurrentVersion</code> auto-derived from field-set hash</td><td>Section 5.4 of this spec; footgun #8.</td></tr>
     <tr><td>Flat <code>bCanExecuteRemotely</code> flag (not per-executor matrix)</td><td>Section 5.2 of this spec; preempts vendor lock-in.</td></tr>
     <tr><td>Fail-fast on plugin EngineVersion mismatch (not warn-and-continue)</td><td>Section 17.3 of this spec.</td></tr>
     <tr><td>File ID decoupled from on-disk path (uses logical plugin path)</td><td>Contract Section 1.4.</td></tr>
     <tr><td>Mixed-language modules (one DLL contains <code>.h</code> + <code>.cpp</code> + <code>.cs</code>)</td><td>Plan Section 2 Module composition row; Contract Section 10.2.</td></tr>
+    <tr><td>Atomic rename with pinned temp-file naming + orphan sweep</td><td>Section 6.4; audit finding #1.</td></tr>
+    <tr><td>Streaming JSON error channel (not post-hoc only)</td><td>Section 21.2; audit finding #5.</td></tr>
+    <tr><td>Quiesce participant + subset-build + patch-DLL discovery hook seams</td><td>Section 16; audit finding #7.</td></tr>
+    <tr><td>Typed <code>IBuildHook</code> surface (not freeform shell)</td><td>Section 5.7; Contract Rev 11 change #11.</td></tr>
+    <tr><td>Itanium-ABI-style length-prefixed mangling</td><td>Sections 8 + 10; Contract Rev 11 change #17.</td></tr>
+    <tr><td>Span-based GC root ABI in manifest</td><td>Section 8.2; Contract Rev 11 change #1.</td></tr>
   </tbody>
 </table>
 
@@ -1214,27 +1712,32 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <ol>
   <li><strong>Builds a Hello-World C++ TU.</strong> A trivial module under <code>XBT.Tests/Fixtures/HelloWorldXPact/</code> with one <code>.cpp</code> emitting a <code>"hello"</code> log line. End-to-end: <code>XBT.exe Build &mdash; success &mdash; produces .dll &mdash; .dll runs.</code></li>
-  <li><strong>Builds a Hello-World C# TU via the placeholder XIL2CPP.</strong> A <code>.cs</code> file in the same fixture transpiles to <code>.cpp</code> via a stubbed XIL2CPP (real XIL2CPP arrives at System 6); the resulting <code>.dll</code> exports the C# symbol per the Contract Section 2.2 mangling rule.</li>
-  <li><strong>Reports clear errors on invalid Tier.</strong> A fixture declaring an Engine module dependent on a Studio module exits 21 with a diagnostic naming both endpoints.</li>
+  <li><strong>Builds a Hello-World C# TU via the placeholder XIL2CPP.</strong> A <code>.cs</code> file in the same fixture transpiles to <code>.cpp</code> via a stubbed XIL2CPP (real XIL2CPP arrives at System 6); the resulting <code>.dll</code> exports the C# symbol per Contract Rev 11's Itanium-ABI-style length-prefixed mangling rule.</li>
+  <li><strong>Reports clear errors on invalid Tier.</strong> A fixture declaring an Engine module link-depending on a Studio module exits 21 with a diagnostic naming both endpoints. A companion fixture declaring an Engine module dynamically-loading a Studio module succeeds (Section 13.1).</li>
   <li><strong>Refuses to build with missing copyright.</strong> A fixture file missing line 1 fails with exit 40.</li>
-  <li><strong>Reproducibility.</strong> Two clean builds of the same fixture produce byte-identical artefacts (Section 19, Section 22.3).</li>
+  <li><strong>Reproducibility.</strong> Two clean builds of the same fixture produce byte-identical artefacts (Section 19, Section 22.3, verification procedure 19.2).</li>
   <li><strong>Engine-version compatibility rejection.</strong> A fixture project pinning a mismatched <code>EngineVersion</code> exits 23.</li>
   <li><strong>Circular-dependency rejection.</strong> A fixture with A &rarr; B &rarr; A exits 22 with the cycle named.</li>
-  <li><strong>SimPath flag propagation.</strong> A fixture SimPath module compiles with <code>/fp:precise</code> / <code>-ffp-contract=off</code>, includes <code>XSimPathMathOverrides.h</code>, links against Sleef not platform libm. Verified by disassembly of the produced object file (the test asserts <code>sin</code> resolves to <code>XSleef_sin</code>).</li>
+  <li><strong>SimPath flag propagation.</strong> A fixture SimPath module compiles with <code>/fp:precise</code> / <code>-ffp-contract=off</code>, <code>SimdLevel = SSE42</code>, includes <code>XSimPathMathOverrides.h</code>, links against Sleef not platform libm. Verified by disassembly of the produced object file (the test asserts <code>sin</code> resolves to <code>XSleef_sin</code>).</li>
   <li><strong>Banned-API rejection.</strong> A SimPath fixture using <code>QueryPerformanceCounter</code> exits 41 with the file:line reported.</li>
+  <li><strong>SimPath PCH + SIMD constraints.</strong> A SimPath fixture with <code>UseSharedPCHs</code> exits 30; a SimPath fixture with <code>SimdLevel.AVX</code> exits 30.</li>
   <li><strong>Cross-config ABI smoke.</strong> Per Section 22.5 + Contract Section 12.3.</li>
-  <li><strong>Plugin enumeration order is deterministic.</strong> Two runs of <code>QueryTargets</code> on the same repo produce byte-identical JSON dumps.</li>
+  <li><strong>Plugin enumeration order is deterministic.</strong> Two runs of <code>QueryTargets</code> on the same repo produce byte-identical JSON dumps; the makefile cache key includes all observed plugin records (Section 17.2), not just resolved shadows.</li>
   <li><strong>Project-file generation is lazy.</strong> Per Section 14.1: <code>GenerateProjectFiles</code> for one target does not write project files for other targets.</li>
   <li><strong>Mode-dispatch help message.</strong> <code>XBT.exe</code> with no arguments prints a list of modes with one-line summaries. <code>XBT.exe &lt;Mode&gt; -Help</code> prints that mode's argument schema.</li>
-  <li><strong>Cancellation graceful.</strong> Pressing Ctrl-C mid-build does not leave partially-produced outputs in the binary tree; exit 130 is reported; the build log is well-formed up to the cancellation point.</li>
-  <li><strong>JSON build log is well-formed.</strong> Every build emits a JSON log validating against the schema in Section 21.2.</li>
+  <li><strong>Cancellation graceful.</strong> Pressing Ctrl-C mid-build does not leave partially-produced outputs in the binary tree; exit 130 is reported; the build log is well-formed up to the cancellation point; orphan temp files are swept at next startup.</li>
+  <li><strong>JSON build log + streaming JSON channel are well-formed.</strong> Every build emits a JSON log validating against the schema in Section 21.4 and a streaming channel record per diagnostic.</li>
+  <li><strong>Manifest parse safety.</strong> A pathological JSON manifest (depth 1000, size 200 MB, 1 M-entry arrays) is rejected with exit 50 in bounded time and memory. The FlatBuffers sidecar verifier rejects malformed buffers similarly.</li>
+  <li><strong>Concurrent XHT + XIL2CPP.</strong> Per Section 10.6: the action graph admits <code>EmitReflectionAction(M)</code> and <code>XIL2CPPAction(M)</code> for the same module as parallel peers; the executor dispatches them concurrently when workers are available.</li>
+  <li><strong>Hot-reload matrix.</strong> Per Section 16.4: a Trainee + Shipping Game target strips hot-reload actions from the graph regardless of any module's <code>bAllowHotReload = true</code>; a Server target does likewise; an Engineer + Shipping Game target retains hot-reload actions where <code>bAllowHotReload = true</code>.</li>
+  <li><strong>Atomic rename + orphan sweep.</strong> A simulated <code>taskkill /F</code> mid-build leaves <code>*.tmp.&lt;pid&gt;.*</code> files in the intermediate tree; the next XBT startup deletes them; no orphan persists into the second build's outputs.</li>
 </ol>
 
-<p>This list is the contract between XBT.html and the implementation that follows. Every item is realisable from the structures above and from the Toolchain Contract.</p>
+<p>This list is the contract between XBT.html and the implementation that follows. Every item is realisable from the structures above and from the Toolchain Contract Rev 11.</p>
 
 <hr>
 
-<p><em>End of XBT system specification. Implementation phase begins per plan Section 7b after both subagents and the user approve this document.</em></p>
+<p><em>End of XBT system specification (Rev 2). Implementation phase begins per plan Section 7b after both subagents and the user approve this document. The Rev 2 audit findings are addressed in: Section 3 (Roslyn dropped, declarative TOML); Section 4 (SimdLevel, InterfaceModule, IsTestModule, DeprecationMessage, MinimumToolchainVersion, Unity-build determinism); Section 5 (XActionType subdivided + reserved, CacheKeyComponents, IBuildHook); Section 6.4 (cancellation + atomic-rename contract); Section 7.4 (s[i] is error, exception ABI split); Section 8 (FBS sidecar, JSON parse safety, auto-derived ContractVersion); Section 13 (cross-tier dep edge matrix); Section 15 (complete cache key, PCH include order); Section 16 (quiesce + subset-build + patch-DLL); Section 17 (all observed plugin records); Section 18 (architecture in cache key even when path omits); Section 19 (complete reproducibility envelope); Section 21 (streaming JSON error channel, provenance). Exit codes are moved to Contract Rev 11 Section 13 and referenced here.</em></p>
 
 </body>
 </html>
