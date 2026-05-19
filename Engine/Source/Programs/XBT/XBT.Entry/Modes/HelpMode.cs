@@ -52,7 +52,13 @@ public sealed class HelpMode : IToolMode<HelpMode>
                     info.Description));
         }
 
-        Logger.Info(sb.ToString().TrimEnd());
+        // Single structured emit per /Documents/XBT.html Rev 4
+        // Section 21.2 -- the human-readable block stays as the message
+        // body; the JSON channel record tags this as the help action so
+        // IDE / CI consumers can ignore it cleanly.
+        Logger.Info(
+            sb.ToString().TrimEnd(),
+            new DiagnosticContext { Action = "help" });
         return Task.FromResult(0);
     }
 }

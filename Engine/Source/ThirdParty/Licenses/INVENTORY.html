@@ -132,5 +132,88 @@
 
 <p><em>Notes.</em> Versions are marked "TBD at integration" because the engine is in pre-bootstrap scaffold phase; each version will be pinned the moment the dependency is actually integrated into its consuming system. The cryptographic library backing XSecurity (Section 2 Network security row &mdash; OpenSSL / BoringSSL or a FIPS-140-3 validated provider) is not in this initial inventory because its selection is deployment-time configurable and lands when XSecurity is implemented at Layer 13.</p>
 
+<h2>Build-tool dependencies (XBT and tooling)</h2>
+
+<p>Build-time-only dependencies consumed by the XBT toolchain (under <code>/Engine/Source/Programs/XBT/</code>). These do not ship in player-facing binaries; they are pulled by the .NET build host. Versions are concrete because XBT is integrated. Each <code>Licenses/&lt;Name&gt;.txt</code> file lands when the corresponding upstream license text is vendored alongside the dependency &mdash; the path column shows where each will be placed; the <code>.txt</code> files do not yet exist and are forward-looking per the engine-tier table's pattern above.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Version</th>
+      <th>License</th>
+      <th>Source URL</th>
+      <th>License file path</th>
+      <th>Used by</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Blake3</td>
+      <td>1.1.0</td>
+      <td>CC0-1.0 / public-domain-equivalent</td>
+      <td>https://github.com/xoofx/Blake3.NET</td>
+      <td><code>Licenses/Blake3.txt</code></td>
+      <td>XBT.Core (IoHash)</td>
+      <td>BLAKE3 reference impl for .NET.</td>
+    </tr>
+    <tr>
+      <td>FlatSharp.Runtime</td>
+      <td>7.9.0</td>
+      <td>Apache-2.0</td>
+      <td>https://github.com/jamesqo/FlatSharp</td>
+      <td><code>Licenses/FlatSharp.Runtime.txt</code></td>
+      <td>XBT.Manifest (FBS readers/writers)</td>
+      <td>Idiomatic .NET FlatBuffers; codegen via MSBuild.</td>
+    </tr>
+    <tr>
+      <td>FlatSharp.Compiler</td>
+      <td>7.9.0</td>
+      <td>Apache-2.0</td>
+      <td>https://github.com/jamesqo/FlatSharp</td>
+      <td><code>Licenses/FlatSharp.Compiler.txt</code></td>
+      <td>XBT.Manifest (build-time codegen)</td>
+      <td>Build-time only; not redistributed.</td>
+    </tr>
+    <tr>
+      <td>xunit</td>
+      <td>2.x</td>
+      <td>Apache-2.0</td>
+      <td>https://github.com/xunit/xunit</td>
+      <td><code>Licenses/xunit.txt</code></td>
+      <td>XBT.Tests</td>
+      <td>Unit-test framework.</td>
+    </tr>
+    <tr>
+      <td>xunit.runner.visualstudio</td>
+      <td>3.x</td>
+      <td>Apache-2.0</td>
+      <td>https://github.com/xunit/visualstudio.xunit</td>
+      <td><code>Licenses/xunit.runner.visualstudio.txt</code></td>
+      <td>XBT.Tests</td>
+      <td>Test runner.</td>
+    </tr>
+    <tr>
+      <td>Microsoft.NET.Test.Sdk</td>
+      <td>17.x</td>
+      <td>MIT</td>
+      <td>https://github.com/microsoft/vstest</td>
+      <td><code>Licenses/Microsoft.NET.Test.Sdk.txt</code></td>
+      <td>XBT.Tests</td>
+      <td>Test SDK.</td>
+    </tr>
+    <tr>
+      <td>coverlet.collector</td>
+      <td>6.x</td>
+      <td>MIT</td>
+      <td>https://github.com/coverlet-coverage/coverlet</td>
+      <td><code>Licenses/coverlet.collector.txt</code></td>
+      <td>XBT.Tests (optional)</td>
+      <td>Code coverage collector.</td>
+    </tr>
+  </tbody>
+</table>
+
 </body>
 </html>

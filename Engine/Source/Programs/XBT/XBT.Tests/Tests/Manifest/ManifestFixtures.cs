@@ -121,7 +121,7 @@ internal static class ManifestFixtures
             MinimumToolchainVersion:  "1.7.0");
 
         return new ManifestRecord(
-            ContractVersion:                 "v13-stub",
+            ContractVersion:                 ContractVersion.Current,
             EngineVersion:                   "0.1.0",
             TargetName:                      "MiningTrainingEditor",
             TargetType:                      BuildTargetType.Editor,
@@ -149,7 +149,7 @@ internal static class ManifestFixtures
         Module programsMod = MakeMinimalModule("XBT.Manifest", ModuleTier.Engine, ModuleType.Programs);
 
         return new ManifestRecord(
-            ContractVersion:                 "v13-stub",
+            ContractVersion:                 ContractVersion.Current,
             EngineVersion:                   "0.1.0",
             TargetName:                      "SmokeTarget",
             TargetType:                      BuildTargetType.Game,

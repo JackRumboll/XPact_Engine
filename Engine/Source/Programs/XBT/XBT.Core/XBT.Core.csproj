@@ -16,4 +16,16 @@
     <PackageReference Include="Blake3" Version="1.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      XBT.Tests needs access to internal test hooks on Logger
+      (__SetJsonStreamForTesting, __ResetWarningLatchForTesting) and on
+      RepoRoot (ResetForTesting, SetForTesting, DiscoverFrom) per
+      /Documents/XBT.html Rev 4 Section 22.1 deterministic-input rule.
+      Keep this list short; new entries must justify why a test cannot
+      exercise the surface through the public API.
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
+  </ItemGroup>
+
 </Project>

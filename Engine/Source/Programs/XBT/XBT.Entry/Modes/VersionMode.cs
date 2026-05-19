@@ -59,7 +59,13 @@ public sealed class VersionMode : IToolMode<VersionMode>
             sb.AppendLine($"Blake3 library:     {blake3Version}");
         }
 
-        Logger.Info(sb.ToString().TrimEnd());
+        // Single structured emit -- the human-readable block stays as
+        // the message body (so existing stderr scrapers keep working);
+        // the JSON channel record additionally tags this as the
+        // version-mode action so IDE subscribers can filter for it.
+        Logger.Info(
+            sb.ToString().TrimEnd(),
+            new DiagnosticContext { Action = "version" });
         return Task.FromResult(0);
     }
 }
