@@ -3,12 +3,42 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 11</title>
+<title>XPact Toolchain Contract &mdash; Rev 12</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 11</h1>
+<h1>XPact Toolchain Contract &mdash; Rev 12</h1>
 <p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
+
+<p><strong>Rev 12 (reconciliation pass:</strong> contradiction resolution with XBT.html Rev 2 [SimdLevel enum + values, IBuildHook signature, Roslyn escape hatch retained], plus N1 GC span hot-reload protocol, N2 Tier 2 cross-module sequencing, N3 Starlark grammar pinned, N4 FlatBuffers schema inlined, N5 IXModule dynamic-load protocol, M1 container move-only, M2 XResult exception destructor, M3 banned-API on preprocessed text, plus minor<strong>).</strong></p>
+
+<p>Rev 12 is a <em>reconciliation pass</em> against XBT.html Rev 2 plus a deep-audit follow-up. No re-litigation of Rev 11's seventeen findings; Rev 12 layers on top. Summary of Rev 12 changes:</p>
+<ul>
+  <li><strong>Contradiction resolutions with XBT.html Rev 2</strong> (decisions; XBT.html and Contract are now aligned):
+    <ul>
+      <li><strong>SimPath SimdLevel.</strong> Rev 11 said <code>None</code>. XBT.html Rev 2 said <code>&le; SSE42</code>. Winner: <code>&le; SSE42</code>. SSE2 is the x86_64-v1 baseline; SSE4.2 has no FMA so determinism holds; "None" is unnecessarily restrictive and breaks performance for sim-path math. Section 4.2 updated to specify <code>SimdLevel &le; SSE42</code> for SimPath modules, with <code>-mno-fma</code> on Clang regardless.</li>
+      <li><strong>SimdLevel enum values.</strong> Rev 11 enum: <code>None / SSE2 / SSE42 / AVX / AVX2 / AVX512</code>. XBT.html Rev 2: <code>Default / SSE2 / SSE42 / AVX / AVX2 / AVX512</code>. Winner: union &mdash; both values present. Final enum: <code>None / Default / SSE2 / SSE42 / AVX / AVX2 / AVX512</code>. Semantics: <code>None</code> = scalar-only (no SIMD codegen); <code>Default</code> = use target default (set on TargetRules); <code>SSE2</code>&ndash;<code>AVX512</code> = explicit baseline. Section 4.2 and Section 9.1 updated.</li>
+      <li><strong>IBuildHook signature.</strong> Rev 11 (this contract): <code>CreateAction(BuildHookContext) returns IExternalAction</code>. XBT.html Rev 2: <code>Task&lt;HookResult&gt; ExecuteAsync(HookContext, CancellationToken)</code>. Winner: Contract's signature. Hooks MUST participate in the action graph for caching, incrementalization, and parallel scheduling &mdash; an <code>ExecuteAsync</code> shape bypasses that. Action-graph integration is the entire reason for typed hooks vs UE's freeform shell commands. The Contract Rev 11 signature is unchanged in Rev 12; subagent B will align XBT.html.</li>
+      <li><strong>Roslyn escape hatch.</strong> Rev 11 Section 9.6 retains the Phase 1 fallback for legitimate <code>.Build.cs</code> cases. XBT.html Rev 2 Section 3.6 drops it to Phase 2. Winner: Contract's Phase 1 escape hatch retained. Empty repo means no immediate use, but the escape hatch is cheap to implement at Phase 1 (Roslyn becomes a dependency only when actually invoked) and the alternative ("wait for Phase 2 to do X") is worse than the cost of carrying the optional dependency.</li>
+    </ul>
+  </li>
+  <li><strong>New audit findings applied in Rev 12:</strong>
+    <ul>
+      <li><strong>N1 &mdash; Container type hot-reload constraints (CRITICAL).</strong> Container class layouts (any class with an embedded <code>XGCRootSpan</code> member) are <em>layout-frozen</em> within a hot-reload session. Section 3 gains a new subsection 3.7.</li>
+      <li><strong>N2 &mdash; XIL2CPP Tier 2 cross-module sequencing (MAJOR).</strong> Two-pass classification with conservative-default in Pass 1 (per-module, concurrent) and optional whole-program Pass 2 (post-MVP). Section 5.2 revised.</li>
+      <li><strong>N3 &mdash; Starlark subset grammar pinned (MAJOR).</strong> Bazel Starlark spec version <code>0.10.0</code> (commit pinned) plus enumerated deviations, bindings table, and grammar productions. Section 9.6 revised.</li>
+      <li><strong>N4 &mdash; FlatBuffers manifest schema inlined (MAJOR).</strong> Schema fragment + append-only versioning rule. Section 10.2 revised.</li>
+      <li><strong>N5 &mdash; IXModule dynamic-load protocol (MAJOR).</strong> Typed dispatch via <code>IXModule*</code> + Itanium-mangled symbol resolution; raw <code>GetProcAddress</code>/<code>dlsym</code> banned. New Section 9.7.</li>
+      <li><strong>M1 &mdash; Container move-only constraint (MAJOR).</strong> Transpiled containers with <code>XGCRootSpan</code> are move-only. Section 3.4 revised.</li>
+      <li><strong>M2 &mdash; XResult destructor in exception cases (MAJOR).</strong> RAII destructor with conditional teardown based on discriminator. Section 5.8 revised.</li>
+      <li><strong>M3 &mdash; Banned-API check on preprocessed text (MAJOR).</strong> Pass runs after <code>cl /E</code> / <code>clang -E</code> rather than raw source. Section 4.4 revised.</li>
+      <li><strong>N6 &mdash; XGCRootSpan null-base + count=0 valid (MINOR).</strong> Container constructor "register before assigning buffer" pattern is valid; collector skips. Section 3.5 amended.</li>
+      <li><strong>N7 &mdash; SimdLevel default consistency (MINOR).</strong> <code>ModuleRules.SimdLevel</code> defaults to <code>SimdLevel.Default</code> (use TargetRules); <code>TargetRules.SimdLevelDefault</code> defaults to <code>SimdLevel.SSE42</code> (production baseline). Sections 4.2 and 10.2 amended.</li>
+    </ul>
+  </li>
+</ul>
+
+<p>Rev 11 banner preserved verbatim below for traceability.</p>
 
 <p><strong>Rev 11 (post-deep-audit:</strong> GC span ABI, exception convention split, complete repro envelope, ConstInit emit lock, concurrent XHT+XIL2CPP, binary manifest sidecar, auto-derived ContractVersion, declarative .Build.cs, cross-tier dep matrix, typed IBuildHook, drop PublicIncludePathModuleNames, SimPath PCH rule, AVX/SIMD lever, missing descriptor fields, exit-code surface, plus medium/minor)<strong>.</strong></p>
 
@@ -323,6 +353,8 @@ extern "C" void _v1ab12cd34__Simgenics__XPact__GameFramework__Valve__SetOpenFrac
 </ol>
 <p>The span-based ABI fixes all three. The GC iterates live slots during mark by walking registered spans, not a flat slot table.</p>
 
+<p><strong>Rev 12 layering.</strong> Rev 12 adds three constraints on top of Rev 11's span ABI: a hot-reload protocol (Section 3.7, new), a move-only constraint on transpiled container types (Section 3.4 revised), and an explicit null-base validity note (Section 3.5 amended). The <code>extern "C"</code> surface and <code>XGCRootSpan</code> struct layout are unchanged.</p>
+
 <h3>3.1 The span primitive and ABI surface</h3>
 
 <pre><code>// XPact Rev 11 GC root-span ABI &mdash; layout part of the contract.
@@ -443,7 +475,43 @@ public:
 
 <p>Note: the <code>XGCRootSpan</code> member is part of every transpiled container type. XIL2CPP emits it at the end of the class body; reflection (XHT) does not enumerate it (it is not an <code>XPROPERTY</code>).</p>
 
-<h3>3.4 Example: List&lt;object&gt; conservative span</h3>
+<h3>3.4 Container copy/move semantics (REVISED Rev 12 &mdash; M1: move-only)</h3>
+
+<p><strong>Rule (Rev 12).</strong> Transpiled container types with an embedded <code>XGCRootSpan</code> member are <strong>move-only</strong>. Copy construction would create two objects with the same <code>m_rootSpan</code> registered &mdash; double-registration of a single buffer with two independently-tracked spans, with destructor semantics that would unregister twice. XIL2CPP emits <code>= delete</code> for copy constructor and copy assignment on any container type whose generic instantiation produces a non-empty <code>m_rootSpan</code> (any of <code>Strong</code> / <code>Weak</code> / <code>Conservative</code> kinds).</p>
+
+<p><strong>Move semantics.</strong> Move construction and move assignment transfer ownership of the span registration: the destination's <code>m_rootSpan.base</code> is updated to the moved buffer via <code>XGC_UpdateRootSpan</code>, the source's <code>m_rootSpan.count</code> is zeroed (the source is left in a valid-but-empty state). The source's destructor then safely no-ops the span scan (count=0) and unregisters the now-zero span. The single transfer is atomic w.r.t. the mark phase under the same write-barrier protocol as <code>XGC_UpdateRootSpan</code> (Section 3.5).</p>
+
+<pre><code>// Rev 12 move-only container shape
+class List_Actor {
+    Actor**     m_data;
+    size_t      m_count;
+    size_t      m_capacity;
+    XGCRootSpan m_rootSpan;
+
+public:
+    List_Actor(const List_Actor&amp;)            = delete;   // Rev 12
+    List_Actor&amp; operator=(const List_Actor&amp;) = delete;   // Rev 12
+
+    List_Actor(List_Actor&amp;&amp; other) noexcept
+        : m_data(other.m_data), m_count(other.m_count),
+          m_capacity(other.m_capacity), m_rootSpan(other.m_rootSpan)
+    {
+        // Re-register destination's span at the same buffer, then zero source.
+        XGC_RegisterRootSpan(&amp;m_rootSpan);
+        other.m_data = nullptr;
+        other.m_count = 0;
+        other.m_capacity = 0;
+        XGC_UpdateRootSpan(&amp;other.m_rootSpan, nullptr, 0);
+    }
+
+    List_Actor&amp; operator=(List_Actor&amp;&amp; other) noexcept { /* analogous */ }
+
+    // ... Add / Remove / EnsureCapacity / dtor as in Section 3.3 ...
+};</code></pre>
+
+<p>Note: the actual emit detail (how registration ownership transfers) is XIL2CPP-internal. The contract guarantee is: copy operations are <code>= delete</code> for every container type with an embedded <code>XGCRootSpan</code>; move operations preserve span-registration uniqueness.</p>
+
+<h3>3.5 Example: List&lt;object&gt; conservative span</h3>
 
 <pre><code>// Transpiled shape for List&lt;object&gt; &mdash; same primitive, different kind
 class List_object {
@@ -453,6 +521,11 @@ class List_object {
     XGCRootSpan m_rootSpan;
 
 public:
+    List_object(const List_object&amp;)            = delete;   // Rev 12: M1
+    List_object&amp; operator=(const List_object&amp;) = delete;   // Rev 12: M1
+    List_object(List_object&amp;&amp;) noexcept;                   // move-transfer per 3.4
+    List_object&amp; operator=(List_object&amp;&amp;) noexcept;
+
     List_object() : m_data(nullptr), m_count(0), m_capacity(0) {
         m_rootSpan = { nullptr, sizeof(void*), 0, XGCRootKind::Conservative, 0 };
         XGC_RegisterRootSpan(&m_rootSpan);
@@ -466,13 +539,41 @@ public:
     }
 };</code></pre>
 
-<h3>3.5 Atomicity contract for UpdateRootSpan</h3>
+<h3>3.6 Atomicity contract for UpdateRootSpan (REVISED Rev 12 &mdash; N6: null-base validity)</h3>
 
 <p>The mark phase and <code>XGC_UpdateRootSpan</code> coordinate via XCoreXObject's internal write-barrier protocol (collector internals; not in this contract). The contract guarantee at this surface is: <strong>the mark-phase scan and the span update are mutually serialized such that the collector never observes a span whose <code>(base, count)</code> tuple is inconsistent with a live buffer.</strong> Container code does not need additional locks beyond calling <code>XGC_UpdateRootSpan</code>. The serialization protocol is the collector's responsibility, locked in XCoreXObject; the container ABI is locked here.</p>
 
-<h3>3.6 Internals not in the contract</h3>
+<p><strong>Rev 12 N6 amendment &mdash; null base with count=0 is a valid registered span.</strong> A span with <code>base = nullptr, count = 0</code> is a valid registered span; the collector skips it during mark (the slot-walk loop terminates on count=0 before dereferencing base). The container's constructor pattern &mdash; <code>XGC_RegisterRootSpan</code> on a freshly-initialized <code>{nullptr, sizeof(void*), 0, kind, 0}</code> before any buffer allocation &mdash; is the canonical and recommended idiom. This makes container construction exception-safe: the span is registered before any allocation that could throw, so the destructor can always safely <code>XGC_UnregisterRootSpan</code> regardless of how construction terminated.</p>
 
-<p>The contract locks only the <code>extern "C"</code> surface above plus the <code>XGCRootSpan</code> struct layout. The collector's internal root-set data structures, the locking discipline for concurrent registration, the bump-allocated span-table format, the card-table format, the write-barrier intrinsic shape &mdash; all internal to XCoreXObject and documented there (plan Section 3: XCoreXObject "will split into multiple docs: allocator + collector + reflection + write-barriers/roots"). XIL2CPP emits only the surface above.</p>
+<h3>3.7 Container type hot-reload constraints (NEW Rev 12 &mdash; N1)</h3>
+
+<p>Hot-reload (XLiveCoding) patches function bodies of live classes mid-session. For most class types the cascade re-loads the patched DLL and reattaches; live instances continue with the same field layout, since hot-reload prohibits ABI-changing patches at the class level. <strong>Container types embedding <code>XGCRootSpan</code> have an additional constraint:</strong> live instances carry a buffer governed by the embedded <code>m_rootSpan</code>, and a patch that changes the <code>XGCRootSpan</code> offset within the container, or that changes the buffer geometry the span governs, would leave the collector reading the span at the wrong offset on every live instance &mdash; corruption, not just a wrong value.</p>
+
+<p><strong>Rule (Rev 12).</strong> Container class layouts (any class with an embedded <code>XGCRootSpan</code> member) are <strong>layout-frozen within a hot-reload session</strong>. XLiveCoding rejects any patch that modifies a container type's class layout. The rule is enforced at patch-DLL load time: the new DLL's class-descriptor for every container type must report the same field offsets, the same <code>m_rootSpan</code> offset, the same vtable shape as the live DLL's class-descriptor.</p>
+
+<p><strong>Allowed mid-session patches on container types:</strong></p>
+<ul>
+  <li>Function-body changes to <code>Add</code>, <code>Remove</code>, <code>RemoveAt</code>, <code>EnsureCapacity</code>, iterator methods, etc. The patched function bodies attach to the same vtable slots and run against the same span layout.</li>
+  <li>Adding new methods that do not change the vtable layout (e.g., new non-virtual methods, or new virtual methods only on classes the live session has not yet instantiated &mdash; classes with zero live instances may receive layout changes per the standard XLiveCoding policy).</li>
+</ul>
+
+<p><strong>Disallowed mid-session patches on container types:</strong></p>
+<ul>
+  <li>Adding, removing, or reordering data fields. The <code>m_rootSpan</code> offset must not change.</li>
+  <li>Relocating <code>m_rootSpan</code> within the layout.</li>
+  <li>Changing the <code>m_rootSpan</code> kind from <code>Strong</code> to <code>Weak</code> or to <code>Conservative</code> (or vice versa).</li>
+  <li>Changing the container's stride (e.g., switching from <code>void*</code> slots to a struct-of-arrays layout).</li>
+</ul>
+
+<p><strong>Patches that change container type layouts</strong> require the close-reopen flow: XEditorSession snapshots state, the engine shuts down, the patched DLL loads on next start, the snapshot restores into the new layouts. State snapshot for Trainee builds is N/A &mdash; Trainee builds disable XLiveCoding entirely per the master plan station-role policy.</p>
+
+<p><strong>Acquire/release on existing instances is unchanged.</strong> The mark phase walks span entries as before. After a function-body-only patch, the patched method runs against the same span layout the un-patched method did. Per-instance state is preserved across the patch.</p>
+
+<p><strong>Validation.</strong> XLiveCoding's patch-validation pass walks the patched DLL's class-descriptor table; for every class that the live DLL's descriptor table marks as <code>container = true</code> (a new flag XIL2CPP emits on any class with an embedded <code>XGCRootSpan</code>), the patch validation compares the field-offset list field-by-field. A mismatch fails the patch with exit code 90&ndash;99 (Live Coding domain, Section 13).</p>
+
+<h3>3.8 Internals not in the contract</h3>
+
+<p>The contract locks only the <code>extern "C"</code> surface above plus the <code>XGCRootSpan</code> struct layout, the copy/move semantics in Section 3.4, and the hot-reload protocol in Section 3.7. The collector's internal root-set data structures, the locking discipline for concurrent registration, the bump-allocated span-table format, the card-table format, the write-barrier intrinsic shape &mdash; all internal to XCoreXObject and documented there (plan Section 3: XCoreXObject "will split into multiple docs: allocator + collector + reflection + write-barriers/roots"). XIL2CPP emits only the surface above.</p>
 
 <hr>
 
@@ -484,25 +585,41 @@ public:
 
 <p>A module declares itself as sim-path via an explicit field on its descriptor (TOML or escape-hatch <code>.Build.cs</code>; see Section 9.6):</p>
 
-<pre><code># XPhysics.Build.toml &mdash; Rev 11 declarative form
+<pre><code># XPhysics.Build.toml &mdash; Rev 12 declarative form
 tier = "Engine"
 module_type = "Runtime"
 languages = ["Cpp"]
 
 # &lt;-- declares this module's TUs as sim-path
 sim_path = true
-# &lt;-- new Rev 11 audit finding #14: explicit SIMD level
-simd_level = "None"
-# &lt;-- new Rev 11 audit finding #10: PCH lock for sim-path
+# &lt;-- Rev 12: SimPath modules constrained to &le; SSE42 (was "None" in Rev 11).
+#     SSE4.2 has no FMA so determinism holds; SSE2 is also valid.
+simd_level = "SSE42"
+# &lt;-- Rev 11 audit finding #10: PCH lock for sim-path
 pch_usage = "NoSharedPCHs"
 
 public_dependency_modules = ["XCore", "XCoreXObject", "XTaskGraph"]</code></pre>
 
 <p>The field is on the module level (matches Unreal's per-module enum-then-translate pattern). Per-file overrides are not supported in MVP. If a single file in a non-sim-path module legitimately needs sim-path semantics, the file must be split into its own micro-module. This matches the UE pattern observed in the reference brief.</p>
 
-<h3>4.2 Flag translation table (REVISED Rev 11 &mdash; SIMD column + ARM64 NEON FMA suppress + provisional Win ARM64)</h3>
+<h3>4.2 Flag translation table (REVISED Rev 12 &mdash; SimPath &le; SSE42 + SimdLevel.Default added)</h3>
 
-<p>XBT carries a per-platform-toolchain flag translation table. When <code>SimPath = true</code>, XBT adds the SimPath columns; the SIMD column applies regardless of SimPath based on the new <code>SimdLevel</code> field.</p>
+<p>XBT carries a per-platform-toolchain flag translation table. When <code>SimPath = true</code>, XBT adds the SimPath columns; the SIMD column applies regardless of SimPath based on the <code>SimdLevel</code> field.</p>
+
+<p><strong>Rev 12 contradiction resolution &mdash; SimPath SimdLevel rule.</strong> Rev 11 specified <code>SimdLevel = None</code> (scalar-only) for SimPath modules. XBT.html Rev 2 specified <code>SimdLevel &le; SSE42</code>. Rev 12 adopts XBT.html's rule: <strong>SimPath modules are constrained to <code>SimdLevel &le; SSE42</code></strong> (i.e., any of <code>None</code>, <code>SSE2</code>, <code>SSE42</code>; the <code>Default</code> value is also accepted, and resolves at compile-derivation to <code>SSE42</code> for SimPath modules per the lookup rule in Section 10.2). SSE2 is the x86_64-v1 baseline; SSE4.2 has no FMA, so determinism is preserved up through that level. Limiting SimPath to <code>None</code> is unnecessarily restrictive and breaks performance for sim-path math; the <code>&le; SSE42</code> ceiling is the correct constraint. <code>-mno-fma</code> remains mandatory on Clang for SimPath TUs regardless of <code>SimdLevel</code>, as a belt-and-braces guard against FMA contraction by the back-end.</p>
+
+<p><strong>Rev 12 contradiction resolution &mdash; SimdLevel enum values.</strong> Rev 11's enum was <code>None / SSE2 / SSE42 / AVX / AVX2 / AVX512</code>. XBT.html Rev 2's enum was <code>Default / SSE2 / SSE42 / AVX / AVX2 / AVX512</code>. Rev 12 unions them: <strong><code>None / Default / SSE2 / SSE42 / AVX / AVX2 / AVX512</code></strong>. Semantics:</p>
+<ul>
+  <li><code>None</code> &mdash; scalar-only; no SIMD codegen.</li>
+  <li><code>Default</code> &mdash; use the target's default; <code>SimdLevel</code> is resolved at flag-derivation time by looking up <code>TargetRules.SimdLevelDefault</code> (Section 10.2). The production default is <code>SSE42</code>.</li>
+  <li><code>SSE2</code> &mdash; x86_64-v1 baseline. <code>SimPath</code>-eligible.</li>
+  <li><code>SSE42</code> &mdash; x86_64-v2 baseline (no FMA). <code>SimPath</code>-eligible.</li>
+  <li><code>AVX</code> &mdash; introduces 256-bit lanes. Not <code>SimPath</code>-eligible.</li>
+  <li><code>AVX2</code> &mdash; x86_64-v3. FMA available. Not <code>SimPath</code>-eligible.</li>
+  <li><code>AVX512</code> &mdash; x86_64-v4. Not <code>SimPath</code>-eligible.</li>
+</ul>
+
+<p>XBT.html Rev 2 and Contract Rev 12 are now aligned on enum values and on the SimPath constraint.</p>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Toolchain</th><th>SimPath flags added</th><th>SimPath flags banned</th><th>SIMD lever (per <code>SimdLevel</code>)</th></tr></thead>
@@ -511,19 +628,19 @@ public_dependency_modules = ["XCore", "XCoreXObject", "XTaskGraph"]</code></pre>
       <td>MSVC (Win64)</td>
       <td><code>/fp:precise</code></td>
       <td><code>/fp:fast</code>, <code>/fp:except</code></td>
-      <td>None: no <code>/arch</code>; SSE42: <code>/arch:SSE42</code> (synth); AVX: <code>/arch:AVX</code>; AVX2: <code>/arch:AVX2</code>; AVX512: <code>/arch:AVX512</code>. SimPath constrained to <code>None</code>.</td>
+      <td>None: no <code>/arch</code>; Default: <code>/arch:</code> per TargetRules default (production: SSE42); SSE2: <code>/arch:SSE2</code>; SSE42: <code>/arch:SSE42</code> (synth); AVX: <code>/arch:AVX</code>; AVX2: <code>/arch:AVX2</code>; AVX512: <code>/arch:AVX512</code>. SimPath constrained to <code>&le; SSE42</code> (any of <code>None / SSE2 / SSE42</code>); <code>Default</code> accepted and resolves to <code>SSE42</code>.</td>
     </tr>
     <tr>
       <td>Clang (Linux)</td>
       <td><code>-ffp-contract=off</code>, <code>-fno-fast-math</code>, <code>-fno-finite-math-only</code>, <code>-mno-fma</code></td>
       <td><code>-ffast-math</code>, <code>-funsafe-math-optimizations</code>, <code>-ffp-contract=fast</code>, <code>-ffp-contract=on</code>, <code>-mfma</code></td>
-      <td>None: <code>-mno-sse</code>; SSE42: <code>-march=x86-64-v2</code>; AVX2 baseline: <code>-march=x86-64-v3</code>; AVX512: <code>-march=x86-64-v4</code>. SimPath constrained to <code>None</code>; <code>-mno-fma</code> mandatory.</td>
+      <td>None: <code>-mno-sse</code>; Default: TargetRules default; SSE2: <code>-march=x86-64</code>; SSE42: <code>-march=x86-64-v2</code>; AVX: <code>-march=sandybridge</code>; AVX2: <code>-march=x86-64-v3</code>; AVX512: <code>-march=x86-64-v4</code>. SimPath constrained to <code>&le; SSE42</code>; <code>-mno-fma</code> mandatory regardless.</td>
     </tr>
     <tr>
       <td>Clang (Android ARM64)</td>
       <td>same as Clang Linux + ARM64 NEON FMA suppress: <code>-mno-fma</code>, <code>-mllvm -enable-fp-contract=false</code></td>
       <td>same as Clang Linux + <code>-march=armv8-a+fp+simd</code> with FMA enabled</td>
-      <td>None: scalar only; default: NEON enabled, FMA suppressed. SimPath constrained to <code>None</code>; ARM64 FMA suppress flags mandatory.</td>
+      <td>None: scalar only; Default: NEON enabled, FMA suppressed; <code>SSE2</code>/<code>SSE42</code> are ignored on ARM64 (no x86 SIMD); levels map to NEON-equivalent baselines. SimPath: NEON allowed, ARM64 FMA suppress flags mandatory.</td>
     </tr>
     <tr>
       <td>ClangWindows (ARM64) &mdash; <em>provisional, MVP-tier-2</em></td>
@@ -534,7 +651,15 @@ public_dependency_modules = ["XCore", "XCoreXObject", "XTaskGraph"]</code></pre>
   </tbody>
 </table>
 
-<p>Banned flags appearing in any module's <code>AdditionalCompilerArguments</code> on a SimPath module fail the build with a diagnostic naming the flag and module. The SimPath rule + the <code>SimdLevel</code> field are independent (per Rev 11 audit finding #14): <strong>non-SimPath modules can use AVX-512; SimPath callees compiled at SimdLevel = None form a boundary where the callee's compile is the constraint</strong>. A non-SimPath caller and a SimPath callee in the same DLL is supported because XBT applies flags per-TU, not per-DLL.</p>
+<p>Banned flags appearing in any module's <code>AdditionalCompilerArguments</code> on a SimPath module fail the build with a diagnostic naming the flag and module. <strong>Non-SimPath modules can use AVX-512; SimPath callees compiled at <code>SimdLevel &le; SSE42</code> form a boundary where the callee's compile is the constraint.</strong> A non-SimPath caller and a SimPath callee in the same DLL is supported because XBT applies flags per-TU, not per-DLL.</p>
+
+<p><strong>Rev 12 N7 amendment &mdash; default consistency.</strong> The lookup rule for <code>SimdLevel</code> resolution at flag-derivation time:</p>
+<ol>
+  <li>If <code>ModuleRules.SimdLevel</code> is an explicit non-<code>Default</code> value, use it as-is.</li>
+  <li>If <code>ModuleRules.SimdLevel == SimdLevel.Default</code>, look up <code>TargetRules.SimdLevelDefault</code> (must be a non-<code>Default</code> value; XBT validates this at target-graph build time).</li>
+  <li>If the module is <code>SimPath = true</code>, additionally clamp the resolved value to <code>&le; SSE42</code>. A SimPath module that explicitly specifies <code>SimdLevel = AVX</code> or higher fails the build with exit code 41 (banned-API / banned-flag check).</li>
+</ol>
+<p>The production defaults: <code>ModuleRules.SimdLevel = SimdLevel.Default</code> (modules opt into per-module overrides); <code>TargetRules.SimdLevelDefault = SimdLevel.SSE42</code> (the production baseline for Windows-x64 / Linux-x64 builds, matching the SimPath ceiling so SimPath and non-SimPath modules use the same arch by default).</p>
 
 <h3>4.3 Transcendental library substitution</h3>
 
@@ -546,7 +671,7 @@ public_dependency_modules = ["XCore", "XCoreXObject", "XTaskGraph"]</code></pre>
   <li>Link-time: XBT excludes platform libm from the link line for SimPath modules. Any unresolved reference to <code>__libm_sse2_sin</code> (MSVC) or <code>sin@GLIBC_2.2.5</code> (glibc) etc. fails the link with a clear diagnostic. The vendored library is linked in its place.</li>
 </ul>
 
-<h3>4.4 Banned-API check</h3>
+<h3>4.4 Banned-API check (REVISED Rev 12 &mdash; M3: pass runs on preprocessed text)</h3>
 
 <p>SimPath TUs additionally get a build-time error if they call non-deterministic platform APIs. The banned set is enumerated in a small text file (<code>XSimPathBannedAPIs.txt</code>) consulted by an XBT pre-compile action:</p>
 
@@ -560,7 +685,13 @@ GetCurrentThreadId        # don't branch on thread identity in sim path
 rand
 srand</code></pre>
 
-<p>The check is a lightweight regex pass over the TU's source. False positives can be allowlisted per-line via an end-of-line comment marker <code>// XSIMPATH_OK</code> with a rationale string. Function-level suppression is available via the new <code>[XFunction(SimPathStringIndexOK = true)]</code> for <code>s[i]</code> only; the banned-API check has no function-level suppression on purpose.</p>
+<p><strong>Rev 12 (M3) &mdash; pass target is post-preprocessor source, not raw source.</strong> Rev 11 specified "a lightweight regex pass over the TU's source," which left macro-wrapped bypasses uncaught. A user defining a macro <code>#define SAFE_TIME() QueryPerformanceCounter()</code> in a header could call <code>SAFE_TIME()</code> from a sim-path TU and the raw-source regex pass would not match. Rev 12 closes the bypass: <strong>the regex pass runs against the TU's preprocessed output, not its raw source.</strong></p>
+
+<p><strong>Mechanism.</strong> XBT invokes the platform compiler in preprocess-only mode (<code>cl /E</code> on MSVC, <code>clang -E</code> on Clang) writing preprocessed output to a temp file. The banned-API regex pass inspects this preprocessed file. Macro expansions are fully resolved, conditional compilation has been evaluated, and any <code>#include</code>d header's contribution to the TU is visible &mdash; matching post-expansion call-site text. The regex pass therefore sees the same source the compiler sees, so any banned call that the compiler would translate is caught.</p>
+
+<p><strong>Performance.</strong> Preprocessing is already part of every compile (the compiler runs the preprocessor unconditionally as part of the standard pipeline). XBT does not incur a separate preprocessor invocation: it writes the preprocessed output to a temp file via the <code>/P</code> / <code>-save-temps=cwd</code> family of flags during the actual compile, and the banned-API regex pass consumes that temp file in parallel with the compiler continuing to ingest its own preprocessed token stream. On Windows, where <code>/P</code> stops compilation, XBT instead runs <code>cl /E</code> as a separate fast action whose output piggy-backs on the file-system cache; the cost is &lt; 5% of the total compile time for typical sim-path TUs.</p>
+
+<p><strong>Suppression model.</strong> False positives can be allowlisted per-line via an end-of-line comment marker <code>// XSIMPATH_OK</code> with a rationale string. The marker must appear on the same line as the banned-call site <em>in the preprocessed output</em> &mdash; since most macro definitions place the call on a single line, this works naturally; for multi-line macro expansions the call site uses a leading <code>// XSIMPATH_OK</code> comment at the macro's expansion line. Function-level suppression is available via <code>[XFunction(SimPathStringIndexOK = true)]</code> for <code>s[i]</code> only; the banned-API check has no function-level suppression on purpose (file-level / line-level only).</p>
 
 <h3>4.5 Per-target settings</h3>
 
@@ -596,19 +727,32 @@ srand</code></pre>
   </tbody>
 </table>
 
-<h3>5.2 Classification algorithm (interface-level)</h3>
+<h3>5.2 Classification algorithm (REVISED Rev 12 &mdash; N2: two-pass with conservative default)</h3>
 
 <p>XIL2CPP analyzes the call graph during transpile. A function <code>f</code> is classified Tier 2 iff:</p>
 <ol>
   <li><code>f</code> is not exported from its owning DLL (i.e. is not part of the module's public API surface as derived from the reflection surface and the module's <code>PublicDependencyModuleNames</code>); AND</li>
   <li><code>f</code> is not annotated <code>[XFunction(CanThrow = true)]</code>; AND</li>
-  <li>Every callee of <code>f</code> is itself Tier 2 (transitive); AND</li>
+  <li>Every callee of <code>f</code> is itself Tier 2 (transitive; see two-pass sequencing below); AND</li>
   <li><code>f</code>'s body contains no <code>throw</code> expression; AND</li>
   <li><code>f</code> does not invoke a C++ function declared without <code>noexcept</code> that XIL2CPP cannot prove safe (the "C++ interop wall" &mdash; if the wall is crossed, the wall side must be Tier 1).</li>
 </ol>
 <p>The algorithm is a fixpoint pass: initially every function is candidate Tier 2; constraints 1-5 promote functions to Tier 1; the pass iterates until stable. Per plan Section 4 "XIL2CPP analyzes C# call graphs to classify which functions can throw vs are noexcept-safe."</p>
 
-<p>The annotation <code>[XFunction(NoThrow = true)]</code> serves as a developer assertion that the function is Tier 2. XIL2CPP runs the classification algorithm and fails the build with a clear diagnostic if the annotation cannot be satisfied (e.g., a transitively reachable C++ function is not <code>noexcept</code>). Reference: Clang's exception-table emission for <code>noexcept</code> functions skips EH tables entirely; the same posture applies here.</p>
+<p><strong>Rev 12 N2 &mdash; cross-module sequencing.</strong> Tier 2 classification's transitive callee constraint requires whole-program analysis, but XIL2CPP runs <em>per-module concurrent</em> (Section 10.1 step 4). Rev 11 left an implicit sequencing contradiction: a per-module pass cannot know the Tier classification of a callee that lives in another module being transpiled in parallel. Rev 12 resolves this with a two-pass scheme, with Pass 2 optional at MVP:</p>
+
+<p><strong>Pass 1 &mdash; per-module, concurrent (mandatory).</strong> Each module classifies each function purely from its own module's source:</p>
+<ul>
+  <li>Local callees within the same module participate in the fixpoint normally.</li>
+  <li><strong>Any cross-module callee is conservatively assumed Tier 1</strong> unless that callee is annotated <code>[XFunction(NoThrow = true)]</code> in its declaring module's exported interface (XHT-emitted reflection metadata exposes the <code>NoThrow</code> annotation per Section 1.2; XIL2CPP at run-time consults this metadata for any cross-module callee).</li>
+  <li>The XHT-emitted <code>NoThrow</code> bit is part of FProperty's function-descriptor surface and is therefore a Stage-A interface concern; Stage B finalizes byte layout, not the existence of the bit.</li>
+</ul>
+
+<p><strong>Pass 2 &mdash; sequential, after all per-module passes complete (optional in MVP; lands post-MVP).</strong> Propagate Tier 2 attribution upward through dependency-resolved cross-module call graphs. A function conservatively marked Tier 1 in Pass 1 because of an unresolved cross-module callee can be promoted to Tier 2 if Pass 2 proves the callee is in fact NoThrow. Pass 2 is a whole-program analysis pass that runs once all per-module passes have published their per-function Tier assignments to a join file (one per build, written to <code>Intermediate/Build/{Target}/{Configuration}/TierTable.json</code>).</p>
+
+<p><strong>MVP correctness statement.</strong> Pass 1 alone is correct &mdash; the conservative Pass-1-only result classifies fewer functions as Tier 2 than the Pass-2-augmented result, but every Pass-1-Tier-2 classification is also a valid Pass-2-Tier-2 classification (Pass 2 only adds Tier 2 attributions; it never demotes). Pass 2 is therefore a strict optimization: it lands when XIL2CPP gains a whole-program-analysis pass post-MVP. Until then, the MVP ships with conservative-only and accepts the lost Tier 2 opportunities.</p>
+
+<p>The annotation <code>[XFunction(NoThrow = true)]</code> serves as a developer assertion that the function is Tier 2. XIL2CPP runs the classification algorithm and fails the build with a clear diagnostic if the annotation cannot be satisfied (e.g., a transitively reachable C++ function is not <code>noexcept</code>). For cross-module callee annotations specifically: if the callee module is in the same build, XIL2CPP reads the callee's annotation from XHT's already-emitted reflection metadata; if the callee module is pre-built and the annotation is missing, the cross-module call is conservatively Tier 1 in Pass 1 and Pass 2 is required to promote it. Reference: Clang's exception-table emission for <code>noexcept</code> functions skips EH tables entirely; the same posture applies here.</p>
 
 <p>The annotation <code>[XFunction(CanThrow = true)]</code> serves as a developer assertion that the function is Tier 1 even if classification might otherwise rule it noexcept-safe. Used at API surfaces where the function's body is currently noexcept-safe but the maintainer wants the option to add a throw site later without breaking ABI.</p>
 
@@ -699,7 +843,7 @@ extern "C" void _v1__Foo_Shim(void* self, A a, B b, XResult* outResult) {
 
 <p>The body's <em>internal</em> structure differs between configs; the shim's <em>external</em> signature does not. A C++ caller linking against the shim never sees the difference. Cross-config linking works: an editor module compiled in Development can call into a runtime module compiled in Shipping (or vice versa, for hot-reload scenarios).</p>
 
-<h3>5.8 Generic instantiation rules</h3>
+<h3>5.8 Generic instantiation rules &mdash; XResult destructor (REVISED Rev 12 &mdash; M2: exception-case timing)</h3>
 
 <p>The contract requires that <code>T</code> and <code>E</code> in <code>Result&lt;T,E&gt;</code> instantiate as either:</p>
 <ul>
@@ -708,6 +852,34 @@ extern "C" void _v1__Foo_Shim(void* self, A a, B b, XResult* outResult) {
 </ul>
 
 <p>Non-trivially-destructible non-XObject types (e.g., <code>FString</code>, <code>TArray&lt;T&gt;</code>, custom RAII handles) require explicit destruction. The shim emits the appropriate destructor call when <code>XResult</code> goes out of scope on the calling side; XIL2CPP generates this teardown automatically at every call site.</p>
+
+<p><strong>Rev 12 M2 &mdash; destructor timing in exception cases.</strong> Rev 11 did not specify when the destructor runs in the failure path where the callee wrote a success result into <code>XResult.success_value</code> and then a subsequent operation throws before the function returns. Rev 12 locks the timing.</p>
+
+<p><strong>Tier 1 (shim path).</strong> If the callee writes a success result into <code>XResult.success_value</code> (the discriminator is set to <code>Success</code>) and then a subsequent operation throws before the function exits, the destructor of <code>success_value</code> MUST run before unwinding propagates out of the function. To achieve this, <strong>XIL2CPP emits <code>XResult</code> as an RAII type with a destructor that conditionally destructs based on the discriminator</strong>:</p>
+
+<pre><code>// XResult destructor &mdash; Rev 12 RAII semantics (illustrative)
+XResult::~XResult() noexcept {
+    if (discriminator == Discriminator::Success) {
+        // Type-erased destructor pointer in the success buffer's
+        // header byte. XIL2CPP emits the per-T destructor at each
+        // shim's emit site; the destructor pointer is filled in
+        // when success_value is written. Null pointer means trivial.
+        if (auto* dtor = reinterpret_cast&lt;void (*)(void*)&gt;(success.dtor_thunk)) {
+            dtor(success.buffer);
+        }
+    } else if (discriminator == Discriminator::Error) {
+        // Error descriptor's strings (typeName, message) are call-stack
+        // arena-allocated and do not require explicit teardown here;
+        // the arena releases at frame end. stackTrace, if non-null,
+        // is shared with the EH unwinder and not owned by XResult.
+    }
+}</code></pre>
+
+<p>The conditional teardown handles both the normal-exit case (caller observes <code>Success</code>, consumes the value, the destructor runs at caller-scope exit) and the exception-during-callee case (an unrelated throw mid-callee triggers stack unwinding; the <code>XResult</code> local goes out of scope; its destructor sees <code>Success</code> and destructs the buffer; unwinding continues with the error captured separately by the caller's <code>catch</code>). Without this, a partially-completed callee that wrote a non-POD success result and then threw would leak the buffer's contents.</p>
+
+<p><strong>Tier 2 (direct path).</strong> No <code>XResult</code>, no concern. Standard C++ exception semantics apply (which is to say, no exceptions, since Tier 2 is <code>noexcept</code> by construction; any path that would throw is by definition Tier 1).</p>
+
+<p><strong>Cross-config compatibility.</strong> <code>XResult</code> has identical layout and identical destructor in both Development and Shipping configurations. The difference is purely in how the discriminator gets set: in Development (native exceptions on), the shim's <code>catch</code> block sets <code>discriminator = Error</code>; in Shipping (Result&lt;T,E&gt; lowering), the callee sets the discriminator directly via early-return. The destructor sees the same discriminator-driven dispatch in both configs, so the RAII semantics are identical.</p>
 
 <h3>5.9 Reflection coverage</h3>
 
@@ -916,7 +1088,11 @@ public abstract class ModuleRules
     public bool SimPathConservativeRootsAllowed { get; set; } = false;
 
     // Rev 11 audit finding #14: SIMD lever.
-    public SimdLevel SimdLevel { get; set; } = SimdLevel.SSE42;
+    // Rev 12 (N7): default is SimdLevel.Default, which resolves at
+    // flag-derivation time by reading TargetRules.SimdLevelDefault
+    // (which the production target sets to SimdLevel.SSE42).
+    // SimPath modules are additionally clamped to &le; SSE42 by Section 4.2.
+    public SimdLevel SimdLevel { get; set; } = SimdLevel.Default;
 
     // === Dependencies (Rev 11: PublicIncludePathModuleNames REMOVED) ===
 
@@ -974,7 +1150,16 @@ public struct ModuleDep
 }
 
 // Rev 11 audit finding #14: SIMD level field.
-public enum SimdLevel { None, SSE2, SSE42, AVX, AVX2, AVX512 }
+// Rev 12 contradiction resolution: enum unions Rev 11's None with
+// XBT.html Rev 2's Default. Semantics per Section 4.2:
+//   None     - scalar only, no SIMD codegen
+//   Default  - resolve via TargetRules.SimdLevelDefault at flag-derivation
+//   SSE2     - x86_64-v1 baseline (SimPath-eligible)
+//   SSE42    - x86_64-v2 baseline (SimPath-eligible; production default)
+//   AVX      - 256-bit lanes (NOT SimPath-eligible)
+//   AVX2     - x86_64-v3, FMA available (NOT SimPath-eligible)
+//   AVX512   - x86_64-v4 (NOT SimPath-eligible)
+public enum SimdLevel { None, Default, SSE2, SSE42, AVX, AVX2, AVX512 }
 
 // Rev 11 audit finding #11: typed IBuildHook surface.
 public interface IBuildHook
@@ -1044,11 +1229,13 @@ public interface IBuildHook
 
 <p><strong>Per-module <code>MinimumToolchainVersion</code> (Rev 11 audit finding #15).</strong> A module may declare a minimum toolchain version (XBT version) it requires. XBT validates this against its own version at resolution and rejects with a clear diagnostic naming the module, the required version, and the actual version. This solves the "Roslyn API drift" footgun where a module imports a Roslyn feature added in a later toolchain release.</p>
 
-<h3>9.5 Build hooks &mdash; typed IBuildHook surface (NEW Rev 11 &mdash; audit finding #11)</h3>
+<h3>9.5 Build hooks &mdash; typed IBuildHook surface (REVISED Rev 12 &mdash; signature reaffirmed against XBT.html Rev 2)</h3>
 
-<p>The Rev 10 contract did not specify a build-hook surface, leaving the door open to UE's <code>CustomBuildSteps.cs</code> pattern (freeform shell-command strings with environment variable interpolation). Per the audit: that pattern is the source of most "I cannot reproduce this on my machine" Unreal build bugs. Rev 11 closes the door with a typed interface.</p>
+<p>The Rev 10 contract did not specify a build-hook surface, leaving the door open to UE's <code>CustomBuildSteps.cs</code> pattern (freeform shell-command strings with environment variable interpolation). Per the audit: that pattern is the source of most "I cannot reproduce this on my machine" Unreal build bugs. Rev 11 closed the door with a typed interface.</p>
 
-<pre><code>// Rev 11 IBuildHook interface
+<p><strong>Rev 12 contradiction resolution &mdash; IBuildHook signature.</strong> XBT.html Rev 2 specified a different shape: <code>Task&lt;HookResult&gt; ExecuteAsync(HookContext, CancellationToken)</code>. The Contract's signature wins because <strong>hooks must participate in the action graph for caching, incrementalization, and parallel scheduling</strong> &mdash; an <code>ExecuteAsync</code> shape would bypass the action graph entirely, running hooks as opaque async callbacks rather than as first-class graph nodes that XBT's executor can schedule, cache, and skip on incremental rebuilds. The entire reason for typed hooks vs. UE's freeform shell commands is action-graph integration; reverting to the async-callback shape would lose the property that motivated the typing. The Contract's signature is therefore reaffirmed and is normative for both this document and XBT.html. Subagent B is responsible for aligning XBT.html Section 5.7 to the signature below.</p>
+
+<pre><code>// Rev 12 IBuildHook interface (signature unchanged from Rev 11)
 public interface IBuildHook
 {
     // Declared inputs &mdash; absolute paths. XBT tracks them as action prerequisites.
@@ -1064,7 +1251,7 @@ public interface IBuildHook
     IExternalAction CreateAction(BuildHookContext context);
 }</code></pre>
 
-<p>Hooks declare their inputs and outputs ahead of time. A hook with no declared inputs is a build-graph anomaly that XBT flags as a warning (the hook will run on every build and never get cached). A hook that touches an output file not declared in <code>OutputFiles</code> fails the build with a diagnostic. <strong>Freeform shell commands without declared inputs/outputs are not supported.</strong></p>
+<p>Hooks declare their inputs and outputs ahead of time. A hook with no declared inputs is a build-graph anomaly that XBT flags as a warning (the hook will run on every build and never get cached). A hook that touches an output file not declared in <code>OutputFiles</code> fails the build with a diagnostic. <strong>Freeform shell commands without declared inputs/outputs are not supported. Async-callback shapes that bypass the action graph are not supported.</strong></p>
 
 <p>Reference anti-pattern: UE's <code>CustomBuildSteps.cs</code> lines 15-28 (the <code>RunSteps</code> function that <code>Environment.ExpandEnvironmentVariables</code>s a string and shells out). The XPact contract rejects this approach entirely.</p>
 
@@ -1081,7 +1268,7 @@ tier = "Engine"
 module_type = "Runtime"
 languages = ["Cpp", "CSharp"]
 sim_path = true
-simd_level = "None"
+simd_level = "SSE42"
 pch_usage = "NoSharedPCHs"
 
 public_dependency_modules = [
@@ -1101,28 +1288,176 @@ private_include_paths = ["XScoring/Private"]
 b_use_rtti = false
 b_warnings_as_errors = true</code></pre>
 
-<p><strong>The expression sub-language.</strong> For the 5% with conditionals, alongside <code>XScoring.Build.toml</code> the author may place <code>XScoring.Build.expr</code> &mdash; a small Starlark-inspired file with sandboxed evaluation. Available bindings: <code>target.platform</code>, <code>target.configuration</code>, <code>target.fips_mode</code>, <code>target.is_editor</code>, <code>target.is_test</code>. Available operators: <code>==</code>, <code>!=</code>, <code>&amp;&amp;</code>, <code>||</code>, <code>!</code>, plus string/list literals and simple function calls (a fixed allowlist). <strong>No I/O, no arbitrary code, no Roslyn.</strong></p>
+<p><strong>The expression sub-language &mdash; pinned grammar (REVISED Rev 12, N3).</strong> For the 5% with conditionals, alongside <code>XScoring.Build.toml</code> the author may place <code>XScoring.Build.expr</code> &mdash; a small Starlark-derived file with sandboxed evaluation. Rev 11 hand-waved "Starlark-inspired"; Rev 12 pins the grammar reference and enumerates the deviations.</p>
 
-<pre><code># XCryptoFIPS.Build.expr
+<p><strong>Reference grammar.</strong> Bazel Starlark spec version <code>0.10.0</code>, cited URL: <code>https://github.com/bazelbuild/starlark/blob/master/spec.md</code>, commit pinned at the engine's <code>ThirdParty/Specs/starlark-spec-0.10.0.md</code> mirror. The pin is part of the contract surface (a Stage B addendum that re-mirrors a newer commit bumps the ContractStructureHash per Section 10.2).</p>
+
+<p><strong>Deviations from Bazel Starlark 0.10.0 (enumerated):</strong></p>
+<ul>
+  <li><strong>(a)</strong> No file I/O. The <code>load</code>, <code>print</code>, and any file-reading functions are banned. The interpreter has no concept of "file" in its API surface.</li>
+  <li><strong>(b)</strong> No mutation of arguments. Functions are pure: a function may not mutate its parameters, may not mutate any global state, and may not perform side effects observable outside its own return value.</li>
+  <li><strong>(c)</strong> No recursion. The interpreter caps evaluation depth at 32 frames; recursive function definitions parse but exceeding the call depth fails with a diagnostic (exit code 30).</li>
+  <li><strong>(d)</strong> No string interpolation via <code>%</code>. Only the explicit <code>.format()</code> method on string is supported.</li>
+  <li><strong>(e)</strong> Integer overflow is detected, not silently wrapped. Bazel Starlark allows overflow to wrap modulo 2^32 on int operations; the XPact subset detects overflow and fails the build with a diagnostic.</li>
+  <li><strong>(f)</strong> Total evaluation budget: 100,000 instructions per top-level expression. Exceeding the budget fails the build with exit code 30 and a diagnostic naming the expression and the budget.</li>
+</ul>
+
+<p><strong>Available bindings:</strong></p>
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Binding</th><th>Type</th><th>Values</th></tr></thead>
+  <tbody>
+    <tr><td><code>target.platform</code></td><td>string</td><td><code>"Win64"</code>, <code>"Linux"</code>, <code>"Android"</code></td></tr>
+    <tr><td><code>target.configuration</code></td><td>string</td><td><code>"Debug"</code>, <code>"DebugGame"</code>, <code>"Development"</code>, <code>"Test"</code>, <code>"Shipping"</code></td></tr>
+    <tr><td><code>target.station_role</code></td><td>string</td><td><code>"Engineer"</code>, <code>"Instructor"</code>, <code>"Trainee"</code></td></tr>
+    <tr><td><code>target.fips_mode</code></td><td>bool</td><td><code>True</code> / <code>False</code></td></tr>
+    <tr><td><code>target.architecture</code></td><td>string</td><td><code>"x86_64"</code>, <code>"aarch64"</code></td></tr>
+    <tr><td><code>module.tier</code></td><td>string</td><td><code>"Engine"</code>, <code>"Studio"</code>, <code>"Project"</code></td></tr>
+    <tr><td><code>module.sim_path</code></td><td>bool</td><td><code>True</code> / <code>False</code></td></tr>
+    <tr><td><code>module.simd_level</code></td><td>string</td><td><code>"None"</code>, <code>"Default"</code>, <code>"SSE2"</code>, <code>"SSE42"</code>, <code>"AVX"</code>, <code>"AVX2"</code>, <code>"AVX512"</code></td></tr>
+  </tbody>
+</table>
+
+<p><strong>Grammar productions (BNF-style; inline normative reference).</strong> The XPact subset accepts the following productions; anything outside is a parse error:</p>
+
+<pre><code>// XPact Starlark subset grammar (BNF-style)
+// Whitespace and comments per Bazel Starlark 0.10.0 (lines start with '#'
+// for comments; whitespace is significant only at statement level).
+
+expr        ::= conditional
+conditional ::= or_expr ('if' or_expr 'else' conditional)?    // ternary
+or_expr     ::= and_expr ('or' and_expr)*
+and_expr    ::= not_expr ('and' not_expr)*
+not_expr    ::= 'not' not_expr | comparison
+comparison  ::= unary (comp_op unary)*
+comp_op     ::= '==' | '!=' | '&lt;' | '&gt;' | '&lt;=' | '&gt;=' | 'in' | 'not' 'in'
+unary       ::= ('+' | '-') unary | primary
+primary     ::= call | atom
+call        ::= atom '.' identifier '(' arglist? ')'
+              | identifier '(' arglist? ')'
+arglist     ::= expr (',' expr)*
+atom        ::= literal | identifier | '(' expr ')' | list | dict
+literal     ::= STRING | INT | BOOL | 'None'
+list        ::= '[' (expr (',' expr)*)? ']'
+dict        ::= '{' (expr ':' expr (',' expr ':' expr)*)? '}'
+identifier  ::= [A-Za-z_][A-Za-z0-9_]*  // qualifier-dot chains via call
+
+assignment  ::= identifier '=' expr           // top-level only
+
+statement   ::= assignment | expr             // expr-as-statement is allowed
+file        ::= (statement NEWLINE)*</code></pre>
+
+<p>Function definitions (<code>def</code>) are <strong>not</strong> in the subset; the interpreter is pure-expression-plus-top-level-assignment. List comprehensions and dict comprehensions are <strong>not</strong> in the subset (Bazel Starlark 0.10.0 includes them; XPact's reduced subset omits them for evaluation-budget predictability). String methods limited to: <code>.format()</code>, <code>.replace()</code>, <code>.split()</code>, <code>.startswith()</code>, <code>.endswith()</code>, <code>.upper()</code>, <code>.lower()</code>, <code>.strip()</code>. List methods limited to: <code>.append()</code> (returns new list; arg-pure), <code>.contains()</code> via <code>in</code>, indexing.</p>
+
+<pre><code># XCryptoFIPS.Build.expr &mdash; Rev 12 example
 # Enable this module only when FIPS mode is active.
-enable_if = "target.fips_mode == true"
+enable_if = target.fips_mode == True
 
-# Conditional library selection.
-extra_libs = if target.platform == "Win64" then ["BCrypt.lib"] else ["openssl-fips"]</code></pre>
+# Conditional library selection (ternary expression form).
+extra_libs = ["BCrypt.lib"] if target.platform == "Win64" else ["openssl-fips"]
 
-<p><strong>Cache and failure handling.</strong> XBT compiles the TOML + expr files into the same per-scope assembly artifact (hash-keyed by content; see XBT spec Section 3). Failures are surfaced with file path + line + column + diagnostic. The expression evaluator is sandboxed at the engine source level &mdash; no <code>System.IO</code>, no <code>System.Reflection.Emit</code>, no process spawn.</p>
+# Tier-conditional dependency.
+extra_dep_module = "XCryptoBackend" if module.tier == "Engine" else "XCryptoStub"</code></pre>
 
-<p><strong>Escape hatch.</strong> A module that legitimately needs full C# (an edge case the audit acknowledges may exist) can still ship a <code>.Build.cs</code> file alongside the TOML; XBT detects the <code>.Build.cs</code> and falls back to Roslyn for that module only. This isolates the cold-start cost to the modules that genuinely need it; the rest of the engine never pays.</p>
+<p><strong>Cache and failure handling.</strong> XBT compiles the TOML + expr files into the same per-scope assembly artifact (hash-keyed by content; see XBT spec Section 3). Failures are surfaced with file path + line + column + diagnostic and exit code 30. The expression evaluator is sandboxed at the engine source level &mdash; no <code>System.IO</code>, no <code>System.Reflection.Emit</code>, no process spawn, no <code>load</code>, no recursion past depth 32, no instructions past 100,000.</p>
 
-<h3>9.7 Example: a mixed-language module (REVISED Rev 11 &mdash; TOML form)</h3>
+<p><strong>Escape hatch (RETAINED Rev 12 &mdash; Phase 1).</strong> A module that legitimately needs full C# (an edge case the audit acknowledges may exist) can still ship a <code>.Build.cs</code> file alongside the TOML; XBT detects the <code>.Build.cs</code> and falls back to Roslyn for that module only. This isolates the cold-start cost to the modules that genuinely need it; the rest of the engine never pays. <strong>Rev 12 contradiction resolution:</strong> XBT.html Rev 2 dropped the Phase 1 escape hatch to Phase 2. Rev 12 retains the Phase 1 escape hatch in the Contract. Reasoning: the empty repo means no immediate use, but the escape hatch is cheap to implement at Phase 1 (Roslyn is a dependency only when actually invoked &mdash; the dependency is lazy-loaded per the <code>.Build.cs</code> detection path) and the alternative (telling users "wait for Phase 2 to do X") is worse than the cost of carrying the optional dependency. Subagent B is responsible for aligning XBT.html Section 3.6 to retain the Phase 1 escape hatch.</p>
 
-<pre><code># /Engine/Source/Runtime/XScoring/XScoring.Build.toml &mdash; Rev 11 declarative form
+<h3>9.7 Dynamic Module Loading Protocol (NEW Rev 12 &mdash; N5)</h3>
+
+<p>Section 9.3 allows upward edges (Engine consuming Studio plugin dynamically) via <code>DynamicallyLoadedModuleNames</code> per the cross-tier dep matrix. Rev 11 left the symbol-resolution mechanism unspecified, leaving open the question of how an Engine module discovers and dispatches into a Studio plugin's symbols at runtime. Rev 12 locks the protocol.</p>
+
+<p><strong>The IXModule interface.</strong> Every plugin module that may be loaded dynamically exports a single well-known function:</p>
+
+<pre><code>// XCore &mdash; Public/XModule.h (Rev 12 locked surface)
+class IXModule
+{
+public:
+    virtual ~IXModule() = default;
+
+    // Identity
+    virtual const char* GetName() const = 0;          // e.g., "IndustrialEquipment"
+    virtual XVersion    GetVersion() const = 0;       // semver
+    virtual XTier       GetTier() const = 0;          // Engine / Studio / Project
+
+    // Symbol surface
+    virtual const IXSymbolTable* GetSymbolTable() const = 0;
+
+    // Lifecycle
+    virtual void Initialize(IXEngine* engine) = 0;
+    virtual void Shutdown() = 0;
+};
+
+// The well-known C entry point. Every dynamically-loadable plugin
+// module exports this exactly once. The symbol name is fixed across
+// all plugin modules; the OS dynamic loader resolves by literal name.
+extern "C" IXModule* GetModulePtr();</code></pre>
+
+<p><strong>The IXSymbolTable abstract interface.</strong> The symbol table provides type-safe dispatch into the plugin's exported symbols, keyed by Itanium-style mangled symbol names (per Section 1.4):</p>
+
+<pre><code>// XCore &mdash; Public/XSymbolTable.h
+class IXSymbolTable
+{
+public:
+    virtual ~IXSymbolTable() = default;
+
+    // Generic resolve: returns nullptr if symbol not found. The mangled
+    // name is the Itanium-style mangled name per Contract Section 1.4
+    // (PluginName + LogicalPath + Suffix encoding).
+    virtual void* ResolveRaw(const char* mangledName) const = 0;
+
+    // Type-safe wrapper. Looks up an interface symbol declared with the
+    // IXInterface vocabulary (Contract Section 1.1). T must be a class
+    // declared with [XInterface] / XINTERFACE() that the loaded plugin
+    // exports an instance of.
+    template &lt;class T&gt;
+    T* Resolve(const char* interfaceName) const
+    {
+        return static_cast&lt;T*&gt;(ResolveRaw(MangleInterfaceName&lt;T&gt;(interfaceName)));
+    }
+};</code></pre>
+
+<p><strong>Engine consumer pattern.</strong> An Engine module that consumes an upward-dependent Studio plugin uses XModuleManager (declared in XCore):</p>
+
+<pre><code>// In an Engine module, consuming a Studio plugin dynamically:
+IXModule* mod = XModuleManager::Load("IndustrialEquipment");
+if (!mod)
+{
+    return XErrorCode::PluginNotFound;
+}
+// Type-safe dispatch via Itanium-mangled symbol name.
+auto* pumpFactory = mod-&gt;GetSymbolTable()-&gt;Resolve&lt;IPumpFactory&gt;("IPumpFactory");
+if (!pumpFactory)
+{
+    return XErrorCode::SymbolNotFound;
+}
+IPump* pump = pumpFactory-&gt;Create();</code></pre>
+
+<p><strong>Hot-reload integration.</strong> The dynamic-load protocol cooperates with the hot-reload cascade. When a dynamically-loaded module is hot-reloaded, the cascade:</p>
+<ol>
+  <li>Calls the live module's <code>Shutdown()</code>.</li>
+  <li>Unloads the live DLL via <code>FreeLibrary</code> / <code>dlclose</code>.</li>
+  <li>Loads the patched DLL via <code>LoadLibrary</code> / <code>dlopen</code>.</li>
+  <li>Resolves the patched DLL's <code>GetModulePtr</code> symbol.</li>
+  <li>Calls the new <code>IXModule*</code>'s <code>Initialize(IXEngine*)</code>.</li>
+  <li>Updates XModuleManager's table; cached <code>IXModule*</code> handles held by consumers are invalidated and consumers re-resolve through XModuleManager (which exposes a stable handle wrapper, not the raw pointer).</li>
+  <li>Validates patched class layouts per Section 3.7 (container hot-reload constraints) and per the standard XLiveCoding layout-stability rules.</li>
+</ol>
+
+<p>Reloading a dynamically-loaded module follows the same Phase 1 / Phase 2 protocol as a statically-linked module: Phase 1 patches reuse the same vtable layout; Phase 2 (close-reopen) is required for layout-changing patches.</p>
+
+<p><strong>Banned anti-patterns.</strong> Raw <code>GetProcAddress</code> / <code>dlsym</code> calls with ad-hoc string symbol names from non-XCore code are banned. The check is enforced at XHT emit time: any TU outside the XCore module that references <code>GetProcAddress</code>, <code>dlsym</code>, or <code>WinBase.h</code>'s <code>FARPROC</code> typedef on a non-allowlisted basis fails the build with exit code 41 (banned-API check). The allowlist is small: XCore's own dynamic-loader implementation (XModuleManager.cpp), platform abstraction shims for fonts / OS DPI / etc., and third-party libraries' bindings that legitimately need raw symbol lookup. All other code must resolve dynamic symbols through <code>IXSymbolTable</code> &mdash; this forces all dynamic resolution through the typed <code>IXModule</code> surface and preserves type safety, hot-reload-coordination, and tier-validation across plugin boundaries.</p>
+
+<p><strong>Versioning.</strong> The <code>IXModule</code> interface itself is part of the contract surface. Adding a virtual method requires a contract revision (and a ContractStructureHash bump per Section 10.2); removing or repurposing a method is forbidden. Plugins compiled against contract version N may safely load into an engine running contract version N or N+1 with appended methods; loading a contract-version-N plugin into contract-version-N+2 with appended methods may succeed or fail depending on whether the added methods are reached (default-implementation v-table slots resolve safely; concrete-method slots that the plugin didn't override fail at call).</p>
+
+<h3>9.8 Example: a mixed-language module (REVISED Rev 11 &mdash; TOML form)</h3>
+
+<pre><code># /Engine/Source/Runtime/XScoring/XScoring.Build.toml &mdash; Rev 12 declarative form
 
 tier = "Engine"
 module_type = "Runtime"
 languages = ["Cpp", "CSharp"]   # .h/.cpp/.cs all live here
 sim_path = true                  # scoring tick participates in lockstep
-simd_level = "None"              # required for sim_path
+simd_level = "SSE42"             # Rev 12: SimPath modules allowed &le; SSE42
 pch_usage = "NoSharedPCHs"       # required for sim_path
 
 public_dependency_modules = [
@@ -1183,7 +1518,7 @@ b_warnings_as_errors = true
         "Architecture": "x86_64",
         "FipsMode": false,
         "SimPathConservativeRootsAllowed": false,
-        "SimdLevelDefault": "AVX2"
+        "SimdLevelDefault": "SSE42"
     },
     "EngineVersion": "0.1.0",
     "ToolchainVersion": "1.7.0",
@@ -1194,7 +1529,7 @@ b_warnings_as_errors = true
             "ModuleType": "Runtime",
             "Languages": ["Cpp"],
             "SimPath": false,
-            "SimdLevel": "AVX2",
+            "SimdLevel": "Default",
             "PCHUsage": "UseSharedPCHs",
             "bIsTestModule": false,
             "DeprecationMessage": null,
@@ -1218,7 +1553,7 @@ b_warnings_as_errors = true
             "ModuleType": "Runtime",
             "Languages": ["Cpp", "CSharp"],
             "SimPath": true,
-            "SimdLevel": "None",
+            "SimdLevel": "SSE42",
             "PCHUsage": "NoSharedPCHs",
             "bIsTestModule": false,
             "CSharpSources": ["Private/Scoring.cs", "Private/Rubric.cs"],
@@ -1227,11 +1562,164 @@ b_warnings_as_errors = true
     ]
 }</code></pre>
 
-<h4>The binary sidecar (FlatBuffers; machine-read)</h4>
+<h4>The binary sidecar (FlatBuffers; machine-read) (REVISED Rev 12 &mdash; N4: schema inlined)</h4>
 
 <p>XBT writes the same logical content as a FlatBuffers buffer encoded against a fixed schema. Filename is content-addressable: <code>Manifest.{Hash}.fbs.bin</code> where <code>{Hash}</code> is the BLAKE3 of the binary contents. XHT and XIL2CPP receive the binary path on the command line; they <code>mmap</code> the file and read fields zero-copy. The JSON's <code>ManifestBinaryHash</code> field is the cache key for "did we already process this manifest?" &mdash; if a tool's per-run cache already holds the hash, the tool skips re-reading entirely.</p>
 
-<p>Schema-evolution discipline: FlatBuffers fields are append-only. Adding a field is backward-compatible; removing a field requires a contract revision (and a ContractStructureHash bump).</p>
+<p><strong>Rev 12 &mdash; FlatBuffers schema (inlined; .fbs source).</strong> Rev 11 referenced the binary sidecar but did not provide the schema. The schema below is the normative source; XBT ships the schema file at <code>/Engine/Source/Programs/XBT/Manifest.fbs</code> (a Phase 1 deliverable). XBT's <code>WriteManifestAction</code> compiles this schema to C# code via the FlatBuffers <code>flatc</code> compiler at XBT-build-time. XHT and XIL2CPP receive generated readers at their own build time; the schema is consumed at runtime via <code>mmap</code>.</p>
+
+<pre><code>// /Engine/Source/Programs/XBT/Manifest.fbs &mdash; Rev 12 normative
+
+namespace XPact.Manifest;
+
+enum TargetType : ubyte {
+    Editor = 0,
+    Game,
+    Server,
+    Client,
+    Program
+}
+
+enum Configuration : ubyte {
+    Debug = 0,
+    DebugGame,
+    Development,
+    Test,
+    Shipping
+}
+
+enum Platform : ubyte {
+    Win64 = 0,
+    Linux,
+    Android,
+    LinuxArm64,        // future, currently unused
+    WindowsArm64       // future, currently unused
+}
+
+enum Tier : ubyte {
+    Engine = 0,
+    Studio,
+    Project
+}
+
+enum ModuleType : ubyte {
+    Runtime = 0,
+    Editor,
+    Developer,
+    ThirdParty
+}
+
+enum Languages : ubyte (bit_flags) {
+    Cpp = 0,
+    CSharp = 1
+}
+
+enum SimdLevel : ubyte {
+    None = 0,
+    Default,
+    SSE2,
+    SSE42,
+    AVX,
+    AVX2,
+    AVX512
+}
+
+enum PCHUsageMode : ubyte {
+    Default = 0,
+    NoPCHs,
+    NoSharedPCHs,
+    UseSharedPCHs,
+    UseExplicitOrSharedPCHs
+}
+
+enum FPSemantics : ubyte {
+    Default = 0,
+    Precise,
+    Imprecise
+}
+
+enum StationRole : ubyte {
+    Engineer = 0,
+    Instructor,
+    Trainee
+}
+
+table TargetInfo {
+    name: string;
+    type: TargetType;
+    platform: Platform;
+    configuration: Configuration;
+    architecture: string;          // "x86_64" / "aarch64"
+    fips_mode: bool = false;
+    station_role: StationRole = Engineer;
+    sim_path_conservative_roots_allowed: bool = false;
+    simd_level_default: SimdLevel = SSE42;     // Rev 12 N7 production default
+}
+
+table SourceFile {
+    relative_path: string;
+    content_hash: string;          // BLAKE3 hex
+}
+
+table ModuleDep {
+    name: string;
+    interface_module: bool = false;
+    is_dynamic: bool = false;      // true if cited in DynamicallyLoadedModuleNames
+}
+
+table Module {
+    name: string;
+    tier: Tier;
+    module_type: ModuleType;
+    languages: Languages;
+    base_directory: string;
+    output_directory: string;
+    sim_path: bool = false;
+    simd_level: SimdLevel = Default;
+    fp_semantics: FPSemantics = Default;
+    pch_usage: PCHUsageMode = Default;
+    public_headers: [string];
+    internal_headers: [string];
+    private_headers: [string];
+    classes_headers: [string];
+    csharp_sources: [SourceFile];
+    public_definitions: [string];
+    private_definitions: [string];
+    module_dependencies: [ModuleDep];
+    generated_cpp_filename_base: string;
+    generated_code_version: string;
+    // Rev 11 additions (audit finding #15)
+    is_test_module: bool = false;
+    deprecation_message: string;       // null if none
+    minimum_toolchain_version: string; // null if none
+    // Rev 12 reserves additional fields by append-only convention.
+}
+
+table Manifest {
+    contract_version: string;          // the composite from Section 10.2
+    contract_structure_hash: string;
+    contract_semantic_tag: string;
+    manifest_binary_path: string;
+    manifest_binary_hash: string;
+    target: TargetInfo;
+    engine_version: string;
+    toolchain_version: string;
+    modules: [Module];
+}
+
+root_type Manifest;
+file_identifier "XMFT";              // FlatBuffers file_identifier
+file_extension "fbs.bin";</code></pre>
+
+<p><strong>Versioning rule.</strong> The schema is append-only:</p>
+<ul>
+  <li>New fields are appended to the end of their table; never reordered, never deleted.</li>
+  <li>FlatBuffers' default-value semantics fill in missing fields on older readers &mdash; an XHT compiled against schema version N can read a manifest written by an XBT using schema version N+1 (new fields read as defaults).</li>
+  <li>Enum values are appended; never reordered, never deleted.</li>
+  <li>Removing a field or repurposing a slot requires a contract revision and a ContractStructureHash bump (Section 10.2). The schema's content is part of the contract structure hash automatically.</li>
+</ul>
+
+<p>The <code>file_identifier "XMFT"</code> is the FlatBuffers convention for "this binary is an XPact manifest." Tools verify the identifier before parsing, providing an early failure on mis-pointed file paths or corrupted writes.</p>
 
 <h4>ContractVersion auto-derivation</h4>
 
@@ -1398,11 +1886,11 @@ b_warnings_as_errors = true
 
 <h3>12.6 Determinism flag-propagation test</h3>
 
-<p><strong>Statement:</strong> A module declared <code>SimPath = true</code> in its descriptor compiles with <code>/fp:precise</code> + <code>-ffp-contract=off</code> + <code>-mno-fma</code> + Sleef-vendored transcendentals + the banned-API regex check + <code>NoSharedPCHs</code> + <code>SimdLevel = None</code>. A SimPath module that includes a header from a non-SimPath dependency does not inherit the dep's flag posture &mdash; SimPath is per-module.</p>
+<p><strong>Statement (REVISED Rev 12):</strong> A module declared <code>SimPath = true</code> in its descriptor compiles with <code>/fp:precise</code> + <code>-ffp-contract=off</code> + <code>-mno-fma</code> + Sleef-vendored transcendentals + the banned-API regex check on preprocessed output (Section 4.4) + <code>NoSharedPCHs</code> + <code>SimdLevel &le; SSE42</code>. A SimPath module that includes a header from a non-SimPath dependency does not inherit the dep's flag posture &mdash; SimPath is per-module. A SimPath module declaring <code>SimdLevel = AVX</code> (or higher) fails the build with a clear diagnostic and exit code 41.</p>
 
-<p><strong>Mechanism:</strong> Section 4 of this contract + Section 1.5 PCH lock. XBT's per-platform-toolchain flag tables + the <code>/FI</code> / <code>-include</code> header gate + the link-time platform-libm exclusion.</p>
+<p><strong>Mechanism:</strong> Section 4 of this contract + Section 1.5 PCH lock. XBT's per-platform-toolchain flag tables + the <code>/FI</code> / <code>-include</code> header gate + the link-time platform-libm exclusion + the SimPath SimdLevel ceiling clamp (Section 4.2 N7 lookup rule).</p>
 
-<p><strong>Validation:</strong> The test harness compiles a synthetic SimPath module containing a single <code>sin(x)</code> call; disassembles the resulting <code>.obj</code>; asserts the call target resolves to <code>XSleef_sin</code> not <code>__libm_sse2_sin</code> / <code>sin@GLIBC</code>. Similarly the test harness validates that banned APIs (<code>QueryPerformanceCounter</code>) on a SimPath TU fail the build, and that declaring <code>SimPath = true</code> + <code>PCHUsage = UseSharedPCHs</code> fails resolution.</p>
+<p><strong>Validation:</strong> The test harness compiles a synthetic SimPath module containing a single <code>sin(x)</code> call; disassembles the resulting <code>.obj</code>; asserts the call target resolves to <code>XSleef_sin</code> not <code>__libm_sse2_sin</code> / <code>sin@GLIBC</code>. Similarly the test harness validates that banned APIs (<code>QueryPerformanceCounter</code>) on a SimPath TU fail the build (including via a synthetic macro-wrapped call &mdash; the Rev 12 preprocessed-text check catches the macro expansion), and that declaring <code>SimPath = true</code> + <code>PCHUsage = UseSharedPCHs</code> fails resolution, and that <code>SimPath = true</code> + <code>SimdLevel = AVX</code> fails the build.</p>
 
 <h3>12.7 Tier enforcement test (REVISED Rev 11 &mdash; dep matrix)</h3>
 
@@ -1444,15 +1932,63 @@ b_warnings_as_errors = true
 
 <p><strong>Mechanism:</strong> XHT extracts the property from <code>[XProperty]</code>-attributed C# fields; XIL2CPP transpiles to a getter/setter pair the shared FProperty table can call; XCoreXObject's reflection runtime dispatches to them.</p>
 
-<h3>12.12 Manifest binary sidecar test (NEW Rev 11)</h3>
+<h3>12.12 Manifest binary sidecar test (NEW Rev 11; REVISED Rev 12 &mdash; schema verification added)</h3>
 
-<p><strong>Statement:</strong> XBT writes both the JSON manifest and the FlatBuffers binary sidecar on every build. XHT and XIL2CPP read the binary sidecar (verified by reading the sidecar file's mtime + content hash after each tool runs &mdash; the JSON's mtime is untouched). The JSON's <code>ManifestBinaryPath</code> field points at the sidecar that was written. The binary sidecar's filename hash matches its content.</p>
+<p><strong>Statement:</strong> XBT writes both the JSON manifest and the FlatBuffers binary sidecar on every build. XHT and XIL2CPP read the binary sidecar (verified by reading the sidecar file's mtime + content hash after each tool runs &mdash; the JSON's mtime is untouched). The JSON's <code>ManifestBinaryPath</code> field points at the sidecar that was written. The binary sidecar's filename hash matches its content. <strong>Rev 12 addition:</strong> the binary sidecar conforms to the schema in Section 10.2 (validated by re-parsing with the schema-derived reader); the <code>file_identifier</code> on the sidecar reads <code>"XMFT"</code>; older readers (compiled against an earlier schema version) successfully read newer manifests with appended fields, with the appended fields returning their default values.</p>
 
-<p><strong>Mechanism:</strong> Section 10.2 of this contract.</p>
+<p><strong>Mechanism:</strong> Section 10.2 of this contract; the inlined FlatBuffers schema.</p>
 
-<p><strong>Validation:</strong> The test harness builds a synthetic module; asserts both files exist; asserts the binary sidecar's content hash matches its filename; asserts the JSON's <code>ManifestBinaryHash</code> matches.</p>
+<p><strong>Validation:</strong> The test harness builds a synthetic module; asserts both files exist; asserts the binary sidecar's content hash matches its filename; asserts the JSON's <code>ManifestBinaryHash</code> matches; asserts the FlatBuffers reader recognizes the file identifier; asserts an older-schema reader can read newer-schema manifests with sensible defaults.</p>
 
-<h3>12.13 Aggregate gate &mdash; the Foundation Prototype</h3>
+<h3>12.13 Container hot-reload constraint test (NEW Rev 12 &mdash; N1)</h3>
+
+<p><strong>Statement:</strong> A patch DLL that modifies the field-offset list of any container class (any class with an embedded <code>XGCRootSpan</code> member) is rejected by XLiveCoding's patch-validation pass with a diagnostic naming the offending class. A patch DLL that only changes function bodies of container classes loads successfully and runs against the same span layout.</p>
+
+<p><strong>Mechanism:</strong> Section 3.7 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic <code>List_Actor</code> twice &mdash; once with the standard layout, once with an added data field. Asserts the second-DLL load via XLiveCoding fails with a Live Coding domain exit code (90&ndash;99 per Section 13). Separately, builds the same container twice with only function-body changes; asserts the patch loads successfully and that live instances continue to mark correctly.</p>
+
+<h3>12.14 Container move-only test (NEW Rev 12 &mdash; M1)</h3>
+
+<p><strong>Statement:</strong> A transpiled container type with an embedded <code>XGCRootSpan</code> has its copy constructor and copy assignment <code>= delete</code>'d by XIL2CPP. Attempting <code>auto y = x;</code> on a transpiled <code>List&lt;Actor&gt;</code> fails the C++ compile with a clear diagnostic. <code>auto y = std::move(x);</code> compiles successfully and leaves <code>x</code> in a valid-but-empty state with <code>count=0</code>.</p>
+
+<p><strong>Mechanism:</strong> Section 3.4 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness compiles a synthetic class invoking the copy constructor; asserts the C++ compile fails. The test harness builds a stress test where the move operation runs concurrently with a mark phase; asserts span registration uniqueness is preserved and that no double-registration is observed by the collector.</p>
+
+<h3>12.15 IXModule dynamic-load protocol test (NEW Rev 12 &mdash; N5)</h3>
+
+<p><strong>Statement:</strong> An Engine module declaring a Studio plugin in <code>DynamicallyLoadedModuleNames</code> can load the plugin at runtime via <code>XModuleManager::Load</code>, retrieve a typed interface via <code>IXSymbolTable::Resolve&lt;T&gt;</code>, and dispatch through the interface. A non-XCore module that calls <code>GetProcAddress</code> / <code>dlsym</code> with a literal symbol name (without going through <code>IXSymbolTable</code>) fails the build at XHT-emit time with exit code 41.</p>
+
+<p><strong>Mechanism:</strong> Section 9.7 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic Engine module that loads a synthetic Studio plugin and dispatches via <code>IPumpFactory</code>; asserts the call succeeds. Separately, builds a synthetic module that calls <code>GetProcAddress("SomeFunction")</code>; asserts the build fails with exit code 41.</p>
+
+<h3>12.16 Tier 2 cross-module classification test (NEW Rev 12 &mdash; N2)</h3>
+
+<p><strong>Statement:</strong> XIL2CPP's Pass 1 classification correctly treats cross-module callees without <code>[XFunction(NoThrow = true)]</code> annotations as conservatively Tier 1, producing a correct (if non-optimal) build. The Pass 2 whole-program pass (post-MVP) successfully promotes such functions to Tier 2 when the cross-module callee is in fact NoThrow.</p>
+
+<p><strong>Mechanism:</strong> Section 5.2 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic module A with a function <code>Helper</code> annotated <code>[XFunction(NoThrow = true)]</code> and a module B with a function <code>Consumer</code> that calls <code>Helper</code> and is itself a candidate for Tier 2. Asserts Pass 1 classifies <code>Consumer</code> as Tier 1 if XHT's metadata is absent or the annotation is missing on the exported interface; asserts Pass 2 (when implemented) promotes <code>Consumer</code> to Tier 2.</p>
+
+<h3>12.17 XResult destructor exception test (NEW Rev 12 &mdash; M2)</h3>
+
+<p><strong>Statement:</strong> A Tier 1 shim that writes a non-POD success value into <code>XResult.success</code> and then encounters a throw before returning runs the success value's destructor before unwinding propagates. No buffer leak occurs.</p>
+
+<p><strong>Mechanism:</strong> Section 5.8 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic class with a method that returns a non-POD type, writes the success value, then triggers a deliberate throw in subsequent code; instruments the destructor to count invocations; asserts the destructor runs exactly once even when the exception path is taken.</p>
+
+<h3>12.18 Starlark subset evaluation test (NEW Rev 12 &mdash; N3)</h3>
+
+<p><strong>Statement:</strong> An expression file that exceeds the 100,000-instruction budget fails the build with exit code 30. An expression file that uses banned constructs (<code>load</code>, recursion past depth 32, <code>%</code> interpolation) fails the build at parse or evaluation time.</p>
+
+<p><strong>Mechanism:</strong> Section 9.6 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds synthetic expressions exercising each deviation; asserts each fails with the expected diagnostic and exit code.</p>
+
+<h3>12.19 Aggregate gate &mdash; the Foundation Prototype</h3>
 
 <p>The contract's correct implementation across XBT + XHT + XIL2CPP is the prerequisite for the Foundation Prototype milestone at plan Section 11 Step 5.5. Until criteria (a) through (g) hold, the contract is not validated in implementation. The seven Foundation Prototype criteria are:</p>
 
@@ -1516,7 +2052,7 @@ b_warnings_as_errors = true
 
 <hr>
 
-<p><em>End of Toolchain Contract &mdash; Stage A, Rev 11. The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers; the Stage B addendum will automatically bump the ContractStructureHash per Section 10.2. The Step 0.5 addendum will pin the per-file dependency model after XBT (System 1) implementation lands; it too will bump the hash.</em></p>
+<p><em>End of Toolchain Contract &mdash; Stage A, Rev 12. The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers; the Stage B addendum will automatically bump the ContractStructureHash per Section 10.2. The Step 0.5 addendum will pin the per-file dependency model after XBT (System 1) implementation lands; it too will bump the hash. Rev 12 (reconciliation pass) is alignment-only with XBT.html Rev 2 plus N1&ndash;N7, M1&ndash;M3 audit findings; it does not change which surfaces Stage A locks, only refines their content.</em></p>
 
 </body>
 </html>
