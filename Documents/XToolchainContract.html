@@ -3,56 +3,1067 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XToolchainContract &mdash; XPact Engine</title>
+<title>XPact Toolchain Contract</title>
 </head>
 <body>
-<h1>XToolchainContract</h1>
-<p><em>Stub. This is the Step 0 deliverable per master-plan Section 4. It is an interfaces-only contract for the three toolchain systems &mdash; <strong>XBT</strong>, <strong>XHT</strong>, <strong>XIL2CPP</strong> &mdash; designed jointly before any of them gets its own spec. The contract locks interfaces; internals are deferred to each tool's own spec. Section bodies below are empty and will be filled in by the Step 0 design task.</em></p>
+
+<h1>XPact Toolchain Contract</h1>
+<p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
 
 <hr>
 
-<h2>1. Reflection Schema</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>Name table, marker macros, surface vocabulary. Full binary schema (FName / FClass / FProperty / FField layout including all replication slots) is deferred to a versioned addendum locked at XCore-4b. XHT's parser ships at step 2; XHT's emit format is frozen at the addendum.</em></p>
+<h2>0. Purpose &amp; Scope</h2>
 
-<h2>2. Hot-Reload Symbol Naming</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>Stable exported names for hot-patchable functions, versioned vtable layout, patch-DLL discovery protocol.</em></p>
+<p>This document is the <strong>interfaces-only contract</strong> jointly designed for XPact's three build-time tools before any of them gets its own system specification:</p>
+<ul>
+  <li><strong>XBT</strong> &mdash; XPact Build Tool. C# standalone. Reads <code>.xengine</code>, <code>.xproject</code>, and per-module <code>.Build.cs</code> descriptors. Builds the module dependency graph, drives reflection extraction, drives C# transpilation, schedules compile / link actions. Unreal-equivalent reference: UnrealBuildTool.</li>
+  <li><strong>XHT</strong> &mdash; XPact Header Tool. C# standalone. Parses reflection markers in <code>.h</code> headers (C++) and reflection attributes in <code>.cs</code> source (C#) and emits the registration scaffolding that the runtime reflection system consumes at engine boot. Unreal-equivalent reference: UnrealHeaderTool.</li>
+  <li><strong>XIL2CPP</strong> &mdash; XPact IL2CPP transpiler. C# standalone. Transpiles C# source into C++ with GC root scaffolding, exception lowering, C# string mapping, and stable symbol mangling. No Unreal precedent &mdash; closest reference is Unity's IL2CPP, but XIL2CPP transpiles directly from C# source (not IL) and emits hot-patchable, hybrid-GC-aware code rather than Mono-runtime-bound code.</li>
+</ul>
+
+<p>The contract <strong>locks the wire and surface interfaces</strong> between these three tools and the C++ runtime systems they feed (XCore, XCoreXObject, the platform toolchains). The contract is the document each tool's spec writes against. The contract is the document the Foundation Prototype milestone validates against. The contract is the document a contract revision must reopen by name.</p>
+
+<p>The contract does <strong>not</strong> cover the internal architecture of each tool. XBT's action-graph internals, dependency-cache file format, parallel executor design &mdash; not here, they belong in <code>/Documents/XBT.html</code>. XHT's parser AST shape, attribute reader, and emitter internals &mdash; <code>/Documents/XHT.html</code>. XIL2CPP's parser, lowering pipeline, and GC-emit pass &mdash; <code>/Documents/XIL2CPP.html</code> (will split per plan Section 3, "Systems whose HTML will likely split"). The contract is the seam; the tools are the volumes the seam holds together.</p>
+
+<p>The contract is delivered in two stages per plan Section 4:</p>
+<ul>
+  <li><strong>Stage A &mdash; Step 0 (this document).</strong> Locks the marker macro vocabulary, the file naming convention, the invocation protocol (JSON manifest), the symbol mangling rule, the GC root-registration ABI, the determinism flag propagation contract, the exception codegen ABI boundary, the C# string mapping, and the module descriptor shape. XBT consumes XHT's output <em>opaquely</em> &mdash; XBT does not parse XHT's binary struct layouts &mdash; so Stage A is sufficient to build XBT (System 1) and XHT's parser (System 2).</li>
+  <li><strong>Stage B &mdash; Contract Addendum at XCore-4b ship (Step 4).</strong> Freezes the concrete binary struct layouts &mdash; FName, FClass, FProperty, FField with the full replication-metadata surface per plan Section 2 Replication row. XHT's emitter is provisional until then; XHT's emit format finalizes at the Addendum.</li>
+  <li><strong>Step 0.5 addendum (descriptive).</strong> Pins the per-file dependency model XBT actually implements once XBT is built. Per plan Section 4: "the Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it."</li>
+</ul>
+
+<p>Decisions that genuinely await Stage B are marked inline throughout this document with <code>&lt;!-- STAGE-B: ... --&gt;</code> HTML comments and an italic note.</p>
+
+<hr>
+
+<h2>1. Reflection Schema &mdash; Name Table, Marker Macros, Surface Vocabulary</h2>
+
+<p>Per plan Section 2 Naming row, XPact mirrors Unreal's reflection vocabulary with the only rename being <code>UObject &rarr; XObject</code>. The C++ side uses uppercase macros with the <code>X</code> prefix; the C# side uses bracketed PascalCase attributes mirroring the same names.</p>
+
+<h3>1.1 Marker macros (C++) and attributes (C#)</h3>
+
+<p>The full vocabulary, locked at Stage A:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Concept</th><th>C++ marker</th><th>C# attribute</th><th>Placement</th></tr></thead>
+  <tbody>
+    <tr><td>Reflected class</td><td><code>XCLASS(specifiers)</code></td><td><code>[XClass(specifiers)]</code></td><td>Immediately before <code>class</code> declaration.</td></tr>
+    <tr><td>Reflected struct</td><td><code>XSTRUCT(specifiers)</code></td><td><code>[XStruct(specifiers)]</code></td><td>Immediately before <code>struct</code> declaration.</td></tr>
+    <tr><td>Reflected enum</td><td><code>XENUM(specifiers)</code></td><td><code>[XEnum(specifiers)]</code></td><td>Immediately before <code>enum class</code> declaration.</td></tr>
+    <tr><td>Reflected interface</td><td><code>XINTERFACE(specifiers)</code></td><td><code>[XInterface(specifiers)]</code></td><td>Immediately before interface class.</td></tr>
+    <tr><td>Reflected function/method</td><td><code>XFUNCTION(specifiers)</code></td><td><code>[XFunction(specifiers)]</code></td><td>Immediately before method declaration.</td></tr>
+    <tr><td>Reflected property/field</td><td><code>XPROPERTY(specifiers)</code></td><td><code>[XProperty(specifiers)]</code></td><td>Immediately before field declaration.</td></tr>
+    <tr><td>Reflected delegate</td><td><code>XDELEGATE(specifiers)</code></td><td><code>[XDelegate(specifiers)]</code></td><td>Immediately before delegate / event declaration.</td></tr>
+    <tr><td>Function parameter spec</td><td><code>XPARAM(specifiers)</code></td><td><code>[XParam(specifiers)]</code></td><td>Inline on parameter.</td></tr>
+    <tr><td>Enum value metadata</td><td><code>XMETA(specifiers)</code></td><td><code>[XMeta(specifiers)]</code></td><td>Inline on enum member.</td></tr>
+    <tr><td>Body anchor (C++ only)</td><td><code>XGENERATED_BODY()</code></td><td>(not applicable &mdash; C# attributes are anchored by the attribute target itself)</td><td>Inside class body, before first member.</td></tr>
+  </tbody>
+</table>
+
+<p>To the C++ compiler all markers except <code>XGENERATED_BODY()</code> are empty defines. They are read by XHT's C++ front-end via a lightweight, single-pass tokenizer (not a full Clang parse) and discarded by the C++ compile. <code>XGENERATED_BODY()</code> is a real macro that expands via a file-id / line-number combination to a generated registration block; the line number is load-bearing. Example:</p>
+
+<pre><code>// XGameFramework module &mdash; example header
+#pragma once
+#include "XCoreXObject.h"
+
+XCLASS(BlueprintType)
+class AXValve : public AXActor
+{
+    XGENERATED_BODY()
+
+public:
+    XPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated)
+    float OpenFraction = 0.0f;
+
+    XFUNCTION(BlueprintCallable)
+    void SetOpenFraction(XPARAM(DisplayName = "Open Fraction") float InFraction);
+};</code></pre>
+
+<p>The C# equivalent (which XIL2CPP transpiles, and XHT's C# front-end reads for reflection extraction):</p>
+
+<pre><code>// XGameFramework module &mdash; example C#
+namespace Simgenics.XPact.GameFramework;
+
+[XClass(BlueprintType = true)]
+public partial class Valve : Actor
+{
+    [XProperty(EditAnywhere = true, BlueprintReadWrite = true, Replicated = true)]
+    public float OpenFraction = 0.0f;
+
+    [XFunction(BlueprintCallable = true)]
+    public void SetOpenFraction([XParam(DisplayName = "Open Fraction")] float inFraction)
+    {
+        OpenFraction = inFraction;
+    }
+}</code></pre>
+
+<h3>1.2 Specifier vocabulary</h3>
+
+<p>Per plan Section 2 Naming row, "Specifiers mirror Unreal verbatim." The MVP-relevant specifier set, locked at Stage A:</p>
+
+<ul>
+  <li><strong>Class specifiers:</strong> <code>Blueprintable</code>, <code>BlueprintType</code>, <code>Abstract</code>, <code>NotBlueprintable</code>, <code>Transient</code>, <code>Config</code>, <code>HideCategories</code>, <code>ShowCategories</code>, <code>ClassGroup</code>, <code>MinimalAPI</code>, <code>NotPlaceable</code>, <code>Placeable</code>, <code>Within</code>, <code>EditInlineNew</code>, <code>DefaultToInstanced</code>.</li>
+  <li><strong>Property specifiers:</strong> <code>EditAnywhere</code>, <code>EditDefaultsOnly</code>, <code>EditInstanceOnly</code>, <code>VisibleAnywhere</code>, <code>VisibleDefaultsOnly</code>, <code>VisibleInstanceOnly</code>, <code>BlueprintReadOnly</code>, <code>BlueprintReadWrite</code>, <code>BlueprintAssignable</code>, <code>Replicated</code>, <code>ReplicatedUsing</code>, <code>Transient</code>, <code>Config</code>, <code>SaveGame</code>, <code>Instanced</code>, <code>Category</code>, <code>DisplayName</code>, <code>ToolTip</code>, <code>ClampMin</code>, <code>ClampMax</code>, <code>UIMin</code>, <code>UIMax</code>, <code>Meta</code>.</li>
+  <li><strong>Function specifiers:</strong> <code>BlueprintCallable</code>, <code>BlueprintPure</code>, <code>BlueprintImplementableEvent</code>, <code>BlueprintNativeEvent</code>, <code>BlueprintAuthorityOnly</code>, <code>BlueprintCosmetic</code>, <code>Server</code>, <code>Client</code>, <code>NetMulticast</code>, <code>Reliable</code>, <code>Unreliable</code>, <code>Category</code>, <code>DisplayName</code>, <code>Exec</code>, <code>CallInEditor</code>.</li>
+  <li><strong>Replication specifiers</strong> (per plan Section 2 Replication row scope expansion): replication-condition values populate the <code>ELifetimeCondition</code> slot on FProperty &mdash; <code>COND_None</code>, <code>COND_OwnerOnly</code>, <code>COND_SkipOwner</code>, <code>COND_SimulatedOnly</code>, <code>COND_AutonomousOnly</code>, <code>COND_SimulatedOrPhysics</code>, <code>COND_InitialOnly</code>, <code>COND_ReplayOnly</code>, <code>COND_ReplicatedOnly</code>.</li>
+</ul>
+
+<p>Specifiers parse identically across the C++ and C# front-ends. Unknown specifiers fail the build with a diagnostic naming the marker line. New specifiers may only be added via a Toolchain Contract revision &mdash; XHT's compile-time specifier registry is frozen alongside the contract version.</p>
+
+<h3>1.3 Body-macro suffix table</h3>
+
+<p>For each class containing <code>XGENERATED_BODY()</code>, XHT emits a per-file generated header (<code>{Header}.gen.h</code>) containing macros suffixed by purpose. These compose at the <code>XGENERATED_BODY()</code> expansion site. The suffix set, locked at Stage A:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Suffix</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>_PROLOG</code></td><td>Forward declarations + friend declarations that must appear at file scope before the class body.</td></tr>
+    <tr><td><code>_GENERATED_BODY</code></td><td>The composite macro <code>XGENERATED_BODY()</code> resolves to. Concatenates the other suffixes in correct order.</td></tr>
+    <tr><td><code>_INCLASS</code></td><td>Static class-registration members: <code>StaticClass()</code>, <code>StaticRegisterNatives*</code>, type-info statics.</td></tr>
+    <tr><td><code>_RPC_WRAPPERS</code></td><td>Server / Client / NetMulticast RPC dispatch stubs.</td></tr>
+    <tr><td><code>_ACCESSORS</code></td><td>Generated property getters/setters where specifier flags require them (e.g., <code>ReplicatedUsing</code> RepNotify binding).</td></tr>
+    <tr><td><code>_FIELDNOTIFY</code></td><td>UI-binding change-notification slots for properties with <code>BlueprintReadWrite</code> + <code>FieldNotify</code>.</td></tr>
+    <tr><td><code>_VINTERFACES</code></td><td>Virtual interface dispatch table for interfaces this class implements.</td></tr>
+    <tr><td><code>_STANDARD_CONSTRUCTORS</code></td><td>Default constructor + object-initializer constructor declarations.</td></tr>
+  </tbody>
+</table>
+
+<p>The composite expansion order is fixed: <code>_INCLASS</code> &rarr; <code>_RPC_WRAPPERS</code> &rarr; <code>_ACCESSORS</code> &rarr; <code>_FIELDNOTIFY</code> &rarr; <code>_VINTERFACES</code> &rarr; <code>_STANDARD_CONSTRUCTORS</code>. Generated code outside <code>XGENERATED_BODY()</code> &mdash; per-file <code>_PROLOG</code> blocks &mdash; appears at file scope before the class declaration.</p>
+
+<h3>1.4 Per-file ID scheme</h3>
+
+<p>UE's reflection system encodes file identity into the body-macro name via the on-disk header path (non-alphanumerics replaced by underscores). This couples the symbol identity to the file's filesystem location: moving a header to a different directory invalidates every consumer's file-ID-derived symbols. Per the UE reference brief gotcha list, <strong>XPact decouples file ID from on-disk path</strong>.</p>
+
+<p>XPact's file-ID format:</p>
+
+<pre><code>XID_{PluginName}__{LogicalPath}_h_{LineNumber}_{Suffix}</code></pre>
+
+<p>Where:</p>
+<ul>
+  <li><code>PluginName</code> &mdash; the plugin's name as declared in its <code>.xplugin</code> descriptor. For the engine itself this is the literal <code>Engine</code>. For Studio and Project plugins it is the descriptor's <code>Name</code> field.</li>
+  <li><code>LogicalPath</code> &mdash; the header's logical path within the plugin (forward slashes replaced by single underscores), <em>not</em> its absolute filesystem path. The logical path is declared per-module in the module's <code>.Build.cs</code> (<code>PublicIncludePaths</code> / <code>PrivateIncludePaths</code>) and is preserved across folder reorganization. <strong>Moving the file on disk does not break consumers as long as the logical path is preserved.</strong></li>
+  <li><code>LineNumber</code> &mdash; line number of the <code>XGENERATED_BODY()</code> macro within the header. Same load-bearing role as UE.</li>
+  <li><code>Suffix</code> &mdash; one of the suffixes from Section 1.3.</li>
+</ul>
+
+<p>Example expansion. For <code>AXValve</code> in <code>/Engine/Source/Runtime/XGameFramework/Public/Valves/XValve.h</code> at line 14 of plugin <code>Engine</code> with logical path <code>XGameFramework/Public/Valves/XValve</code>:</p>
+
+<pre><code>// What XGENERATED_BODY() expands to (composed from generated header):
+#define XID_Engine__XGameFramework_Public_Valves_XValve_h_14_GENERATED_BODY \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_INCLASS \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_RPC_WRAPPERS \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_ACCESSORS \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_FIELDNOTIFY \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_VINTERFACES \
+    XID_Engine__XGameFramework_Public_Valves_XValve_h_14_STANDARD_CONSTRUCTORS</code></pre>
+
+<h3>1.5 What Stage A locks vs. Stage B</h3>
+
+<p>Stage A (this document) locks: the marker macro / attribute names, the specifier vocabulary, the body-macro suffix table, the file-ID format, the placement rules. XHT's C++ front-end and C# front-end ship at System 2 (XHT parser) targeting this surface.</p>
+
+<!-- STAGE-B: FName / FClass / FProperty / FField binary struct layouts including replication metadata slots freeze at Contract Addendum after XCore-4b ships at Step 4. -->
+<p><em>Stage B (Contract Addendum at XCore-4b ship) freezes the concrete binary struct layouts &mdash; <code>FName</code>, <code>FClass</code>, <code>FProperty</code>, <code>FField</code> &mdash; including all replication-metadata slots per plan Section 2 Replication row (<code>ELifetimeCondition</code>, <code>RepNotify</code> callback slot, delta-compression hint flags, replication group ID, owner / autonomous / simulated-only flags). Until then, XHT's emitter is provisional; per plan Section 4, "XHT Step 2 delivers parser-complete + emitter-provisional. XHT's emitter finalizes its concrete output struct layouts at Step 4 when the addendum lands."</em></p>
+
+<hr>
+
+<h2>2. Hot-Reload Symbol Naming &mdash; Versioned ABI</h2>
+
+<p>Per plan Section 2 XIL2CPP symbol naming row (Rev 7), the transpiled-symbol mangling is a <strong>locked ABI</strong> in the Toolchain Contract. Per plan Section 2 Hot-reload commitment row, hot-reload requires stable exported symbol names for hot-patchable functions. Per plan Section 11 Step 5.5 (g), <em>repeated XIL2CPP runs over the same input produce byte-identical mangled symbol names</em>. This section locks the mangling rule.</p>
+
+<h3>2.1 Native C++ side</h3>
+
+<p>Native C++ symbol mangling is whatever the platform compiler produces &mdash; MSVC's mangling on Win64, Itanium ABI mangling on Linux and Android (Clang). Both are stable across builds of the same source. The contract requires only that the build be <strong>byte-reproducible</strong>, which adds two flags to the platform-toolchain flag tables (see Section 4):</p>
+<ul>
+  <li><strong>MSVC:</strong> <code>/Brepro</code> to suppress timestamps in the output binary.</li>
+  <li><strong>Clang:</strong> <code>-frandomize-layout-seed-file=</code> pinned to an empty / deterministic seed; combined with <code>-fno-ident</code> for object-file determinism; <code>-Wl,--build-id=none</code> at link.</li>
+</ul>
+
+<p>These flags are mandatory on every XBT-driven build, not only sim-path TUs. The Foundation Prototype reproducibility criterion (plan Section 11 Step 5.5 (g)) cannot be satisfied without them.</p>
+
+<h3>2.2 Transpiled C# side</h3>
+
+<p>XIL2CPP-transpiled symbols use a custom, contract-versioned mangling rule:</p>
+
+<pre><code>{ContractVersion}__{Namespace}::{Type}::{Method}{GenericArgManglings}{ParamManglings}</code></pre>
+
+<p>Component definitions:</p>
+<ul>
+  <li><strong><code>{ContractVersion}</code>:</strong> the literal <code>_v1</code> for the Stage A contract. A future contract revision that breaks the mangling bumps to <code>_v2</code>. A version bump may only be done via a deliberate Toolchain Contract revision &mdash; never silently.</li>
+  <li><strong><code>{Namespace}</code>:</strong> dot-separated namespace path with dots replaced by <code>::</code>. Example: <code>Simgenics.XPact.GameFramework</code> becomes <code>Simgenics::XPact::GameFramework</code>.</li>
+  <li><strong><code>{Type}</code>:</strong> the simple type name. Nested types are joined by <code>::</code>.</li>
+  <li><strong><code>{Method}</code>:</strong> the simple method name. C# operator overloads use <code>op_Add</code>, <code>op_Equality</code>, etc. (CLR convention). Constructors are <code>$ctor</code>. Static constructors are <code>$cctor</code>.</li>
+  <li><strong><code>{GenericArgManglings}</code>:</strong> for generic methods, <code>_G_</code> followed by a comma-separated list of mangled generic argument types in angle brackets, recursively mangled. Empty when not generic.</li>
+  <li><strong><code>{ParamManglings}</code>:</strong> <code>_P_</code> followed by a parenthesized comma-separated list of mangled parameter types. Reference types prefix <code>R</code>, value types prefix <code>V</code>, by-ref prefix <code>B</code>, in/out prefix <code>I</code>/<code>O</code>. Empty parentheses for parameterless methods.</li>
+</ul>
+
+<h3>2.3 Free-function form with explicit self</h3>
+
+<p>Per the UE reference brief recommendation: <strong>every transpiled C# method becomes a free function</strong> (not a member function) with an explicit <code>XObject* self</code> first parameter. This makes Live-Coding-style RVA-rewrite trampolines work cleanly &mdash; the patcher writes one jump at the function's entry point, without vtable-slot rewriting. Vtable dispatch for virtual methods is handled by a generated dispatcher (also a free function) that performs the table lookup and tail-calls the resolved free function. Per plan Section 2 Hot-reload commitment row, no virtual-method signature changes are permitted mid-session, so the vtable layout is stable across patches.</p>
+
+<p>Example. Given the C# above:</p>
+
+<pre><code>// C# source
+namespace Simgenics.XPact.GameFramework;
+public partial class Valve : Actor {
+    public void SetOpenFraction(float inFraction) { /* ... */ }
+}</code></pre>
+
+<p>The transpiled symbol is:</p>
+
+<pre><code>_v1__Simgenics::XPact::GameFramework::Valve::SetOpenFraction_P_(R Simgenics::XPact::GameFramework::Valve, V float)</code></pre>
+
+<p>And the C++ declaration XIL2CPP emits:</p>
+
+<pre><code>// Transpiled C++ &mdash; free function with explicit self
+extern "C" void _v1__Simgenics__XPact__GameFramework__Valve__SetOpenFraction_P_R_Simgenics__XPact__GameFramework__Valve_V_float(
+    Simgenics::XPact::GameFramework::Valve* self,
+    float inFraction);</code></pre>
+
+<p>(The angle-bracket / parenthesis / colon characters in the conceptual mangling above are translated to single-underscore tokens for the actual linker-visible symbol &mdash; <code>::</code> &rarr; <code>__</code>, parentheses dropped, commas and spaces &rarr; <code>_</code>. The translation is deterministic and reversible.)</p>
+
+<h3>2.4 Determinism requirement</h3>
+
+<p>Per plan Section 11 Step 5.5 criterion (g): repeated XIL2CPP runs over the same input produce <strong>byte-identical mangled symbol names</strong>. This requires:</p>
+<ol>
+  <li>The mangling rule is purely structural &mdash; no hash, no random, no build-time-derived suffix.</li>
+  <li>The generic-instantiation walk visits arguments in source-declaration order.</li>
+  <li>XIL2CPP's internal dictionary iteration over namespaces / types / methods is sorted by name before emit. No insertion-order dependence on the parse.</li>
+  <li>The reproducibility flags (<code>/Brepro</code>, <code>-frandomize-layout-seed-file=</code>, etc.) propagate from XIL2CPP's own build of itself, not just the user's build &mdash; XIL2CPP's binary is itself reproducible.</li>
+</ol>
+
+<hr>
 
 <h2>3. GC Root-Registration ABI</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>What the IL2CPP transpiler emits for non-GC containers holding XObjects; the runtime ABI for register / de-register; handling of <code>List&lt;object&gt;</code> and other non-statically-typed containers (conservative full-slot registration).</em></p>
+
+<p>Per plan Section 2 Memory/GC row, XPact uses a hybrid memory model: a non-moving precise mark-and-sweep GC for XObject-derived types only, with plain C# value types and containers (<code>List&lt;T&gt;</code>, <code>Dictionary&lt;K,V&gt;</code>, <code>string</code>, structs) transpiling to native deterministic-lifetime equivalents that are NOT GC-managed. <em>When a non-GC container holds XObject references, the container explicitly registers GC roots at construction and de-registers at destruction; the IL2CPP transpiler emits this scaffolding by statically analyzing generic instantiations.</em></p>
+
+<p>This section locks the extern "C" surface XIL2CPP emits at those construction / destruction sites.</p>
+
+<h3>3.1 The three primitives</h3>
+
+<pre><code>extern "C" {
+
+    // Single-slot registration. slot points to where the XObject*-typed reference
+    // lives. The GC dereferences slot each mark cycle and traces through it.
+    void XGC_RegisterRoot(void** slot, XGCRootKind kind);
+
+    // Single-slot deregistration. Must be called for every successful RegisterRoot.
+    void XGC_UnregisterRoot(void** slot);
+
+    // Conservative range registration. start..start+count*stride is treated as a
+    // contiguous array of void* slots. The GC traces each one. Used for
+    // List&lt;object&gt;-style non-statically-typed containers where individual
+    // per-slot registration would be too noisy.
+    void XGC_RegisterRootRange(void** start, size_t count, size_t stride);
+
+    void XGC_UnregisterRootRange(void** start);
+
+}</code></pre>
+
+<h3>3.2 XGCRootKind</h3>
+
+<pre><code>enum class XGCRootKind : uint8_t {
+    Strong,        // mark prevents collection
+    Weak,          // GC clears the slot if the referent is collected
+    Conservative   // treat slot as possibly-pointer; only register if non-null
+                   // during mark; ignore type info. Used for List&lt;object&gt; etc.
+};</code></pre>
+
+<p>The transpiler chooses the kind statically based on the generic instantiation:</p>
+
+<ul>
+  <li><strong>Generic type argument is statically XObject-derived</strong> (<code>List&lt;XActor&gt;</code>, <code>Dictionary&lt;FName, XComponent&gt;</code>): <code>XGCRootKind::Strong</code>, registered per slot in <code>XGC_RegisterRoot</code> calls during container growth.</li>
+  <li><strong>Generic type argument is statically a value type</strong> (<code>List&lt;int&gt;</code>, <code>List&lt;FVector&gt;</code>): no GC scaffolding emitted at all. The container is pure RAII.</li>
+  <li><strong>Generic type argument is <code>object</code> or a non-statically-typed interface that could hold XObjects</strong> (<code>List&lt;object&gt;</code>, <code>Dictionary&lt;string, object&gt;</code>): <code>XGCRootKind::Conservative</code>, registered as a range via <code>XGC_RegisterRootRange</code>.</li>
+</ul>
+
+<p><em>Per plan Section 2 Memory/GC row: "XIL2CPP emits a build-time warning when such a pattern appears on a sim-path TU because the per-mutation root-register/unregister cost is real." This warning is mandatory; it is not suppressible from <code>.cs</code> source. It is suppressible only at the module level via an explicit <code>SimPathConservativeRootsOK = true</code> field in the module's <code>.Build.cs</code>, which is also visible in build logs.</em></p>
+
+<h3>3.3 Example: List&lt;XActor&gt;</h3>
+
+<p>Suppose the C# author writes:</p>
+
+<pre><code>// C# &mdash; gameplay code
+List&lt;Actor&gt; ActiveActors = new List&lt;Actor&gt;();
+ActiveActors.Add(SomeActorRef);
+ActiveActors.RemoveAt(0);</code></pre>
+
+<p>XIL2CPP transpiles this with explicit root scaffolding around every container mutation. Conceptual emit shape (illustrative, not normative):</p>
+
+<pre><code>// Transpiled C++ shape
+class List_Actor {
+    Actor** m_data;       // dynamic array of XObject*-typed slots
+    size_t  m_count;
+    size_t  m_capacity;
+
+public:
+    void Add(Actor* item) {
+        EnsureCapacity(m_count + 1);
+        m_data[m_count] = item;
+        XGC_RegisterRoot(reinterpret_cast&lt;void**&gt;(&m_data[m_count]),
+                         XGCRootKind::Strong);
+        ++m_count;
+    }
+
+    void RemoveAt(size_t i) {
+        XGC_UnregisterRoot(reinterpret_cast&lt;void**&gt;(&m_data[i]));
+        // shift remaining slots down (each shifted slot gets its registration
+        // re-pointed via internal XGC_RebindRoot &mdash; not exposed externally)
+        ...
+    }
+
+    void EnsureCapacity(size_t needed) {
+        if (needed &lt;= m_capacity) return;
+        // Reallocate. For every live slot, unregister at old address and
+        // re-register at new address (the GC slot address must point into
+        // the live buffer at all times).
+        ...
+    }
+
+    ~List_Actor() {
+        for (size_t i = 0; i &lt; m_count; ++i)
+            XGC_UnregisterRoot(reinterpret_cast&lt;void**&gt;(&m_data[i]));
+        free(m_data);
+    }
+};</code></pre>
+
+<h3>3.4 Example: List&lt;object&gt; conservative range</h3>
+
+<pre><code>// Transpiled shape for List&lt;object&gt;
+class List_object {
+    void** m_data;
+    size_t m_count;
+    size_t m_capacity;
+
+public:
+    void EnsureCapacity(size_t needed) {
+        if (needed &lt;= m_capacity) return;
+        if (m_count &gt; 0) XGC_UnregisterRootRange(m_data);
+        void** newData = reinterpret_cast&lt;void**&gt;(realloc(m_data, needed * sizeof(void*)));
+        m_data = newData;
+        m_capacity = needed;
+        if (m_count &gt; 0)
+            XGC_RegisterRootRange(m_data, m_count, sizeof(void*));
+    }
+    // Build-time warning emitted at this instantiation site if the
+    // owning module's .Build.cs has SimPath = true.
+    ...
+};</code></pre>
+
+<h3>3.5 Internals not in the contract</h3>
+
+<p>The contract locks only the <code>extern "C"</code> surface. The collector's internal root-set data structures, the locking discipline for concurrent registration, the bump-allocated root-table format, the card-table format, the write-barrier intrinsic shape &mdash; all internal to XCoreXObject and documented there (plan Section 3: XCoreXObject "will split into multiple docs: allocator + collector + reflection + write-barriers/roots"). XIL2CPP emits only the surface above.</p>
+
+<hr>
 
 <h2>4. Determinism Flag Propagation</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>How a module declares "this TU is sim-path"; how XBT translates that to <code>/fp:precise</code> + <code>-ffp-contract=off</code> + transcendental-library substitution at compile time.</em></p>
 
-<h2>5. Exception Codegen Switch</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>The ABI-stable boundary layer that gives transpiled C# functions identical external signatures across Dev (native exceptions) and Shipping (<code>Result&lt;T,E&gt;</code>); internal-only differences in lowering.</em></p>
+<p>Per plan Section 2 Determinism row, sim-path translation units require <code>/fp:precise</code> + <code>-ffp-contract=off</code> + Sleef-vendored transcendentals; <code>-ffast-math</code> / <code>/fp:fast</code> / FMA contraction are banned; platform libm calls error at link on sim-path TUs.</p>
 
-<h2>6. C# String &harr; FString Mapping</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>C# <code>string</code> transpiles to an immutable string handle wrapping <code>FString</code> (UTF-8); literal C# strings emit as UTF-8 byte arrays at transpile time (no runtime conversion); <code>foreach</code> over a C# string iterates code points, not bytes.</em></p>
+<h3>4.1 Module-level declaration</h3>
+
+<p>A module declares itself as sim-path via an explicit field on its <code>.Build.cs</code> descriptor:</p>
+
+<pre><code>// XPhysics.Build.cs
+public class XPhysics : ModuleRules
+{
+    public XPhysics(ReadOnlyTargetRules Target) : base(Target)
+    {
+        Tier = ModuleTier.Engine;
+        ModuleType = ModuleType.Runtime;
+        Languages = Languages.Cpp;
+
+        SimPath = true;       // &lt;-- declares this module's TUs as sim-path
+
+        PublicDependencyModuleNames.AddRange(new[] { "XCore", "XCoreXObject", "XTaskGraph" });
+        // ...
+    }
+}</code></pre>
+
+<p>The field is on the module level (matches Unreal's per-module enum-then-translate pattern). Per-file overrides are not supported in MVP. If a single file in a non-sim-path module legitimately needs sim-path semantics, the file must be split into its own micro-module. This matches the UE pattern observed in the reference brief.</p>
+
+<h3>4.2 Flag translation table</h3>
+
+<p>XBT carries a per-platform-toolchain flag translation table. When <code>SimPath = true</code>, XBT adds the following flags to the C++ compile environment for the module's TUs:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Toolchain</th><th>Flags added on SimPath = true</th><th>Flags banned (error if present)</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>MSVC (Win64)</td>
+      <td><code>/fp:precise</code>, <code>/Brepro</code></td>
+      <td><code>/fp:fast</code>, <code>/fp:except</code></td>
+    </tr>
+    <tr>
+      <td>Clang (Linux)</td>
+      <td><code>-ffp-contract=off</code>, <code>-fno-fast-math</code>, <code>-fno-finite-math-only</code></td>
+      <td><code>-ffast-math</code>, <code>-funsafe-math-optimizations</code>, <code>-ffp-contract=fast</code>, <code>-ffp-contract=on</code></td>
+    </tr>
+    <tr>
+      <td>Clang (Android ARM64)</td>
+      <td>same as Clang Linux + <code>-mno-fma</code> (prevent target-default FMA enablement)</td>
+      <td>same as Clang Linux</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Banned flags appearing in any <code>.Build.cs</code> <code>AdditionalCompilerArguments</code> on a SimPath module fail the build with a diagnostic naming the flag and module.</p>
+
+<h3>4.3 Transcendental library substitution</h3>
+
+<p>For SimPath TUs, XBT substitutes platform libm with Sleef (configured in non-FMA mode) or vendored Chebyshev/Remez polynomial implementations. Substitution mechanism:</p>
+
+<ul>
+  <li>XBT injects a header gate <code>#include "XSimPathMathOverrides.h"</code> at the top of every TU in the SimPath module via the compiler's <code>/FI</code> (MSVC) or <code>-include</code> (Clang) flag.</li>
+  <li>The override header <code>#define</code>s <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>atan2</code>, <code>sqrt</code>, <code>pow</code>, <code>exp</code>, <code>log</code>, and their <code>f</code> variants to redirect to the Sleef-vendored symbols (e.g., <code>XSleef_sin</code>).</li>
+  <li>Link-time: XBT excludes platform libm from the link line for SimPath modules. Any unresolved reference to <code>__libm_sse2_sin</code> (MSVC) or <code>sin@GLIBC_2.2.5</code> (glibc) etc. fails the link with a clear diagnostic. The vendored library is linked in its place.</li>
+</ul>
+
+<h3>4.4 Banned-API check</h3>
+
+<p>SimPath TUs additionally get a build-time error if they call non-deterministic platform APIs. The banned set is enumerated in a small text file (<code>XSimPathBannedAPIs.txt</code>) consulted by an XBT pre-compile action:</p>
+
+<pre><code># XSimPathBannedAPIs.txt &mdash; representative entries
+GetSystemTime
+GetTickCount
+QueryPerformanceCounter   # use XTime::DeterministicNow() instead
+gettimeofday
+clock_gettime
+GetCurrentThreadId        # don't branch on thread identity in sim path
+rand
+srand</code></pre>
+
+<p>The check is a lightweight regex pass over the TU's source. False positives can be allowlisted per-line via an end-of-line comment marker <code>// XSIMPATH_OK</code> with a rationale string.</p>
+
+<h3>4.5 Per-target settings</h3>
+
+<p>XBT also propagates a per-target settings struct to XHT and XIL2CPP &mdash; the analog of UE's <code>UHTTargetSettings</code>. The struct carries <code>SimPathConservativeRootsAllowed</code>, <code>FipsMode</code> (per plan Section 2 Network security row), the contract version, and the target's platform identifier. XHT and XIL2CPP read this in addition to the per-module manifest.</p>
 
 <hr>
 
-<h2>XHT Emit-Format Freeze &mdash; Two-Stage</h2>
-<p><em>XHT's emit format is frozen in two stages. Step 0 (this document) locks the interface; the binary schema is frozen later at the Contract addendum that lands when XCore-4b ships at Step 4.</em></p>
+<h2>5. Exception Codegen Switch &mdash; ABI-Stable Boundary</h2>
 
-<h3>Stage A &mdash; Step 0 (this document): Interface Freeze</h3>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>Locks file naming, invocation protocol, marker macros, and surface vocabulary. XBT consumes XHT output opaquely &mdash; XBT does not parse XHT's binary struct layouts &mdash; so XBT at Step 1 is decoupled from the binary-schema finalization in Stage B.</em></p>
+<p>Per plan Section 2 Exception handling row: "C++ exceptions off in Shipping, on in Debug/DebugGame/Development/Test. XIL2CPP emits C# throw/catch as native exceptions in Dev/Test configurations and as <code>Result&lt;T,E&gt;</code> lowering in Shipping. ABI stability: public API surfaces of transpiled C# functions go through an ABI-stable boundary layer defined in the Toolchain Contract (Step 0, item 5) &mdash; same C function signature across configs, with internal lowering varying. Cross-config linking is supported because all call sites see the same external signature; only the body differs. Third-party libraries linked in Shipping must be exception-clean. <strong>Result&lt;T,E&gt; type definition (struct layout, generic instantiation rules, reflection coverage, serialization semantics) is part of the Toolchain Contract's Step 0, item 5 deliverable &mdash; not deferred.</strong>"</p>
 
-<h3>Stage B &mdash; Step 4 Contract Addendum: Binary-Schema Freeze</h3>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>Lands when XCore-4b ships. Freezes the concrete output struct layouts (FName / FClass / FProperty / FField including all replication-metadata slots). XHT Step 2 ships parser-complete + emitter-provisional; XHT's emitter finalizes its concrete output struct layouts here.</em></p>
+<h3>5.1 The ABI boundary</h3>
+
+<p>Every transpiled C# method gets two artifacts:</p>
+<ol>
+  <li>A <strong>shim entry point</strong>: an <code>extern "C"</code> free function with a fixed signature determined by the C# method's static signature. This signature is <strong>identical across all build configurations</strong>. Call sites &mdash; whether from C++, from other transpiled C#, or from Blueprint dispatch &mdash; bind against this shim.</li>
+  <li>A <strong>body implementation</strong> internal to the shim. The body's lowering differs between Dev/Test (native C++ exceptions) and Shipping (<code>Result&lt;T,E&gt;</code>). The shim adapts the body's output to the contract-defined return discipline.</li>
+</ol>
+
+<p>The shim signature, given C# method <code>T Foo(A a, B b)</code>:</p>
+
+<pre><code>// Shim entry point &mdash; identical across Dev and Shipping
+extern "C" void _v1__Foo_Shim(
+    void* self,             // null for static methods
+    A a,
+    B b,
+    XResult* outResult);    // out-parameter for both the value and the error</code></pre>
+
+<p>The <code>XResult</code> out-parameter carries either the successful return value or a typed error descriptor &mdash; same layout in both configs.</p>
+
+<h3>5.2 XResult layout</h3>
+
+<pre><code>// Plain C++ struct &mdash; layout locked at Stage A
+struct alignas(16) XResult {
+    enum class Discriminator : uint8_t { Success, Error };
+    Discriminator   discriminator;
+    uint8_t         _padding[7];
+    union {
+        // SuccessValue is type-erased to a tagged buffer. Each shim emits
+        // type-specific accessors. Storage is up to 56 bytes inline; larger
+        // returns spill via XResult::SpillSlot pointer.
+        struct {
+            uint8_t       buffer[56];
+        } success;
+        struct {
+            XErrorCode    code;          // numeric ID into XError descriptor table
+            const char*   typeName;      // mangled type of the original C# exception
+            const char*   message;       // UTF-8, lifetime tied to call stack
+            void*         stackTrace;    // null in Shipping; native trace in Dev/Test
+        } error;
+    };
+};</code></pre>
+
+<p>Note: layout is illustrative; final byte-exact layout finalizes at Stage B if FProperty layout influences it. The <em>external surface</em> (discriminator + access pattern) is locked at Stage A.</p>
+
+<h3>5.3 Dev/Test lowering &mdash; native exceptions</h3>
+
+<p>The shim body is wrapped in a <code>try / catch (...)</code> block. On normal return, the shim copies the return value into the <code>XResult::success</code> buffer and sets the discriminator to <code>Success</code>. On caught exception, the shim translates the native exception to <code>XResult::error</code> and sets the discriminator to <code>Error</code>:</p>
+
+<pre><code>// Dev/Test shim body shape
+extern "C" void _v1__Foo_Shim(void* self, A a, B b, XResult* outResult) {
+    try {
+        T value = _v1__Foo_Body(self, a, b);   // body throws on C# throw
+        outResult-&gt;discriminator = XResult::Discriminator::Success;
+        new (outResult-&gt;success.buffer) T(std::move(value));
+    } catch (const XCSharpException&amp; ex) {
+        outResult-&gt;discriminator = XResult::Discriminator::Error;
+        outResult-&gt;error.code = ex.code;
+        outResult-&gt;error.typeName = ex.typeName;
+        outResult-&gt;error.message = ex.message;
+        outResult-&gt;error.stackTrace = ex.captureStack();
+    }
+}</code></pre>
+
+<h3>5.4 Shipping lowering &mdash; Result&lt;T,E&gt;</h3>
+
+<p>In Shipping, C# <code>throw</code> sites lower to early-return of an <code>XResult</code> with the error discriminator. Every C# <code>try / catch</code> lowers to discriminator-checked dispatch. The shim becomes a thin pass-through:</p>
+
+<pre><code>// Shipping shim body shape
+extern "C" void _v1__Foo_Shim(void* self, A a, B b, XResult* outResult) {
+    _v1__Foo_Body(self, a, b, outResult);
+    // Body writes to outResult directly. No try/catch &mdash; exceptions
+    // are not raised in Shipping bodies.
+}</code></pre>
+
+<p>The body's <em>internal</em> structure differs between configs; the shim's <em>external</em> signature does not. A C++ caller linking against the shim never sees the difference. Cross-config linking works: an editor module compiled in Development can call into a runtime module compiled in Shipping (or vice versa, for hot-reload scenarios).</p>
+
+<h3>5.5 Generic instantiation rules</h3>
+
+<p>The contract requires that <code>T</code> and <code>E</code> in <code>Result&lt;T,E&gt;</code> instantiate as either:</p>
+<ul>
+  <li>C++ trivially destructible types (POD, simple value types), or</li>
+  <li>XObject-derived types (which the GC owns and which require no in-buffer destructor &mdash; the buffer holds the pointer only).</li>
+</ul>
+
+<p>Non-trivially-destructible non-XObject types (e.g., <code>FString</code>, <code>TArray&lt;T&gt;</code>, custom RAII handles) require explicit destruction. The shim emits the appropriate destructor call when <code>XResult</code> goes out of scope on the calling side; XIL2CPP generates this teardown automatically at every call site.</p>
+
+<h3>5.6 Reflection coverage</h3>
+
+<p><code>XResult</code> is itself reflected as an <code>XSTRUCT</code> so editor inspection, serialization, and debugger visualization work uniformly:</p>
+
+<pre><code>XSTRUCT()
+struct XResult {
+    XPROPERTY(VisibleAnywhere) EDiscriminator Discriminator;
+    XPROPERTY(VisibleAnywhere, EditCondition = "Discriminator == EDiscriminator::Error") XErrorDescriptor ErrorInfo;
+    // Success value is type-erased; editor renders via owning method's signature.
+};</code></pre>
+
+<h3>5.7 Serialization semantics</h3>
+
+<p>When <code>XResult</code> is serialized (e.g., as a multi-user RPC return), the wire format is: discriminator byte + (on Success: serialized T per its own serializer; on Error: serialized error descriptor &mdash; code + typeName + message; stackTrace is dropped on the wire). Cross-config: a Development sender and a Shipping receiver agree on the wire format because both serialize through the same <code>XResult</code> reflection path.</p>
+
+<h3>5.8 Third-party library constraint</h3>
+
+<p>Per plan Section 2 Exception handling row, third-party libraries linked in Shipping must be exception-clean. XBT validates this at link time on Shipping configs by inspecting the third-party library's metadata: any <code>.lib</code> / <code>.a</code> with EH information present fails the Shipping link with a diagnostic naming the library. <code>/Engine/Source/ThirdParty/Licenses/INVENTORY.html</code> (plan Section 2 Third-party license inventory row) gains a column noting exception-cleanness for each entry.</p>
 
 <hr>
 
-<h2>Pending: Per-File Dependency Model (TBD at XBT Implementation)</h2>
-<!-- TBD: Step 0 design will fill this -->
-<p><em>Per master-plan Section 4: the contract carries explicit "TBD at XBT implementation" markers for the per-file dependency model, which can only be hardened once XBT is built. The Step 0.5 addendum (descriptive) will document the per-file dependency model that XBT actually implements, rather than prescribing one ahead of time. The Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it.</em></p>
+<h2>6. C# string &harr; FString Mapping</h2>
+
+<p>Per plan Section 2 String encoding row (Rev 4): <code>FString</code> is UTF-8 on all platforms. C# <code>string</code> transpiles to "a transpiler-emitted immutable string handle wrapping FString &mdash; this handle is invisible in C# source code; user code writes <code>string</code> and <code>ReadOnlySpan&lt;char&gt;</code> as in standard C#. Literal C# strings are emitted as UTF-8 constants at build time (no runtime conversion); the transpiler guarantees pointer-identity for compile-time-interned literals so <code>ReferenceEquals(nameof(X), "X")</code> holds." Per plan Section 2 C# string indexing semantics row (Rev 7): <code>s[i]</code> becomes O(n).</p>
+
+<h3>6.1 The handle type</h3>
+
+<p>XIL2CPP transpiles C# <code>string</code> to a value-type handle:</p>
+
+<pre><code>// Transpiled shape
+struct XCSharpString {
+    const FString* m_storage;    // points into interned FName table OR
+                                 // into per-call cached view
+};</code></pre>
+
+<p>The handle is 8 bytes on all platforms, trivially copyable, no destructor. The <code>FString</code> storage it points into is owned either by the global interned literal pool (for compile-time string literals) or by the runtime string-builder allocator (for runtime-computed strings &mdash; lifetime tracked by call-stack arena or by explicit user-side GC root in the rare case the string escapes).</p>
+
+<h3>6.2 Literal interning</h3>
+
+<p>Compile-time C# string literals emit as UTF-8 constants in the binary's read-only data section. XIL2CPP guarantees pointer identity for them: every occurrence of <code>"open valve"</code> in any transpiled C# resolves to the same <code>const FString*</code>. <code>nameof(X)</code>, <code>typeof(X).Name</code>, and string-literal usages all participate in the interning pool.</p>
+
+<p>Example:</p>
+
+<pre><code>// C#
+string a = "open valve";
+string b = "open valve";
+if (ReferenceEquals(a, b)) { /* always true under XPact */ }
+if (ReferenceEquals(nameof(Valve), "Valve")) { /* also true */ }</code></pre>
+
+<p>Both <code>a</code> and <code>b</code> transpile to handles whose <code>m_storage</code> points to the same <code>const FString*</code> in <code>.rodata</code>.</p>
+
+<h3>6.3 The shared FName table</h3>
+
+<p>Per the UE reference brief recommendation: a <strong>single shared FName table</strong> across XHT-generated and XIL2CPP-generated callers, with stable indices across hot-reload. <code>FName::FromString("open valve")</code> from C++ and the C# literal <code>"open valve"</code> resolve to the same FName index. Per plan Section 2 String encoding row, FName is case-sensitive in MVP &mdash; hashing and comparison are bytewise.</p>
+
+<h3>6.4 Indexing &amp; iteration</h3>
+
+<p>The <code>s[i]</code> operator walks UTF-8 to find the i-th codepoint &mdash; O(n). XIL2CPP emits a build-time warning on <code>s[i]</code> usage in sim-path TUs. Idiomatic alternatives ship in the C# binding surface:</p>
+
+<pre><code>// C# idiomatic alternatives
+ReadOnlySpan&lt;char&gt; span = s.AsSpan();      // O(n) materialize once, O(1) afterward
+int idx = s.IndexOf('v');                  // O(n) but single pass
+string sub = s.Substring(0, 5);            // O(n) materialize once
+
+// New API documented in the C# binding surface
+foreach (int codepoint in s.AsCodepoints())   // iterator, no intermediate buffer
+{
+    // ...
+}</code></pre>
+
+<h3>6.5 Runtime conversion at the IL2CPP boundary</h3>
+
+<p>When C# string crosses to C++ (e.g., a Blueprint-callable C++ function takes <code>const FString&amp;</code>), the conversion is zero-copy: the handle's <code>m_storage</code> pointer is passed directly. When a C++ <code>FString</code> crosses to C# (e.g., a C++-implemented property returns <code>FString</code> to a C# field), XIL2CPP emits a cached-view wrapper that allocates an <code>XCSharpString</code> handle pointing into the FString. The cached view is interned per-call-stack-frame to avoid repeated allocations for the same FString within a frame.</p>
+
+<h3>6.6 What Stage A locks vs. Stage B</h3>
+
+<p>Stage A locks: the handle layout, literal interning behavior, FName table sharing, indexing semantics, the iterator surface (<code>AsSpan</code>, <code>AsCodepoints</code>, <code>IndexOf</code>, <code>Substring</code>).</p>
+
+<!-- STAGE-B: FName binary struct layout (the actual byte-exact FName entry record in the shared table) freezes at the Contract Addendum after XCore-4b ships. -->
+<p><em>Stage B (Contract Addendum) freezes the FName entry binary layout in the shared table. Until then, FName index space is virtualized via XCore-4a's provisional FName implementation; the index is stable across hot-reload at Stage A, but the on-disk serialized format finalizes at Stage B.</em></p>
+
+<hr>
+
+<h2>7. Two-Stage XHT Emit-Format Freeze</h2>
+
+<p>Per plan Section 4 (Rev 4 two-stage freeze clarification): "XHT's emit format is frozen in two stages. (a) Step 0 contract locks the interface &mdash; file naming, invocation protocol, marker macros, surface vocabulary. (b) The binary schema (FName / FClass / FProperty / FField layout, including all replication-metadata slots) is frozen at the Contract addendum that lands when XCore-4b ships at Step 4. Consequence: XHT Step 2 delivers parser-complete + emitter-provisional. XHT's emitter finalizes its concrete output struct layouts at Step 4 when the addendum lands."</p>
+
+<h3>7.1 Stage A &mdash; what this document locks</h3>
+
+<p>Stage A locks the following XHT-relevant interfaces:</p>
+<ul>
+  <li><strong>Generated file naming.</strong> For input header <code>{ModulePath}/{HeaderName}.h</code>, XHT emits <code>{ModuleIntermediate}/{HeaderName}.gen.h</code>. For each module, XHT emits <code>{ModuleIntermediate}/{ModuleName}.gen.cpp</code> aggregating all module-level registration calls.</li>
+  <li><strong>Invocation protocol.</strong> XHT runs as a subprocess of XBT (or as an in-process library &mdash; XBT's choice, internal). XBT writes a JSON manifest (see Section 10) and either passes its path on the command line or calls XHT's in-process entry point with the parsed manifest.</li>
+  <li><strong>Marker macro vocabulary.</strong> Section 1 above.</li>
+  <li><strong>Body-macro suffix table.</strong> Section 1.3 above.</li>
+  <li><strong>Per-file ID scheme.</strong> Section 1.4 above.</li>
+  <li><strong>Per-module text manifest.</strong> XHT emits, alongside its binary outputs, a small text manifest (<code>{ModuleName}.gen.manifest</code>) listing the generated files. XBT reads this manifest as XHT's opaque output; XBT does NOT parse the .gen.h or .gen.cpp content. Per plan Section 4: "XBT consumes XHT output opaquely. XBT treats XHT's output as opaque artifacts indexed by file-level dependency markers."</li>
+</ul>
+
+<h3>7.2 Stage B &mdash; what the Contract Addendum will lock</h3>
+
+<!-- STAGE-B: Concrete binary struct layouts for FName, FClass, FProperty, FField including the full replication-metadata surface per plan Section 2 Replication row. -->
+<p><em>Stage B (Contract Addendum at XCore-4b ship, Step 4) freezes:</em></p>
+<ul>
+  <li><em><strong>FName</strong> binary layout &mdash; the on-disk and in-memory shared-table entry record.</em></li>
+  <li><em><strong>FClass</strong> binary layout &mdash; class-descriptor struct with vtable info, super-class pointer, property list head, function list head.</em></li>
+  <li><em><strong>FProperty</strong> binary layout including all replication-metadata slots: <code>ELifetimeCondition</code>, <code>RepNotify</code> callback function-pointer slot, delta-compression hint flags, replication group ID, owner-only / autonomous-proxy-only / simulated-proxy-only flags.</em></li>
+  <li><em><strong>FField</strong> binary layout &mdash; the generalized property-or-field descriptor.</em></li>
+  <li><em>The choice between UE's Params-style emit and ConstInit-style emit &mdash; XHT spec resolves at System 2.</em></li>
+</ul>
+
+<p>XHT's parser is complete at System 2 (Step 2 in plan Section 4 build order). The emitter is provisional until Step 4. Consumers of XHT-generated headers between Step 2 and Step 4 build against the parser-provided field set but should not depend on exact binary layout. XCore-4a (Step 3) uses a small set of forward-declared opaque types in places that would otherwise see XHT's output; XCore-4b's ship simultaneously finalizes both XHT's emit and the runtime's consumption.</p>
+
+<hr>
+
+<h2>8. Per-File Dependency Model</h2>
+
+<p>Per plan Section 4: "The contract is delivered with explicit 'TBD at XBT implementation' markers for the per-file dependency model (which can only be hardened once XBT is built). Step 0.5 addendum: descriptive &mdash; documents the per-file dependency model that XBT actually implements, rather than prescribing one ahead of time."</p>
+
+<p>This section locks the <em>shape</em> of the dependency-tracking surface and defers the algorithm to Step 0.5.</p>
+
+<h3>8.1 What XBT identifies</h3>
+
+<ul>
+  <li><strong>C++ dependencies:</strong> identified via include-graph walk. Each <code>.cpp</code>'s transitive includes form the prerequisite set for its compile action. XBT carries a per-TU CppDependencyCache analogous to UE's; format defined in <code>/Documents/XBT.html</code>.</li>
+  <li><strong>C# dependencies:</strong> identified via <code>using</code> directive + assembly-reference walk. Each <code>.cs</code>'s referenced assemblies and dependent <code>.cs</code> within the same module form the prerequisite set for its transpilation action.</li>
+  <li><strong>Cross-language dependencies within a module:</strong> when a <code>.cpp</code> consumes XHT-generated headers (which contain registration scaffolding for both C++ and transpiled C# types in the module), the <code>.cpp</code>'s dependency record lists every <code>{Header}.gen.h</code> it included. When any of those generated headers changes (because the source header or source <code>.cs</code> that produced it changed), the <code>.cpp</code> is reinvalidated.</li>
+</ul>
+
+<h3>8.2 Opaque consumption of XHT output</h3>
+
+<p>Per plan Section 4: <strong>XBT does not parse XHT's binary struct layouts.</strong> XBT consumes the per-module text manifest XHT emits (Section 7.1) plus the on-disk content hash of each generated file. When the content hash changes, downstream consumers reinvalidate. This means XBT at Step 1 (System 1) is decoupled from XHT's emit-format finalization at Stage B &mdash; XBT does not need to change when XHT's binary schema freezes.</p>
+
+<h3>8.3 Cross-language dependency record</h3>
+
+<p>For each compile action, XBT records "which XHT-output files were consumed when compiling each .cpp." On the next build, XBT re-checks each recorded file's content hash. If any has changed, the consumer is rebuilt.</p>
+
+<p>Conceptual record shape (illustrative &mdash; final format defined in <code>/Documents/XBT.html</code>):</p>
+
+<pre><code>// Per-TU dependency record (.deps file, XBT internal)
+{
+    "tu": "Engine/Source/Runtime/XGameFramework/Private/XValve.cpp",
+    "consumed_xht_outputs": [
+        { "path": "Intermediate/Engine/XGameFramework/XValve.gen.h", "hash": "ab12..." },
+        { "path": "Intermediate/Engine/XGameFramework/XGameFramework.gen.cpp", "hash": "cd34..." }
+    ],
+    "consumed_includes": [
+        ...
+    ]
+}</code></pre>
+
+<h3>8.4 Step 0.5 addendum scope</h3>
+
+<p>The Step 0.5 addendum, delivered after XBT ships at System 1, will document:</p>
+<ul>
+  <li>The exact on-disk format of the dependency cache.</li>
+  <li>The hash algorithm (likely SHA-256 or xxHash3 &mdash; XBT spec decides).</li>
+  <li>The invalidation rules for module-graph topology changes (a module added / removed / retiered).</li>
+  <li>The garbage-collection rules for stale dependency records.</li>
+</ul>
+
+<p>Per plan Section 4: "The Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it."</p>
+
+<hr>
+
+<h2>9. Module Descriptor Shape &mdash; .Build.cs</h2>
+
+<p>Per plan Section 2 Module composition row: "Mixed-language modules. One module = one DLL = one source tree containing .h/.cpp/.cs freely. XBT enforces a per-file dependency graph so touching one .cs doesn't regen the whole module." Per plan Section 2 Tier dependency enforcement row (Rev 7): "Each module's .Build.cs declares its tier (Tier = Engine | Studio | Project) as an explicit field. XBT rejects dependency edges that violate Engine &lt; Studio &lt; Project ordering at module-resolution time."</p>
+
+<p>This section locks the <code>ModuleRules</code> base class shape that every <code>.Build.cs</code> derives from.</p>
+
+<h3>9.1 The base class</h3>
+
+<pre><code>// XBT &mdash; ModuleRules base (shape locked here; full body in XBT spec)
+public abstract class ModuleRules
+{
+    // === Identity ===
+
+    // Per plan Rev 7 Tier dependency enforcement row.
+    public ModuleTier Tier { get; set; }
+
+    // Runtime / Editor / Developer / Programs / ThirdParty.
+    // Per plan Section 6 footnote: "Tier" here refers to the Unreal-convention
+    // subfolder name &mdash; not the three reusability tiers above.
+    public ModuleType ModuleType { get; set; }
+
+    // Cpp | CSharp | Both. Mixed-language modules are first-class.
+    public Languages Languages { get; set; } = Languages.Cpp;
+
+    // === Sim-path declaration ===
+
+    // Per plan Section 2 Determinism row + Section 4 of this contract.
+    public bool SimPath { get; set; } = false;
+
+    // Per Section 3 of this contract &mdash; suppresses the List&lt;object&gt; warning
+    // when the module legitimately needs it on sim path.
+    public bool SimPathConservativeRootsAllowed { get; set; } = false;
+
+    // === Dependencies ===
+
+    // Public: visible to dependents through this module's public headers.
+    public List&lt;string&gt; PublicDependencyModuleNames { get; } = new();
+
+    // Private: used only by this module's implementation; not exposed to dependents.
+    public List&lt;string&gt; PrivateDependencyModuleNames { get; } = new();
+
+    // Dynamically loaded: this module loads these at runtime via XLiveCoding's
+    // hot-load mechanism. Not linked at build time.
+    public List&lt;string&gt; DynamicallyLoadedModuleNames { get; } = new();
+
+    // === Include paths ===
+
+    public List&lt;string&gt; PublicIncludePaths { get; } = new();
+    public List&lt;string&gt; PrivateIncludePaths { get; } = new();
+
+    // Public include-only dependencies &mdash; the dependent module's headers are
+    // visible but no link is performed (analog of UE's PublicIncludePathModuleNames).
+    public List&lt;string&gt; PublicIncludePathModuleNames { get; } = new();
+
+    // === Preprocessor definitions ===
+
+    public List&lt;string&gt; PublicDefinitions { get; } = new();
+    public List&lt;string&gt; PrivateDefinitions { get; } = new();
+
+    // === Compile environment ===
+
+    public PCHUsageMode PCHUsage { get; set; } = PCHUsageMode.Default;
+
+    // Per plan Section 2 Determinism row + Section 4 of this contract:
+    // overridden to Precise when SimPath = true.
+    public FPSemantics FPSemantics { get; set; } = FPSemantics.Default;
+
+    public OptimizeCodeMode OptimizeCode { get; set; } = OptimizeCodeMode.Default;
+
+    // Per plan Section 2 Exception handling row &mdash; per-config bool.
+    public bool bEnableExceptions { get; set; } = true;
+
+    public bool bUseRTTI { get; set; } = false;
+    public bool bUseUnity { get; set; } = true;
+    public bool bWarningsAsErrors { get; set; } = true;
+
+    // === Constructor takes target view ===
+
+    protected ModuleRules(ReadOnlyTargetRules target) { /* ... */ }
+}</code></pre>
+
+<h3>9.2 Circular dependencies</h3>
+
+<p>Per the UE reference brief: UE supports <code>CircularlyReferencedDependentModules</code> as an explicit allow-list. <strong>XPact bans circular module dependencies outright at the contract level.</strong> XBT fails the build at module-resolution time with a diagnostic naming the cycle. There is no allow-list. Modules that genuinely need bidirectional access must be merged or split &mdash; the cycle is an architectural smell that the contract refuses to launder.</p>
+
+<h3>9.3 Tier enforcement</h3>
+
+<p>XBT validates these edges at module-resolution time:</p>
+<ol>
+  <li>A module with <code>Tier = Engine</code> may only depend on <code>Engine</code> modules.</li>
+  <li>A module with <code>Tier = Studio</code> may depend on <code>Studio</code> or <code>Engine</code> modules.</li>
+  <li>A module with <code>Tier = Project</code> may depend on <code>Project</code>, <code>Studio</code>, or <code>Engine</code> modules.</li>
+</ol>
+
+<p>Per plan Section 2 Tier dependency enforcement row: "Source-tree path checks are NOT used &mdash; paths can be symlinked or restructured; the declared tier in <code>.Build.cs</code> is canonical." Violations fail the build at resolution.</p>
+
+<h3>9.4 Engine-version compatibility</h3>
+
+<p>Per plan Section 2 Plugin versioning &amp; pinning row (Rev 8): XBT enforces engine-version compatibility at build time &mdash; the project's declared <code>EngineVersion</code> must satisfy every enabled Studio plugin's <code>MinEngineVersion &le; EngineVersion &le; MaxEngineVersion</code>. The plugin descriptor (<code>.xplugin</code>) is read by XBT alongside <code>.Build.cs</code>. Schema validation is part of module resolution.</p>
+
+<h3>9.5 RulesAssembly compilation</h3>
+
+<p>UE compiles <code>.Build.cs</code> files via Roslyn at startup, caching the assembly by source-hash. XPact's choice between Roslyn-compiled rules and a declarative-only subset is <strong>internal to XBT</strong> &mdash; either approach satisfies this contract. The contract only requires: hash-keyed caching of the rules artifact; deterministic ordering of module discovery; clear failure mode when a <code>.Build.cs</code> fails to compile or load. Plan Section 4 places this decision in XBT's spec, not here.</p>
+
+<h3>9.6 Example: a mixed-language module</h3>
+
+<pre><code>// /Engine/Source/Runtime/XScoring/XScoring.Build.cs
+public class XScoring : ModuleRules
+{
+    public XScoring(ReadOnlyTargetRules target) : base(target)
+    {
+        Tier = ModuleTier.Engine;
+        ModuleType = ModuleType.Runtime;
+        Languages = Languages.Both;          // .h/.cpp/.cs all live here
+        SimPath = true;                       // scoring tick participates in lockstep
+
+        PublicDependencyModuleNames.AddRange(new[]
+        {
+            "XCore", "XCoreXObject", "XSerialization", "XTaskGraph"
+        });
+        PrivateDependencyModuleNames.AddRange(new[]
+        {
+            "XTelemetry"
+        });
+
+        PublicIncludePaths.Add("XScoring/Public");
+        PrivateIncludePaths.Add("XScoring/Private");
+
+        // FPSemantics auto-set to Precise because SimPath = true.
+        bEnableExceptions = (target.Configuration != BuildConfiguration.Shipping);
+        bUseRTTI = false;
+        bWarningsAsErrors = true;
+    }
+}</code></pre>
+
+<hr>
+
+<h2>10. Toolchain Pipeline &mdash; XBT &rarr; XHT &rarr; XIL2CPP &rarr; C++ compile &rarr; link</h2>
+
+<p>This section locks the end-to-end invocation sequence and the JSON manifest XBT emits as the single source of truth shared with XHT and XIL2CPP. The manifest is the analog of UE's UHTManifest, extended to cover C# files as well.</p>
+
+<h3>10.1 The sequence</h3>
+
+<ol>
+  <li><strong>XBT discovery + graph build.</strong> XBT reads the root engine descriptor (<code>/Engine/Engine.xengine</code>), the project descriptor (<code>/Projects/&lt;ProductName&gt;/&lt;ProductName&gt;.xproject</code>), and every reachable <code>.Build.cs</code>. Validates Tier per Section 9.3; validates engine-version compatibility per Section 9.4; validates every enabled plugin's <code>MinEngineVersion / MaxEngineVersion</code>. Builds the module dependency graph. Fails on any cycle or constraint violation.</li>
+  <li><strong>XBT manifest emit.</strong> XBT writes a JSON manifest to <code>Intermediate/Build/{Target}/{Configuration}/Manifest.json</code> (path illustrative). Format below.</li>
+  <li><strong>XHT invocation.</strong> XBT invokes XHT with the manifest path. XHT reads the manifest, parses C++ headers (single-pass tokenizer for reflection markers; the C++ compile happens later and is authoritative for type-checking the C++) and attribute-marked <code>.cs</code> files (XHT's C# front-end), and emits per-header <code>{Header}.gen.h</code>, per-module <code>{Module}.gen.cpp</code>, and the per-module text manifest <code>{Module}.gen.manifest</code>. <strong>XHT runs in parallel across modules</strong> (no inter-module dependencies in the parse phase).</li>
+  <li><strong>XIL2CPP invocation.</strong> XBT invokes XIL2CPP with the same manifest. XIL2CPP reads the manifest, transpiles <code>.cs</code> files into <code>.cpp</code>/<code>.h</code> with GC root scaffolding (Section 3), exception codegen switch (Section 5), C# string handle emission (Section 6), and symbol mangling (Section 2). XIL2CPP also runs in parallel across modules.</li>
+  <li><strong>Copyright validation.</strong> XBT runs <code>ValidateCopyright</code> action over every authored source file in the build (<code>.h</code>, <code>.cpp</code>, <code>.cs</code>; not generated files; not <code>/Engine/Source/ThirdParty/</code>). Per plan Section 2 Copyright / licensing row: every file must begin with <code>// Copyright Simgenics. All Rights Reserved.</code> Build fails on any missing header. The action is cached by source hash; an unchanged file is not re-validated.</li>
+  <li><strong>C++ compile actions.</strong> XBT schedules compile actions: original <code>.cpp</code>, XHT-generated <code>.gen.cpp</code>, XIL2CPP-generated <code>.cpp</code>. Per-TU flag derivation per Section 4. Action graph &mdash; each compile is an <code>IExternalAction</code> with explicit Prerequisites / Produces.</li>
+  <li><strong>Link.</strong> XBT links each module into a DLL. Banned-platform-libm check (Section 4) applies on SimPath modules. Exception-cleanness check on third-party libs (Section 5.8) applies on Shipping.</li>
+</ol>
+
+<h3>10.2 The manifest format</h3>
+
+<p>Single JSON file. Top-level shape:</p>
+
+<pre><code>{
+    "ContractVersion": "v1",
+    "Target": {
+        "Name": "TrainingProductEditor",
+        "Type": "Editor",
+        "Platform": "Win64",
+        "Configuration": "Development",
+        "Architecture": "x86_64",
+        "FipsMode": false,
+        "SimPathConservativeRootsAllowed": false
+    },
+    "EngineVersion": "0.1.0",
+    "Modules": [
+        {
+            "Name": "XCore",
+            "Tier": "Engine",
+            "ModuleType": "Runtime",
+            "Languages": ["Cpp"],
+            "SimPath": false,
+            "BaseDirectory": "Engine/Source/Runtime/XCore",
+            "OutputDirectory": "Intermediate/Build/.../XCore",
+            "PublicHeaders":   ["Public/XCore.h", "Public/Math/XVector.h", ...],
+            "InternalHeaders": ["Internal/...", ...],
+            "PrivateHeaders":  ["Private/...", ...],
+            "ClassesHeaders":  ["Classes/...", ...],
+            "CSharpSources":   [],
+            "PublicDefinitions":  ["XCORE_API=DLLIMPORT", ...],
+            "PrivateDefinitions": [...],
+            "ModuleDependencies": [],
+            "GeneratedCPPFilenameBase": "XCore.gen",
+            "GeneratedCodeVersion": "v1"
+        },
+        {
+            "Name": "XScoring",
+            "Tier": "Engine",
+            "ModuleType": "Runtime",
+            "Languages": ["Cpp", "CSharp"],
+            "SimPath": true,
+            ...
+            "CSharpSources": ["Private/Scoring.cs", "Private/Rubric.cs"],
+            ...
+        }
+    ]
+}</code></pre>
+
+<p>Both XHT and XIL2CPP consume this manifest. <strong>Neither parses any other tool's binary output during their own work.</strong> The manifest is the join key.</p>
+
+<h3>10.3 Action graph</h3>
+
+<p>Every step that produces or consumes files is an action with explicit prerequisites and produced files. The contract names these action types:</p>
+
+<ul>
+  <li><code>ValidateCopyrightAction</code> &mdash; per source file. Cached by source hash. Output: a marker file in <code>Intermediate</code>.</li>
+  <li><code>WriteManifestAction</code> &mdash; one per build. Output: the JSON manifest.</li>
+  <li><code>XHTAction</code> &mdash; one per module. Inputs: manifest + all module headers + all module .cs (read by XHT's C# front-end). Outputs: <code>{Header}.gen.h</code> per public/private header + <code>{Module}.gen.cpp</code> + <code>{Module}.gen.manifest</code>.</li>
+  <li><code>XIL2CPPAction</code> &mdash; one per module. Inputs: manifest + all module .cs files + (XCoreXObject's compiled header surface, for the GC ABI emit). Outputs: transpiled <code>.cpp</code>/<code>.h</code> in the module's intermediate directory.</li>
+  <li><code>CompileCppAction</code> &mdash; one per <code>.cpp</code> (original, XHT-generated, or XIL2CPP-generated). Inputs: .cpp + transitive includes. Output: .obj/.o.</li>
+  <li><code>LinkModuleAction</code> &mdash; one per module. Inputs: all .obj/.o + dependency-module import libs. Output: module DLL.</li>
+</ul>
+
+<p>Incremental builds re-run only actions whose declared prerequisites have changed. Per plan Section 11 Step 5.5 (g): byte-identical compile output across two clean builds is a Foundation Prototype pass criterion &mdash; achieved via the reproducibility flags in Section 2.1 plus deterministic action scheduling.</p>
+
+<hr>
+
+<h2>11. UE Patterns Adopted vs Divergent</h2>
+
+<p>Summary of where this contract follows Unreal precedent vs. departs from it. Each line cross-references the relevant plan section.</p>
+
+<h3>11.1 Adopted directly from UE</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Pattern</th><th>Plan reference</th></tr></thead>
+  <tbody>
+    <tr><td><code>ModuleRules</code> base-class shape with three-tier dependency model (Public / Private / DynamicallyLoaded)</td><td>Section 2 Module composition row; Section 9 of this contract.</td></tr>
+    <tr><td>JSON manifest as the XBT &harr; XHT contract (mirrors UE's UHTManifest)</td><td>Section 4 "XBT consumes XHT output opaquely"; Section 10 of this contract.</td></tr>
+    <tr><td><code>IExternalAction</code> graph for incremental builds (each command is an action with prerequisites + produces)</td><td>Section 10 of this contract.</td></tr>
+    <tr><td>File-ID + line-number macro naming (with the <code>XID_</code> prefix to avoid UE clash)</td><td>Section 1.4 of this contract.</td></tr>
+    <tr><td><code>FCoreRedirect</code> entry shape adopted by XCoreRedirects</td><td>Section 2 Cross-tier asset references &amp; redirects row (Rev 8); XCoreRedirects spec consumes it.</td></tr>
+    <tr><td>Per-target settings struct passed to XHT (UE's <code>UHTTargetSettings</code> analog)</td><td>Section 4.5 of this contract.</td></tr>
+    <tr><td>Enum-then-translate flag propagation (per-module enum &rarr; CppCompileEnvironment &rarr; toolchain class)</td><td>Section 2 Determinism row; Section 4 of this contract.</td></tr>
+    <tr><td>Marker macro vocabulary (XCLASS / XSTRUCT / XENUM / XINTERFACE / XFUNCTION / XPROPERTY / XDELEGATE / XPARAM / XMETA, plus XGENERATED_BODY)</td><td>Section 2 Naming row; Section 1 of this contract.</td></tr>
+    <tr><td>Body-macro suffix table (_PROLOG, _GENERATED_BODY, _INCLASS, _RPC_WRAPPERS, _ACCESSORS, _FIELDNOTIFY, _VINTERFACES, _STANDARD_CONSTRUCTORS)</td><td>Section 1.3 of this contract.</td></tr>
+  </tbody>
+</table>
+
+<h3>11.2 Divergent from UE</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Divergence</th><th>Plan reference / rationale</th></tr></thead>
+  <tbody>
+    <tr><td>Three-tier Engine / Studio / Project reusability model + Tier-field enforcement (no UE equivalent)</td><td>Section 2 Folder structure row (Rev 6); Tier dependency enforcement row (Rev 7).</td></tr>
+    <tr><td>Mixed-language modules &mdash; one DLL contains .h / .cpp / .cs freely</td><td>Section 2 Module composition row.</td></tr>
+    <tr><td>JSON manifest extended with C# source-file lists per module</td><td>Section 10.2 of this contract.</td></tr>
+    <tr><td>Copyright validation as a pre-compile action with hashed cache</td><td>Section 2 Copyright / licensing row (Rev 6); Section 10.1 step 5 of this contract.</td></tr>
+    <tr><td>FIPS-switchable crypto as a target-level flag propagating to library selection</td><td>Section 2 Network security row (Rev 8); Section 4.5 / 10.2 of this contract.</td></tr>
+    <tr><td>GC root-registration ABI &mdash; extern "C" surface emitted by XIL2CPP at every non-GC-container site holding XObject refs</td><td>Section 2 Memory/GC row (Rev 4); Section 3 of this contract. No UE precedent &mdash; UE uses a single C++ GC and managed C# in a sibling Mono runtime.</td></tr>
+    <tr><td>Exception codegen ABI-stable boundary &mdash; one extern "C" shim signature across configs, body lowering varies (native exceptions in Dev, Result&lt;T,E&gt; in Shipping)</td><td>Section 2 Exception handling row (Rev 5); Section 5 of this contract.</td></tr>
+    <tr><td>C# <code>string</code> &rarr; immutable handle wrapping FString (UTF-8 throughout)</td><td>Section 2 String encoding row (Rev 4); C# string indexing row (Rev 7); Section 6 of this contract.</td></tr>
+    <tr><td>Circular module dependencies banned outright (no allow-list)</td><td>Section 9.2 of this contract. Cf. UE's <code>CircularlyReferencedDependentModules</code>.</td></tr>
+    <tr><td>File ID decoupled from on-disk path (PluginName::LogicalPath pair vs. UE's filesystem-path-as-identity)</td><td>Section 1.4 of this contract. Preempts the UE gotcha that moving a header invalidates every consumer's file-ID symbols.</td></tr>
+    <tr><td>Symbol mangling versioned with <code>_v1</code> suffix on contract</td><td>Section 2 XIL2CPP symbol naming row (Rev 7); Section 2 of this contract.</td></tr>
+    <tr><td>Free-function transpiled methods with explicit <code>XObject* self</code> first parameter</td><td>Section 2.3 of this contract. Enables Live-Coding-style RVA trampolines without vtable rewriting.</td></tr>
+    <tr><td>SimPath banned-API check (regex pass for non-deterministic platform calls on sim-path TUs)</td><td>Section 4.4 of this contract.</td></tr>
+  </tbody>
+</table>
+
+<h3>11.3 Not yet decided &mdash; deferred to per-system specs</h3>
+
+<ul>
+  <li><strong>RulesAssembly Roslyn-vs-declarative trade-off.</strong> XBT's choice; documented in <code>/Documents/XBT.html</code> when XBT spec ships. Either satisfies the contract per Section 9.5.</li>
+  <li><strong>Params-vs-ConstInit emit mode.</strong> XHT's choice between UE's two emit styles, finalized at Stage B per Section 7.2.</li>
+  <li><strong>Per-file dependency cache file format.</strong> Step 0.5 addendum, descriptive; per Section 8 of this contract.</li>
+</ul>
+
+<hr>
+
+<h2>12. Verification</h2>
+
+<p>This section enumerates the verifications that XBT.html, XHT.html, and XIL2CPP.html specs (plus their implementations) must satisfy. Several map directly to Foundation Prototype pass criteria (plan Section 11 Step 5.5). Others are contract-internal acceptance gates that XBT enforces during routine builds.</p>
+
+<h3>12.1 Reproducibility test</h3>
+
+<p><strong>Statement:</strong> Two clean builds of the same source on the same machine produce byte-identical compile outputs and byte-identical link outputs. This includes generated headers, transpiled C++, .obj/.o files, and final DLLs.</p>
+
+<p><strong>Mechanism:</strong> The reproducibility flags from Section 2.1 (<code>/Brepro</code>, <code>-frandomize-layout-seed-file=</code>, <code>--build-id=none</code>) plus XIL2CPP / XHT's deterministic ordering disciplines from Section 2.4.</p>
+
+<p><strong>Maps to:</strong> Foundation Prototype criterion (g) "Symbol stability: repeated XIL2CPP runs over the same input produce byte-identical mangled symbol names" generalized to the entire toolchain.</p>
+
+<h3>12.2 Hot-reload symbol stability test</h3>
+
+<p><strong>Statement:</strong> Running XIL2CPP twice over the same input <code>.cs</code> source produces byte-identical mangled output symbols. A method in build N+1 has the same symbol name as in build N if its signature is unchanged.</p>
+
+<p><strong>Mechanism:</strong> Section 2 mangling rule (purely structural, no hash, no random) + Section 2.4 determinism requirements.</p>
+
+<p><strong>Maps to:</strong> Foundation Prototype criterion (g). Critical for XLiveCoding's RVA-rewrite trampolines &mdash; the trampoline target's address resolves by symbol name.</p>
+
+<h3>12.3 Cross-config ABI test</h3>
+
+<p><strong>Statement:</strong> The same C# code compiled in Development (with native exceptions) and in Shipping (with <code>Result&lt;T,E&gt;</code> lowering) produces identical extern "C" entry-point signatures. A C++ caller compiled in Development can link against a transpiled C# module compiled in Shipping (and vice versa) without ABI mismatch.</p>
+
+<p><strong>Mechanism:</strong> Section 5 ABI-stable boundary &mdash; the shim signature is fixed; body lowering differs internally only.</p>
+
+<p><strong>Validation:</strong> XBT's per-system test harness includes a cross-config link check &mdash; build the same module in Dev and Shipping, link the Dev binary against the Shipping module's import lib, run a smoke test. Failure fails the system's merge.</p>
+
+<h3>12.4 Determinism flag-propagation test</h3>
+
+<p><strong>Statement:</strong> A module declared <code>SimPath = true</code> in its <code>.Build.cs</code> compiles with <code>/fp:precise</code> + <code>-ffp-contract=off</code> + Sleef-vendored transcendentals + the banned-API regex check applied. A SimPath module that includes a header from a non-SimPath dependency does not inherit the dep's flag posture &mdash; SimPath is per-module.</p>
+
+<p><strong>Mechanism:</strong> Section 4 of this contract. XBT's per-platform-toolchain flag tables + the <code>/FI</code> / <code>-include</code> header gate + the link-time platform-libm exclusion.</p>
+
+<p><strong>Validation:</strong> The test harness compiles a synthetic SimPath module containing a single <code>sin(x)</code> call; disassembles the resulting <code>.obj</code>; asserts the call target resolves to <code>XSleef_sin</code> not <code>__libm_sse2_sin</code> / <code>sin@GLIBC</code>. Similarly the test harness validates that banned APIs (<code>QueryPerformanceCounter</code>) on a SimPath TU fail the build.</p>
+
+<h3>12.5 Tier enforcement test</h3>
+
+<p><strong>Statement:</strong> A module declared <code>Tier = Engine</code> in its <code>.Build.cs</code> that lists a Studio module in its <code>PublicDependencyModuleNames</code> fails the build at module-resolution time. The diagnostic names the offending module and the upward edge.</p>
+
+<p><strong>Mechanism:</strong> Section 9.3 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic project with an Engine module declaring a Studio dependency; asserts XBT exits non-zero with a diagnostic matching the expected pattern.</p>
+
+<h3>12.6 Copyright validation test</h3>
+
+<p><strong>Statement:</strong> A source file (.h, .cpp, .cs) under any tier's <code>Source/</code> that does not begin with <code>// Copyright Simgenics. All Rights Reserved.</code> fails the build. A third-party file under <code>/Engine/Source/ThirdParty/</code> is excluded from the check.</p>
+
+<p><strong>Mechanism:</strong> Section 10.1 step 5 of this contract; plan Section 2 Copyright / licensing row.</p>
+
+<p><strong>Validation:</strong> The test harness adds a synthetic source file without the header; asserts XBT's <code>ValidateCopyrightAction</code> fails with a diagnostic naming the file.</p>
+
+<h3>12.7 Engine-version compatibility test</h3>
+
+<p><strong>Statement:</strong> A project pinning <code>EngineVersion = 0.4.0</code> with a Studio plugin declaring <code>MinEngineVersion = 0.5.0</code> fails the build at module-resolution time.</p>
+
+<p><strong>Mechanism:</strong> Section 9.4 of this contract; plan Section 2 Plugin versioning &amp; pinning row.</p>
+
+<p><strong>Validation:</strong> The test harness builds a synthetic project + plugin combination violating the constraint; asserts XBT exits with a clear diagnostic.</p>
+
+<h3>12.8 Circular-dependency rejection test</h3>
+
+<p><strong>Statement:</strong> Two modules with mutual dependencies fail the build at module-resolution time. The diagnostic names the cycle.</p>
+
+<p><strong>Mechanism:</strong> Section 9.2 of this contract.</p>
+
+<p><strong>Validation:</strong> The test harness constructs a synthetic A &rarr; B &rarr; A cycle; asserts XBT exits non-zero with a cycle diagnostic.</p>
+
+<h3>12.9 Reflection round-trip test</h3>
+
+<p><strong>Statement:</strong> A transpiled C# property is settable and gettable through XPropertyEditor's reflection-driven path with no marshalling errors.</p>
+
+<p><strong>Maps to:</strong> Foundation Prototype criterion (f).</p>
+
+<p><strong>Mechanism:</strong> XHT extracts the property from <code>[XProperty]</code>-attributed C# fields; XIL2CPP transpiles to a getter/setter pair the shared FProperty table can call; XCoreXObject's reflection runtime dispatches to them.</p>
+
+<h3>12.10 Aggregate gate &mdash; the Foundation Prototype</h3>
+
+<p>The contract's correct implementation across XBT + XHT + XIL2CPP is the prerequisite for the Foundation Prototype milestone at plan Section 11 Step 5.5. Until criteria (a) through (g) hold, the contract is not validated in implementation. The seven Foundation Prototype criteria are:</p>
+
+<ol type="a">
+  <li>GC pause &lt; 5ms typical on Quest 3 (validates the GC root-registration ABI's throughput in steady state).</li>
+  <li>GC fallback &lt; 50ms on Quest 3 (validates the GC root-registration ABI under saturated remembered-set conditions).</li>
+  <li>Cross-arch determinism (validates Section 4 flag propagation + Sleef substitution).</li>
+  <li>Single-method hot-patch latency &lt; 30s (validates Section 2 symbol mangling stability + XLiveCoding's patch-DLL discovery).</li>
+  <li>Cascade hot-patch latency &lt; 120s nominal / &lt; 150s timeout (validates the XLiveCoding cascade orchestration's interaction with Section 9 module-graph topology).</li>
+  <li>Reflection round-trip (validates Sections 1 + 7 surfaces against runtime consumption).</li>
+  <li>Symbol stability (validates Section 2 mangling determinism + Section 2.1 reproducibility flags).</li>
+</ol>
+
+<p>Per plan Section 11: "Fail criterion: any single criterion not met. Failure triggers a foundational-design review &mdash; revisit XCoreXObject + XIL2CPP design (and possibly the lockstep-determinism commitment) before committing further engineering effort."</p>
+
+<hr>
+
+<p><em>End of Toolchain Contract &mdash; Stage A. The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers. The Step 0.5 addendum will pin the per-file dependency model after XBT (System 1) implementation lands.</em></p>
 
 </body>
 </html>
