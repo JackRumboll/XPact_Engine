@@ -1,0 +1,68 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Toolchain</title>
+</head>
+<body>
+
+<h1>XBT.Toolchain</h1>
+
+<p>The platform-toolchain abstraction layer for the XPact Build Tool.
+Translates module-level enums (<code>FPSemantics</code>,
+<code>OptimizeCodeMode</code>, <code>SimdLevel</code>, <code>SimPath</code>)
+into the per-platform flag sets MSVC and Clang accept. Constructs the
+<code>IExternalAction</code> instances for compile and link.</p>
+
+<p>Per <code>/Documents/XBT.html</code> Rev 4 Sections 7 (Toolchain
+Abstraction), 19.1 (Reproducibility Envelope) and Toolchain Contract
+Rev 13 Section 4 (<em>"Determinism Flag Propagation"</em>) + Section 5
+(<em>"Exception Codegen Switch"</em>).</p>
+
+<p>Public surface (Phase 1.2):</p>
+<ul>
+  <li><code>XToolChain</code> &mdash; abstract base. Owns the
+  <code>CompileSource</code>, <code>LinkModule</code>,
+  <code>GetCompileArguments_FPSemantics</code>,
+  <code>GetCompileArguments_OptimizeCode</code>,
+  <code>GetCompileArguments_Simd</code>,
+  <code>GetCompileArguments_SimPath</code> seams.</li>
+
+  <li><code>XMSVCToolChain</code> &mdash; concrete subclass for Win64.
+  Discovers MSVC via <code>vswhere.exe</code> (cached). Emits the
+  unconditional reproducibility envelope (<code>/Brepro</code>,
+  <code>/BREPRO</code>, <code>/TIMESTAMP:0</code>,
+  <code>/pathmap:&lt;RepoRoot&gt;=X:/R</code>,
+  <code>/INCREMENTAL:NO</code>,
+  <code>/d2:-cgmanifestencoded-</code>). SIMD lever maps to
+  <code>/arch:&lt;level&gt;</code>; SimPath modules force
+  <code>/fp:precise</code> + the <code>&le;SSE42</code> ceiling.</li>
+
+  <li><code>XClangToolChain</code> &mdash; concrete subclass for Linux
+  and Android. Discovers Clang via <code>$LLVM_HOME</code> or
+  <code>$ANDROID_NDK_ROOT</code>. Emits the reproducibility envelope
+  (<code>-fdebug-prefix-map</code>, <code>-fno-ident</code>,
+  <code>-Wl,--build-id=none</code>,
+  <code>-fdeterministic-cgu-order</code>). SimPath modules force
+  <code>-ffp-contract=off</code> + <code>-mno-fma</code>; the
+  <code>-include XSimPathMathOverrides.h</code> header gate is injected
+  by XBT (the header file itself lands in a later phase).</li>
+
+  <li><code>VCEnvironment</code> &mdash; the cached MSVC discovery
+  record (CompilerPath, LinkerPath, include paths, lib paths, Windows
+  SDK version). Mirrors UE's <code>VCEnvironment</code>.</li>
+</ul>
+
+<p><strong>Subagent A coordination.</strong> The toolchain code consumes
+<code>ModuleRules</code> and <code>TargetRules</code> from
+<code>XBT.Configuration</code>. Until Subagent A's project surfaces those
+types, the toolchain uses placeholder POCOs declared in the
+<code>Simgenics.XPact.XBT.Toolchain._Placeholders</code> namespace whose
+field set matches XBT.html Rev 4 Section 4.2 verbatim. When A's types
+land, the placeholders are removed and the toolchain repoints at
+<code>XBT.Configuration</code>'s real types &mdash; the field-set
+contract is identical, so no API changes ripple downstream.</p>
+
+</body>
+</html>

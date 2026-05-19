@@ -1,0 +1,35 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.Configuration</RootNamespace>
+    <AssemblyName>XBT.Configuration</AssemblyName>
+    <Description>Descriptor surface for XBT: ModuleRules + TargetRules POCOs, the .Build.toml parser, the sandboxed Starlark-subset expression evaluator, IBuildHook interface, and cross-tier dependency-matrix enforcement. Per /Documents/XBT.html Rev 4 Section 4 and Toolchain Contract Rev 13 Section 9.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+    <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Tomlyn is the .Build.toml parser. Pinned to 0.17.0 (latest stable
+      0.17.x line as of 2026-05-19). Tomlyn is small (~150 KB), pure
+      managed, and produces a typed DOM the BuildTomlParser walks.
+      Per /Documents/XBT.html Section 3.2 (NEW Rev 2 declarative-first
+      descriptor format).
+    -->
+    <PackageReference Include="Tomlyn" Version="0.17.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      XBT.Tests needs access to internal parser helpers (e.g. the
+      raw-AST visitor) without making them part of the public surface
+      consumed by XBT.ActionGraph / XBT.Toolchain.
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
+  </ItemGroup>
+
+</Project>

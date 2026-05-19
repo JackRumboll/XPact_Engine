@@ -1,0 +1,46 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Discovery</title>
+</head>
+<body>
+
+<h1>XBT.Discovery</h1>
+
+<p>Plugin and module discovery layer of the XPact Build Tool. Walks
+<code>/Engine/</code>, <code>/Studio/</code>, and <code>/Projects/</code>
+trees for <code>.xplugin</code> and <code>.Build.toml</code> files,
+applies shadow precedence per Toolchain Contract Rev 13 Section 9.4
+(Project shadows Studio shadows Engine for same plugin name), and
+records all observed plugin descriptors so a hot-rebuild does not
+spuriously rebuild when a non-shadowed plugin elsewhere is touched
+(the Rev 2 audit finding #8 fix in
+<code>/Documents/XBT.html</code> Section 17.2).</p>
+
+<p>Public surface (Phase 1.2):</p>
+<ul>
+  <li><code>PluginEnumerator</code> &mdash; walks the three plugin
+  roots (<code>/Engine/Plugins/</code>, <code>/Studio/Plugins/</code>,
+  <code>/Projects/&lt;P&gt;/Plugins/</code>) for <code>*.xplugin</code>
+  files. Returns a <code>PluginCatalog</code>.</li>
+  <li><code>ModuleEnumerator</code> &mdash; walks every tier's
+  <code>Source/</code> tree and each plugin's <code>Source/</code> tree
+  for <code>*.Build.toml</code> files. Returns a
+  <code>ModuleCatalog</code>.</li>
+  <li><code>PluginCatalog</code> / <code>ModuleCatalog</code> &mdash;
+  deduplicated, tier-tagged result sets. The plugin catalog records
+  ALL observed descriptors of each name so cache invalidation tracks
+  shadow changes correctly.</li>
+  <li><code>DiscoveryDiagnostics</code> &mdash; structured diagnostics
+  via the <code>Logger</code> when a plugin/module is invalid or
+  fails tier validation.</li>
+</ul>
+
+<p><strong>No engine-runtime imports.</strong> Pure tooling code;
+references <code>XBT.Core</code>, <code>XBT.Manifest</code>,
+<code>XBT.Configuration</code>.</p>
+
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.ActionGraph</title>
+</head>
+<body>
+
+<h1>XBT.ActionGraph</h1>
+
+<p>The action-graph and execution subsystem of the XPact Build Tool. Owns
+the in-memory build DAG (<code>ActionGraph</code>), the per-output
+content-hash cache (<code>ActionHistory</code>), and the local parallel
+executor (<code>ParallelExecutor</code>).</p>
+
+<p>Per <code>/Documents/XBT.html</code> Rev 4 Sections 5 (Action Graph),
+6 (Executor), 15 (Caching), and Toolchain Contract Rev 13 Section 10.3
+(<em>"Action Graph"</em>) + Section 13 (<em>"Exit Code Surface"</em>).</p>
+
+<p>Public surface (Phase 1.2):</p>
+<ul>
+  <li><code>XActionType</code> &mdash; enum locking the action-type slots
+  per Contract Section 10.3. Slots 0&ndash;8 + 13 + 16 are live; slots
+  9&ndash;15 are Phase 2 reservations (XPactBuildAccelerator,
+  XLiveCoding); slot 17 (formerly <code>RunPostBuildAction</code>) is
+  retired and never reused. Slot ordering is the cache-key input that
+  <code>ActionHistory.CurrentVersion</code> hashes.</li>
+
+  <li><code>IExternalAction</code> + <code>ExternalAction</code> &mdash;
+  the per-action contract (Section 5.2). Each action declares its
+  prerequisites and produces, the command line to run, the
+  <code>CommandVersion</code> hash (auto-derived from the field set), the
+  remote-cache key components, and the provenance fields. Implementations
+  are immutable <code>record</code>s; sorting + determinism rules
+  enforced at construction.</li>
+
+  <li><code>LinkedAction</code> &mdash; an <code>IExternalAction</code>
+  wrapped with the resolved <code>PrerequisiteActions</code> back-links
+  for topological sort and scheduling.</li>
+
+  <li><code>ActionGraph</code> &mdash; the DAG. Builds the
+  <code>FileItem &rarr; LinkedAction</code> producer map, validates
+  conflicts, detects cycles (Kahn's algorithm with deterministic
+  tiebreak by <code>CommandVersion</code>), and emits a sorted list
+  suitable for executor dispatch. Throws
+  <code>ActionGraphConflictException</code> (exit 80) on duplicate-producer
+  output and <code>ActionGraphCycleException</code> (exit 80) on
+  cycle detection. Supports <code>GetActionsForSubset</code> for
+  XLiveCoding's compile-only pass (Section 16.6).</li>
+
+  <li><code>ActionHistory</code> &mdash; per-output content-hash cache
+  (Section 15.2). Partitioned by hash-prefix bucket for low-contention
+  parallel writes; persisted atomically (temp + rename per Section 6.4).
+  <code>CurrentVersion</code> is auto-derived from a BLAKE3 hash of the
+  <code>IExternalAction</code> property set (footgun #8 preempt).</li>
+
+  <li><code>ParallelExecutor</code> &mdash; local-only worker pool sized
+  to <code>Environment.ProcessorCount</code>. Honors cancellation
+  (Ctrl-C with 5-second grace per Section 6.4); writes outputs through
+  temp-file + atomic-rename so a killed action never leaves a torn
+  output; respects <code>bCanExecuteRemotely</code> as a hint
+  (Phase 1: ignored; Phase 2: consumed by XPactBuildAccelerator).</li>
+</ul>
+
+<p><strong>No engine-runtime imports.</strong> Pure tooling code; only
+references <code>XBT.Core</code> (primitives) and <code>XBT.Manifest</code>
+(shared enums + ContractVersion).</p>
+
+</body>
+</html>

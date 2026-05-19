@@ -1,0 +1,26 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.ActionGraph</RootNamespace>
+    <AssemblyName>XBT.ActionGraph</AssemblyName>
+    <Description>Action-graph data model + executor for XBT. Owns IExternalAction, XActionType, LinkedAction, ActionGraph (DAG build + cycle detection + deterministic topo sort), ActionHistory (per-output IoHash cache), and ParallelExecutor (local worker pool with cancellation + atomic-rename per XBT.html Section 6.4). Per /Documents/XBT.html Rev 4 Sections 5, 6, 15 and Toolchain Contract Rev 13 Section 10.3.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+    <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      XBT.Tests needs access to internal test hooks on ActionHistory
+      (in-process file partition resets, deterministic CurrentVersion
+      probes) and on ParallelExecutor (single-thread mode for ordering
+      assertions) per /Documents/XBT.html Rev 4 Section 22.1 deterministic-
+      input rule. Surface kept narrow.
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
+  </ItemGroup>
+
+</Project>

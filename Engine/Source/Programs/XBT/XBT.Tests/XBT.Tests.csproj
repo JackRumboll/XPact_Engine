@@ -30,6 +30,10 @@
   <ItemGroup>
     <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
     <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+    <ProjectReference Include="..\XBT.Configuration\XBT.Configuration.csproj" />
+    <ProjectReference Include="..\XBT.Discovery\XBT.Discovery.csproj" />
+    <ProjectReference Include="..\XBT.ActionGraph\XBT.ActionGraph.csproj" />
+    <ProjectReference Include="..\XBT.Toolchain\XBT.Toolchain.csproj" />
   </ItemGroup>
 
 </Project>

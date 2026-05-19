@@ -1,0 +1,64 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.Configuration</title>
+</head>
+<body>
+
+<h1>XBT.Configuration</h1>
+
+<p>The descriptor surface for the XPact Build Tool. Owns the in-memory
+<code>ModuleRules</code> and <code>TargetRules</code> POCOs, the
+<code>.Build.toml</code> parser (Tomlyn-backed), the sandboxed
+Starlark-subset expression evaluator for <code>.Build.expr</code> files,
+the <code>IBuildHook</code> interface, and the cross-tier dependency
+matrix enforcer.</p>
+
+<p>Per <code>/Documents/XBT.html</code> Rev 4 Section 4 and Toolchain
+Contract Rev 13 Section 9 (<em>"Module Descriptor Shape"</em>).</p>
+
+<p>Public surface (Phase 1.2):</p>
+<ul>
+  <li><code>ModuleRules</code>, <code>TargetRules</code> &mdash;
+  in-memory descriptors. Field-for-field mirror of the contract surface;
+  consumed by <code>XBT.ActionGraph</code> and <code>XBT.Toolchain</code>.</li>
+
+  <li><code>IBuildHook</code>, <code>BuildHookContext</code> &mdash;
+  typed pre/post-build hook surface per Contract Section 9.5. Hooks
+  return <code>IExternalAction</code> instances (owned by
+  <code>XBT.ActionGraph</code>) so they participate in the action graph as
+  first-class nodes &mdash; cacheable, incrementalizable, parallelizable.</li>
+
+  <li><code>TierMatrix</code> + <code>TierValidator</code> &mdash;
+  cross-tier dependency-edge matrix per Contract Section 9.3 and
+  <code>XBT.html</code> Section 13.1. Link deps point downward
+  (Engine &larr; Studio &larr; Project); <code>DynamicallyLoadedModuleNames</code>
+  may point upward.</li>
+
+  <li><code>BuildTomlParser</code> + <code>BuildTomlSerializer</code>
+  &mdash; round-trip TOML I/O. Strict parse rejects unknown top-level
+  keys (closed surface, exit 30). Deterministic ordering on write.</li>
+
+  <li><code>PluginDescriptor</code> + <code>PluginDescriptorParser</code>
+  &mdash; <code>.xplugin</code> POCO and JSON parser. The JSON form
+  mirrors UE's <code>.uplugin</code> with XPact-specific fields.</li>
+
+  <li><code>StarlarkEvaluator</code> &mdash; sandboxed subset evaluator
+  for <code>.Build.expr</code> per Contract Section 9.6. 100,000
+  instruction budget; no file I/O, no recursion past 32 frames, no
+  mutation, no <code>def</code>.</li>
+</ul>
+
+<p><strong>Tomlyn dependency.</strong> Pinned at 0.17.0 (latest stable
+0.17.x). Small (~150 KB) pure managed parser producing a typed DOM.
+Used only by <code>BuildTomlParser</code>; the rest of XBT.Configuration
+operates on POCOs.</p>
+
+<p><strong>No engine-runtime imports.</strong> Pure tooling code; only
+references <code>XBT.Core</code> (primitives) and
+<code>XBT.Manifest</code> (shared enums + ModuleDep).</p>
+
+</body>
+</html>
