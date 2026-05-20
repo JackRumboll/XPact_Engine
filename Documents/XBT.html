@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 8)</title>
+<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 9)</title>
 </head>
 <body>
 
@@ -14,10 +14,17 @@
   <strong>Layer:</strong> 0 (Build &amp; Tooling) &nbsp;|&nbsp;
   <strong>Tier:</strong> Engine &nbsp;|&nbsp;
   <strong>Language:</strong> C# (.NET 8 standalone) &nbsp;|&nbsp;
-  <strong>Revision:</strong> Rev 8 &nbsp;|&nbsp;
+  <strong>Revision:</strong> Rev 9 &nbsp;|&nbsp;
   <strong>Plan reference:</strong> <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10 &nbsp;|&nbsp;
   <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 13.5 (Stage A).
 </p>
+
+<p><strong>Rev 9 (XHT Rev 2 cross-review alignment &mdash; &sect;9.2 output-shape correction):</strong></p>
+<ul>
+  <li><strong>Section 9.2 / 9.4 &mdash; XHT output shape aligned with XHT.html Rev 2.</strong> Rev 8 described XHT's per-module outputs as "per-header <code>.gen.h</code> + a single <code>&lt;Module&gt;.gen.cpp</code> aggregator + <code>&lt;Module&gt;.gen.manifest</code>". The authoritative shape (XHT.html Rev 2 Section 8) is <strong>per-header <code>.gen.h</code> + per-header <code>.gen.cpp</code> + per-module <code>&lt;Module&gt;.init.gen.cpp</code> aggregator + per-module <code>&lt;Module&gt;.gen.manifest</code></strong> &mdash; matching UHT precedent in <code>EpicGames.UHT/Exporters/CodeGen/UhtHeaderCodeGeneratorCppFile.cs</code> (per-header) + <code>UhtPackageCodeGeneratorCppFile.cs</code> (per-module aggregator). The Rev 8 single-<code>.gen.cpp</code> wording was stale relative to UE precedent and the XHT spec's actual Section 8 emit model. Section 9.2 + 9.4 updated to reflect per-header <code>.gen.cpp</code> + per-module <code>&lt;Module&gt;.init.gen.cpp</code>. The action-graph implications are surgical: <code>EmitReflectionAction</code>'s <code>ProducedItems</code> set grows from <em>O(reflectedHeaders + 2)</em> to <em>O(2 &times; reflectedHeaders + 2)</em> per module, but no new action types are introduced &mdash; the existing single <code>EmitReflectionAction</code> per module still produces the full set atomically.</li>
+  <li><strong>No <code>ContractSurface</code> impact.</strong> The action-type enum <code>XActionType</code> is unchanged; <code>EmitReflectionAction</code>'s slot ordinal (3) is unchanged. The shape of the produced-items list is internal to the action's <code>Execute()</code> result and is not part of <code>ContractSurface</code> (which covers enum types and an explicit element list, per Section 8.1). <code>ContractVersion.Current</code> therefore remains <code>"13.2+b04ae3cc84cdd9f3"</code>.</li>
+  <li><strong>Test count unchanged at 377.</strong> The existing <code>EmitReflectionAction</code> integration tests already assert against the produced-items set from XHT's manifest; the test fixtures' golden outputs were generated against the per-header <code>.gen.cpp</code> shape (XHT-side reference snapshots), so the per-test reconciliation is internal to XHT.Tests, not XBT.Tests.</li>
+</ul>
 
 <p><strong>Rev 8 (Round-6 Phase 1 hardening capture &mdash; UBT-comparison audit closure):</strong></p>
 <ul>
@@ -83,6 +90,10 @@
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>Rev 9</strong></td>
+      <td><strong>XHT Rev 2 cross-review alignment.</strong> XHT's per-module output shape corrected at &sect;9.2 + &sect;9.4 to match XHT.html Rev 2 Section 8: per-header <code>.gen.h</code> + per-header <code>.gen.cpp</code> + per-module <code>&lt;Module&gt;.init.gen.cpp</code> aggregator + per-module <code>&lt;Module&gt;.gen.manifest</code>. Rev 8's single-<code>&lt;Module&gt;.gen.cpp</code> aggregator wording was stale relative to UE precedent (<code>UhtHeaderCodeGeneratorCppFile.cs</code> per-header + <code>UhtPackageCodeGeneratorCppFile.cs</code> per-module) and the actual XHT emit model. <code>EmitReflectionAction</code>'s <code>ProducedItems</code> shape grows accordingly. No <code>ContractSurface</code> changes (action-type enum unchanged; produced-items list is internal to the action). <code>ContractVersion.Current</code> still <code>"13.2+b04ae3cc84cdd9f3"</code>. Test count unchanged at 377 (the XHT-side fixtures and golden snapshots reflect the per-header shape; XBT.Tests are not affected).</td>
+    </tr>
     <tr>
       <td><strong>Rev 8</strong></td>
       <td><strong>Round-6 Phase 1 hardening capture &mdash; UBT-comparison audit closure.</strong> <code>IExternalAction.DependencyListFile</code> field added (nullable <code>FileItem</code>; defaults to <code>null</code> in Phase 1, schema-stable hook for Phase 2's <code>CppDependencyCache</code>); Sections 5.2 / 5.4 updated. <code>ActionHistory.RecordContentHash</code> wired into the production executor (closes the latent mtime-ban gap; Section 5.4 / 15.2 + Addendum Section 4.3 updated). <code>ActionGraph.Link</code> conflict detection extended to compare prerequisite-item sets and working directory in addition to command-version (Section 5.3). New Section 19.3 documents the Windows Job Object integration on <code>ParallelExecutor</code> (<code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code>; Linux/Mac no-op for Phase 1). New Section 19.4 documents the antivirus-retry helper (<code>FileSystemOps.RetryOnTransientIOException</code>, schedule <code>[100ms, 200ms, 1000ms, 5000ms]</code>, applied to manifest writers, <code>ActionHistory.Save</code>, executor temp-file move/delete, PCH wrapper write). New Section 19.5 documents proactive MAX_PATH validation via <code>ActionGraph.CheckPathLengths</code> on Windows (exits 71 / <code>LinkFailed</code> as the closest-fit code). New <code>-NoMutexWait</code> CLI flag + named-mutex build coordination documented in Sections 1.1 / 1.2 / 6.5. Contract reference bumped to Rev 13.5. <code>ContractVersion</code> literals unchanged (Round 6 affects <code>IExternalAction</code> reflection &rarr; internal <code>ActionHistory.CurrentVersion</code> digest only, not the public <code>ContractSurface</code> hash). Test count moved 363 &rarr; 377.</td>
@@ -697,7 +708,7 @@ allow = false                      # SimPath; default-disable hot-reload
 
     // Reflection (split per Rev 2 audit finding #4)
     ParseHeadersAction             = 2,   // XHT pass 1: per-module token parse
-    EmitReflectionAction           = 3,   // XHT pass 2: per-module .gen.cpp emit; parallel with ParseHeaders on next module
+    EmitReflectionAction           = 3,   // XHT pass 2: per-header .gen.cpp + per-module .init.gen.cpp emit; parallel with ParseHeaders on next module
 
     // Transpile
     XIL2CPPAction                  = 4,
@@ -1184,7 +1195,7 @@ extern "C" float  XSleef_cosf  (float);
     <tr><td><code>PCHUsage</code></td><td>string</td><td>NEW Rev 7 (D-m4). One of <code>"Default"|"NoPCHs"|"NoSharedPCHs"|"UseSharedPCHs"|"UseExplicitOrSharedPCHs"</code>. The Section 8.6 JSON example carries this field; it was omitted from the Rev 4 field table in error. SimPath modules force <code>"NoSharedPCHs"</code> (Section 4.5); see Addendum Section 3.4 row.</td></tr>
     <tr><td><code>ExcludeFromSharedPCH</code></td><td>bool</td><td>Honoured by the SharedPCH grouping pre-pass; see Addendum Section 3.4.</td></tr>
     <tr><td><code>AllowHotReload</code></td><td>bool</td><td>Phase 2 XLiveCoding signal; Phase 1 read-through with no consumer.</td></tr>
-    <tr><td><code>GeneratedCPPFilenameBase</code></td><td>string</td><td>e.g. <code>"XScoring.gen"</code>. XHT names <code>XScoring.gen.cpp</code> from this.</td></tr>
+    <tr><td><code>GeneratedCPPFilenameBase</code></td><td>string</td><td>e.g. <code>"XScoring.gen"</code>. XHT names the per-module aggregator <code>XScoring.init.gen.cpp</code> + the per-module text manifest <code>XScoring.gen.manifest</code> from this base (Rev 9 alignment with XHT Rev 2 output shape).</td></tr>
     <tr><td><code>EngineVersionCompat</code></td><td>string</td><td>Semver range the module declares it compatible with (default <code>"*"</code>).</td></tr>
   </tbody>
 </table>
@@ -1359,16 +1370,19 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <p>XBT can also call XHT once with no <code>-Module=</code> filter, in which case XHT processes every module in the manifest. XBT chooses the per-module form so XHT actions can run in parallel across modules (Contract Section 10.1 step 3).</p>
 
-<h3>9.2 Outputs</h3>
+<h3>9.2 Outputs (REVISED Rev 9 &mdash; per-header .gen.cpp + per-module init.gen.cpp aggregator)</h3>
 
 <p>XHT writes outputs to paths derived from the manifest's <code>BaseDirectory</code> + <code>OutputDirectory</code> conventions; XBT discovers them via the per-module text manifest XHT emits alongside its binary outputs (Contract Section 7.1). XBT does not parse <code>.gen.h</code> or <code>.gen.cpp</code> &mdash; their content is opaque (plan Section 4 Rev 5 clarification).</p>
 
-<p>Outputs per module (Contract Section 7.1):</p>
+<p>Outputs per module (Contract Section 7.1; Rev 9 correction matches UE precedent &mdash; UHT emits per-header <code>.gen.cpp</code> via <code>UhtHeaderCodeGeneratorCppFile</code> + per-module aggregator via <code>UhtPackageCodeGeneratorCppFile</code> &mdash; and XHT.html Rev 2 Section 8):</p>
 <ul>
   <li><code>Intermediate/.../&lt;Module&gt;/&lt;Header&gt;.gen.h</code> per reflected header.</li>
-  <li><code>Intermediate/.../&lt;Module&gt;/&lt;Module&gt;.gen.cpp</code> &mdash; aggregator.</li>
+  <li><code>Intermediate/.../&lt;Module&gt;/&lt;Header&gt;.gen.cpp</code> per reflected header. <em>(Rev 9 correction: was &lt;Module&gt;.gen.cpp aggregator in Rev 8.)</em></li>
+  <li><code>Intermediate/.../&lt;Module&gt;/&lt;Module&gt;.init.gen.cpp</code> &mdash; per-module aggregator carrying <code>ModuleLinkableObjects</code>, <code>Z_Construct_XPackage_&lt;Module&gt;</code>, and the empty-link sentinel. <em>(Rev 9 NEW: this is the file XHT actually emits as the per-module aggregation step; the Rev 8 description that single-aggregator role conflated this with the per-header <code>.gen.cpp</code>.)</em></li>
   <li><code>Intermediate/.../&lt;Module&gt;/&lt;Module&gt;.gen.manifest</code> &mdash; text manifest listing every input source file and the generated files it produced. <strong>This is the file XBT uses for cross-language incremental builds</strong>: when a <code>.cs</code> changes, XBT reads the manifest to discover which <code>.gen.h</code> may have changed and reinvalidates downstream <code>.cpp</code> compiles whose <code>.deps</code> records reference those headers.</li>
 </ul>
+
+<p>The per-header <code>.gen.cpp</code> + per-module <code>.init.gen.cpp</code> shape preserves UHT precedent and lets XBT schedule per-header compile actions at the finest grain &mdash; one <code>CompileCppAction</code> per <code>.gen.cpp</code> &mdash; in addition to the per-module <code>.init.gen.cpp</code> compile. The Phase 1 implementation reads the per-module <code>.gen.manifest</code>'s <code>[Generated]</code> section verbatim and treats every entry as a graph-edge producer; no UHT-style pre-discovery of output filenames is required at the XBT side beyond the action-graph seeding rule documented in XHT.html Section 9.3.1.</p>
 
 <h3>9.3 Cross-language compatibility</h3>
 
@@ -1380,7 +1394,7 @@ XHT.exe -Manifest=Intermediate/Build/MiningTrainingEditor/Development/Manifest.j
 
 <ul>
   <li><strong><code>ParseHeadersAction</code></strong>: one per module. Prerequisites: every <code>.h</code> and <code>.cs</code> in the module + the JSON manifest + the binary FBS sidecar + XHT's own binary content hash. Produces: a per-module token-AST cache file under <code>Intermediate/.../&lt;Module&gt;/&lt;Module&gt;.tokens.bin</code>.</li>
-  <li><strong><code>EmitReflectionAction</code></strong>: one per module. Prerequisite: the corresponding <code>ParseHeadersAction</code>'s output. Produces: <code>.gen.h</code> per reflected header + <code>&lt;Module&gt;.gen.cpp</code> + <code>&lt;Module&gt;.gen.manifest</code>.</li>
+  <li><strong><code>EmitReflectionAction</code></strong>: one per module. Prerequisite: the corresponding <code>ParseHeadersAction</code>'s output. Produces: <code>.gen.h</code> per reflected header + <code>.gen.cpp</code> per reflected header + <code>&lt;Module&gt;.init.gen.cpp</code> aggregator + <code>&lt;Module&gt;.gen.manifest</code>. <em>(Rev 9 correction: per-header <code>.gen.cpp</code> + per-module <code>.init.gen.cpp</code> aligns with UHT precedent and XHT.html Rev 2 Section 8.)</em></li>
 </ul>
 
 <p>The split lets module B's <code>ParseHeadersAction</code> run in parallel with module A's <code>EmitReflectionAction</code> &mdash; useful when modules are large enough that parse-phase becomes a sequential bottleneck. The token-AST cache is also separately invalidatable: an edit that changes a header's reflection markers reparses only that module, not every module that includes the header.</p>
@@ -1820,8 +1834,9 @@ public enum QuiescePriority
     &lt;CSFile&gt;.cs.cpp        (XIL2CPP output)
     &lt;CSFile&gt;.cs.h
   Generated/
-    &lt;Header&gt;.gen.h         (XHT output)
-    &lt;Module&gt;.gen.cpp
+    &lt;Header&gt;.gen.h         (XHT output: per reflected header)
+    &lt;Header&gt;.gen.cpp       (XHT output: per reflected header; Rev 9 correction)
+    &lt;Module&gt;.init.gen.cpp  (XHT output: per-module aggregator; Rev 9 correction)
     &lt;Module&gt;.gen.manifest
     &lt;Module&gt;.tokens.bin    (XHT ParseHeadersAction cache; Rev 2)
   Link/
