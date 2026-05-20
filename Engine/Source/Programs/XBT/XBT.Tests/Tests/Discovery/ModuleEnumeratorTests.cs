@@ -143,11 +143,125 @@ public sealed class ModuleEnumeratorTests : IDisposable
             "// Copyright Simgenics. All Rights Reserved.\n// stub",
             new UTF8Encoding(false));
 
+        // No target supplied -> legacy pending-diagnostic path.
         ModuleEnumerator.Enumerate(
             new[] { Path.Combine(_scratchDir, "Engine", "Source") },
             _diagnostics);
 
         Assert.Single(_diagnostics.RoslynPending);
+    }
+
+    [Fact]
+    public void BuildCsOnly_RoslynFallback_Lands_In_Catalog_When_Target_Supplied()
+    {
+        // A module shipping only a .Build.cs (Phase 1 escape hatch).
+        string moduleDir = Path.Combine(_scratchDir, "Engine", "Source", "Runtime", "XCryptoFIPS");
+        Directory.CreateDirectory(moduleDir);
+        WriteBuildCs(moduleDir, "XCryptoFIPS",
+            tier: "Engine",
+            extraCtorBody: "if (target.FipsMode) { PublicDefinitions.Add(\"X_FIPS=1\"); }");
+
+        string cacheDir = Path.Combine(_scratchDir, "Cache");
+        Directory.CreateDirectory(cacheDir);
+        TargetRules target = MakeTarget(fipsMode: true);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics,
+            target,
+            buildCsCacheDirectory: cacheDir);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.True(catalog.TryGet("XCryptoFIPS", out ModuleRecord rec));
+        Assert.Equal(ModuleTier.Engine, rec.Rules.Tier);
+        Assert.Contains("X_FIPS=1", rec.Rules.PublicDefinitions);
+        // Legacy pending diagnostic must NOT fire when a target is supplied.
+        Assert.Empty(_diagnostics.RoslynPending);
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
+    public void BuildCs_And_BuildToml_Both_Present_BuildCs_Wins()
+    {
+        // Per Contract Section 9.6, when a module ships both descriptors
+        // the .Build.cs takes precedence.
+        string moduleDir = Path.Combine(_scratchDir, "Engine", "Source", "Runtime", "DualDescriptor");
+        Directory.CreateDirectory(moduleDir);
+
+        // Write the TOML with a sentinel define so we can prove which
+        // path executed.
+        ModuleRules tomlRules = new()
+        {
+            Name = "DualDescriptor",
+            Tier = ModuleTier.Engine,
+            ModuleType = ModuleType.Runtime,
+        };
+        tomlRules.PublicDefinitions.Add("FROM_TOML=1");
+        string tomlPath = Path.Combine(moduleDir, "DualDescriptor.Build.toml");
+        File.WriteAllText(tomlPath, BuildTomlSerializer.Serialize(tomlRules), new UTF8Encoding(false));
+
+        // Write the .Build.cs with its own sentinel define.
+        WriteBuildCs(moduleDir, "DualDescriptor",
+            tier: "Engine",
+            extraCtorBody: "PublicDefinitions.Add(\"FROM_BUILDCS=1\");");
+
+        string cacheDir = Path.Combine(_scratchDir, "Cache");
+        Directory.CreateDirectory(cacheDir);
+        TargetRules target = MakeTarget();
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics,
+            target,
+            buildCsCacheDirectory: cacheDir);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.True(catalog.TryGet("DualDescriptor", out ModuleRecord rec));
+        // The .Build.cs branch ran -- FROM_BUILDCS=1 present, FROM_TOML=1 absent.
+        Assert.Contains("FROM_BUILDCS=1", rec.Rules.PublicDefinitions);
+        Assert.DoesNotContain("FROM_TOML=1", rec.Rules.PublicDefinitions);
+        // The descriptor path on the record is the .Build.cs, not the TOML.
+        Assert.EndsWith(".Build.cs", rec.DescriptorPath);
+    }
+
+    private static TargetRules MakeTarget(bool fipsMode = false)
+        => new()
+        {
+            Name = "TestTarget",
+            TargetType = BuildTargetType.Editor,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+            Architecture = "x86_64",
+            StationRole = StationRole.Engineer,
+            FipsMode = fipsMode,
+        };
+
+    private static void WriteBuildCs(
+        string moduleDir,
+        string moduleName,
+        string tier,
+        string extraCtorBody)
+    {
+        string source = $$"""
+            // Copyright Simgenics. All Rights Reserved.
+            using Simgenics.XPact.XBT.Configuration;
+            using Simgenics.XPact.XBT.Manifest;
+
+            public sealed class {{moduleName}}Build : ModuleRules
+            {
+                public {{moduleName}}Build(TargetRules target)
+                {
+                    Name = "{{moduleName}}";
+                    Tier = ModuleTier.{{tier}};
+                    ModuleType = ModuleType.Runtime;
+                    {{extraCtorBody}}
+                }
+            }
+            """;
+        File.WriteAllText(
+            Path.Combine(moduleDir, moduleName + ".Build.cs"),
+            source,
+            new UTF8Encoding(false));
     }
 
     private void WriteModule(string relativePath, string moduleName, ModuleTier tier)

@@ -212,6 +212,15 @@
       <td>XBT.Tests (optional)</td>
       <td>Code coverage collector.</td>
     </tr>
+    <tr>
+      <td>Microsoft.CodeAnalysis.CSharp.Scripting</td>
+      <td>4.11.0</td>
+      <td>MIT</td>
+      <td>https://github.com/dotnet/roslyn</td>
+      <td><code>Licenses/Microsoft.CodeAnalysis.CSharp.Scripting.txt</code></td>
+      <td>XBT.Configuration (BuildCsCompiler)</td>
+      <td>Roslyn .Build.cs escape hatch per Contract Rev 13 Section 9.6 / XBT.html Rev 4 Section 3.6. Loaded on-demand only for modules that ship a .Build.cs; pure-TOML projects never page Roslyn in at runtime.</td>
+    </tr>
   </tbody>
 </table>
 

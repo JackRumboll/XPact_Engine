@@ -21,6 +21,17 @@
       descriptor format).
     -->
     <PackageReference Include="Tomlyn" Version="0.17.0" />
+
+    <!--
+      Microsoft.CodeAnalysis.CSharp 4.11.0 (the Roslyn compiler surface;
+      the Scripting package pulls this in plus the CSharpScript runner).
+      We use it only for the Phase 1 .Build.cs escape hatch in
+      BuildCsCompiler. The dependency is loaded on-demand for modules
+      that actually ship a .Build.cs; pure-TOML projects never page it in
+      at runtime. Per Toolchain Contract Rev 13 Section 9.6 and
+      /Documents/XBT.html Rev 4 Section 3.6.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.11.0" />
   </ItemGroup>
 
   <ItemGroup>

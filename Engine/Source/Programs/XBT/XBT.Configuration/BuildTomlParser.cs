@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using Simgenics.XPact.XBT.Core;
 using Simgenics.XPact.XBT.Manifest;
 using Tomlyn;
 using Tomlyn.Model;
@@ -68,6 +70,56 @@ namespace Simgenics.XPact.XBT.Configuration;
 public static class BuildTomlParser
 {
     /// <summary>
+    /// Regex that matches a complete <c>@expr:&lt;identifier&gt;</c>
+    /// reference at TOML-value scope. The substitution pass only
+    /// triggers on values that match this anchored regex; literal
+    /// strings containing the prefix mid-text are pass-through.
+    /// </summary>
+    private static readonly Regex ExprReferencePattern = new(
+        @"^@expr:([A-Za-z_][A-Za-z0-9_]*)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// TOML keys whose underlying POCO field accepts a list-of-strings
+    /// value. <c>@expr</c> references on these keys may resolve to a
+    /// list (replaces the whole field) or a single string (treated as
+    /// a one-element list). Individual array elements that are
+    /// <c>@expr</c> references may resolve to a string (1:1) or a list
+    /// (spliced in place).
+    /// </summary>
+    private static readonly HashSet<string> StringListKeys =
+        new(StringComparer.Ordinal)
+        {
+            "public_include_paths",
+            "private_include_paths",
+            "public_definitions",
+            "private_definitions",
+        };
+
+    /// <summary>
+    /// TOML keys whose POCO field is a single string. <c>@expr</c>
+    /// references on these keys must resolve to a string; a list result
+    /// is a type mismatch.
+    /// </summary>
+    private static readonly HashSet<string> StringScalarKeys =
+        new(StringComparer.Ordinal)
+        {
+            "name",
+            "short_name",
+            "deprecation_message",
+            "minimum_toolchain_version",
+            // Enum-string keys -- the result must be a string, then
+            // re-parsed by the enum reader. Treated as string scalars
+            // for the purposes of @expr substitution.
+            "tier",
+            "module_type",
+            "simd_level",
+            "pch_usage",
+            "fp_semantics",
+            "optimize_code",
+        };
+
+    /// <summary>
     /// The set of TOML keys that the parser recognises at the top
     /// level of a <c>.Build.toml</c> file. Anything outside this set is
     /// rejected as an unknown key (strict-parse mode per
@@ -114,12 +166,24 @@ public static class BuildTomlParser
     /// portion of the filename before <c>.Build.toml</c>) when the
     /// TOML does not set it explicitly.
     /// </summary>
+    /// <param name="filePath">Absolute path of the <c>.Build.toml</c>.</param>
+    /// <param name="target">
+    /// Optional active target. When non-null, the parser performs the
+    /// <c>@expr:&lt;identifier&gt;</c> substitution pass per Toolchain
+    /// Contract Rev 13 Section 9.6: any string value matching
+    /// <c>^@expr:&lt;identifier&gt;$</c> is replaced by evaluating the
+    /// named expression from the sibling <c>.Build.expr</c> file
+    /// against the target's <c>target.*</c> bindings + this module's
+    /// <c>module.*</c> bindings. When null, <c>@expr</c> references
+    /// pass through unchanged (test-only convenience).
+    /// </param>
     /// <exception cref="DescriptorParseException">
     /// Thrown on TOML syntax error, unknown top-level key, bad enum
-    /// value, or type mismatch. Carries the file path + line + column
-    /// when Tomlyn can localise the error.
+    /// value, type mismatch, missing <c>@expr</c> identifier, or
+    /// orphan <c>.Build.expr</c> file. Carries the file path + line +
+    /// column when Tomlyn can localise the error. Exit code 30.
     /// </exception>
-    public static ModuleRules ParseFile(string filePath)
+    public static ModuleRules ParseFile(string filePath, TargetRules? target = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(filePath);
 
@@ -136,7 +200,96 @@ public static class BuildTomlParser
         }
 
         string defaultName = DeriveDefaultModuleName(filePath);
-        return Parse(text, filePath, defaultName);
+
+        // Locate the optional sibling .Build.expr (per /Documents/XBT.html
+        // Section 3.3): prefer <stem>.Build.expr (same stem as the .toml);
+        // fall back to a *.Build.expr glob if exactly one such file
+        // exists in the directory and the stem-specific lookup missed.
+        IReadOnlyDictionary<string, string>? expressions = null;
+        string? exprPath = LocateBuildExpr(filePath);
+        if (exprPath is not null)
+        {
+            expressions = BuildExprFile.Load(exprPath);
+        }
+
+        return ParseInternal(text, filePath, defaultName, target, expressions, exprPath);
+    }
+
+    /// <summary>
+    /// Detect an orphan <c>.Build.expr</c> file in a directory that has
+    /// no matching <c>.Build.toml</c>. Per Toolchain Contract Rev 13
+    /// Section 9.6 / <c>/Documents/XBT.html</c> Section 3.3, a
+    /// <c>.Build.expr</c> with no companion <c>.Build.toml</c> is a
+    /// build failure with exit code 30 because the descriptor surface
+    /// is the TOML; the expr is a sidecar that only has meaning when
+    /// referenced.
+    /// </summary>
+    /// <param name="directory">Module directory to check.</param>
+    /// <exception cref="DescriptorParseException">
+    /// Thrown when the directory contains a <c>.Build.expr</c> but no
+    /// <c>.Build.toml</c>.
+    /// </exception>
+    public static void ValidateNoOrphanBuildExpr(string directory)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(directory);
+
+        if (!Directory.Exists(directory))
+        {
+            return;
+        }
+
+        bool hasToml = Directory.EnumerateFiles(directory, "*.Build.toml").Any();
+        if (hasToml)
+        {
+            return;
+        }
+        string[] orphanExprs = Directory.GetFiles(directory, "*" + BuildExprFile.BuildExprSuffix);
+        if (orphanExprs.Length > 0)
+        {
+            throw new DescriptorParseException(
+                $"Orphan .Build.expr file at '{orphanExprs[0]}': a .Build.expr only " +
+                "has meaning as a sidecar to a .Build.toml in the same directory. " +
+                "Either add the missing .Build.toml or remove the .Build.expr.",
+                filePath: orphanExprs[0]);
+        }
+    }
+
+    /// <summary>
+    /// Locate the sibling <c>.Build.expr</c> for a given
+    /// <c>.Build.toml</c> file. Per <c>/Documents/XBT.html</c>
+    /// Section 3.3 the canonical pattern is same-stem-different-suffix
+    /// (<c>X.Build.toml</c> → <c>X.Build.expr</c>); the fallback when
+    /// the canonical lookup misses is a single-match
+    /// <c>*.Build.expr</c> in the same directory.
+    /// </summary>
+    /// <returns>Absolute path of the expr file, or null when none exists.</returns>
+    private static string? LocateBuildExpr(string tomlPath)
+    {
+        string? directory = Path.GetDirectoryName(tomlPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return null;
+        }
+        string fileName = Path.GetFileName(tomlPath);
+        const string tomlSuffix = ".Build.toml";
+        string stem = fileName.EndsWith(tomlSuffix, StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^tomlSuffix.Length]
+            : Path.GetFileNameWithoutExtension(fileName);
+
+        // Canonical lookup: <stem>.Build.expr next to the TOML.
+        string canonical = Path.Combine(directory, stem + BuildExprFile.BuildExprSuffix);
+        if (File.Exists(canonical))
+        {
+            return canonical;
+        }
+
+        // Fallback: exactly one *.Build.expr in the directory.
+        string[] candidates = Directory.GetFiles(directory, "*" + BuildExprFile.BuildExprSuffix);
+        if (candidates.Length == 1)
+        {
+            return candidates[0];
+        }
+        return null;
     }
 
     /// <summary>
@@ -151,10 +304,37 @@ public static class BuildTomlParser
     /// Default value for <see cref="ModuleRules.Name"/> when the TOML
     /// does not set it explicitly.
     /// </param>
+    /// <param name="target">
+    /// Optional active target. When non-null, the parser performs the
+    /// <c>@expr:&lt;identifier&gt;</c> substitution pass. When null,
+    /// <c>@expr</c> references are left as literal strings (test-only
+    /// path; lets the TOML-only happy path keep working without a
+    /// target).
+    /// </param>
+    /// <param name="expressions">
+    /// Pre-loaded expression name -&gt; source map (as produced by
+    /// <see cref="BuildExprFile.Parse(string, string?)"/>). Allows tests
+    /// to supply the expression body in-process without writing a
+    /// sidecar file.
+    /// </param>
     /// <exception cref="DescriptorParseException">
     /// Thrown on parse failure or validation failure.
     /// </exception>
-    public static ModuleRules Parse(string text, string? sourcePath = null, string? defaultModuleName = null)
+    public static ModuleRules Parse(
+        string text,
+        string? sourcePath = null,
+        string? defaultModuleName = null,
+        TargetRules? target = null,
+        IReadOnlyDictionary<string, string>? expressions = null)
+        => ParseInternal(text, sourcePath, defaultModuleName, target, expressions, exprSourcePath: null);
+
+    private static ModuleRules ParseInternal(
+        string text,
+        string? sourcePath,
+        string? defaultModuleName,
+        TargetRules? target,
+        IReadOnlyDictionary<string, string>? expressions,
+        string? exprSourcePath)
     {
         ArgumentNullException.ThrowIfNull(text);
 
@@ -181,6 +361,19 @@ public static class BuildTomlParser
                     $"Allowed keys: {string.Join(", ", KnownTopLevelKeys.OrderBy(k => k, StringComparer.Ordinal))}.",
                     sourcePath);
             }
+        }
+
+        // @expr substitution pass. Per Toolchain Contract Rev 13
+        // Section 9.6 / /Documents/XBT.html Section 3.3: walk the
+        // TomlTable and replace @expr:<identifier> values with their
+        // Starlark-evaluated equivalents. Only triggers when a target
+        // is supplied (test paths without a target leave @expr
+        // references as literal strings); the substitution operates
+        // on the TomlTable before the POCO is built so init-only
+        // properties receive the substituted value at construction.
+        if (target is not null)
+        {
+            SubstituteExpressions(model, expressions, sourcePath, exprSourcePath, target);
         }
 
         // Populate POCO. Unset keys keep their POCO defaults.
@@ -534,4 +727,382 @@ public static class BuildTomlParser
         TomlTable => "table",
         _ => value.GetType().Name,
     };
+
+    // -----------------------------------------------------------------
+    // @expr substitution pass (Toolchain Contract Rev 13 Section 9.6 /
+    // /Documents/XBT.html Rev 4 Section 3.3).
+    //
+    // The pass operates at the TomlTable level so substituted values
+    // are visible to the POCO constructor (the POCO has init-only
+    // properties; mutating after construction is impossible without
+    // reflection trickery). Each known top-level key is dispatched
+    // according to its expected target type:
+    //
+    //   string scalar : value must be a string; @expr ref must yield a string.
+    //   list-of-string: value can be either a list (each element checked) or
+    //                   a scalar @expr ref yielding a list.
+    //   list-of-dep   : same as list-of-string for the element-level @expr
+    //                   case (dep entries don't themselves substitute,
+    //                   only their bare-string form does).
+    //   bool / int     : @expr refs are NOT valid on these keys per spec.
+    //
+    // The spec also documents that expression-references-expression is
+    // out of scope for Phase 1.2.1 -- the Starlark evaluator does not
+    // expose expression-name bindings, so an expression has no way to
+    // reference another expression by name. Enforced by construction.
+    // -----------------------------------------------------------------
+
+    private static void SubstituteExpressions(
+        TomlTable model,
+        IReadOnlyDictionary<string, string>? expressions,
+        string? sourcePath,
+        string? exprSourcePath,
+        TargetRules target)
+    {
+        // First, build the partially-loaded module bindings from the
+        // raw TOML literal values BEFORE any substitution. Phase 1.2.1
+        // does NOT support @expr on the module.* binding fields
+        // (tier, sim_path, simd_level); the spec calls expression-
+        // references-expression out of scope, and these fields ARE the
+        // expression's input. Treat any @expr value on them as an
+        // unbindable module.* lookup -- it will surface naturally as
+        // "Unbound name" if a downstream expression references it.
+        string moduleTier = ReadRawString(model, "tier") ?? string.Empty;
+        bool moduleSimPath = ReadRawBool(model, "sim_path") ?? false;
+        string moduleSimdLevel = ReadRawString(model, "simd_level") ?? SimdLevel.Default.ToString();
+
+        StarlarkEvaluator.Bindings bindings = new()
+        {
+            TargetPlatform = target.Platform.ToString(),
+            TargetConfiguration = target.Configuration.ToString(),
+            TargetStationRole = target.StationRole.ToString(),
+            TargetFipsMode = target.FipsMode,
+            TargetArchitecture = target.Architecture,
+            ModuleTier = moduleTier,
+            ModuleSimPath = moduleSimPath,
+            ModuleSimdLevel = moduleSimdLevel,
+        };
+
+        // Track which expression identifiers we resolved so we can
+        // warn on unused names afterwards.
+        HashSet<string> usedExpressionNames = new(StringComparer.Ordinal);
+
+        // Snapshot keys -- we mutate the table inside the loop, but
+        // the key set itself does not change (we replace values in
+        // place).
+        List<string> keys = model.Keys.ToList();
+        foreach (string key in keys)
+        {
+            object value = model[key];
+            object? replacement = SubstituteValueForKey(
+                key,
+                value,
+                expressions,
+                bindings,
+                sourcePath,
+                exprSourcePath,
+                usedExpressionNames);
+            if (replacement is not null && !ReferenceEquals(replacement, value))
+            {
+                model[key] = replacement;
+            }
+        }
+
+        // Unused-expression warning. The spec calls for a non-fatal
+        // Logger.Warning when a .Build.expr defines a name that the
+        // .Build.toml never references; the warning identifies the
+        // expr file path and the unused identifier so the developer
+        // can clean it up. Emitted lazily so the test paths that
+        // don't bother with a Logger configuration still pass.
+        if (expressions is not null)
+        {
+            foreach (string exprName in expressions.Keys)
+            {
+                if (!usedExpressionNames.Contains(exprName))
+                {
+                    Logger.Warning(
+                        $"Unused expression name '{exprName}' in {exprSourcePath ?? "<inline expressions>"}.",
+                        new DiagnosticContext { File = exprSourcePath });
+                }
+            }
+        }
+    }
+
+    private static object? SubstituteValueForKey(
+        string key,
+        object value,
+        IReadOnlyDictionary<string, string>? expressions,
+        StarlarkEvaluator.Bindings bindings,
+        string? sourcePath,
+        string? exprSourcePath,
+        HashSet<string> usedExpressionNames)
+    {
+        // Scalar string at the top level.
+        if (value is string str)
+        {
+            if (TryParseExprReference(str, out string? identifier))
+            {
+                object evaluated = EvaluateExpression(
+                    identifier!, expressions, bindings, sourcePath, exprSourcePath, usedExpressionNames);
+
+                // String-scalar field -- result must be a string.
+                if (StringScalarKeys.Contains(key))
+                {
+                    if (evaluated is string s)
+                    {
+                        return s;
+                    }
+                    throw new DescriptorParseException(
+                        $"Type mismatch in @expr:{identifier} for field '{key}': " +
+                        $"expression returned {DescribeEvalType(evaluated)}, but field expects a string.",
+                        filePath: sourcePath);
+                }
+
+                // List-of-strings field declared as a scalar @expr ref --
+                // the expression must return either a list of strings
+                // or a single string (treated as one-element list).
+                if (StringListKeys.Contains(key))
+                {
+                    return ConvertExprResultToTomlList(
+                        evaluated, key, identifier!, sourcePath);
+                }
+
+                // Bool / int / array fields cannot be substituted via a
+                // scalar @expr ref -- spec says "@expr pattern only
+                // valid in string positions in the TOML. A TOML integer
+                // or boolean cannot be @expr:..."
+                throw new DescriptorParseException(
+                    $"Field '{key}' does not accept an @expr scalar reference. " +
+                    "@expr substitution is only supported on string-typed and list-of-string-typed fields.",
+                    filePath: sourcePath);
+            }
+            // Literal string, not an @expr ref: pass through.
+            return value;
+        }
+
+        // TomlArray at the top level. Elements may individually be
+        // @expr refs; iterate and substitute. Type-check depends on
+        // whether the array is a string list or a dep list.
+        if (value is TomlArray array)
+        {
+            return SubstituteArray(
+                key, array, expressions, bindings, sourcePath, exprSourcePath, usedExpressionNames);
+        }
+
+        // Anything else (bool, int, table) is left alone.
+        return value;
+    }
+
+    private static TomlArray SubstituteArray(
+        string key,
+        TomlArray array,
+        IReadOnlyDictionary<string, string>? expressions,
+        StarlarkEvaluator.Bindings bindings,
+        string? sourcePath,
+        string? exprSourcePath,
+        HashSet<string> usedExpressionNames)
+    {
+        bool isStringList = StringListKeys.Contains(key);
+
+        // Walk elements and accumulate the substituted result. Each
+        // string element that is an @expr ref expands; everything
+        // else passes through.
+        TomlArray substituted = new();
+        for (int i = 0; i < array.Count; i++)
+        {
+            object? entry = array[i];
+            if (entry is string s && TryParseExprReference(s, out string? identifier))
+            {
+                object evaluated = EvaluateExpression(
+                    identifier!, expressions, bindings, sourcePath, exprSourcePath, usedExpressionNames);
+
+                if (evaluated is string singleStr)
+                {
+                    substituted.Add(singleStr);
+                    continue;
+                }
+                if (evaluated is List<object> list)
+                {
+                    if (!isStringList)
+                    {
+                        // Dep-list element returning a list -- not in
+                        // scope for Phase 1.2.1; the dep array's element
+                        // shape is a name (possibly inline table).
+                        throw new DescriptorParseException(
+                            $"@expr:{identifier} in array element of '{key}' returned a list, " +
+                            "but dependency-list fields only support per-element string @expr refs " +
+                            "returning a single name.",
+                            filePath: sourcePath);
+                    }
+                    foreach (object item in list)
+                    {
+                        if (item is not string itemStr)
+                        {
+                            throw new DescriptorParseException(
+                                $"Type mismatch in @expr:{identifier} for list field '{key}': " +
+                                $"expression returned a list containing a {DescribeEvalType(item)} " +
+                                "(every element of a list-of-string field must be a string).",
+                                filePath: sourcePath);
+                        }
+                        substituted.Add(itemStr);
+                    }
+                    continue;
+                }
+                // Bool, int, etc. on a string-list element -> mismatch.
+                throw new DescriptorParseException(
+                    $"Type mismatch in @expr:{identifier} for list field '{key}': " +
+                    $"expression returned {DescribeEvalType(evaluated)}, " +
+                    "but list-of-string elements must be strings (or a list of strings).",
+                    filePath: sourcePath);
+            }
+            substituted.Add(entry);
+        }
+        return substituted;
+    }
+
+    /// <summary>
+    /// Convert a Starlark evaluation result into a TomlArray suitable
+    /// for placement into a list-of-string TOML field. The expression
+    /// may yield a single string (one-element list) or a list of
+    /// strings (the canonical multi-value case).
+    /// </summary>
+    private static TomlArray ConvertExprResultToTomlList(
+        object evaluated,
+        string key,
+        string identifier,
+        string? sourcePath)
+    {
+        TomlArray result = new();
+        if (evaluated is string s)
+        {
+            result.Add(s);
+            return result;
+        }
+        if (evaluated is List<object> list)
+        {
+            foreach (object item in list)
+            {
+                if (item is not string itemStr)
+                {
+                    throw new DescriptorParseException(
+                        $"Type mismatch in @expr:{identifier} for list field '{key}': " +
+                        $"expression returned a list containing a {DescribeEvalType(item)} " +
+                        "(every element of a list-of-string field must be a string).",
+                        filePath: sourcePath);
+                }
+                result.Add(itemStr);
+            }
+            return result;
+        }
+        throw new DescriptorParseException(
+            $"Type mismatch in @expr:{identifier} for list field '{key}': " +
+            $"expression returned {DescribeEvalType(evaluated)}, " +
+            "but field expects a string or a list of strings.",
+            filePath: sourcePath);
+    }
+
+    /// <summary>
+    /// Attempt to parse a string as a complete <c>@expr:&lt;identifier&gt;</c>
+    /// reference. Returns true and emits the bare identifier on match,
+    /// false otherwise (in which case the caller treats the string as
+    /// a literal).
+    /// </summary>
+    private static bool TryParseExprReference(string value, out string? identifier)
+    {
+        Match match = ExprReferencePattern.Match(value);
+        if (match.Success)
+        {
+            identifier = match.Groups[1].Value;
+            return true;
+        }
+        identifier = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Resolve a named expression to its evaluated value. Per spec,
+    /// missing identifiers fail with a clear "@expr:&lt;name&gt; not
+    /// found" diagnostic naming both the missing identifier and the
+    /// expression file path.
+    /// </summary>
+    private static object EvaluateExpression(
+        string identifier,
+        IReadOnlyDictionary<string, string>? expressions,
+        StarlarkEvaluator.Bindings bindings,
+        string? sourcePath,
+        string? exprSourcePath,
+        HashSet<string> usedExpressionNames)
+    {
+        if (expressions is null)
+        {
+            throw new DescriptorParseException(
+                $"@expr:{identifier} referenced from {sourcePath ?? "<inline>"} " +
+                "but no .Build.expr file was found in the same directory. " +
+                "Create a sibling .Build.expr file (same stem as the .Build.toml) " +
+                $"defining '{identifier}'.",
+                filePath: sourcePath);
+        }
+        if (!expressions.TryGetValue(identifier, out string? expressionSource))
+        {
+            throw new DescriptorParseException(
+                $"@expr:{identifier} referenced from {sourcePath ?? "<inline>"} " +
+                $"but expression '{identifier}' is not defined in " +
+                $"{exprSourcePath ?? "<inline expressions>"}. " +
+                "Add a definition for the missing identifier or remove the reference.",
+                filePath: sourcePath);
+        }
+
+        usedExpressionNames.Add(identifier);
+        return StarlarkEvaluator.Evaluate(expressionSource, bindings, exprSourcePath);
+    }
+
+    /// <summary>
+    /// Describe an evaluator-returned value for use in diagnostics.
+    /// Mirrors <see cref="StarlarkEvaluator"/>'s internal naming
+    /// (the evaluator's own DescribeType is private).
+    /// </summary>
+    private static string DescribeEvalType(object value) => value switch
+    {
+        string => "string",
+        long => "integer",
+        bool => "boolean",
+        List<object> => "list",
+        StarlarkEvaluator.Nothing => "None",
+        _ => value.GetType().Name,
+    };
+
+    /// <summary>
+    /// Read a TOML scalar string value without triggering any of the
+    /// type-checking diagnostics the normal readers raise. Returns
+    /// null when the key is absent, when the value is not a string,
+    /// or when the value is a string but happens to be an @expr ref
+    /// (used for module.* binding lookup; the spec excludes
+    /// expression-references-expression from Phase 1.2.1 so a module
+    /// binding cannot itself be @expr).
+    /// </summary>
+    private static string? ReadRawString(TomlTable t, string key)
+    {
+        if (!t.TryGetValue(key, out object? raw))
+        {
+            return null;
+        }
+        if (raw is string s && !ExprReferencePattern.IsMatch(s))
+        {
+            return s;
+        }
+        return null;
+    }
+
+    private static bool? ReadRawBool(TomlTable t, string key)
+    {
+        if (!t.TryGetValue(key, out object? raw))
+        {
+            return null;
+        }
+        if (raw is bool b)
+        {
+            return b;
+        }
+        return null;
+    }
 }

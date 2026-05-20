@@ -21,9 +21,20 @@ namespace Simgenics.XPact.XBT.Configuration;
 /// (<see cref="BuildTomlParser"/>) constructs instances of this type.
 /// </para>
 /// <para>
-/// <b>Mutability.</b> The base shape is a sealed class with
-/// init-only scalar properties and pre-allocated collection
-/// properties (<see cref="System.Collections.Generic.List{T}"/>).
+/// <b>Derivability.</b> The class is non-sealed so the Phase 1 Roslyn
+/// escape hatch (<c>.Build.cs</c>, see <see cref="BuildCsCompiler"/>)
+/// can have the user write
+/// <c>public sealed class MyModuleBuild : ModuleRules</c> with a
+/// constructor receiving <see cref="TargetRules"/>. Contract Section 9.1
+/// declares the base shape as <c>abstract</c>; in this implementation
+/// it is concrete (not abstract) so the TOML parser can instantiate
+/// <see cref="ModuleRules"/> directly without spinning a one-off
+/// derived type. Treat the type as if it were abstract from the
+/// descriptor-author's perspective: every C# descriptor derives from it.
+/// </para>
+/// <para>
+/// <b>Mutability.</b> Init-only scalar properties and pre-allocated
+/// collection properties (<see cref="System.Collections.Generic.List{T}"/>).
 /// Init-only properties may only be set by the parser at construction
 /// time; the collections may have items appended (e.g. by a Roslyn
 /// <c>.Build.cs</c>) but the property references themselves are not
@@ -37,7 +48,7 @@ namespace Simgenics.XPact.XBT.Configuration;
 /// same source.
 /// </para>
 /// </remarks>
-public sealed class ModuleRules
+public class ModuleRules
 {
     // -----------------------------------------------------------------
     // Identity (Contract Section 9.1; XBT.html Section 4.2)
