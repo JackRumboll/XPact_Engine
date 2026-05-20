@@ -420,6 +420,155 @@ public sealed class XClangToolChain : XToolChain
     }
 
     /// <inheritdoc/>
+    public override PCHBinding GenerateSharedPCH(
+        string headerFile,
+        IReadOnlyList<ModuleRules> participants,
+        FileItem headerFileItem,
+        TargetRules target,
+        string outputDir)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(headerFile);
+        ArgumentNullException.ThrowIfNull(participants);
+        ArgumentNullException.ThrowIfNull(headerFileItem);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrEmpty(outputDir);
+
+        if (participants.Count == 0)
+        {
+            throw new ArgumentException(
+                "GenerateSharedPCH requires at least one participant.",
+                nameof(participants));
+        }
+
+        // Defence-in-depth: SimPath modules cannot share a PCH per
+        // Contract Rev 13 Section 1.5.
+        EnforceSimPathSharedPchGate(participants);
+
+        // Group-keyed hash names the on-disk artefact deterministically.
+        string headerAbsolutePath = headerFileItem.FullPath;
+        string groupHash = ComputeSharedPchHash(headerAbsolutePath, participants);
+
+        // Place artefacts under {outputDir}/SharedPCH/.
+        string sharedDir = Path.Combine(outputDir, "SharedPCH");
+        Directory.CreateDirectory(sharedDir);
+
+        string headerLeafName = Path.GetFileName(headerFile);
+
+        // Output: {sharedDir}/SharedPCH.{hash}.pchi
+        string pchOutputName = "SharedPCH." + groupHash + ".pchi";
+        string pchOutputPath = Path.Combine(sharedDir, pchOutputName);
+        FileItem pchOutputItem = FileItem.GetItemByPath(pchOutputPath);
+
+        List<string> args = new();
+
+        // === Reproducibility envelope ===
+        args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
+        args.Add("-fno-ident");
+        args.Add("-fdeterministic-cgu-order");
+
+        // Aggregate include paths from every participant (sorted ordinal
+        // + deduped for determinism). Include the header's own directory
+        // so the -x c++-header path resolves.
+        SortedSet<string> publicIncs = new(StringComparer.Ordinal);
+        SortedSet<string> privateIncs = new(StringComparer.Ordinal);
+        SortedSet<string> publicDefs = new(StringComparer.Ordinal);
+        foreach (ModuleRules m in participants)
+        {
+            foreach (string inc in m.PublicIncludePaths) publicIncs.Add(inc);
+            foreach (string inc in m.PrivateIncludePaths) privateIncs.Add(inc);
+            foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+        }
+        string headerDir = Path.GetDirectoryName(headerAbsolutePath) ?? string.Empty;
+        if (!string.IsNullOrEmpty(headerDir))
+        {
+            publicIncs.Add(headerDir);
+        }
+        foreach (string inc in publicIncs) args.Add($"-I{inc}");
+        foreach (string inc in privateIncs) args.Add($"-I{inc}");
+
+        // Union of participants' PublicDefinitions.
+        foreach (string def in publicDefs) args.Add($"-D{def}");
+
+        // Exception + RTTI posture: pick the most-restrictive (any
+        // participant requiring no-exceptions / no-RTTI wins so the
+        // generated PCH is consumable by all participants).
+        bool enableExceptions = true;
+        bool useRTTI = false;
+        foreach (ModuleRules m in participants)
+        {
+            if (!m.bEnableExceptions) enableExceptions = false;
+            if (m.bUseRTTI) useRTTI = true;
+        }
+        if (!enableExceptions)
+        {
+            args.Add("-fno-exceptions");
+        }
+        if (!useRTTI)
+        {
+            args.Add("-fno-rtti");
+        }
+
+        // PCH-specific: treat header as c++-header.
+        args.Add("-x");
+        args.Add("c++-header");
+
+        // Output then input (clang convention).
+        args.Add("-o");
+        args.Add(pchOutputPath);
+        args.Add(headerAbsolutePath);
+
+        // CacheKeyComponents threads the group hash + participants
+        // explicitly so the cache key is observable.
+        List<string> cacheKeyComponents = new()
+        {
+            $"SharedPCHGroupHash={groupHash}",
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+        };
+        foreach (string name in SortedParticipantNames(participants))
+        {
+            cacheKeyComponents.Add($"Participant={name}");
+        }
+
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.PCHGenerationAction,
+            PrerequisiteItems = new[] { headerFileItem },
+            ProducedItems = new[] { pchOutputItem },
+            CommandPath = _clangPath,
+            CommandArguments = args,
+            WorkingDirectory = _repoRoot,
+            CommandDescription = "GenerateSharedPCH",
+            StatusDescription = pchOutputName,
+            Module = "SharedPCH:" + groupHash,
+            Tier = null,
+            SimPath = false,
+            Configuration = target.Configuration,
+            Platform = target.Platform,
+            Weight = 4.0,
+            CacheKeyComponents = cacheKeyComponents,
+        });
+
+        return new PCHBinding(
+            Action: action,
+            PchHeaderFile: headerFileItem,
+            PchHeaderName: headerLeafName,
+            PchOutputFile: pchOutputItem);
+    }
+
+    /// <summary>
+    /// Return the participants' names sorted ordinal for determinism.
+    /// </summary>
+    private static IReadOnlyList<string> SortedParticipantNames(
+        IReadOnlyList<ModuleRules> participants)
+    {
+        List<string> names = new(participants.Count);
+        foreach (ModuleRules m in participants) names.Add(m.Name);
+        names.Sort(StringComparer.Ordinal);
+        return names;
+    }
+
+    /// <inheritdoc/>
     public override IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,

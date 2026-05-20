@@ -167,6 +167,231 @@ public sealed class XMSVCToolChainTests : IDisposable
         Assert.Contains(compile.CommandArguments, a => a.EndsWith("Trivial.cpp", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Phase 1.4a: CompileSource emits <c>/I</c> for every entry in the
+    /// composite include path list (MSVC + Windows SDK). Module-private
+    /// /I flags still come first per the spec; the system includes are
+    /// appended in the deterministic VCEnvironment order.
+    /// </summary>
+    [Fact]
+    public void CompileSource_EmitsIncludeFlagsForEnvironmentPaths()
+    {
+        // Build a sandboxed environment with explicit MSVC + SDK include
+        // paths so the assertion does not depend on whatever the host
+        // happens to have installed.
+        string sdkRoot = Path.Combine(_scratchDir, "FakeSdk");
+        foreach (string sub in new[] { "um", "shared", "ucrt", "winrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Include", "10.0.26100.0", sub));
+        }
+        foreach (string sub in new[] { "um", "ucrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Lib", "10.0.26100.0", sub, "x64"));
+        }
+
+        VCEnvironment env = VCEnvironment.ForTesting(
+            vsInstallDir: @"C:\FakeVS",
+            compilerPath: @"C:\FakeVS\VC\Tools\MSVC\14.40\bin\HostX64\x64\cl.exe",
+            linkerPath: @"C:\FakeVS\VC\Tools\MSVC\14.40\bin\HostX64\x64\link.exe",
+            msvcIncludePaths: new[] { @"C:\FakeMSVC\include" },
+            sdkRoot: sdkRoot);
+
+        XMSVCToolChain toolchain = new(env, repoRoot: @"C:\repo");
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        var actions = toolchain.CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        // Every IncludePaths entry must appear as a /I<path> arg.
+        foreach (string inc in env.IncludePaths)
+        {
+            Assert.Contains($"/I{inc}", compile.CommandArguments);
+        }
+
+        // MSVC include comes before any SDK include in the command line.
+        int msvcIdx = -1;
+        int firstSdkIdx = -1;
+        for (int i = 0; i < compile.CommandArguments.Count; i++)
+        {
+            string arg = compile.CommandArguments[i];
+            if (msvcIdx < 0 && arg == @"/IC:\FakeMSVC\include")
+            {
+                msvcIdx = i;
+            }
+            if (firstSdkIdx < 0 && arg.Contains(@"\10.0.26100.0\um", StringComparison.Ordinal))
+            {
+                firstSdkIdx = i;
+            }
+        }
+        Assert.True(msvcIdx >= 0, "MSVC /I flag not found.");
+        Assert.True(firstSdkIdx >= 0, "SDK /I flag not found.");
+        Assert.True(msvcIdx < firstSdkIdx,
+            $"MSVC /I (idx {msvcIdx}) must precede SDK /I (idx {firstSdkIdx}).");
+    }
+
+    /// <summary>
+    /// Phase 1.4a: LinkModule emits <c>/LIBPATH:</c> for every entry in
+    /// the composite library path list PLUS the standard Win32 system
+    /// import libs (kernel32, user32, ...). Both must be present on
+    /// every link command so a downstream test can spot a missing one
+    /// without re-running the linker.
+    /// </summary>
+    [Fact]
+    public void LinkModule_EmitsLibPathFlagsAndDefaultSystemLibs()
+    {
+        string sdkRoot = Path.Combine(_scratchDir, "FakeSdk");
+        foreach (string sub in new[] { "um", "shared", "ucrt", "winrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Include", "10.0.26100.0", sub));
+        }
+        foreach (string sub in new[] { "um", "ucrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Lib", "10.0.26100.0", sub, "x64"));
+        }
+
+        VCEnvironment env = VCEnvironment.ForTesting(
+            vsInstallDir: @"C:\FakeVS",
+            compilerPath: @"C:\FakeVS\cl.exe",
+            linkerPath: @"C:\FakeVS\link.exe",
+            msvcLibraryPaths: new[] { @"C:\FakeMSVC\lib\x64" },
+            sdkRoot: sdkRoot);
+
+        XMSVCToolChain toolchain = new(env, repoRoot: @"C:\repo");
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        IExternalAction link = toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        // Every LibraryPaths entry must appear as a /LIBPATH:<path> arg.
+        foreach (string libPath in env.LibraryPaths)
+        {
+            Assert.Contains($"/LIBPATH:{libPath}", link.CommandArguments);
+        }
+
+        // Default system libs must all be present.
+        foreach (string sysLib in new[]
+        {
+            "kernel32.lib", "user32.lib", "gdi32.lib", "winspool.lib",
+            "comdlg32.lib", "advapi32.lib", "shell32.lib", "ole32.lib",
+            "oleaut32.lib", "uuid.lib", "odbc32.lib", "odbccp32.lib",
+        })
+        {
+            Assert.Contains(sysLib, link.CommandArguments);
+        }
+    }
+
+    /// <summary>
+    /// Phase 1.4a: CacheKeyComponents for a compile action MUST include
+    /// the MSVC compiler version AND the Windows SDK version. Swapping
+    /// either one between two builds (e.g. an MSVC point-release upgrade)
+    /// invalidates the cache so the new SDK headers / new MSVC code
+    /// generators actually get exercised.
+    /// </summary>
+    [Fact]
+    public void CompileSource_CacheKey_IncludesMsvcAndWinSdkVersion()
+    {
+        string sdkRootA = Path.Combine(_scratchDir, "SdkA");
+        string sdkRootB = Path.Combine(_scratchDir, "SdkB");
+        foreach (string root in new[] { sdkRootA, sdkRootB })
+        {
+            foreach (string sub in new[] { "um", "shared", "ucrt", "winrt" })
+            {
+                Directory.CreateDirectory(Path.Combine(root, "Include", "10.0.26100.0", sub));
+            }
+            foreach (string sub in new[] { "um", "ucrt" })
+            {
+                Directory.CreateDirectory(Path.Combine(root, "Lib", "10.0.26100.0", sub, "x64"));
+            }
+        }
+
+        VCEnvironment envA = VCEnvironment.ForTesting(
+            vsInstallDir: @"C:\FakeVS",
+            compilerPath: @"C:\FakeVS\cl.exe",
+            linkerPath: @"C:\FakeVS\link.exe",
+            compilerVersion: "14.40.0.0",
+            sdkRoot: sdkRootA);
+
+        VCEnvironment envB = VCEnvironment.ForTesting(
+            vsInstallDir: @"C:\FakeVS",
+            compilerPath: @"C:\FakeVS\cl.exe",
+            linkerPath: @"C:\FakeVS\link.exe",
+            compilerVersion: "14.41.0.0",          // bumped MSVC version
+            sdkRoot: sdkRootB);
+
+        XMSVCToolChain tcA = new(envA, repoRoot: @"C:\repo");
+        XMSVCToolChain tcB = new(envB, repoRoot: @"C:\repo");
+
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        IExternalAction compileA = tcA.CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+        IExternalAction compileB = tcB.CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        // The cache key components must reflect the differing MSVC versions.
+        Assert.Contains("MsvcVersion=14.40.0.0", compileA.CacheKeyComponents);
+        Assert.Contains("MsvcVersion=14.41.0.0", compileB.CacheKeyComponents);
+        // And BOTH must include a WinSdkVersion= component (the value
+        // here is the same -- 10.0.26100.0 -- but the component MUST be
+        // present so a hypothetical SDK swap invalidates the cache).
+        Assert.Contains(compileA.CacheKeyComponents, c => c.StartsWith("WinSdkVersion=", StringComparison.Ordinal));
+        Assert.Contains(compileB.CacheKeyComponents, c => c.StartsWith("WinSdkVersion=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Phase 1.4a: GeneratePCH also incorporates the composite include
+    /// path list so a PCH-generating compile sees the same Windows SDK
+    /// headers as the downstream consumer compiles. A PCH built without
+    /// SDK paths in its include search would silently shadow the
+    /// consumer's symbol resolution and trigger a C1859 (PCH was built
+    /// from a different command line) at consumer-compile time.
+    /// </summary>
+    [Fact]
+    public void GeneratePCH_EmitsIncludeFlagsForEnvironmentPaths()
+    {
+        string sdkRoot = Path.Combine(_scratchDir, "FakeSdk");
+        foreach (string sub in new[] { "um", "shared", "ucrt", "winrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Include", "10.0.26100.0", sub));
+        }
+        foreach (string sub in new[] { "um", "ucrt" })
+        {
+            Directory.CreateDirectory(Path.Combine(sdkRoot, "Lib", "10.0.26100.0", sub, "x64"));
+        }
+
+        VCEnvironment env = VCEnvironment.ForTesting(
+            vsInstallDir: @"C:\FakeVS",
+            compilerPath: @"C:\FakeVS\cl.exe",
+            linkerPath: @"C:\FakeVS\link.exe",
+            msvcIncludePaths: new[] { @"C:\FakeMSVC\include" },
+            sdkRoot: sdkRoot);
+
+        XMSVCToolChain toolchain = new(env, repoRoot: @"C:\repo");
+
+        // Module with PrivatePCHHeaderFile so GeneratePCH executes.
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        string pchOutDir = Path.Combine(_scratchDir, "pchout");
+        string pchHeaderPath = Path.Combine(_scratchDir, "pch.h");
+        File.WriteAllText(pchHeaderPath, "// PCH header\n");
+        FileItem pchHeader = FileItem.GetItemByPath(pchHeaderPath);
+
+        PCHBinding binding = toolchain.GeneratePCH(
+            module: module,
+            target: target,
+            pchHeaderName: "pch.h",
+            pchHeaderFile: pchHeader,
+            outputDir: pchOutDir);
+
+        // Every IncludePaths entry must appear as a /I<path> arg.
+        foreach (string inc in env.IncludePaths)
+        {
+            Assert.Contains($"/I{inc}", binding.Action.CommandArguments);
+        }
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

@@ -5,13 +5,16 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using Microsoft.Win32;
+using Simgenics.XPact.XBT.Core;
 
 namespace Simgenics.XPact.XBT.Toolchain;
 
 /// <summary>
 /// Cached MSVC environment record. Discovers the active MSVC installation
-/// via <c>vswhere.exe</c> on first access; subsequent reads return the
-/// cached value. Mirrors UE's <c>VCEnvironment</c> in shape.
+/// via <c>vswhere.exe</c> and the Windows SDK via the registry on first
+/// access; subsequent reads return the cached value. Mirrors UE's
+/// <c>VCEnvironment</c> in shape.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,6 +24,14 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// <see cref="DiscoveryResult.NotFound"/>. The toolchain reports a
 /// build-blocking diagnostic at that point; no fallback to ad-hoc
 /// path scanning is provided.
+/// </para>
+/// <para>
+/// Phase 1.4a extension: the discovery probe now also locates the
+/// Windows 10/11 SDK (headers + import libs) via the
+/// <c>HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots</c> registry
+/// key (value <c>KitsRoot10</c>) and the highest-numbered subdirectory
+/// under <c>&lt;root&gt;/Include/</c>. The chosen SDK version may be
+/// overridden via the <c>XPACT_WINSDK_VERSION</c> environment variable.
 /// </para>
 /// </remarks>
 public sealed class VCEnvironment
@@ -40,14 +51,54 @@ public sealed class VCEnvironment
     /// <summary>Absolute path to <c>rc.exe</c>.</summary>
     public string ResourceCompilerPath { get; }
 
-    /// <summary>Include paths the compiler searches for system + MSVC headers.</summary>
+    /// <summary>
+    /// Include paths the MSVC compiler itself ships (CRT, ATL, MFC, the
+    /// MSVC headers). Used as the first half of <see cref="IncludePaths"/>.
+    /// </summary>
+    public IReadOnlyList<string> MsvcIncludePaths { get; }
+
+    /// <summary>
+    /// Library paths the MSVC compiler itself ships (libcmt, libcpmt,
+    /// vcruntime, msvcrt, the import-library half of the MSVC redist).
+    /// Used as the first half of <see cref="LibraryPaths"/>.
+    /// </summary>
+    public IReadOnlyList<string> MsvcLibraryPaths { get; }
+
+    /// <summary>
+    /// Absolute path to the Windows 10/11 SDK root (typically
+    /// <c>C:\Program Files (x86)\Windows Kits\10</c>). Empty for a
+    /// synthetic test environment that has not declared an SDK.
+    /// </summary>
+    public string WindowsSdkRoot { get; }
+
+    /// <summary>
+    /// Windows SDK version string (e.g. <c>"10.0.26100.0"</c>). Used to
+    /// resolve include + library subdirectories under
+    /// <see cref="WindowsSdkRoot"/>.
+    /// </summary>
+    public string WindowsSdkVersion { get; }
+
+    /// <summary>
+    /// Include paths under <c>&lt;sdkRoot&gt;/Include/&lt;sdkVersion&gt;/</c>:
+    /// <c>um</c> (user-mode Win32), <c>shared</c> (kernel + user shared),
+    /// <c>ucrt</c> (the universal C runtime headers), and <c>winrt</c>
+    /// (Windows Runtime). Listed in the order MSVC's <c>cl.exe</c>
+    /// expects.
+    /// </summary>
+    public IReadOnlyList<string> SdkIncludePaths { get; }
+
+    /// <summary>
+    /// Library paths under <c>&lt;sdkRoot&gt;/Lib/&lt;sdkVersion&gt;/</c>:
+    /// <c>um/x64</c> (user-mode import libs) and <c>ucrt/x64</c> (UCRT
+    /// import libs). Always in the order linker would consume them.
+    /// </summary>
+    public IReadOnlyList<string> SdkLibraryPaths { get; }
+
+    /// <summary>Composite include paths: MSVC paths first, then SDK paths.</summary>
     public IReadOnlyList<string> IncludePaths { get; }
 
-    /// <summary>Library paths the linker searches for system + MSVC libraries.</summary>
+    /// <summary>Composite library paths: MSVC paths first, then SDK paths.</summary>
     public IReadOnlyList<string> LibraryPaths { get; }
-
-    /// <summary>Windows SDK version string (e.g. <c>"10.0.22621.0"</c>).</summary>
-    public string WindowsSdkVersion { get; }
 
     /// <summary>Compiler version string (e.g. <c>"14.40.33807"</c>).</summary>
     public string CompilerVersion { get; }
@@ -58,9 +109,12 @@ public sealed class VCEnvironment
         string linkerPath,
         string libraryManagerPath,
         string resourceCompilerPath,
-        IReadOnlyList<string> includePaths,
-        IReadOnlyList<string> libraryPaths,
+        IReadOnlyList<string> msvcIncludePaths,
+        IReadOnlyList<string> msvcLibraryPaths,
+        string windowsSdkRoot,
         string windowsSdkVersion,
+        IReadOnlyList<string> sdkIncludePaths,
+        IReadOnlyList<string> sdkLibraryPaths,
         string compilerVersion)
     {
         VSInstallDir = vsInstallDir;
@@ -68,10 +122,26 @@ public sealed class VCEnvironment
         LinkerPath = linkerPath;
         LibraryManagerPath = libraryManagerPath;
         ResourceCompilerPath = resourceCompilerPath;
-        IncludePaths = includePaths;
-        LibraryPaths = libraryPaths;
+        MsvcIncludePaths = msvcIncludePaths;
+        MsvcLibraryPaths = msvcLibraryPaths;
+        WindowsSdkRoot = windowsSdkRoot;
         WindowsSdkVersion = windowsSdkVersion;
+        SdkIncludePaths = sdkIncludePaths;
+        SdkLibraryPaths = sdkLibraryPaths;
         CompilerVersion = compilerVersion;
+
+        // Composite paths: MSVC first, then SDK. Build once at construction
+        // so callers and the determinism test get identical instances on
+        // repeat reads.
+        List<string> includes = new(msvcIncludePaths.Count + sdkIncludePaths.Count);
+        includes.AddRange(msvcIncludePaths);
+        includes.AddRange(sdkIncludePaths);
+        IncludePaths = includes;
+
+        List<string> libs = new(msvcLibraryPaths.Count + sdkLibraryPaths.Count);
+        libs.AddRange(msvcLibraryPaths);
+        libs.AddRange(sdkLibraryPaths);
+        LibraryPaths = libs;
     }
 
     /// <summary>Outcome of a discovery attempt.</summary>
@@ -101,11 +171,11 @@ public sealed class VCEnvironment
     ///   (<c>%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\</c>).</item>
     /// </list>
     /// <para>
-    /// When MSVC is found, the helper does not validate version
-    /// requirements; the caller compares
-    /// <see cref="CompilerVersion"/> against
-    /// <see cref="XMSVCToolChain"/>'s minimum-version policy and emits a
-    /// diagnostic if the version is too old.
+    /// When MSVC is found, the helper additionally probes the Windows
+    /// SDK (via the registry) and populates
+    /// <see cref="WindowsSdkRoot"/>, <see cref="WindowsSdkVersion"/>,
+    /// <see cref="SdkIncludePaths"/>, and <see cref="SdkLibraryPaths"/>.
+    /// A missing SDK throws <see cref="VCEnvironmentNotFoundException"/>.
     /// </para>
     /// </remarks>
     public static DiscoveryResult TryDiscover(out VCEnvironment? environment)
@@ -149,30 +219,63 @@ public sealed class VCEnvironment
 
     /// <summary>
     /// Test hook: construct a synthetic VCEnvironment for a per-test
-    /// fixture. The real <see cref="TryDiscover"/> spawns vswhere which is
-    /// machine-dependent; tests substitute a synthetic env so they run
-    /// the same on every machine.
+    /// fixture. The real <see cref="TryDiscover"/> spawns vswhere and
+    /// touches the registry, both of which are machine-dependent; tests
+    /// substitute a synthetic env so they run the same on every machine.
     /// </summary>
+    /// <param name="sdkRoot">
+    /// Synthetic Windows SDK root. When non-null and non-empty, the
+    /// factory probes <c>&lt;sdkRoot&gt;/Include/</c> for a version
+    /// subdirectory (the highest one wins, or <paramref name="sdkVersion"/>
+    /// if provided). When the directory does not exist or contains no
+    /// version subdirectories, <see cref="VCEnvironmentNotFoundException"/>
+    /// is thrown so tests exercise the missing-SDK path.
+    /// </param>
+    /// <param name="sdkVersion">
+    /// Explicit SDK version to pick. When null or empty, the highest
+    /// version under <paramref name="sdkRoot"/>/Include is chosen.
+    /// </param>
     internal static VCEnvironment ForTesting(
         string vsInstallDir,
         string compilerPath,
         string linkerPath,
         string? libraryManagerPath = null,
         string? resourceCompilerPath = null,
-        IReadOnlyList<string>? includePaths = null,
-        IReadOnlyList<string>? libraryPaths = null,
-        string? windowsSdkVersion = null,
+        IReadOnlyList<string>? msvcIncludePaths = null,
+        IReadOnlyList<string>? msvcLibraryPaths = null,
+        string? sdkRoot = null,
+        string? sdkVersion = null,
         string? compilerVersion = null)
     {
+        IReadOnlyList<string> sdkIncludes = Array.Empty<string>();
+        IReadOnlyList<string> sdkLibs = Array.Empty<string>();
+        string resolvedSdkRoot = "";
+        string resolvedSdkVersion = "";
+
+        if (!string.IsNullOrEmpty(sdkRoot))
+        {
+            (resolvedSdkRoot, resolvedSdkVersion, sdkIncludes, sdkLibs) =
+                ResolveSdkPaths(sdkRoot, sdkVersion);
+        }
+        else if (!string.IsNullOrEmpty(sdkVersion))
+        {
+            // No root supplied but a version: synthetic path-only fixture
+            // (tests for cache-key invalidation use this).
+            resolvedSdkVersion = sdkVersion!;
+        }
+
         return new VCEnvironment(
             vsInstallDir,
             compilerPath,
             linkerPath,
             libraryManagerPath ?? "",
             resourceCompilerPath ?? "",
-            includePaths ?? Array.Empty<string>(),
-            libraryPaths ?? Array.Empty<string>(),
-            windowsSdkVersion ?? "10.0.22621.0",
+            msvcIncludePaths ?? Array.Empty<string>(),
+            msvcLibraryPaths ?? Array.Empty<string>(),
+            resolvedSdkRoot,
+            resolvedSdkVersion,
+            sdkIncludes,
+            sdkLibs,
             compilerVersion ?? "14.40.0.0");
     }
 
@@ -206,25 +309,235 @@ public sealed class VCEnvironment
             return null;
         }
 
-        List<string> includePaths = new()
+        List<string> msvcIncludePaths = new()
         {
             Path.Combine(versionDir, "include"),
         };
-        List<string> libraryPaths = new()
+        List<string> msvcLibraryPaths = new()
         {
             Path.Combine(versionDir, "lib", "x64"),
         };
+
+        // Discover the Windows SDK. Throws VCEnvironmentNotFoundException
+        // when the SDK is absent -- that is a fatal-on-Windows condition
+        // and the message instructs the operator to install the
+        // Win10/11 SDK.
+        (string sdkRoot, string sdkVersion, IReadOnlyList<string> sdkIncludes, IReadOnlyList<string> sdkLibs)
+            = DiscoverWindowsSdk();
+
+        // Resolve rc.exe under the SDK root for the chosen SDK version.
+        // rc.exe lives at <sdkRoot>/bin/<sdkVersion>/x64/rc.exe.
+        string rcPath = "";
+        if (!string.IsNullOrEmpty(sdkRoot))
+        {
+            string candidateRc = Path.Combine(sdkRoot, "bin", sdkVersion, "x64", "rc.exe");
+            if (File.Exists(candidateRc))
+            {
+                rcPath = candidateRc;
+            }
+        }
 
         return new VCEnvironment(
             installDir,
             compilerPath,
             linkerPath,
             File.Exists(libPath) ? libPath : "",
-            "",                       // rc.exe lives in the Windows SDK; resolved later
-            includePaths,
-            libraryPaths,
-            "10.0.22621.0",           // Windows SDK; later improvement: read registry
+            rcPath,
+            msvcIncludePaths,
+            msvcLibraryPaths,
+            sdkRoot,
+            sdkVersion,
+            sdkIncludes,
+            sdkLibs,
             version);
+    }
+
+    /// <summary>
+    /// Resolve the Windows SDK root + version + include + library paths
+    /// from the registry, with override support via the
+    /// <c>XPACT_WINSDK_VERSION</c> environment variable.
+    /// </summary>
+    /// <remarks>
+    /// Reads <c>HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots</c>'s
+    /// <c>KitsRoot10</c> value. Enumerates the
+    /// <c>&lt;root&gt;/Include/</c> subdirectories and picks the highest
+    /// version (or the env-var override, if set). Builds the standard
+    /// include + library subdirectory list. Throws
+    /// <see cref="VCEnvironmentNotFoundException"/> when the registry
+    /// key or any include subdirectory is missing.
+    /// </remarks>
+    private static (string Root, string Version, IReadOnlyList<string> Includes, IReadOnlyList<string> Libs)
+        DiscoverWindowsSdk()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new VCEnvironmentNotFoundException(
+                "Windows SDK discovery is only supported on Windows hosts. " +
+                "MSVC / Win64 builds require Windows; use the Clang toolchain " +
+                "for Linux / Android.");
+        }
+
+        string? root = ReadKitsRoot10FromRegistry();
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+        {
+            throw new VCEnvironmentNotFoundException(
+                "Windows SDK not found. The registry value HKLM\\SOFTWARE\\Microsoft\\" +
+                "Windows Kits\\Installed Roots\\KitsRoot10 is missing or points to a " +
+                "non-existent directory. Install the Windows 10/11 SDK via " +
+                "https://developer.microsoft.com/windows/downloads/windows-sdk/ " +
+                "or the Visual Studio Installer 'Desktop development with C++' workload.");
+        }
+
+        // ResolveSdkPaths consults XPACT_WINSDK_VERSION internally if no
+        // explicit override is provided; pass null here to let the env
+        // var path drive in the production discovery flow.
+        return ResolveSdkPaths(root, versionOverride: null);
+    }
+
+    /// <summary>
+    /// Given an SDK root (real or synthetic) and an optional explicit
+    /// version, resolve to (root, version, includes, libs). The version
+    /// preference order is:
+    /// <list type="number">
+    ///   <item><paramref name="versionOverride"/> if non-null + non-empty.</item>
+    ///   <item>The <c>XPACT_WINSDK_VERSION</c> environment variable, if set.</item>
+    ///   <item>The highest version subdirectory found under
+    ///   <paramref name="root"/>/Include.</item>
+    /// </list>
+    /// Throws <see cref="VCEnvironmentNotFoundException"/> if no version
+    /// is resolvable.
+    /// </summary>
+    private static (string Root, string Version, IReadOnlyList<string> Includes, IReadOnlyList<string> Libs)
+        ResolveSdkPaths(string root, string? versionOverride)
+    {
+        string includeRoot = Path.Combine(root, "Include");
+        if (!Directory.Exists(includeRoot))
+        {
+            throw new VCEnvironmentNotFoundException(
+                $"Windows SDK root '{root}' does not contain an Include/ subdirectory. " +
+                "Install the Windows 10/11 SDK via " +
+                "https://developer.microsoft.com/windows/downloads/windows-sdk/.");
+        }
+
+        // Enumerate version subdirectories. A valid SDK version subdirectory
+        // contains the canonical 'um' folder; anything else (e.g. wdf, .nuget)
+        // is filtered.
+        List<string> versionDirs = new();
+        foreach (string dir in Directory.GetDirectories(includeRoot))
+        {
+            string umCandidate = Path.Combine(dir, "um");
+            if (Directory.Exists(umCandidate))
+            {
+                versionDirs.Add(Path.GetFileName(dir));
+            }
+        }
+
+        if (versionDirs.Count == 0)
+        {
+            throw new VCEnvironmentNotFoundException(
+                $"Windows SDK root '{root}' has an Include/ directory but no version " +
+                "subdirectories containing a 'um' folder. Install the Windows 10/11 " +
+                "SDK via the Visual Studio Installer (workload " +
+                "'Desktop development with C++').");
+        }
+
+        // The effective override is the explicit param if non-empty,
+        // otherwise the env var. ResolveSdkPaths is the central choke
+        // point so the env var works for both the discovery path (which
+        // doesn't pass an explicit version) and the test path (which
+        // wants to exercise the env var too).
+        string? effectiveOverride = !string.IsNullOrEmpty(versionOverride)
+            ? versionOverride
+            : Environment.GetEnvironmentVariable("XPACT_WINSDK_VERSION");
+
+        // Choose: explicit/env-var > highest.
+        string chosen;
+        if (!string.IsNullOrEmpty(effectiveOverride) && versionDirs.Contains(effectiveOverride))
+        {
+            chosen = effectiveOverride!;
+        }
+        else if (!string.IsNullOrEmpty(effectiveOverride))
+        {
+            throw new VCEnvironmentNotFoundException(
+                $"Requested Windows SDK version '{effectiveOverride}' is not installed. " +
+                $"Available versions under '{includeRoot}': " +
+                string.Join(", ", versionDirs) + ".");
+        }
+        else
+        {
+            // Sort ordinal so 10.0.26100.0 sorts after 10.0.22621.0 (which
+            // is the desired ordering for numeric-with-dots version strings;
+            // ordinal is sufficient because the dot-separated components
+            // are zero-padded to the same width within each SDK release
+            // family). Reverse to get highest-first.
+            versionDirs.Sort(StringComparer.Ordinal);
+            versionDirs.Reverse();
+            chosen = versionDirs[0];
+        }
+
+        // Build include + library paths. Order is the same one the
+        // Visual Studio "x64 Native Tools Command Prompt" uses, so any
+        // diagnostic the compiler emits about a missing header mentions
+        // the directories in the same order.
+        List<string> includes = new()
+        {
+            Path.Combine(includeRoot, chosen, "um"),
+            Path.Combine(includeRoot, chosen, "shared"),
+            Path.Combine(includeRoot, chosen, "ucrt"),
+            Path.Combine(includeRoot, chosen, "winrt"),
+        };
+        List<string> libs = new()
+        {
+            Path.Combine(root, "Lib", chosen, "um", "x64"),
+            Path.Combine(root, "Lib", chosen, "ucrt", "x64"),
+        };
+
+        return (root, chosen, includes, libs);
+    }
+
+    /// <summary>
+    /// Read the Windows SDK install root from the registry. Returns null
+    /// on any failure (key absent, access denied, registry corrupt, etc.).
+    /// The trailing backslash is stripped so callers can <see cref="Path.Combine(string, string)"/>
+    /// without doubling separators.
+    /// </summary>
+    private static string? ReadKitsRoot10FromRegistry()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            // The KitsRoot10 value lives in the 32-bit registry view on
+            // 64-bit Windows hosts. Use the explicit 32-bit view so we
+            // hit the same key as the Microsoft installers regardless of
+            // whether the calling process is 32- or 64-bit.
+            using RegistryKey baseKey = RegistryKey.OpenBaseKey(
+                RegistryHive.LocalMachine,
+                RegistryView.Registry32);
+            using RegistryKey? subKey = baseKey.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows Kits\Installed Roots",
+                writable: false);
+            if (subKey is null)
+            {
+                return null;
+            }
+            object? value = subKey.GetValue("KitsRoot10");
+            string? root = value as string;
+            if (string.IsNullOrEmpty(root))
+            {
+                return null;
+            }
+            return root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception)
+        {
+            // Registry access can throw on locked-down machines; treat as
+            // "not found" rather than propagating.
+            return null;
+        }
     }
 
     private static string? RunVswhereForInstallPath(string vswhereExe)
@@ -254,5 +567,31 @@ public sealed class VCEnvironment
         {
             return null;
         }
+    }
+}
+
+/// <summary>
+/// Thrown by <see cref="VCEnvironment"/> when a discovery probe fails
+/// in a way that cannot be recovered (e.g. the Windows SDK registry key
+/// is missing, or the requested SDK version is not installed). Maps to
+/// Toolchain Contract Rev 13 Section 13 exit code 25
+/// (Toolchain discovery range; new code reserved for Phase 1.4a alongside
+/// the existing 23 = engine/toolchain version mismatch).
+/// </summary>
+public sealed class VCEnvironmentNotFoundException : XBTException
+{
+    /// <summary>Exit code reserved for Win SDK discovery failure.</summary>
+    public const int ExitCodeWinSdkNotFound = 25;
+
+    /// <summary>Construct an SDK-not-found exception with the given message.</summary>
+    public VCEnvironmentNotFoundException(string message)
+        : base(message, exitCode: ExitCodeWinSdkNotFound)
+    {
+    }
+
+    /// <summary>Construct an SDK-not-found exception with an inner cause.</summary>
+    public VCEnvironmentNotFoundException(string message, Exception inner)
+        : base(message, exitCode: ExitCodeWinSdkNotFound, inner)
+    {
     }
 }

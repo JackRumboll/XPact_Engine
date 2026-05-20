@@ -123,6 +123,148 @@ public abstract class XToolChain
         string outputDir);
 
     /// <summary>
+    /// Emit a SHARED PCH generation action consumed by every module in
+    /// the group. The header file lives at a stable absolute path
+    /// independent of any single module; the toolchain places the
+    /// generated artefact under
+    /// <c>{outputDir}/SharedPCH/{ContentHash}.pch</c> (MSVC) or
+    /// <c>{outputDir}/SharedPCH/{ContentHash}.pchi</c> (Clang). The
+    /// content hash incorporates the header's absolute path and every
+    /// participant's <see cref="ModuleRules.PublicDefinitions"/> so a
+    /// change in any participant's defines invalidates the shared PCH.
+    /// </summary>
+    /// <param name="headerFile">
+    /// Resolved <see cref="FileItem"/> for the shared header. The header's
+    /// absolute canonical path is the group key.
+    /// </param>
+    /// <param name="participants">
+    /// Every module that named the same <see cref="ModuleRules.SharedPCHHeaderFile"/>
+    /// and is in the build's selected-module set. Must contain at least
+    /// one element. SimPath modules are forbidden here per Contract Rev 13
+    /// Section 1.5; the implementation re-checks at emit time as
+    /// defence-in-depth and fails with exit 41 if violated.
+    /// </param>
+    /// <param name="target">The target driving the build.</param>
+    /// <param name="outputDir">
+    /// Absolute path to the intermediate output directory. The shared PCH
+    /// artefacts live under a <c>SharedPCH/</c> subdirectory so they
+    /// don't collide with any participant's per-module intermediate files.
+    /// </param>
+    /// <returns>
+    /// A <see cref="PCHBinding"/> the orchestrator threads through to
+    /// every participant's <see cref="CompileSource"/> invocation. Every
+    /// consumer compile depends on the same shared <see cref="PCHBinding.Action"/>
+    /// and consumes the same <see cref="PCHBinding.PchOutputFile"/>.
+    /// </returns>
+    /// <exception cref="ToolchainBannedFlagException">
+    /// Thrown with exit 41 when any element of <paramref name="participants"/>
+    /// has <see cref="ModuleRules.SimPath"/> = true. Per Contract Rev 13
+    /// Section 1.5, SimPath modules cannot participate in a shared PCH
+    /// because shared-PCH non-determinism violates sim-path determinism.
+    /// </exception>
+    public abstract PCHBinding GenerateSharedPCH(
+        string headerFile,
+        IReadOnlyList<ModuleRules> participants,
+        FileItem headerFileItem,
+        TargetRules target,
+        string outputDir);
+
+    /// <summary>
+    /// Defence-in-depth gate for <see cref="GenerateSharedPCH"/>: a
+    /// shared PCH group must contain zero SimPath modules per Contract
+    /// Rev 13 Section 1.5. Subclasses call this from their
+    /// <see cref="GenerateSharedPCH"/> implementations; the parser-side
+    /// validator catches the same case at descriptor-parse time.
+    /// </summary>
+    protected static void EnforceSimPathSharedPchGate(IReadOnlyList<ModuleRules> participants)
+    {
+        ArgumentNullException.ThrowIfNull(participants);
+        foreach (ModuleRules m in participants)
+        {
+            if (m.SimPath)
+            {
+                throw new ToolchainBannedFlagException(
+                    $"Module '{m.Name}' is SimPath but appears in a shared-PCH group. " +
+                    "Contract Rev 13 Section 1.5 forbids SimPath modules from " +
+                    "participating in a shared PCH because shared-PCH non-determinism " +
+                    "violates sim-path determinism. Drop the shared_pch_header_file " +
+                    $"declaration from '{m.Name}' (use pch_header_file = ... for a " +
+                    "private PCH instead).");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Compute the canonical content hash key for a shared PCH group per
+    /// Contract Rev 13 Section 1.5 + <c>/Documents/XBT.html</c>
+    /// Section 15.4. The key incorporates:
+    /// </summary>
+    /// <list type="bullet">
+    ///   <item>The header's absolute canonical path (the group key).</item>
+    ///   <item>Every participant's name, sorted ordinal.</item>
+    ///   <item>Every participant's <see cref="ModuleRules.PublicDefinitions"/>
+    ///   (deduped + sorted ordinal so define-order doesn't change the
+    ///   hash).</item>
+    /// </list>
+    /// <remarks>
+    /// The hash is a hex-encoded BLAKE3 digest. Used to name the on-disk
+    /// PCH artefact so two builds of the same input set re-use the same
+    /// file path.
+    /// </remarks>
+    protected static string ComputeSharedPchHash(
+        string headerAbsolutePath,
+        IReadOnlyList<ModuleRules> participants)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(headerAbsolutePath);
+        ArgumentNullException.ThrowIfNull(participants);
+
+        using Blake3.Hasher hasher = Blake3.Hasher.New();
+        Span<byte> intBuffer = stackalloc byte[4];
+
+        // 1. Header absolute path. Length-prefixed UTF-8.
+        byte[] headerUtf8 = System.Text.Encoding.UTF8.GetBytes(headerAbsolutePath);
+        BitConverter.TryWriteBytes(intBuffer, headerUtf8.Length);
+        hasher.Update(intBuffer);
+        hasher.Update(headerUtf8);
+
+        // 2. Participants sorted by Name ordinal so the hash is independent
+        //    of the discovery order.
+        List<ModuleRules> sortedParticipants = new(participants);
+        sortedParticipants.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
+
+        BitConverter.TryWriteBytes(intBuffer, sortedParticipants.Count);
+        hasher.Update(intBuffer);
+
+        foreach (ModuleRules m in sortedParticipants)
+        {
+            // Participant name.
+            byte[] nameUtf8 = System.Text.Encoding.UTF8.GetBytes(m.Name);
+            BitConverter.TryWriteBytes(intBuffer, nameUtf8.Length);
+            hasher.Update(intBuffer);
+            hasher.Update(nameUtf8);
+
+            // PublicDefinitions, deduped + ordinal-sorted so define-order
+            // does not change the hash.
+            List<string> defs = new(new HashSet<string>(m.PublicDefinitions, StringComparer.Ordinal));
+            defs.Sort(StringComparer.Ordinal);
+
+            BitConverter.TryWriteBytes(intBuffer, defs.Count);
+            hasher.Update(intBuffer);
+            foreach (string def in defs)
+            {
+                byte[] defUtf8 = System.Text.Encoding.UTF8.GetBytes(def);
+                BitConverter.TryWriteBytes(intBuffer, defUtf8.Length);
+                hasher.Update(intBuffer);
+                hasher.Update(defUtf8);
+            }
+        }
+
+        Span<byte> digest = stackalloc byte[Core.IoHash.Length];
+        hasher.Finalize(digest);
+        return new Core.IoHash(digest).ToString();
+    }
+
+    /// <summary>
     /// Sim-path PCH gate. Per Contract Section 1.5 + Phase 1.3 spec, a
     /// sim-path module must declare <c>PCHUsage = NoPCHs</c> or
     /// <c>PCHUsage = NoSharedPCHs</c>; anything else fails with exit

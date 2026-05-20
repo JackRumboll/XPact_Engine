@@ -108,6 +108,8 @@ public static class BuildTomlParser
             "short_name",
             "deprecation_message",
             "minimum_toolchain_version",
+            "pch_header_file",
+            "shared_pch_header_file",
             // Enum-string keys -- the result must be a string, then
             // re-parsed by the enum reader. Treated as string scalars
             // for the purposes of @expr substitution.
@@ -139,6 +141,8 @@ public static class BuildTomlParser
             "sim_path_conservative_roots_allowed",
             "simd_level",
             "pch_usage",
+            "pch_header_file",
+            "shared_pch_header_file",
             "fp_semantics",
             "optimize_code",
             "b_enable_exceptions",
@@ -388,6 +392,8 @@ public static class BuildTomlParser
             SimPathConservativeRootsAllowed = ReadBool(model, "sim_path_conservative_roots_allowed", sourcePath) ?? false,
             SimdLevel = ReadEnum<SimdLevel>(model, "simd_level", sourcePath, required: false) ?? SimdLevel.Default,
             PCHUsage = ReadEnum<PCHUsageMode>(model, "pch_usage", sourcePath, required: false) ?? PCHUsageMode.Default,
+            PrivatePCHHeaderFile = ReadString(model, "pch_header_file", sourcePath),
+            SharedPCHHeaderFile = ReadString(model, "shared_pch_header_file", sourcePath),
             FPSemantics = ReadEnum<FPSemantics>(model, "fp_semantics", sourcePath, required: false) ?? FPSemantics.Default,
             OptimizeCode = ReadEnum<OptimizeCodeMode>(model, "optimize_code", sourcePath, required: false) ?? OptimizeCodeMode.Default,
             bEnableExceptions = ReadBool(model, "b_enable_exceptions", sourcePath) ?? true,
@@ -407,6 +413,12 @@ public static class BuildTomlParser
             PublicDefinitions = ReadStringList(model, "public_definitions", sourcePath),
             PrivateDefinitions = ReadStringList(model, "private_definitions", sourcePath),
         };
+
+        // PCH-header mutual-exclusion check. A module may declare a
+        // private OR a shared PCH header, never both. Per Toolchain
+        // Contract Rev 13 Section 1.5: a module has at most one PCH
+        // source. Exit code 30 (RulesCompileFailed).
+        ValidatePchHeaderExclusivity(rules, sourcePath);
 
         // SimPath constraint checks (XBT.html Section 4.5). These run
         // at parse time so a malformed descriptor fails before any
@@ -438,6 +450,26 @@ public static class BuildTomlParser
         return Path.GetFileNameWithoutExtension(fileName);
     }
 
+    /// <summary>
+    /// Reject a module that declares both <c>pch_header_file</c> and
+    /// <c>shared_pch_header_file</c>. Per Toolchain Contract Rev 13
+    /// Section 1.5 a module has at most one PCH source.
+    /// </summary>
+    private static void ValidatePchHeaderExclusivity(ModuleRules rules, string? sourcePath)
+    {
+        if (!string.IsNullOrEmpty(rules.PrivatePCHHeaderFile)
+            && !string.IsNullOrEmpty(rules.SharedPCHHeaderFile))
+        {
+            throw new DescriptorParseException(
+                $"Module '{rules.Name}' declares both pch_header_file = " +
+                $"'{rules.PrivatePCHHeaderFile}' and shared_pch_header_file = " +
+                $"'{rules.SharedPCHHeaderFile}'. A module can only use one PCH source " +
+                "(per Toolchain Contract Rev 13 Section 1.5). Pick exactly one.",
+                exitCode: 30,
+                filePath: sourcePath);
+        }
+    }
+
     private static void ValidateSimPathConstraints(ModuleRules rules, string? sourcePath)
     {
         if (!rules.SimPath)
@@ -465,6 +497,20 @@ public static class BuildTomlParser
             throw new DescriptorParseException(
                 $"SimPath module '{rules.Name}' declared PCHUsage = {rules.PCHUsage}, " +
                 "but SimPath modules must use NoSharedPCHs per /Documents/XBT.html Section 4.5.",
+                exitCode: 30,
+                filePath: sourcePath);
+        }
+
+        // SimPath modules cannot declare a shared PCH header at all --
+        // they're not allowed to participate in any shared PCH group
+        // (Section 1.5). Exit 30.
+        if (!string.IsNullOrEmpty(rules.SharedPCHHeaderFile))
+        {
+            throw new DescriptorParseException(
+                $"SimPath module '{rules.Name}' declared shared_pch_header_file = " +
+                $"'{rules.SharedPCHHeaderFile}', but SimPath modules cannot participate " +
+                "in a shared PCH (per Toolchain Contract Rev 13 Section 1.5). Use " +
+                "pch_header_file = ... for a private PCH instead, or omit both keys.",
                 exitCode: 30,
                 filePath: sourcePath);
         }

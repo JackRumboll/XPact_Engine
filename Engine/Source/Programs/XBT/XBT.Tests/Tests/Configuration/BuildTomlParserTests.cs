@@ -336,4 +336,99 @@ public sealed class BuildTomlParserTests
             () => BuildTomlParser.Parse(toml));
         Assert.Contains("interfac_module", ex.Message);
     }
+
+    // -----------------------------------------------------------------
+    // Phase 1.4b: pch_header_file + shared_pch_header_file TOML keys.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// A TOML descriptor with <c>pch_header_file</c> populates
+    /// <see cref="ModuleRules.PrivatePCHHeaderFile"/>; the shared field
+    /// remains null.
+    /// </summary>
+    [Fact]
+    public void PchHeaderFile_BindsToPrivatePCHHeaderFile()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            pch_header_file = "Public/XPrivate.h"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+
+        Assert.Equal("Public/XPrivate.h", rules.PrivatePCHHeaderFile);
+        Assert.Null(rules.SharedPCHHeaderFile);
+    }
+
+    /// <summary>
+    /// A TOML descriptor with <c>shared_pch_header_file</c> populates
+    /// <see cref="ModuleRules.SharedPCHHeaderFile"/>; the private field
+    /// remains null.
+    /// </summary>
+    [Fact]
+    public void SharedPchHeaderFile_BindsToSharedPCHHeaderFile()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "Public/XShared.h"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+
+        Assert.Equal("Public/XShared.h", rules.SharedPCHHeaderFile);
+        Assert.Null(rules.PrivatePCHHeaderFile);
+    }
+
+    /// <summary>
+    /// A TOML descriptor with BOTH <c>pch_header_file</c> AND
+    /// <c>shared_pch_header_file</c> is a parse failure (exit 30) per
+    /// Toolchain Contract Section 1.5 -- a module can only use one PCH
+    /// source.
+    /// </summary>
+    [Fact]
+    public void BothPchKeys_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            pch_header_file = "Public/XPrivate.h"
+            shared_pch_header_file = "Public/XShared.h"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("pch_header_file", ex.Message);
+        Assert.Contains("shared_pch_header_file", ex.Message);
+    }
+
+    /// <summary>
+    /// A SimPath module declaring <c>shared_pch_header_file</c> is a
+    /// parse failure (exit 30) -- SimPath modules cannot participate in
+    /// a shared PCH per Contract Section 1.5.
+    /// </summary>
+    [Fact]
+    public void SimPath_With_SharedPchHeaderFile_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            sim_path = true
+            simd_level = "SSE42"
+            pch_usage = "NoSharedPCHs"
+            shared_pch_header_file = "Public/XShared.h"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("SimPath", ex.Message);
+        Assert.Contains("shared", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

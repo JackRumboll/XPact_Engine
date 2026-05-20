@@ -205,6 +205,36 @@ public class ModuleRules
     public string? PrivatePCHHeaderFile { get; init; } = null;
 
     /// <summary>
+    /// Optional path (module-relative) to a header file this module wants
+    /// to share as a PCH with other modules that name the same header.
+    /// When two or more modules declare the same <see cref="SharedPCHHeaderFile"/>
+    /// (resolved to the same absolute canonical path) and have compatible
+    /// <see cref="PCHUsage"/> settings, XBT emits a single
+    /// <c>PCHGenerationAction</c> for the group and binds all participants
+    /// to its output. A single-participant declaration falls back to
+    /// private-PCH semantics with a <see cref="Core.Logger.Info"/>
+    /// diagnostic.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Per Toolchain Contract Rev 13 Section 1.5 / <c>/Documents/XBT.html</c>
+    /// Section 15.4:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>SimPath modules MUST NOT participate in a shared PCH group;
+    ///   <see cref="SharedPCHHeaderFile"/> must be null on SimPath modules.
+    ///   Parser-side validation rejects with exit 30; toolchain-side
+    ///   <c>GenerateSharedPCH</c> re-checks at emit time with exit 41.</item>
+    ///   <item>The shared PCH header MUST NOT <c>#include</c> any
+    ///   <c>.gen.h</c> file (XHT-generated content carries per-module macro
+    ///   state that would leak across consumers).</item>
+    ///   <item>Mutually exclusive with <see cref="PrivatePCHHeaderFile"/>;
+    ///   a module that declares both is a parse failure (exit 30).</item>
+    /// </list>
+    /// </remarks>
+    public string? SharedPCHHeaderFile { get; init; } = null;
+
+    /// <summary>
     /// Floating-point semantics. Auto-promoted from
     /// <see cref="FPSemantics.Default"/> to <see cref="FPSemantics.Precise"/>
     /// when <see cref="SimPath"/> is true. Explicit

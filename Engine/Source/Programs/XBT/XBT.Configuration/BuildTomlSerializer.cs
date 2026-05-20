@@ -159,6 +159,18 @@ public static class BuildTomlSerializer
                     EmitEnumField(sb, key, r.PCHUsage);
                 }
                 break;
+            case "pch_header_file":
+                if (r.PrivatePCHHeaderFile is not null)
+                {
+                    EmitStringField(sb, key, r.PrivatePCHHeaderFile);
+                }
+                break;
+            case "shared_pch_header_file":
+                if (r.SharedPCHHeaderFile is not null)
+                {
+                    EmitStringField(sb, key, r.SharedPCHHeaderFile);
+                }
+                break;
             case "fp_semantics":
                 if (emitDefaults || r.FPSemantics != FPSemantics.Default)
                 {

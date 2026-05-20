@@ -521,6 +521,18 @@ public sealed class BuildMode : IToolMode<BuildMode>
         List<FileItem> allSourceFiles = new();
         List<IExternalAction> reportActions = new();
 
+        // Shared-PCH grouping pre-pass (Phase 1.4b per Contract Rev 13
+        // Section 1.5). Walk the selected modules, group by the resolved
+        // absolute path of each module's SharedPCHHeaderFile, emit ONE
+        // PCHGenerationAction per group of >= 2 participants, and record
+        // the resulting PCHBinding so the per-module emit loop below can
+        // pass the same shared binding to every participant's
+        // CompileSource call. A group of size 1 falls back to private-PCH
+        // semantics (per the spec: single-participant "shared" PCHs are
+        // wasteful; emit a Logger.Info and treat as private).
+        Dictionary<string, PCHBinding> sharedPchBindingByModule =
+            BuildSharedPchGroups(toolchain, target, engineRoot, targetModules, actions, reportActions);
+
         foreach (ModuleRecord rec in targetModules)
         {
             ModuleRules module = rec.Rules;
@@ -537,12 +549,22 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 target.Configuration.ToString(), target.Platform.ToString(), module.Name);
             Directory.CreateDirectory(moduleObjDir);
 
-            // PCH generation (if applicable).
-            PCHBinding? pchBinding = TryGeneratePCH(toolchain, module, target, moduleDir, moduleObjDir);
-            if (pchBinding is not null)
+            // PCH binding resolution: shared PCH wins if the module is in
+            // a shared group; otherwise fall back to the private-PCH
+            // path (existing Phase 1.3 semantics).
+            PCHBinding? pchBinding;
+            if (sharedPchBindingByModule.TryGetValue(module.Name, out PCHBinding? sharedBinding))
             {
-                actions.Add(pchBinding.Action);
-                reportActions.Add(pchBinding.Action);
+                pchBinding = sharedBinding;
+            }
+            else
+            {
+                pchBinding = TryGeneratePCH(toolchain, module, target, moduleDir, moduleObjDir);
+                if (pchBinding is not null)
+                {
+                    actions.Add(pchBinding.Action);
+                    reportActions.Add(pchBinding.Action);
+                }
             }
 
             // Per-source compile actions.
@@ -615,6 +637,180 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// per the existing API.
     /// </summary>
     private static void cancellationToken_ThrowIfNoOpFastPath() { }
+
+    /// <summary>
+    /// Group selected modules by the absolute canonical path of each
+    /// module's <see cref="ModuleRules.SharedPCHHeaderFile"/>. For each
+    /// group of size &gt;= 2 participants, emit ONE shared PCH generation
+    /// action via <see cref="XToolChain.GenerateSharedPCH"/> and record
+    /// the resulting <see cref="PCHBinding"/> against every participant's
+    /// name. A group of size 1 emits a <see cref="Core.Logger.Info"/>
+    /// diagnostic and falls through to private-PCH semantics; the
+    /// per-module emit loop downstream picks up the private path via
+    /// <see cref="TryGeneratePCH"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Per Contract Rev 13 Section 1.5 / <c>/Documents/XBT.html</c>
+    /// Section 15.4: SimPath modules cannot participate in any shared
+    /// PCH group. The parser-side validator rejects SimPath +
+    /// <c>shared_pch_header_file</c> at parse time (exit 30); this
+    /// method re-checks at emit time as defence-in-depth and propagates
+    /// the toolchain's exit-41 failure if any participant is SimPath.
+    /// </para>
+    /// <para>
+    /// The returned map keys on participant module name (every name has a
+    /// corresponding entry in <paramref name="targetModules"/>). The
+    /// downstream emit loop uses
+    /// <see cref="Dictionary{TKey,TValue}.TryGetValue"/> to decide
+    /// whether a given module uses the shared binding or falls back to
+    /// the private-PCH path.
+    /// </para>
+    /// </remarks>
+    private static Dictionary<string, PCHBinding> BuildSharedPchGroups(
+        XToolChain toolchain,
+        TargetRules target,
+        string engineRoot,
+        IReadOnlyList<ModuleRecord> targetModules,
+        List<IExternalAction> actions,
+        List<IExternalAction> reportActions)
+    {
+        Dictionary<string, PCHBinding> bindingByModule =
+            new(StringComparer.Ordinal);
+
+        // ---- 1. Walk modules and bucket by resolved absolute header path ----
+        Dictionary<string, List<ModuleRecord>> groupRecords =
+            new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> groupRelativeHeader =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ModuleRecord rec in targetModules)
+        {
+            ModuleRules module = rec.Rules;
+            if (string.IsNullOrEmpty(module.SharedPCHHeaderFile))
+            {
+                continue;
+            }
+
+            string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
+            string headerPath = Path.Combine(moduleDir, module.SharedPCHHeaderFile);
+            string absoluteCanonicalPath = Path.GetFullPath(headerPath);
+
+            if (!groupRecords.TryGetValue(absoluteCanonicalPath, out List<ModuleRecord>? list))
+            {
+                list = new List<ModuleRecord>();
+                groupRecords[absoluteCanonicalPath] = list;
+                groupRelativeHeader[absoluteCanonicalPath] = module.SharedPCHHeaderFile;
+            }
+            list.Add(rec);
+        }
+
+        // ---- 2. For each group, emit (size>=2) or log + fall through (size==1) ----
+        // Iterate keys sorted ordinal so action emission order is
+        // deterministic across runs.
+        List<string> sortedGroupKeys = new(groupRecords.Keys);
+        sortedGroupKeys.Sort(StringComparer.Ordinal);
+
+        foreach (string headerKey in sortedGroupKeys)
+        {
+            List<ModuleRecord> participantRecords = groupRecords[headerKey];
+
+            // Sort participants alphabetically for the alphabetical-
+            // include-order policy (Contract Section 1.5) and to feed the
+            // toolchain a deterministic ordering.
+            participantRecords.Sort(static (a, b) =>
+                string.CompareOrdinal(a.Rules.Name, b.Rules.Name));
+
+            if (participantRecords.Count == 1)
+            {
+                // Single-participant "shared" PCH: fall back to private-
+                // PCH semantics per the spec. Log informationally so the
+                // developer knows the declaration is wasteful.
+                ModuleRules onlyModule = participantRecords[0].Rules;
+                Logger.Info(
+                    $"module '{onlyModule.Name}' declared a shared PCH but is the only participant " +
+                    "-- using private PCH semantics for it.",
+                    new DiagnosticContext
+                    {
+                        Action = "shared-pch-grouping",
+                        Module = onlyModule.Name,
+                        Tier = onlyModule.Tier.ToString(),
+                    });
+                continue;
+            }
+
+            // 2+ participants: enforce no-SimPath defence-in-depth,
+            // resolve the header file existence, run the include-order
+            // rewriter, and emit ONE shared PCH action.
+            foreach (ModuleRecord pr in participantRecords)
+            {
+                if (pr.Rules.SimPath)
+                {
+                    throw new ToolchainBannedFlagException(
+                        $"Module '{pr.Rules.Name}' is SimPath but appears in a shared-PCH " +
+                        "group (header: " + headerKey + "). Contract Rev 13 Section 1.5 " +
+                        "forbids SimPath modules from participating in any shared PCH. " +
+                        "Drop the shared_pch_header_file declaration from the SimPath " +
+                        "module (use pch_header_file = ... for a private PCH instead).");
+                }
+            }
+
+            if (!File.Exists(headerKey))
+            {
+                Logger.Warning(
+                    "Shared PCH header file was not found at '" + headerKey + "'. " +
+                    "Skipping shared PCH generation for this group (participants: " +
+                    string.Join(", ", participantRecords.Select(p => p.Rules.Name)) +
+                    "). Each participant will compile without a PCH.",
+                    new DiagnosticContext { Action = "shared-pch-grouping" });
+                continue;
+            }
+
+            // Per Contract Section 1.5: rewrite include order
+            // alphabetically. Idempotent.
+            PCHIncludeOrderRewriter.RewriteFile(headerKey, moduleName: null);
+
+            FileItem headerFileItem = FileItem.GetItemByPath(headerKey);
+
+            // Place the shared PCH artefacts under a target-scoped
+            // intermediate directory. The directory is shared across
+            // modules (the artefact itself is shared).
+            string sharedIntermediateDir = Path.Combine(
+                engineRoot, "Intermediate", "Build", target.Name,
+                target.Configuration.ToString(), target.Platform.ToString(),
+                "_Shared");
+            Directory.CreateDirectory(sharedIntermediateDir);
+
+            // Build the participant ModuleRules list (sorted ordinal by
+            // name) for the toolchain call.
+            List<ModuleRules> participantRules =
+                participantRecords.Select(r => r.Rules).ToList();
+
+            PCHBinding binding = toolchain.GenerateSharedPCH(
+                headerFile: groupRelativeHeader[headerKey],
+                participants: participantRules,
+                headerFileItem: headerFileItem,
+                target: target,
+                outputDir: sharedIntermediateDir);
+
+            actions.Add(binding.Action);
+            reportActions.Add(binding.Action);
+
+            // Index the binding by every participant's name so the
+            // downstream emit loop finds it.
+            foreach (ModuleRules m in participantRules)
+            {
+                bindingByModule[m.Name] = binding;
+            }
+
+            Logger.Info(
+                $"Shared PCH group ({participantRules.Count} participants) emitted for " +
+                $"header '{headerKey}'.",
+                new DiagnosticContext { Action = "shared-pch-grouping" });
+        }
+
+        return bindingByModule;
+    }
 
     /// <summary>
     /// Try to generate a per-module PCH. Returns null when the module

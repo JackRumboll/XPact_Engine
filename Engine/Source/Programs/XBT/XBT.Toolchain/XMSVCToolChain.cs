@@ -42,6 +42,45 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// </remarks>
 public sealed class XMSVCToolChain : XToolChain
 {
+    /// <summary>
+    /// The default Win32 system import libraries every native module
+    /// links against. This is the same list the MSVC IDE silently
+    /// injects via <c>VCProject.DefaultLibraries</c> (see Microsoft's
+    /// documentation of <c>/DEFAULTLIB</c>); replicating it explicitly
+    /// makes the link line self-describing and reproducible.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Order is fixed (intentionally not alphabetic) so the
+    /// /VERBOSE:LIB report cross-references the same column ordering
+    /// across two clean builds. The list is the union of:
+    /// <list type="bullet">
+    ///   <item>kernel32, user32, gdi32: core Win32 surface.</item>
+    ///   <item>winspool, comdlg32, advapi32, shell32: shell + crypto helpers
+    ///   (advapi32 carries RegOpenKeyEx + the CSP shims).</item>
+    ///   <item>ole32, oleaut32, uuid: COM + Automation interop the C runtime
+    ///   itself pulls in via <c>&lt;objbase.h&gt;</c>.</item>
+    ///   <item>odbc32, odbccp32: ODBC + the data-access stack (kept for parity
+    ///   with cl.exe's compiled-in defaults).</item>
+    /// </list>
+    /// </para>
+    /// </remarks>
+    private static readonly string[] DefaultSystemLibs =
+    {
+        "kernel32.lib",
+        "user32.lib",
+        "gdi32.lib",
+        "winspool.lib",
+        "comdlg32.lib",
+        "advapi32.lib",
+        "shell32.lib",
+        "ole32.lib",
+        "oleaut32.lib",
+        "uuid.lib",
+        "odbc32.lib",
+        "odbccp32.lib",
+    };
+
     private readonly VCEnvironment _environment;
     private readonly string _repoRoot;
 
@@ -159,6 +198,15 @@ public sealed class XMSVCToolChain : XToolChain
         }
 
         // === Include paths ===
+        // Order is fixed: module's public includes first, then module's
+        // private includes, then the system (MSVC + Windows SDK) includes.
+        // The composite system list comes from VCEnvironment.IncludePaths
+        // (Phase 1.4a: MSVC headers come first, then um/shared/ucrt/winrt
+        // under the chosen SDK version, in that order). The list is
+        // constructed once at VCEnvironment construction time so two
+        // CompileSource calls in the same process emit byte-identical
+        // /I flag sequences -- a determinism requirement for the
+        // reproducibility envelope.
         foreach (string inc in module.PublicIncludePaths)
         {
             args.Add($"/I{inc}");
@@ -242,6 +290,13 @@ public sealed class XMSVCToolChain : XToolChain
                     $"FipsMode={target.FipsMode}",
                     $"StationRole={target.StationRole}",
                     $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
+                    // Phase 1.4a: changing the MSVC version or the Windows
+                    // SDK version invalidates the compile cache. The
+                    // system headers' definitions of WIN32_LEAN_AND_MEAN
+                    // helpers / WINVER macros / etc. differ between SDK
+                    // versions, so a build switching SDKs must re-compile.
+                    $"MsvcVersion={_environment.CompilerVersion}",
+                    $"WinSdkVersion={_environment.WindowsSdkVersion}",
                 },
             }),
         };
@@ -317,7 +372,12 @@ public sealed class XMSVCToolChain : XToolChain
         args.Add($"/Fo{pchObjPath}");
 
         // Include paths (mirror what a regular compile sees so the PCH
-        // header resolves the same way).
+        // header resolves the same way). The composite system paths from
+        // VCEnvironment.IncludePaths bring in the MSVC headers + the
+        // Windows SDK headers (Phase 1.4a) in the same deterministic
+        // order CompileSource uses, so any header the PCH transitively
+        // pulls in resolves identically between the PCH-generating
+        // compile and the downstream consumer compiles.
         foreach (string inc in module.PublicIncludePaths)
         {
             args.Add($"/I{inc}");
@@ -378,6 +438,195 @@ public sealed class XMSVCToolChain : XToolChain
     }
 
     /// <inheritdoc/>
+    public override PCHBinding GenerateSharedPCH(
+        string headerFile,
+        IReadOnlyList<ModuleRules> participants,
+        FileItem headerFileItem,
+        TargetRules target,
+        string outputDir)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(headerFile);
+        ArgumentNullException.ThrowIfNull(participants);
+        ArgumentNullException.ThrowIfNull(headerFileItem);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrEmpty(outputDir);
+
+        if (participants.Count == 0)
+        {
+            throw new ArgumentException(
+                "GenerateSharedPCH requires at least one participant.",
+                nameof(participants));
+        }
+
+        // Defence-in-depth: SimPath modules cannot share a PCH per
+        // Contract Rev 13 Section 1.5. The parser catches this earlier;
+        // re-check at toolchain emit time.
+        EnforceSimPathSharedPchGate(participants);
+
+        // Group-keyed hash names the on-disk artefacts so two builds of
+        // the same group produce byte-identical paths.
+        string headerAbsolutePath = headerFileItem.FullPath;
+        string groupHash = ComputeSharedPchHash(headerAbsolutePath, participants);
+
+        // Place artefacts under {outputDir}/SharedPCH/ so they don't
+        // collide with any participant's per-module intermediate files.
+        string sharedDir = Path.Combine(outputDir, "SharedPCH");
+        Directory.CreateDirectory(sharedDir);
+
+        // Wrapper .cpp -- cl.exe's /Yc mechanism needs a source file to
+        // compile; the wrapper just #includes the shared header.
+        string headerLeafName = Path.GetFileName(headerFile);
+        string wrapperName = "SharedPCH." + groupHash + ".cpp";
+        string wrapperPath = Path.Combine(sharedDir, wrapperName);
+        string wrapperBody =
+            "// Copyright Simgenics. All Rights Reserved.\n" +
+            $"// AUTO-GENERATED by XMSVCToolChain.GenerateSharedPCH for shared PCH group '{groupHash}'.\n" +
+            $"// Participants: {string.Join(", ", SortedParticipantNames(participants))}\n" +
+            $"#include \"{headerLeafName}\"\n";
+        File.WriteAllText(wrapperPath, wrapperBody);
+        FileItem wrapperItem = FileItem.GetItemByPath(wrapperPath);
+
+        // Output: {sharedDir}/SharedPCH.{hash}.pch
+        string pchOutputName = "SharedPCH." + groupHash + ".pch";
+        string pchOutputPath = Path.Combine(sharedDir, pchOutputName);
+        FileItem pchOutputItem = FileItem.GetItemByPath(pchOutputPath);
+
+        // .pch.obj sidecar (cl.exe /Yc emits this).
+        string pchObjPath = Path.Combine(sharedDir, "SharedPCH." + groupHash + ".obj");
+        FileItem pchObjItem = FileItem.GetItemByPath(pchObjPath);
+
+        // === Build the action ===
+        List<string> args = new();
+        args.Add("/c");
+        args.Add("/nologo");
+        args.Add("/Brepro");
+        args.Add($"/pathmap:{_repoRoot}=X:/R");
+        args.Add("/d2:-cgmanifestencoded-");
+
+        // PCH-specific (mirror the per-module GeneratePCH but use the
+        // header leaf name as the /Yc / /FI argument so cl.exe finds it
+        // via the include path search order).
+        args.Add($"/Yc{headerLeafName}");
+        args.Add($"/Fp{pchOutputPath}");
+        args.Add("/FI");
+        args.Add(headerLeafName);
+        args.Add($"/Fo{pchObjPath}");
+
+        // Aggregate the participants' include paths so the header
+        // resolves regardless of which participant's tree it physically
+        // lives in. Sorted ordinal + deduped for determinism.
+        SortedSet<string> publicIncs = new(StringComparer.Ordinal);
+        SortedSet<string> privateIncs = new(StringComparer.Ordinal);
+        SortedSet<string> publicDefs = new(StringComparer.Ordinal);
+        foreach (ModuleRules m in participants)
+        {
+            foreach (string inc in m.PublicIncludePaths) publicIncs.Add(inc);
+            foreach (string inc in m.PrivateIncludePaths) privateIncs.Add(inc);
+            foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+        }
+        // Also include the directory holding the shared header so cl.exe
+        // resolves the /FI <leaf> against an absolute prefix.
+        string headerDir = Path.GetDirectoryName(headerAbsolutePath) ?? string.Empty;
+        if (!string.IsNullOrEmpty(headerDir))
+        {
+            publicIncs.Add(headerDir);
+        }
+        foreach (string inc in publicIncs) args.Add($"/I{inc}");
+        foreach (string inc in privateIncs) args.Add($"/I{inc}");
+        foreach (string inc in _environment.IncludePaths) args.Add($"/I{inc}");
+
+        // Union of participants' PublicDefinitions per Contract Rev 13
+        // Section 1.5. Sorted ordinal so the command line is deterministic.
+        foreach (string def in publicDefs) args.Add($"/D{def}");
+
+        // Exception + RTTI posture: pick the most-restrictive across
+        // participants (any participant requiring no-exceptions / no-RTTI
+        // wins to ensure compatible PCH consumption).
+        bool enableExceptions = true;
+        bool useRTTI = false;
+        foreach (ModuleRules m in participants)
+        {
+            if (!m.bEnableExceptions) enableExceptions = false;
+            if (m.bUseRTTI) useRTTI = true;
+        }
+        if (enableExceptions)
+        {
+            args.Add("/EHsc");
+        }
+        if (!useRTTI)
+        {
+            args.Add("/GR-");
+        }
+
+        // Wrapper.cpp is the source.
+        args.Add(wrapperPath);
+
+        // Sort produced items by FullPath ordinal for the
+        // ExternalAction sort invariant.
+        FileItem[] produced = new[] { pchOutputItem, pchObjItem };
+        Array.Sort(produced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        FileItem[] prereqs = new[] { wrapperItem, headerFileItem };
+        Array.Sort(prereqs, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        // CacheKeyComponents threads the group hash explicitly so the
+        // shared-PCH cache key is observable in the action's identity.
+        List<string> cacheKeyComponents = new()
+        {
+            $"SharedPCHGroupHash={groupHash}",
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            $"MsvcVersion={_environment.CompilerVersion}",
+            $"WinSdkVersion={_environment.WindowsSdkVersion}",
+        };
+        foreach (string name in SortedParticipantNames(participants))
+        {
+            cacheKeyComponents.Add($"Participant={name}");
+        }
+
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.PCHGenerationAction,
+            PrerequisiteItems = prereqs,
+            ProducedItems = produced,
+            CommandPath = _environment.CompilerPath,
+            CommandArguments = args,
+            WorkingDirectory = _repoRoot,
+            CommandDescription = "GenerateSharedPCH",
+            StatusDescription = pchOutputName,
+            // Module field is the canonical group hash so diagnostics
+            // can attribute the action to the shared group rather than
+            // any single participant.
+            Module = "SharedPCH:" + groupHash,
+            Tier = null,
+            SimPath = false,
+            Configuration = target.Configuration,
+            Platform = target.Platform,
+            Weight = 4.0,
+            CacheKeyComponents = cacheKeyComponents,
+        });
+
+        return new PCHBinding(
+            Action: action,
+            PchHeaderFile: headerFileItem,
+            PchHeaderName: headerLeafName,
+            PchOutputFile: pchOutputItem);
+    }
+
+    /// <summary>
+    /// Return the participants' names sorted ordinal for determinism.
+    /// Used in wrapper-file comment generation and CacheKeyComponents.
+    /// </summary>
+    private static IReadOnlyList<string> SortedParticipantNames(
+        IReadOnlyList<ModuleRules> participants)
+    {
+        List<string> names = new(participants.Count);
+        foreach (ModuleRules m in participants) names.Add(m.Name);
+        names.Sort(StringComparer.Ordinal);
+        return names;
+    }
+
+    /// <inheritdoc/>
     public override IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,
@@ -401,9 +650,26 @@ public sealed class XMSVCToolChain : XToolChain
         string dllPath = Path.Combine(outputDir, dllName);
         args.Add($"/OUT:{dllPath}");
 
+        // Library search paths: VCEnvironment.LibraryPaths is the composite
+        // MSVC + Windows SDK path list constructed in a fixed order at
+        // discovery time (Phase 1.4a). The /LIBPATH: flag order is
+        // load-bearing because cl.exe's import-lib search walks them
+        // left-to-right; we keep VCEnvironment as the single source of
+        // truth so a future SDK move (e.g. ARM64 host adding arm64/x64
+        // siblings) is a one-line change there, not here.
         foreach (string lp in _environment.LibraryPaths)
         {
             args.Add($"/LIBPATH:{lp}");
+        }
+
+        // Standard system libraries the Win32 runtime needs. These are the
+        // "default" libs the MSVC IDE silently injects on every .vcxproj
+        // link command; XBT replicates them here. Order matches the IDE
+        // so /VERBOSE:LIB output cross-references cleanly when diagnosing
+        // a missing import.
+        foreach (string sysLib in DefaultSystemLibs)
+        {
+            args.Add(sysLib);
         }
 
         foreach (FileItem obj in objectFiles)
@@ -443,6 +709,12 @@ public sealed class XMSVCToolChain : XToolChain
             {
                 $"FipsMode={target.FipsMode}",
                 $"StationRole={target.StationRole}",
+                // Phase 1.4a: link cache also gated by toolchain + SDK
+                // version (so an SDK switch re-links even if the .obj
+                // hashes are unchanged -- the import libs ABI may shift
+                // between Win10 1809 and Win11 23H2 SDKs).
+                $"MsvcVersion={_environment.CompilerVersion}",
+                $"WinSdkVersion={_environment.WindowsSdkVersion}",
             },
         });
     }
