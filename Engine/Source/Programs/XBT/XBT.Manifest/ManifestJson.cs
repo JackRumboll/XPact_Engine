@@ -65,6 +65,63 @@ public static class ManifestJson
     }
 
     /// <summary>
+    /// Serialize a manifest to disk at <paramref name="destinationPath"/>
+    /// using the atomic temp-file + rename pattern documented in
+    /// <c>/Documents/XBT.html</c> Section 6.4. The destination is written
+    /// in UTF-8 without a byte-order mark; readers (XHT, XIL2CPP) consume
+    /// raw UTF-8.
+    /// </summary>
+    /// <param name="manifest">The manifest to encode. Must not be null.</param>
+    /// <param name="destinationPath">Absolute filesystem path of the output file.</param>
+    /// <returns>The number of bytes written to disk.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// If <paramref name="manifest"/> is null.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// If <paramref name="destinationPath"/> is null, empty, or whitespace.
+    /// </exception>
+    public static long Serialize(Manifest manifest, string destinationPath)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+
+        string json = SerializeToJson(manifest);
+        // System.Text.Json emits LF, never CRLF -- the writer keeps the
+        // bytes verbatim so the on-disk representation is byte-identical
+        // across Win64 and Linux hosts (matches the reproducibility
+        // envelope's stance on line endings).
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        AtomicWriteAllBytes(destinationPath, bytes);
+        return bytes.LongLength;
+    }
+
+    /// <summary>
+    /// Atomic write helper: write to a uniquely-named temp file in the
+    /// destination directory, fsync, then rename over the target. The
+    /// rename is atomic on every supported filesystem (NTFS, ext4, APFS).
+    /// </summary>
+    private static void AtomicWriteAllBytes(string destinationPath, byte[] bytes)
+    {
+        string? directory = Path.GetDirectoryName(destinationPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+        string parent = string.IsNullOrEmpty(directory) ? "." : directory;
+        // Temp-file naming: <basename>.tmp.<pid>.<guid> -- no timestamp
+        // anywhere per Toolchain Contract Rev 13 Section 2.1 (footgun #1
+        // preempt: timestamps banned from any artefact name engine-wide).
+        // Mirrors ActionHistory.Save's pattern at ActionHistory.cs:336-339.
+        int pid = Environment.ProcessId;
+        string nonce = Guid.NewGuid().ToString("N");
+        string baseName = Path.GetFileName(destinationPath);
+        string tempPath = Path.Combine(parent, $"{baseName}.tmp.{pid}.{nonce}");
+
+        File.WriteAllBytes(tempPath, bytes);
+        File.Move(tempPath, destinationPath, overwrite: true);
+    }
+
+    /// <summary>
     /// Parse a manifest from JSON bytes. The reader options are
     /// hardened at <see cref="JsonReaderOptions"/> level
     /// (<see cref="JsonReaderOptions.MaxDepth"/>, no comments, no

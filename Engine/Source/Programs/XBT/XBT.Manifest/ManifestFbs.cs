@@ -161,6 +161,64 @@ public static class ManifestFbs
     }
 
     /// <summary>
+    /// Serialize a manifest to disk at <paramref name="destinationPath"/>
+    /// using the atomic temp-file + rename pattern documented in
+    /// <c>/Documents/XBT.html</c> Section 6.4. The on-disk payload is the
+    /// raw FlatBuffers binary; consumers verify the
+    /// <c>"XMFT"</c> file_identifier at offset +4 before trusting any
+    /// other field.
+    /// </summary>
+    /// <param name="manifest">The manifest to encode. Must not be null.</param>
+    /// <param name="destinationPath">Absolute filesystem path of the output file.</param>
+    /// <param name="architecture">
+    /// Optional CPU architecture for the FBS <c>TargetInfo.architecture</c>
+    /// field. Defaults to <see cref="DefaultArchitecture"/>.
+    /// </param>
+    /// <param name="dynamicModuleNames">
+    /// Optional set of module names marked <c>is_dynamic = true</c>.
+    /// </param>
+    /// <returns>The number of bytes written to disk.</returns>
+    public static long Serialize(
+        Manifest manifest,
+        string destinationPath,
+        string architecture = DefaultArchitecture,
+        IReadOnlySet<string>? dynamicModuleNames = null)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+
+        byte[] bytes = SerializeToFbs(manifest, architecture, dynamicModuleNames);
+        AtomicWriteAllBytes(destinationPath, bytes);
+        return bytes.LongLength;
+    }
+
+    /// <summary>
+    /// Atomic write helper: write to a uniquely-named temp file in the
+    /// destination directory, then rename over the target. Mirrors
+    /// <c>ManifestJson</c>'s implementation; both forms must use the
+    /// same temp-file pattern so an external observer cannot see a
+    /// partially-written manifest.
+    /// </summary>
+    private static void AtomicWriteAllBytes(string destinationPath, byte[] bytes)
+    {
+        string? directory = System.IO.Path.GetDirectoryName(destinationPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            System.IO.Directory.CreateDirectory(directory);
+        }
+        string parent = string.IsNullOrEmpty(directory) ? "." : directory;
+        // No timestamp anywhere -- per Toolchain Contract Rev 13 Section 2.1
+        // footgun #1 (timestamps banned from artefact names engine-wide).
+        int pid = Environment.ProcessId;
+        string nonce = Guid.NewGuid().ToString("N");
+        string baseName = System.IO.Path.GetFileName(destinationPath);
+        string tempPath = System.IO.Path.Combine(parent, $"{baseName}.tmp.{pid}.{nonce}");
+
+        System.IO.File.WriteAllBytes(tempPath, bytes);
+        System.IO.File.Move(tempPath, destinationPath, overwrite: true);
+    }
+
+    /// <summary>
     /// Deserialize a manifest from a FlatBuffers buffer. Verifies the
     /// file_identifier, applies the size / depth / string / vector limits
     /// from <paramref name="limits"/>, and returns the reconstructed POCO.

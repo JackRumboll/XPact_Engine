@@ -98,7 +98,7 @@
 <ul>
   <li><strong>Stage A &mdash; Step 0 (this document).</strong> Locks the marker macro vocabulary, the file naming convention, the invocation protocol (JSON + binary sidecar manifest), the symbol mangling rule, the GC root-registration ABI, the determinism flag propagation contract, the exception codegen ABI boundary and noexcept tier, the C# string mapping, the XHT emit mode (ConstInit), and the module descriptor shape. XBT consumes XHT's output <em>opaquely</em> &mdash; XBT does not parse XHT's binary struct layouts &mdash; so Stage A is sufficient to build XBT (System 1) and XHT's parser (System 2).</li>
   <li><strong>Stage B &mdash; Contract Addendum at XCore-4b ship (Step 4).</strong> Freezes the concrete binary struct layouts &mdash; FName, FClass, FProperty, FField with the full replication-metadata surface per plan Section 2 Replication row. XHT's emit <em>mode</em> is locked at Stage A (ConstInit, per Rev 11 audit finding); XHT's emit <em>struct byte-layouts</em> are provisional until Stage B.</li>
-  <li><strong>Step 0.5 addendum (descriptive).</strong> Pins the per-file dependency model XBT actually implements once XBT is built. Per plan Section 4: "the Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it."</li>
+  <li><strong>Step 0.5 addendum (descriptive).</strong> Pins the per-file dependency model XBT actually implements once XBT is built. Per plan Section 4: "the Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it." Delivered: see <a href="XToolchainContractAddendum-Step05.html"><code>/Documents/XToolchainContractAddendum-Step05.html</code></a>.</li>
 </ul>
 
 <p>Decisions that genuinely await Stage B are marked inline throughout this document with <code>&lt;!-- STAGE-B: ... --&gt;</code> HTML comments and an italic note. Decisions that the deep audit promoted from Stage B to Stage A (notably XHT emit mode) are called out in their section header.</p>
@@ -1025,7 +1025,7 @@ foreach (int codepoint in s.AsCodepoints())   // iterator, no intermediate buffe
 
 <p>Per plan Section 4: "The contract is delivered with explicit 'TBD at XBT implementation' markers for the per-file dependency model (which can only be hardened once XBT is built). Step 0.5 addendum: descriptive &mdash; documents the per-file dependency model that XBT actually implements, rather than prescribing one ahead of time."</p>
 
-<p>This section locks the <em>shape</em> of the dependency-tracking surface and defers the algorithm to Step 0.5.</p>
+<p>This section locks the <em>shape</em> of the dependency-tracking surface and defers the algorithm to Step 0.5. <strong>Step 0.5 delivered:</strong> see <a href="XToolchainContractAddendum-Step05.html"><code>/Documents/XToolchainContractAddendum-Step05.html</code></a> for the descriptive snapshot of XBT's per-file dependency model as actually implemented.</p>
 
 <p><strong>Rev 11 audit minor cleanup:</strong> the dependency model is explicitly <strong>manifest-based opaque consumption</strong> &mdash; XBT records "what XHT-output files were consumed when compiling each .cpp" during compile and re-checks the recorded file's content hash on next build. XBT does not parse <code>.gen.h</code> content to determine dependency edges; the hash-of-the-emitted-file is the dependency edge.</p>
 
@@ -1061,7 +1061,7 @@ foreach (int codepoint in s.AsCodepoints())   // iterator, no intermediate buffe
 
 <h3>8.4 Step 0.5 addendum scope</h3>
 
-<p>The Step 0.5 addendum, delivered after XBT ships at System 1, will document:</p>
+<p>The Step 0.5 addendum, delivered after XBT ships at System 1, documents:</p>
 <ul>
   <li>The exact on-disk format of the dependency cache.</li>
   <li>The hash algorithm (BLAKE3, per XBT spec).</li>
@@ -1069,7 +1069,7 @@ foreach (int codepoint in s.AsCodepoints())   // iterator, no intermediate buffe
   <li>The garbage-collection rules for stale dependency records.</li>
 </ul>
 
-<p>Per plan Section 4: "The Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it."</p>
+<p>Per plan Section 4: "The Step 0.5 addendum does not change XBT's behavior; it pins the model XBT chose so XHT and XIL2CPP can target it." <strong>Delivered:</strong> <a href="XToolchainContractAddendum-Step05.html"><code>/Documents/XToolchainContractAddendum-Step05.html</code></a>.</p>
 
 <hr>
 
@@ -1846,7 +1846,7 @@ file_extension "fbs.bin";</code></pre>
 <h3>11.3 Not yet decided &mdash; deferred to per-system specs</h3>
 
 <ul>
-  <li><strong>Per-file dependency cache file format.</strong> Step 0.5 addendum, descriptive; per Section 8 of this contract.</li>
+  <li><strong>Per-file dependency cache file format.</strong> Step 0.5 addendum, descriptive; per Section 8 of this contract. <strong>Delivered:</strong> <a href="XToolchainContractAddendum-Step05.html"><code>/Documents/XToolchainContractAddendum-Step05.html</code></a>.</li>
   <li><strong>FName / FClass / FProperty / FField byte layouts.</strong> Stage B addendum at XCore-4b ship; per Section 7.2.</li>
 </ul>
 

@@ -232,12 +232,41 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 Actions: Array.Empty<IExternalAction>());
         }
 
+        Dictionary<string, ModuleFileSet> fileSetByModule = new(StringComparer.Ordinal);
         List<IExternalAction> actions = EmitActions(
             engineRoot,
             target,
             toolchain,
             targetModules,
+            fileSetByModule,
             out IReadOnlyList<IExternalAction> emittedForReport);
+
+        // ---- 9.5 Emit the manifest (Step 0.5 addendum + Contract Section 8) ----
+        // The manifest is a snapshot of discovery + configuration produced
+        // ONCE per BuildMode invocation. XHT (System 2) and XIL2CPP
+        // (System 6) consume this file; it is the wire surface between
+        // XBT and downstream tooling.
+        //
+        // Phase 1 emits the manifest directly from BuildMode rather than
+        // via a WriteManifestAction node in the action graph. The
+        // XActionType.WriteManifestAction slot at ordinal 1 remains
+        // reserved; future phases may construct a WriteManifestAction
+        // IExternalAction to gain cache integration and let XHT/XIL2CPP
+        // reference the manifest's ProducedItems as PrerequisiteItems.
+        // For Phase 1 the simpler direct-emission path is sufficient
+        // because the manifest's content hash is not yet a CacheKeyComponent
+        // for downstream actions.
+        string intermediateBuildDir = Path.Combine(
+            engineRoot, "Intermediate", "Build", target.Name,
+            target.Configuration.ToString());
+        Directory.CreateDirectory(intermediateBuildDir);
+        EmitManifest(
+            engineRoot,
+            target,
+            engineVersion,
+            targetModules,
+            fileSetByModule,
+            intermediateBuildDir);
 
         // ---- 10. Build the action graph --------------------------------
         Simgenics.XPact.XBT.ActionGraph.ActionGraph graph = new(actions);
@@ -532,6 +561,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
         TargetRules target,
         XToolChain toolchain,
         IReadOnlyList<ModuleRecord> targetModules,
+        Dictionary<string, ModuleFileSet> fileSetByModule,
         out IReadOnlyList<IExternalAction> emittedForReport)
     {
         List<IExternalAction> actions = new();
@@ -556,10 +586,12 @@ public sealed class BuildMode : IToolMode<BuildMode>
             string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
 
             // Enumerate the module's source files.
-            (IReadOnlyList<FileItem> sourceFiles, IReadOnlyList<FileItem> headerFiles) =
+            (IReadOnlyList<FileItem> sourceFiles, IReadOnlyList<FileItem> headerFiles, IReadOnlyList<FileItem> csharpFiles) =
                 EnumerateModuleFiles(moduleDir);
+            fileSetByModule[module.Name] = new ModuleFileSet(sourceFiles, headerFiles, csharpFiles);
             allSourceFiles.AddRange(sourceFiles);
             allSourceFiles.AddRange(headerFiles);
+            allSourceFiles.AddRange(csharpFiles);
 
             string moduleObjDir = Path.Combine(
                 engineRoot, "Intermediate", "Build", target.Name,
@@ -654,6 +686,237 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// per the existing API.
     /// </summary>
     private static void cancellationToken_ThrowIfNoOpFastPath() { }
+
+    /// <summary>
+    /// Per-module file enumeration produced by
+    /// <see cref="EnumerateModuleFiles"/>. Carries the C++ sources, C++
+    /// headers, and C# sources so the manifest emitter can author the
+    /// <see cref="Simgenics.XPact.XBT.Manifest.Module.SourceFiles"/> and
+    /// <see cref="Simgenics.XPact.XBT.Manifest.Module.CSharpSources"/>
+    /// lists without rewalking the filesystem.
+    /// </summary>
+    private sealed record ModuleFileSet(
+        IReadOnlyList<FileItem> Sources,
+        IReadOnlyList<FileItem> Headers,
+        IReadOnlyList<FileItem> CSharpSources);
+
+    /// <summary>
+    /// Build a <see cref="Simgenics.XPact.XBT.Manifest.Manifest"/> POCO
+    /// from the post-discovery state and write both forms (JSON +
+    /// FlatBuffers binary sidecar) to
+    /// <c>&lt;intermediateBuildDir&gt;/Manifest.json</c> and
+    /// <c>Manifest.fbs.bin</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Per the Step 0.5 addendum + Toolchain Contract Rev 13 Section 10.2,
+    /// the manifest is the wire surface XHT (System 2) and XIL2CPP
+    /// (System 6) consume. It is emitted once per BuildMode invocation,
+    /// before the action graph is built, so a downstream tool that runs
+    /// against an interrupted build still gets a consistent snapshot.
+    /// </para>
+    /// <para>
+    /// <b>Determinism.</b> The serialisation paths in
+    /// <see cref="Manifest.ManifestJson"/> and
+    /// <see cref="Manifest.ManifestFbs"/> are deterministic by construction
+    /// (no timestamps, sorted enumerations). This method preserves the
+    /// alphabetical module ordering from
+    /// <see cref="ModuleCatalog.Modules"/> -- the modules list is the
+    /// same byte sequence on two builds of the same source tree.
+    /// </para>
+    /// </remarks>
+    private static void EmitManifest(
+        string engineRoot,
+        TargetRules target,
+        SemanticVersion engineVersion,
+        IReadOnlyList<ModuleRecord> targetModules,
+        IReadOnlyDictionary<string, ModuleFileSet> fileSetByModule,
+        string intermediateBuildDir)
+    {
+        // Sort participants alphabetically before serialising. The
+        // ModuleCatalog already does this, but defending here keeps the
+        // emitter independent of the catalog's invariant.
+        List<ModuleRecord> orderedModules = targetModules
+            .OrderBy(r => r.Rules.Name, StringComparer.Ordinal)
+            .ToList();
+
+        List<Simgenics.XPact.XBT.Manifest.Module> manifestModules =
+            new(orderedModules.Count);
+        HashSet<string> dynamicModuleNames =
+            new(StringComparer.Ordinal);
+
+        foreach (ModuleRecord rec in orderedModules)
+        {
+            ModuleRules m = rec.Rules;
+            string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
+            string baseDirectory = ToRelativeForward(engineRoot, moduleDir);
+
+            fileSetByModule.TryGetValue(m.Name, out ModuleFileSet? files);
+            files ??= new ModuleFileSet(
+                Array.Empty<FileItem>(),
+                Array.Empty<FileItem>(),
+                Array.Empty<FileItem>());
+
+            // Build the SourceFile list from the filesystem walk. Paths
+            // are recorded module-base-directory-relative with forward
+            // slashes so the manifest stays portable across hosts.
+            List<SourceFile> sourceFiles =
+                new(files.Sources.Count + files.Headers.Count + files.CSharpSources.Count);
+            foreach (FileItem cpp in files.Sources)
+            {
+                sourceFiles.Add(new SourceFile(
+                    RelativePath: ToRelativeForward(moduleDir, cpp.FullPath),
+                    IsCSharp: false,
+                    IsHeader: false,
+                    IsTestOnly: m.bIsTestModule));
+            }
+            foreach (FileItem h in files.Headers)
+            {
+                sourceFiles.Add(new SourceFile(
+                    RelativePath: ToRelativeForward(moduleDir, h.FullPath),
+                    IsCSharp: false,
+                    IsHeader: true,
+                    IsTestOnly: m.bIsTestModule));
+            }
+            foreach (FileItem cs in files.CSharpSources)
+            {
+                sourceFiles.Add(new SourceFile(
+                    RelativePath: ToRelativeForward(moduleDir, cs.FullPath),
+                    IsCSharp: true,
+                    IsHeader: false,
+                    IsTestOnly: m.bIsTestModule));
+            }
+            // Sort by relative path ordinal so the manifest is byte-stable
+            // independent of the filesystem walk order.
+            sourceFiles.Sort(static (a, b) =>
+                string.CompareOrdinal(a.RelativePath, b.RelativePath));
+
+            // C# source list: module-base-directory-relative paths, sorted
+            // ordinal. Fed by the filesystem walk in Phase 1; future phases
+            // may merge a parser-authored CSharpSources list on
+            // ModuleRules (currently absent).
+            List<string> csharpSourcePaths = files.CSharpSources
+                .Select(cs => ToRelativeForward(moduleDir, cs.FullPath))
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .ToList();
+
+            // Aggregate module-dependency edges. The contract's three
+            // lists (PublicDeps, PrivateDeps, DynamicallyLoadedModules)
+            // collapse to a single ModuleDep[] in the manifest; the
+            // dynamic edges carry through a side-channel set consumed by
+            // ManifestFbs.Serialize for the FBS-only is_dynamic flag.
+            List<ModuleDep> deps = new();
+            deps.AddRange(m.PublicDependencyModuleNames);
+            deps.AddRange(m.PrivateDependencyModuleNames);
+            foreach (ModuleDep dyn in m.DynamicallyLoadedModuleNames)
+            {
+                deps.Add(new ModuleDep(dyn.Name, InterfaceModule: false));
+                dynamicModuleNames.Add(dyn.Name);
+            }
+            // Sort by Name ordinal for byte-stable output.
+            deps.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
+
+            // Merge public + private include paths for the manifest;
+            // consumers see one flat list per Section 9.1.
+            List<string> includePaths = new();
+            includePaths.AddRange(m.PublicIncludePaths);
+            includePaths.AddRange(m.PrivateIncludePaths);
+            includePaths.Sort(StringComparer.Ordinal);
+
+            List<string> publicDefines = m.PublicDefinitions
+                .OrderBy(s => s, StringComparer.Ordinal)
+                .ToList();
+
+            // Phase 1 leaves header-category lists as the descriptor-
+            // declared values. The filesystem walk is not split by
+            // Public/Private/Internal in Phase 1 (Step 0.5 addendum
+            // Section 2.2), so we cannot author those lists from the
+            // walk; pass through what the descriptor parser populated.
+            // For modules without a parser-authored list, an empty
+            // string[] is the honest answer.
+            Simgenics.XPact.XBT.Manifest.Module manifestModule = new(
+                Name: m.Name,
+                Tier: m.Tier,
+                ModuleType: m.ModuleType,
+                Languages: m.Languages,
+                BaseDirectory: baseDirectory,
+                SourceFiles: sourceFiles,
+                PublicHeaders: Array.Empty<string>(),
+                PrivateHeaders: Array.Empty<string>(),
+                InternalHeaders: Array.Empty<string>(),
+                CSharpSources: csharpSourcePaths,
+                IncludePaths: includePaths,
+                PublicDefines: publicDefines,
+                ModuleDependencies: deps,
+                GeneratedCPPFilenameBase: m.Name + ".gen",
+                SimPath: m.SimPath,
+                EngineVersionCompat: "*",
+                SimdLevel: m.SimdLevel,
+                PCHUsage: m.PCHUsage,
+                ExcludeFromSharedPCH: m.bExcludeFromSharedPCH,
+                AllowHotReload: m.bAllowHotReload,
+                IsTestModule: m.bIsTestModule,
+                DeprecationMessage: m.DeprecationMessage,
+                MinimumToolchainVersion: m.MinimumToolchainVersion);
+            manifestModules.Add(manifestModule);
+        }
+
+        Manifest.Manifest manifest = new(
+            ContractVersion: ContractVersion.Current,
+            EngineVersion: engineVersion.ToString(),
+            TargetName: target.Name,
+            TargetType: target.TargetType,
+            Configuration: target.Configuration,
+            Platform: target.Platform,
+            RootLocalPath: NormalisePathForward(engineRoot),
+            ExternalDependenciesFile: null,
+            FipsMode: target.FipsMode,
+            SimPathConservativeRootsAllowed: target.SimPathConservativeRootsAllowed,
+            StationRole: target.StationRole,
+            SimdLevelDefault: target.SimdLevelDefault,
+            Modules: manifestModules);
+
+        string manifestJsonPath = Path.Combine(intermediateBuildDir, "Manifest.json");
+        string manifestFbsPath = Path.Combine(intermediateBuildDir, "Manifest.fbs.bin");
+
+        long jsonSize = ManifestJson.Serialize(manifest, manifestJsonPath);
+        long fbsSize = ManifestFbs.Serialize(manifest, manifestFbsPath, dynamicModuleNames: dynamicModuleNames);
+
+        Logger.Info(
+            $"manifest written: {manifestJsonPath} ({jsonSize} bytes), " +
+            $"{manifestFbsPath} ({fbsSize} bytes); modules={manifestModules.Count}.",
+            new DiagnosticContext { Action = "write-manifest" });
+    }
+
+    /// <summary>
+    /// Normalise a path to forward slashes. Phase 1 manifests are
+    /// portable across Win64 + Linux; the wire form uses <c>/</c>
+    /// uniformly so a manifest emitted on Windows reads identically on
+    /// Linux.
+    /// </summary>
+    private static string NormalisePathForward(string path)
+    {
+        return path.Replace('\\', '/');
+    }
+
+    /// <summary>
+    /// Compute <paramref name="absolutePath"/>'s position relative to
+    /// <paramref name="baseDir"/> and return it with forward slashes.
+    /// Returns the absolute path (forward-slashed) if no relative form
+    /// is possible (e.g. different drives on Windows).
+    /// </summary>
+    private static string ToRelativeForward(string baseDir, string absolutePath)
+    {
+        try
+        {
+            string rel = Path.GetRelativePath(baseDir, absolutePath);
+            return NormalisePathForward(rel);
+        }
+        catch (ArgumentException)
+        {
+            return NormalisePathForward(absolutePath);
+        }
+    }
 
     /// <summary>
     /// Group selected modules by the absolute canonical path of each
@@ -936,15 +1199,38 @@ public sealed class BuildMode : IToolMode<BuildMode>
         return toolchain.GeneratePCH(module, target, module.PrivatePCHHeaderFile!, header, moduleObjDir);
     }
 
-    private static (IReadOnlyList<FileItem> Sources, IReadOnlyList<FileItem> Headers)
+    /// <summary>
+    /// Per-module source-file enumeration helper. Walks the module directory
+    /// recursively and returns three lists: C++ TU sources (<c>.cpp</c>), C++
+    /// headers (<c>.h</c>), and C# sources (<c>.cs</c>). Descriptor files
+    /// (<c>.Build.cs</c>, <c>.Build.toml</c>, <c>.Build.expr</c>) are excluded
+    /// from the C# list -- they are build metadata, not module source.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All three lists are sorted ordinal so iteration order is reproducible
+    /// across runs and machines (matches the determinism contract documented
+    /// in Step 0.5 addendum Section 2.3).
+    /// </para>
+    /// <para>
+    /// Phase 1 does not distinguish <c>Public/</c>, <c>Private/</c>,
+    /// <c>Internal/</c>, or <c>Classes/</c> subtrees -- every file under
+    /// <paramref name="moduleDir"/> is treated equally. The header-category
+    /// split that the manifest schema exposes is not derived from filesystem
+    /// layout in Phase 1; it carries whatever a parser populated on
+    /// <c>ModuleRules</c> through unchanged.
+    /// </para>
+    /// </remarks>
+    private static (IReadOnlyList<FileItem> Sources, IReadOnlyList<FileItem> Headers, IReadOnlyList<FileItem> CSharpSources)
         EnumerateModuleFiles(string moduleDir)
     {
         List<FileItem> sources = new();
         List<FileItem> headers = new();
+        List<FileItem> csharpSources = new();
 
         if (!Directory.Exists(moduleDir))
         {
-            return (sources, headers);
+            return (sources, headers, csharpSources);
         }
 
         // Walk Public/Private/Internal subtrees + the module root.
@@ -962,10 +1248,24 @@ public sealed class BuildMode : IToolMode<BuildMode>
         {
             headers.Add(FileItem.GetItemByPath(path));
         }
+        foreach (string path in Directory.EnumerateFiles(moduleDir, "*.cs", opts))
+        {
+            // Exclude descriptor files: <ModuleName>.Build.cs and the
+            // legacy/sibling <ModuleName>.Build.toml/.expr forms. Build
+            // descriptors are metadata XBT consumes for discovery; they are
+            // not part of the module's source set.
+            string fileName = Path.GetFileName(path);
+            if (fileName.EndsWith(".Build.cs", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            csharpSources.Add(FileItem.GetItemByPath(path));
+        }
         // Sort ordinal for deterministic order.
         sources.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         headers.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
-        return (sources, headers);
+        csharpSources.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+        return (sources, headers, csharpSources);
     }
 
     private static ExecutionReport ExecuteGraph(
