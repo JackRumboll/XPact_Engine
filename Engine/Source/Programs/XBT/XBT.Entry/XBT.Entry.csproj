@@ -29,6 +29,26 @@
   <ItemGroup>
     <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
     <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+    <!--
+      Phase 1.3 additions: project-file generation mode pulls in the
+      configuration / discovery / toolchain / project-files layers so
+      GenerateProjectFilesMode can compose its GenerationContext. Per
+      /Documents/XBT.html Rev 4 Section 14.
+    -->
+    <ProjectReference Include="..\XBT.Configuration\XBT.Configuration.csproj" />
+    <ProjectReference Include="..\XBT.Discovery\XBT.Discovery.csproj" />
+    <ProjectReference Include="..\XBT.ActionGraph\XBT.ActionGraph.csproj" />
+    <ProjectReference Include="..\XBT.Toolchain\XBT.Toolchain.csproj" />
+    <ProjectReference Include="..\XBT.ProjectFiles\XBT.ProjectFiles.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      XBT.Tests needs access to BuildMode internals for the
+      hello-world smoke test (BuildMode is run programmatically, not
+      by spawning the xbt.exe).
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
   </ItemGroup>
 
 </Project>

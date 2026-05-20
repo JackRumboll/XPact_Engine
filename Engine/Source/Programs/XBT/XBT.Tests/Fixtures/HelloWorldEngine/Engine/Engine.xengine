@@ -1,0 +1,13 @@
+{
+  "_comment": "Hello-world fixture engine descriptor for the XBT BuildMode smoke test (Phase 1.3). Copyright Simgenics. All Rights Reserved.",
+  "FileVersion": 1,
+  "EngineName": "HelloWorld",
+  "EngineVersion": "0.1.0",
+  "Copyright": "Copyright Simgenics. All Rights Reserved.",
+  "Description": "Minimal HelloWorld fixture engine for the BuildMode smoke test.",
+  "MinSupportedPlatforms": ["Win64", "Linux"],
+  "RenderAPI": "Vulkan",
+  "VRBackend": "OpenXR",
+  "BuildTargets": ["Editor", "Game", "Server"],
+  "BuildConfigurations": ["Debug", "DebugGame", "Development", "Test", "Shipping"]
+}

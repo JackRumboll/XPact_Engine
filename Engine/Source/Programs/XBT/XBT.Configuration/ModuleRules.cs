@@ -196,6 +196,15 @@ public class ModuleRules
     public PCHUsageMode PCHUsage { get; init; } = PCHUsageMode.Default;
 
     /// <summary>
+    /// Optional private PCH header path (module-relative) consumed by
+    /// every TU in the module when <see cref="PCHUsage"/> is in a
+    /// PCH-emitting mode. Mirrors UE's <c>PrivatePCHHeaderFile</c>.
+    /// Null = no per-module PCH (the module's TUs compile without
+    /// <c>/Yu</c> / <c>-include-pch</c>).
+    /// </summary>
+    public string? PrivatePCHHeaderFile { get; init; } = null;
+
+    /// <summary>
     /// Floating-point semantics. Auto-promoted from
     /// <see cref="FPSemantics.Default"/> to <see cref="FPSemantics.Precise"/>
     /// when <see cref="SimPath"/> is true. Explicit

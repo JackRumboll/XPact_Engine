@@ -34,6 +34,22 @@
     <ProjectReference Include="..\XBT.Discovery\XBT.Discovery.csproj" />
     <ProjectReference Include="..\XBT.ActionGraph\XBT.ActionGraph.csproj" />
     <ProjectReference Include="..\XBT.Toolchain\XBT.Toolchain.csproj" />
+    <ProjectReference Include="..\XBT.LiveCoding\XBT.LiveCoding.csproj" />
+    <ProjectReference Include="..\XBT.ProjectFiles\XBT.ProjectFiles.csproj" />
+    <ProjectReference Include="..\XBT.Entry\XBT.Entry.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Static fixtures consumed by tests (e.g. HelloWorldSmokeTest looks
+      for Fixtures/HelloWorldEngine/ next to the test source). The
+      <Link/> path keeps the in-output layout consistent with the source
+      tree so HelloWorldSmokeTest.LocateFixture() resolves correctly.
+    -->
+    <None Include="Fixtures\**\*.*" Exclude="Fixtures\**\bin\**;Fixtures\**\obj\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>Fixtures\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
   </ItemGroup>
 
 </Project>

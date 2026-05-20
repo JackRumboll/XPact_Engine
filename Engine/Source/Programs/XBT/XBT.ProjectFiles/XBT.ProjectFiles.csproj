@@ -1,0 +1,29 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.ProjectFiles</RootNamespace>
+    <AssemblyName>XBT.ProjectFiles</AssemblyName>
+    <Description>IDE project-file generation for XBT. Lazy generation per /Documents/XBT.html Rev 4 Section 14 (footgun #9 preempt): emits only the target/configuration the user requested, not the full cross-product. MVP generators: clangd (compile_commands.json per LLVM JSON Compilation Database spec) and JetBrains Rider (.idea/ tree). Visual Studio and Xcode are Phase 2.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+    <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+    <ProjectReference Include="..\XBT.Configuration\XBT.Configuration.csproj" />
+    <ProjectReference Include="..\XBT.Discovery\XBT.Discovery.csproj" />
+    <ProjectReference Include="..\XBT.ActionGraph\XBT.ActionGraph.csproj" />
+    <ProjectReference Include="..\XBT.Toolchain\XBT.Toolchain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      XBT.Tests exercises both generators: determinism (byte-identical
+      output across re-runs per Section 14), MSVC->Clang flag translation
+      for clangd, well-formedness of Rider's emitted XML. Tests probe
+      internal helpers (path translation, XML serialization).
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
+  </ItemGroup>
+
+</Project>

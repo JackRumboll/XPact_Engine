@@ -1,0 +1,55 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.ProjectFiles</title>
+</head>
+<body>
+
+<h1>XBT.ProjectFiles</h1>
+
+<p>IDE project-file generation for XBT per <code>/Documents/XBT.html</code>
+Rev 4 Section 14. MVP generators are <strong>clangd</strong> and
+<strong>JetBrains Rider</strong>; Visual Studio and Xcode are Phase 2.</p>
+
+<p><strong>Lazy generation (footgun #9 preempt).</strong> UBT regenerates
+project files for the full cross-product of targets &times; platforms
+&times; configurations, which is slow at XPact scale (3 targets &times;
+3 platforms &times; 5 configurations &times; ~200 modules). XBT instead
+generates project files only for the target the IDE has selected,
+identified by the CLI flags passed to <code>GenerateProjectFiles</code>.
+The first invocation per session generates; subsequent invocations of
+the same target are cached.</p>
+
+<p>Public surface:</p>
+<ul>
+  <li><code>IProjectFileGenerator</code> &mdash; one interface every
+  generator implements. <code>GenerationContext</code> carries the
+  active <code>TargetRules</code>, the discovered module + plugin
+  catalogs, and the toolchain. <code>GenerationResult</code> reports
+  which files were written + a single error message on failure.</li>
+
+  <li><code>ClangdCompileCommandsGenerator</code> &mdash; emits
+  <code>&lt;EngineRoot&gt;/compile_commands.json</code> per the LLVM
+  JSON Compilation Database spec. Per Section 14.3: one entry per
+  <code>.cpp</code> in every module enabled by the target, with the
+  full compile-command vector. MSVC-style flags
+  (<code>/D</code>, <code>/I</code>) translate to Clang-style
+  (<code>-D</code>, <code>-I</code>) since clangd is Clang;
+  reproducibility-envelope flags pass through unchanged.</li>
+
+  <li><code>RiderProjectGenerator</code> &mdash; emits a minimal
+  <code>.idea/</code> tree at <code>&lt;EngineRoot&gt;/.idea/</code>:
+  <code>modules.xml</code>, one <code>.iml</code> per XPact module,
+  <code>workspace.xml</code>, and <code>.gitignore</code>. Rider's
+  build action delegates back to
+  <code>XBT.exe build</code> per Section 14.4 / UBT's pattern.</li>
+</ul>
+
+<p><strong>Determinism.</strong> Both generators emit byte-identical
+output across re-runs given identical input. Tests in
+<code>XBT.Tests</code> assert this invariant.</p>
+
+</body>
+</html>

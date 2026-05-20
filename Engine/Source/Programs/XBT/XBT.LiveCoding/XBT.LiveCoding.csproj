@@ -1,0 +1,27 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XBT.LiveCoding</RootNamespace>
+    <AssemblyName>XBT.LiveCoding</AssemblyName>
+    <Description>Phase-1 interface seams reserved for Phase-2 XLiveCoding integration per /Documents/XBT.html Rev 4 Section 16. Declares IActionGraphPatcher, IQuiesceParticipant, PatcherRegistry, and PatchDllDiscovery; carries no Phase 1 implementations beyond the empty-registry no-op semantics.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XBT.Core\XBT.Core.csproj" />
+    <ProjectReference Include="..\XBT.Manifest\XBT.Manifest.csproj" />
+    <ProjectReference Include="..\XBT.ActionGraph\XBT.ActionGraph.csproj" />
+    <ProjectReference Include="..\XBT.Configuration\XBT.Configuration.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      XBT.Tests exercises the empty-registry no-op path, the quiesce
+      enum ordering invariant (Rev 3 fix: GC markers must quiesce FIRST),
+      and the PatchDllDiscovery <gen>-counter scan semantics per
+      /Documents/XBT.html Rev 4 Section 16.7.
+    -->
+    <InternalsVisibleTo Include="XBT.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,6 @@
+# Copyright Simgenics. All Rights Reserved.
+
+name = "HelloModule"
+tier = "Engine"
+module_type = "Runtime"
+languages = "Cpp"

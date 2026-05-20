@@ -55,11 +55,19 @@ public abstract class XToolChain
     /// <param name="target">The target driving the build.</param>
     /// <param name="sourceFile">The source TU.</param>
     /// <param name="outputDir">Absolute path to the intermediate output directory.</param>
+    /// <param name="pch">
+    /// Optional precompiled-header binding produced by
+    /// <see cref="GeneratePCH"/>. When non-null, the toolchain inserts
+    /// the <c>/Yu</c>+<c>/Fp</c>+<c>/FI</c> (MSVC) or
+    /// <c>-include-pch</c> (Clang) flags so the TU consumes the PCH
+    /// per Toolchain Contract Rev 13 Section 1.5.
+    /// </param>
     public abstract IReadOnlyList<IExternalAction> CompileSource(
         ModuleRules module,
         TargetRules target,
         FileItem sourceFile,
-        string outputDir);
+        string outputDir,
+        PCHBinding? pch = null);
 
     /// <summary>
     /// Produce the link action for a module. One
@@ -70,6 +78,111 @@ public abstract class XToolChain
         TargetRules target,
         IReadOnlyList<FileItem> objectFiles,
         string outputDir);
+
+    /// <summary>
+    /// Produce the per-module PCH generation action. Returns the
+    /// <see cref="PCHBinding"/> the caller threads through to
+    /// <see cref="CompileSource"/> on every TU in the same module so
+    /// downstream compiles depend on the PCH and consume it via the
+    /// platform's PCH-include mechanism.
+    /// </summary>
+    /// <param name="module">
+    /// The owning module. Must have
+    /// <see cref="ModuleRules.PCHUsage"/> in a PCH-emitting mode and
+    /// must NOT be sim-path with a shared-PCH mode declared (the
+    /// SimPath PCH lock per Contract Section 1.5).
+    /// </param>
+    /// <param name="target">The target driving the build.</param>
+    /// <param name="pchHeaderName">
+    /// The PCH header's filename, as declared by the module
+    /// (<c>PrivatePCHHeaderFile</c> in the descriptor). The toolchain
+    /// resolves this against the module's include path search order.
+    /// </param>
+    /// <param name="pchHeaderFile">
+    /// Resolved <see cref="FileItem"/> for the header. Phase 1.3
+    /// callers pass the FileItem of the on-disk header; later phases
+    /// may pass a generated FileItem for XHT-emitted PCH headers.
+    /// </param>
+    /// <param name="outputDir">
+    /// Absolute path to the intermediate output directory where the
+    /// generated <c>.pch</c> / <c>.pchi</c> lives.
+    /// </param>
+    /// <exception cref="ToolchainBannedFlagException">
+    /// Thrown with exit 41 when <paramref name="module"/> is sim-path
+    /// and its <see cref="ModuleRules.PCHUsage"/> is anything other
+    /// than <see cref="PCHUsageMode.NoPCHs"/> or
+    /// <see cref="PCHUsageMode.NoSharedPCHs"/>. The parser-side
+    /// <see cref="TierValidator"/> catches this earlier; this method's
+    /// re-check is defence-in-depth at the toolchain emit boundary.
+    /// </exception>
+    public abstract PCHBinding GeneratePCH(
+        ModuleRules module,
+        TargetRules target,
+        string pchHeaderName,
+        FileItem pchHeaderFile,
+        string outputDir);
+
+    /// <summary>
+    /// Sim-path PCH gate. Per Contract Section 1.5 + Phase 1.3 spec, a
+    /// sim-path module must declare <c>PCHUsage = NoPCHs</c> or
+    /// <c>PCHUsage = NoSharedPCHs</c>; anything else fails with exit
+    /// 41. Subclasses call this from their <see cref="GeneratePCH"/>
+    /// implementation as defence-in-depth (the parser-side validator
+    /// catches the same case at descriptor-parse time).
+    /// </summary>
+    protected static void EnforceSimPathPchGate(ModuleRules module)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        if (!module.SimPath)
+        {
+            return;
+        }
+
+        // Resolve Default to NoSharedPCHs implicitly -- sim-path modules
+        // always treat Default as the safe baseline.
+        PCHUsageMode resolved = module.PCHUsage;
+        if (resolved is PCHUsageMode.UseSharedPCHs
+                       or PCHUsageMode.UseExplicitOrSharedPCHs)
+        {
+            throw new ToolchainBannedFlagException(
+                $"Module '{module.Name}' is SimPath but declares PCHUsage = {resolved}. " +
+                "Contract Rev 13 Section 1.5 requires SimPath modules to declare " +
+                "PCHUsage = NoPCHs or NoSharedPCHs; SharedPCH on a sim-path module is " +
+                "banned because PCH non-determinism violates sim-path determinism.");
+        }
+    }
+
+    /// <summary>
+    /// Resolve a module's PCH-usage policy per Phase 1.3 spec. Shared-PCH
+    /// modes are downgraded with a Logger.Warning ("shared PCH is Phase
+    /// 1.4; falling back to NoSharedPCHs") so the build proceeds without
+    /// shared-PCH support landing yet. Sim-path modules are gated upstream
+    /// by <see cref="EnforceSimPathPchGate"/>.
+    /// </summary>
+    /// <returns>
+    /// The effective PCH usage. Always one of <see cref="PCHUsageMode.NoPCHs"/>,
+    /// <see cref="PCHUsageMode.NoSharedPCHs"/>, or <see cref="PCHUsageMode.Default"/>.
+    /// </returns>
+    public static PCHUsageMode ResolvePCHUsage(ModuleRules module)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+
+        return module.PCHUsage switch
+        {
+            PCHUsageMode.UseSharedPCHs => DowngradeShared(module, PCHUsageMode.UseSharedPCHs),
+            PCHUsageMode.UseExplicitOrSharedPCHs => DowngradeShared(module, PCHUsageMode.UseExplicitOrSharedPCHs),
+            _ => module.PCHUsage,
+        };
+
+        static PCHUsageMode DowngradeShared(ModuleRules module, PCHUsageMode declared)
+        {
+            Logger.Warning(
+                $"Module '{module.Name}' declares PCHUsage = {declared}; shared PCH is Phase 1.4. " +
+                "Falling back to NoSharedPCHs (per-module PCH only).",
+                new DiagnosticContext { Module = module.Name, Tier = module.Tier.ToString() });
+            return PCHUsageMode.NoSharedPCHs;
+        }
+    }
 
     /// <summary>
     /// Emit the per-platform flags for an <see cref="FPSemantics"/> value.

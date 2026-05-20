@@ -160,7 +160,8 @@ public sealed class XClangToolChain : XToolChain
         ModuleRules module,
         TargetRules target,
         FileItem sourceFile,
-        string outputDir)
+        string outputDir,
+        PCHBinding? pch = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -243,6 +244,15 @@ public sealed class XClangToolChain : XToolChain
             args.Add($"-I{inc}");
         }
 
+        // === PCH consumption (Contract Section 1.5; Phase 1.3) ===
+        // When a per-module PCH was generated (via GeneratePCH), the
+        // module's TUs consume it via -include-pch <pch>.
+        if (pch is not null)
+        {
+            args.Add("-include-pch");
+            args.Add(pch.PchOutputFile.FullPath);
+        }
+
         // === Banned-flag check ===
         // NOTE: ModuleRules in XBT.Configuration does not yet expose an
         // AdditionalCompilerArguments collection. When that field lands
@@ -270,12 +280,27 @@ public sealed class XClangToolChain : XToolChain
         };
         Array.Sort(produced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
 
+        // PrerequisiteItems must be sorted ordinal. When a PCH is
+        // bound, the consumer compile depends on the PCH artefact +
+        // the PCH header too.
+        FileItem[] prereqs;
+        if (pch is not null)
+        {
+            List<FileItem> sortedPrereqs = new(3) { sourceFile, pch.PchOutputFile, pch.PchHeaderFile };
+            sortedPrereqs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+            prereqs = sortedPrereqs.ToArray();
+        }
+        else
+        {
+            prereqs = new[] { sourceFile };
+        }
+
         return new[]
         {
             ExternalAction.Create(new ExternalAction
             {
                 ActionType = XActionType.CompileCppAction,
-                PrerequisiteItems = new[] { sourceFile },
+                PrerequisiteItems = prereqs,
                 ProducedItems = produced,
                 CommandPath = _clangPath,
                 CommandArguments = args,
@@ -294,9 +319,104 @@ public sealed class XClangToolChain : XToolChain
                     $"SimPath={module.SimPath}",
                     $"FipsMode={target.FipsMode}",
                     $"StationRole={target.StationRole}",
+                    $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
                 },
             }),
         };
+    }
+
+    /// <inheritdoc/>
+    public override PCHBinding GeneratePCH(
+        ModuleRules module,
+        TargetRules target,
+        string pchHeaderName,
+        FileItem pchHeaderFile,
+        string outputDir)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentException.ThrowIfNullOrEmpty(pchHeaderName);
+        ArgumentNullException.ThrowIfNull(pchHeaderFile);
+        ArgumentException.ThrowIfNullOrEmpty(outputDir);
+
+        // Defence-in-depth gate: sim-path modules cannot generate
+        // shared-PCH PCHs.
+        EnforceSimPathPchGate(module);
+
+        Directory.CreateDirectory(outputDir);
+
+        // Clang emits a precompiled-header file with the .pchi
+        // extension (XBT convention) via `clang -x c++-header -o file.pchi`.
+        string pchOutputName = module.Name + ".pchi";
+        string pchOutputPath = Path.Combine(outputDir, pchOutputName);
+        FileItem pchOutputItem = FileItem.GetItemByPath(pchOutputPath);
+
+        List<string> args = new();
+
+        // === Reproducibility envelope ===
+        args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
+        args.Add("-fno-ident");
+        args.Add("-fdeterministic-cgu-order");
+
+        // === Determinism + SimPath ===
+        args.AddRange(GetCompileArguments_FPSemantics_Resolved(module));
+        if (module.SimPath)
+        {
+            args.AddRange(GetCompileArguments_SimPath(module));
+        }
+
+        // === Exceptions + RTTI ===
+        if (!module.bEnableExceptions)
+        {
+            args.Add("-fno-exceptions");
+        }
+        if (!module.bUseRTTI)
+        {
+            args.Add("-fno-rtti");
+        }
+
+        // === Include paths (mirror consumer TUs) ===
+        foreach (string inc in module.PublicIncludePaths)
+        {
+            args.Add($"-I{inc}");
+        }
+        foreach (string inc in module.PrivateIncludePaths)
+        {
+            args.Add($"-I{inc}");
+        }
+
+        // === PCH-specific: treat header as a c++-header ===
+        args.Add("-x");
+        args.Add("c++-header");
+
+        // Output then input (clang convention).
+        args.Add("-o");
+        args.Add(pchOutputPath);
+        args.Add(pchHeaderFile.FullPath);
+
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.PCHGenerationAction,
+            PrerequisiteItems = new[] { pchHeaderFile },
+            ProducedItems = new[] { pchOutputItem },
+            CommandPath = _clangPath,
+            CommandArguments = args,
+            WorkingDirectory = _repoRoot,
+            CommandDescription = "GeneratePCH",
+            StatusDescription = pchOutputName,
+            Module = module.Name,
+            Tier = module.Tier.ToString(),
+            SimPath = module.SimPath,
+            Configuration = target.Configuration,
+            Platform = target.Platform,
+            Weight = 4.0,
+        });
+
+        return new PCHBinding(
+            Action: action,
+            PchHeaderFile: pchHeaderFile,
+            PchHeaderName: pchHeaderName,
+            PchOutputFile: pchOutputItem);
     }
 
     /// <inheritdoc/>

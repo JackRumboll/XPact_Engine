@@ -1,0 +1,63 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XBT.LiveCoding</title>
+</head>
+<body>
+
+<h1>XBT.LiveCoding</h1>
+
+<p>Phase-1 interface seams reserved for Phase-2 XLiveCoding integration per
+<code>/Documents/XBT.html</code> Rev 4 Section 16 (<em>"Live Coding Hook"</em>).
+Phase 1 ships the interface shapes and the no-op defaults; nothing in Phase
+1 calls into them in anger -- the patcher registry is empty, no quiesce
+participants register, and no patch DLLs are produced.</p>
+
+<p>Public surface:</p>
+<ul>
+  <li><code>IActionGraphPatcher</code> &mdash; per-toolchain hook that
+  mutates the action graph after <code>Link()</code>+<code>Sort()</code>
+  but before executor dispatch. Routes through the originating toolchain
+  class (NOT through executable-name string matching; preempts UE
+  footgun #5). Phase 1 ships the contract, Phase 2 XLiveCoding plugs
+  in <code>XLiveCodingPatcher</code> which rewrites Compile actions
+  (.obj &rarr; .lc.obj, response file extension &rarr; .lc.response,
+  dependency file path).</li>
+
+  <li><code>PatcherContext</code> &mdash; the per-call context passed to
+  every patcher (active <code>TargetRules</code>, engine root path,
+  diagnostic logger channel).</li>
+
+  <li><code>PatcherRegistry</code> &mdash; mutable list of registered
+  patchers. <code>BuildMode</code> calls <code>ApplyAll</code> between
+  the action-graph sort and the executor dispatch. Empty registry =
+  no-op (Phase 1 default).</li>
+
+  <li><code>IQuiesceParticipant</code> &mdash; participant in the
+  Phase 2 hot-reload cascade's function-pointer-write window. Quiesce
+  + resume on a fixed priority order (<code>QuiescePriority</code>).</li>
+
+  <li><code>QuiescePriority</code> &mdash; the strict ordering for the
+  cascade. <strong>Rev 3 fix</strong>: GC marker threads quiesce
+  <em>FIRST</em> (priority 0), not last, so no concurrent mark phase
+  observes a function pointer mid-rewrite. Then game thread, render
+  thread, RHI thread, audio thread, loading threads, sim-path worker
+  pool (priority 6) in that order. On resume the order reverses.</li>
+
+  <li><code>PatchDllDiscovery</code> &mdash; static helpers that scan
+  <code>/Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/LiveCoding/&lt;Module&gt;.patch.&lt;gen&gt;.dll</code>
+  for the next per-(Target, Module) generation counter. Per Section 16.7
+  the counter persists by scanning observed files (not a separate
+  persistence file). Phase 1 implements the discovery; Phase 2
+  XLiveCoding writes the DLLs.</li>
+</ul>
+
+<p><strong>Phase 1 is interface-only.</strong> No DLLs are produced, no
+patchers are registered, no quiesce participants are registered. The
+seams exist so the Phase 2 XLiveCoding integration does not require
+retrofitting XBT.</p>
+
+</body>
+</html>
