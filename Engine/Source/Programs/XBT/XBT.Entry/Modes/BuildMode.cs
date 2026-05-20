@@ -768,7 +768,9 @@ public sealed class BuildMode : IToolMode<BuildMode>
                         $"'{sharedHeader}' as a file under one of the participants' " +
                         "PublicIncludePaths directories, or use a relative path " +
                         "with path separators if the file lives outside any " +
-                        "include path (per Toolchain Contract Rev 13 Section 1.5).",
+                        "include path (per Toolchain Contract Rev 13.1 Section 1.5). " +
+                        "On Linux the path lookup is case-sensitive; ensure " +
+                        "PublicIncludePaths entries match the exact on-disk directory case.",
                         exitCode: 30,
                         filePath: rec.DescriptorPath);
                 }
