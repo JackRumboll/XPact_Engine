@@ -376,8 +376,200 @@ public sealed class ParallelExecutor
         // Conservative sweep: only the executor's *known* temp paths are
         // tracked via RunAction's DeleteTempFiles. The orphan-sweep at
         // next startup (XBT.html Section 6.4) covers temp files from
-        // crashed previous runs; this method exists as a hook for
-        // additional cleanup the runner may need.
+        // crashed previous runs; that is implemented by
+        // <see cref="SweepOrphanedTempFiles"/> and called from BuildMode
+        // before the executor dispatches anything.
+    }
+
+    /// <summary>
+    /// Orphan-temp-file sweep per <c>/Documents/XBT.html</c> Rev 4
+    /// Section 6.4: walk the intermediate-build root looking for
+    /// <c>*.tmp.&lt;pid&gt;.&lt;actionid&gt;</c> files and delete any
+    /// whose &lt;pid&gt; does not match a currently-running process.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called from <c>BuildMode</c> startup before the
+    /// <see cref="Execute"/> pump begins. Safely re-entrant: multiple
+    /// concurrent XBT invocations all sweeping the same tree at once
+    /// is fine -- each invocation skips temps owned by any live pid
+    /// (which includes the other sibling XBT processes), and deletes
+    /// are best-effort. A delete that loses a race with another sweeper
+    /// silently no-ops.
+    /// </para>
+    /// <para>
+    /// The temp-file naming convention is fixed by
+    /// <see cref="RunAction"/>: <c>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</c>
+    /// where &lt;pid&gt; is decimal. We match
+    /// <c>*.tmp.&lt;number&gt;.&lt;number&gt;</c> via a per-file regex
+    /// rather than a shell glob so the parse is portable across hosts.
+    /// </para>
+    /// </remarks>
+    public static void SweepOrphanedTempFiles(string intermediateBuildRoot)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(intermediateBuildRoot);
+        if (!Directory.Exists(intermediateBuildRoot))
+        {
+            return;
+        }
+
+        int deletedFiles = 0;
+        HashSet<string> deletedDirs = new(StringComparer.OrdinalIgnoreCase);
+
+        IEnumerable<string> tempCandidates;
+        try
+        {
+            tempCandidates = Directory.EnumerateFiles(
+                intermediateBuildRoot,
+                "*.tmp.*",
+                new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    MatchType = MatchType.Simple,
+                });
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        foreach (string path in tempCandidates)
+        {
+            string fileName = Path.GetFileName(path);
+            if (!TryParseTempFilePid(fileName, out int pid))
+            {
+                continue;
+            }
+
+            if (IsProcessAlive(pid))
+            {
+                // Belongs to a sibling XBT run (or our own pid on
+                // restart-during-build). Leave it alone.
+                continue;
+            }
+
+            try
+            {
+                File.Delete(path);
+                deletedFiles++;
+                string? dir = Path.GetDirectoryName(path);
+                if (dir is not null)
+                {
+                    deletedDirs.Add(dir);
+                }
+            }
+            catch (IOException)
+            {
+                // Best-effort. A concurrent sweeper may have raced us.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Best-effort.
+            }
+        }
+
+        if (deletedFiles > 0)
+        {
+            Logger.Debug(
+                $"orphan sweep: deleted {deletedFiles} temp file(s) from " +
+                $"{deletedDirs.Count} director(ies) under {intermediateBuildRoot}.");
+        }
+    }
+
+    /// <summary>
+    /// Parse the pid component of an
+    /// <c>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</c> file
+    /// name. Returns false for any name that does not match the exact
+    /// convention.
+    /// </summary>
+    private static bool TryParseTempFilePid(string fileName, out int pid)
+    {
+        pid = 0;
+        // Find the LAST ".tmp." occurrence in the filename; output file
+        // names may contain dots (e.g. "Foo.cpp.obj.tmp.1234.5"), and
+        // the convention is "<anything>.tmp.<pid>.<actionid>".
+        int tmpIdx = fileName.LastIndexOf(".tmp.", StringComparison.Ordinal);
+        if (tmpIdx < 0)
+        {
+            return false;
+        }
+        int pidStart = tmpIdx + ".tmp.".Length;
+        if (pidStart >= fileName.Length)
+        {
+            return false;
+        }
+        int pidEnd = fileName.IndexOf('.', pidStart);
+        if (pidEnd < 0)
+        {
+            return false;
+        }
+        string pidSegment = fileName[pidStart..pidEnd];
+        if (pidSegment.Length == 0)
+        {
+            return false;
+        }
+        // The actionid suffix after the pid must be all digits with no
+        // further dots (a strict per-spec match).
+        string actionIdSegment = fileName[(pidEnd + 1)..];
+        if (actionIdSegment.Length == 0
+            || !IsAllDigits(actionIdSegment))
+        {
+            return false;
+        }
+        return int.TryParse(pidSegment, out pid) && pid > 0;
+    }
+
+    private static bool IsAllDigits(string s)
+    {
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] < '0' || s[i] > '9')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Test whether a pid corresponds to a live process. On Win64 and
+    /// POSIX, <see cref="Process.GetProcessById"/> throws when the pid
+    /// is not running; we map both the not-running and access-denied
+    /// outcomes to "not alive" so the orphan sweep deletes the file.
+    /// </summary>
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using Process p = Process.GetProcessById(pid);
+            // GetProcessById succeeded -> a process with that pid exists.
+            // We do not require any particular ownership; the temp file
+            // convention is "tmp.<pid>" and a sibling XBT instance is
+            // permitted to own it.
+            return !p.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            // Per docs: thrown when no process with that id is running.
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // Process has already exited.
+            return false;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Access denied or other OS error -- treat as "not ours,
+            // leave alone" to be conservative (deleting another user's
+            // sibling temp could break their build).
+            return true;
+        }
     }
 
     private static void DeleteTempFiles(IEnumerable<string> tempPaths)
@@ -502,6 +694,15 @@ public interface IActionRunner
 /// </remarks>
 public sealed class ProcessActionRunner : IActionRunner
 {
+    /// <summary>
+    /// Poll interval between <c>WaitForExit</c> checks while waiting for
+    /// a subprocess to finish. 250 ms is fast enough that a SIGINT
+    /// honour-deadline of one second still leaves time for the process
+    /// tree kill + drain, and slow enough that the per-action busy-wait
+    /// overhead is negligible.
+    /// </summary>
+    internal const int WaitForExitPollMs = 250;
+
     /// <inheritdoc/>
     public ActionRunResult RunAction(ActionRunContext context)
     {
@@ -538,7 +739,29 @@ public sealed class ProcessActionRunner : IActionRunner
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            process.WaitForExit();
+            // Cancellation-aware wait. WaitForExit() with no timeout
+            // would block the worker thread indefinitely on a hung
+            // subprocess and prevent SIGINT honour. Polling every
+            // WaitForExitPollMs lets us inject a process-tree kill
+            // when the cancellation token fires.
+            while (!process.WaitForExit(WaitForExitPollMs))
+            {
+                if (context.CancellationToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch
+                    {
+                        // Best-effort -- process may have just exited
+                        // on its own between the WaitForExit poll and
+                        // the Kill call, or we may lack the right to
+                        // signal it; either way we propagate cancel.
+                    }
+                    context.CancellationToken.ThrowIfCancellationRequested();
+                }
+            }
 
             int exitCode = process.ExitCode;
             if (exitCode == 0)
@@ -549,6 +772,13 @@ public sealed class ProcessActionRunner : IActionRunner
                 false,
                 exitCode,
                 $"{action.CommandDescription} exit {exitCode}: {stderr}");
+        }
+        catch (OperationCanceledException)
+        {
+            // Surface cancellation up to ParallelExecutor.RunAction
+            // which is responsible for cleaning temp files and emitting
+            // the exit-130 ActionResult.
+            throw;
         }
         catch (Exception ex)
         {

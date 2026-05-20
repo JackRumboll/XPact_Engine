@@ -31,8 +31,8 @@ namespace Simgenics.XPact.XBT.Manifest;
 ///   <item><see cref="Enums"/> -- enum names and ordinals from <see cref="Enums"/>.cs, reflected once at static-init.</item>
 ///   <item><see cref="MarkerMacros"/> -- Contract Section 1.3 marker macros (XCLASS / XSTRUCT / ...).</item>
 ///   <item><see cref="BodyMacroSuffixes"/> -- Contract Section 1.3 body-macro suffix table.</item>
-///   <item><see cref="ManglingRuleExample"/> -- Contract Section 1.4 Itanium-style length-prefixed mangling example.</item>
-///   <item><see cref="FileIdScheme"/> -- Contract Section 1.5 per-file ID scheme.</item>
+///   <item><see cref="ManglingRuleExample"/> -- Contract Section 1.3 Itanium-style length-prefixed mangling example.</item>
+///   <item><see cref="FileIdScheme"/> -- Contract Section 1.4 per-file ID scheme (length-prefixed grammar).</item>
 ///   <item><see cref="ExitCodes"/> -- Contract Section 13 exit-code surface.</item>
 ///   <item><see cref="ActionTypes"/> -- the action-type enum the action graph consumes.</item>
 /// </list>
@@ -41,16 +41,31 @@ public static class ContractSurface
 {
     /// <summary>
     /// Hand-bumped semantic version tag. Tracks the current Toolchain
-    /// Contract revision (Rev 13 -> "13.0"). Bumped on every contract
-    /// revision so a textually-large but structurally-small revision can
-    /// still produce a new <see cref="ContractVersion.Current"/> string.
+    /// Contract revision (Rev 13 -> "13.0"; Rev 13.1 = audit-fixes
+    /// round 1 -> "13.1"). Bumped on every contract revision so a
+    /// textually-large but structurally-small revision can still produce
+    /// a new <see cref="ContractVersion.Current"/> string.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The full <see cref="ContractVersion.Current"/> string is
     /// <c>$"{SemanticVersionTag}+{StructureHash[0..16]}"</c>; the
     /// semantic tag flows before the <c>+</c>, the hash suffix after.
+    /// </para>
+    /// <para>
+    /// Rev 13.1 (audit fixes round 1): corrected Section 13 exit-code
+    /// mnemonics (24=PluginNotFound; 60-63=XHT/XIL2CPP subprocess +
+    /// internal failures), replaced the underscore-collapsing
+    /// <see cref="FileIdScheme"/> with the Itanium-ABI-style
+    /// length-prefixed grammar from Contract Section 1.4, and aligned
+    /// <c>OptimizeCodeMode</c> enum ordinals with XBT.html Section 4.1.
+    /// All three changes mutate the structure hash so every downstream
+    /// cache layer (ActionHistory, XIL2CPP symbol mangling, XHT
+    /// reflection metadata, manifest verification) treats the surface
+    /// as incompatible and recomputes.
+    /// </para>
     /// </remarks>
-    public const string SemanticVersionTag = "13.0";
+    public const string SemanticVersionTag = "13.1";
 
     /// <summary>
     /// Itanium-ABI-style length-prefixed mangling rule example per
@@ -63,11 +78,41 @@ public static class ContractSurface
     public const string ManglingRuleExample = "XN1A1BE";
 
     /// <summary>
-    /// File-ID scheme per Contract Section 1.5. Format string defines
-    /// how XHT and XIL2CPP encode per-file unique symbol prefixes:
-    /// <c>XID_{PluginName}__{LogicalPath}_h_{LineNumber}_{Suffix}</c>.
+    /// Per-file ID grammar per Contract Section 1.4 (REVISED Rev 11 --
+    /// collision-free Itanium-ABI-style length-prefixed mangling). The
+    /// constant is a grammar-description string, not a sprintf-style
+    /// template: each <c>N&lt;Len&gt;&lt;Token&gt;</c> production carries a
+    /// decimal length prefix followed by the token bytes, so escaping
+    /// is bijective and collisions like <c>Foo_Bar/X.h</c> vs.
+    /// <c>Foo/Bar_X.h</c> are impossible.
     /// </summary>
-    public const string FileIdScheme = "XID_{PluginName}__{LogicalPath}_h_{LineNumber}_{Suffix}";
+    /// <remarks>
+    /// <para>
+    /// Components, in order:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><c>PluginName</c> -- the plugin's <c>.xplugin</c>
+    ///   <c>Name</c> field (or the literal <c>"Engine"</c> for the
+    ///   engine itself).</item>
+    ///   <item><c>LogicalPath</c> segments -- the header's per-module
+    ///   logical path (declared via <c>PublicIncludePaths</c> /
+    ///   <c>PrivateIncludePaths</c>), split on forward slash. The
+    ///   filesystem path is intentionally NOT part of the symbol so
+    ///   moving the file on disk does not invalidate consumers.</item>
+    ///   <item><c>LineNumber</c> -- the source line of the
+    ///   <c>XGENERATED_BODY()</c> macro.</item>
+    ///   <item><c>Suffix</c> -- one of the table in
+    ///   <see cref="BodyMacroSuffixes"/>.</item>
+    /// </list>
+    /// <para>
+    /// Worked example for <c>AXValve</c> at line 14 of plugin
+    /// <c>Engine</c> with logical path
+    /// <c>XGameFramework/Public/Valves/XValve</c>:
+    /// <c>_XID_N6EngineN4N14XGameFrameworkN6PublicN6ValvesN6XValve_L14_GENERATED_BODY</c>.
+    /// </para>
+    /// </remarks>
+    public const string FileIdScheme =
+        "_XID_N<PluginNameLen><PluginName>N<LogicalPathSegCount>{N<SegLen><SegName>}_L<LineNumber>_<Suffix>";
 
     /// <summary>
     /// Marker-macro vocabulary per Contract Section 1.3. Locked
@@ -118,32 +163,47 @@ public static class ContractSurface
     /// any entry does.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Mnemonics mirror the contract's Section 13.1 table verbatim.
+    /// Audit fix (Rev 13.1): the Rev 13.0 mnemonics for codes 20 and
+    /// 24 had drifted from the contract (e.g. <c>ConfigurationError</c>
+    /// instead of <c>DiscoveryFailure</c> at code 20;
+    /// <c>PluginVersionMismatch</c> instead of <c>PluginNotFound</c>
+    /// at code 24), and codes 60-63 had incorrectly been assigned to
+    /// the plugin / dynamic-load domain instead of the XHT / XIL2CPP
+    /// subprocess + internal failure domain. The table now matches
+    /// Contract Section 13.1 exactly.
+    /// </para>
+    /// <para>
     /// Codes 90-99 are reserved (not enumerated here) for Phase 2 Live
     /// Coding domain failures. They join the surface when XLiveCoding
     /// ships.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<(int Code, string Mnemonic)> ExitCodes = new[]
     {
         (0,   "Success"),
         (1,   "GenericFailure"),
         (10,  "CliArgumentError"),
-        (20,  "ConfigurationError"),
+        (20,  "DiscoveryFailure"),
         (21,  "TierViolation"),
         (22,  "CycleDetected"),
         (23,  "EngineOrToolchainVersionMismatch"),
-        (24,  "PluginVersionMismatch"),
+        (24,  "PluginNotFound"),
         (30,  "RulesCompileFailed"),
         (40,  "CopyrightHeaderMissing"),
         (41,  "BannedApiOnSimPathTU"),
         (50,  "ManifestMalformed"),
-        (60,  "PluginNotFound"),
-        (61,  "DependencyResolutionFailed"),
-        (62,  "DynamicLoadProtocolMismatch"),
-        (63,  "InterfaceModuleSymbolLeak"),
+        (60,  "XhtSubprocessFailure"),
+        (61,  "Xil2CppSubprocessFailure"),
+        (62,  "XhtInternalFailure"),
+        (63,  "Xil2CppInternalFailure"),
         (70,  "CompileFailed"),
         (71,  "LinkFailed"),
         (80,  "ActionGraphCycle"),
         (81,  "BuildHookOutputMismatch"),
+        // Codes 90-99 reserved for Phase 2 XLiveCoding domain (not
+        // enumerated; they join the surface when XLiveCoding ships).
         (130, "Cancelled"),
     };
 

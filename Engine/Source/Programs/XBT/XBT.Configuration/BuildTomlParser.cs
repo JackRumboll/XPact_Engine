@@ -425,6 +425,25 @@ public static class BuildTomlParser
         // action-graph work happens.
         ValidateSimPathConstraints(rules, sourcePath);
 
+        // Path-traversal validation. Every path-typed field must
+        // resolve relative to the module's BaseDirectory; absolute
+        // paths leak host-machine layout into the descriptor, and
+        // `..` segments allow a malicious or buggy descriptor to
+        // include headers from outside the module's source tree
+        // (cross-module escape; reproducibility hazard). Per Toolchain
+        // Contract Rev 13 Section 2.1 the reproducibility envelope
+        // requires all source paths to be machine-portable.
+        ValidatePathField("pch_header_file", rules.PrivatePCHHeaderFile, sourcePath);
+        ValidatePathField("shared_pch_header_file", rules.SharedPCHHeaderFile, sourcePath);
+        foreach (string p in rules.PublicIncludePaths)
+        {
+            ValidatePathField("public_include_paths", p, sourcePath);
+        }
+        foreach (string p in rules.PrivateIncludePaths)
+        {
+            ValidatePathField("private_include_paths", p, sourcePath);
+        }
+
         // Closed-surface name check: a module with no name is a parse
         // failure; we ran the file stem fallback above, so if Name is
         // still empty something's wrong with the call site.
@@ -448,6 +467,53 @@ public static class BuildTomlParser
             return fileName[..^suffix.Length];
         }
         return Path.GetFileNameWithoutExtension(fileName);
+    }
+
+    /// <summary>
+    /// Reject any path-typed field that contains an absolute path or
+    /// a parent-directory (<c>..</c>) segment. Per Toolchain Contract
+    /// Rev 13 Section 2.1 every path the descriptor names must be
+    /// relative to the module's BaseDirectory; absolute paths and
+    /// path-traversal references are forbidden. The check normalises
+    /// both forward- and back-slash directory separators so a TOML
+    /// authored on Windows or Linux fails identically. Exit code 30.
+    /// </summary>
+    private static void ValidatePathField(string fieldName, string? value, string? moduleSourcePath)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return;
+        }
+
+        // Reject absolute paths. Path.IsPathRooted catches both
+        // Windows-style ("C:\..." or "\foo") and Unix-style ("/foo").
+        if (Path.IsPathRooted(value))
+        {
+            throw new DescriptorParseException(
+                $"Field '{fieldName}' has absolute path '{value}'; only paths " +
+                "relative to the module's BaseDirectory are allowed (per Toolchain " +
+                "Contract Rev 13 Section 2.1).",
+                exitCode: 30,
+                filePath: moduleSourcePath);
+        }
+
+        // Reject `..` segments (path traversal). Normalise the
+        // separator first so a Windows-authored "..\.." and a
+        // Linux-authored "../.." both fail.
+        string[] segments = value.Replace('\\', '/').Split('/');
+        foreach (string segment in segments)
+        {
+            if (segment == "..")
+            {
+                throw new DescriptorParseException(
+                    $"Field '{fieldName}' value '{value}' contains a parent-directory " +
+                    "segment '..'; path-traversal references are forbidden (per Toolchain " +
+                    "Contract Rev 13 Section 2.1). Paths must stay within the module's " +
+                    "BaseDirectory.",
+                    exitCode: 30,
+                    filePath: moduleSourcePath);
+            }
+        }
     }
 
     /// <summary>

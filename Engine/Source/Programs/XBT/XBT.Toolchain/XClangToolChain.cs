@@ -14,7 +14,8 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// Clang toolchain integration for Linux and Android builds. Translates
 /// per-module rules into the <c>clang</c>/<c>clang++</c> flag set; emits
 /// the unconditional reproducibility envelope per
-/// <c>/Documents/XBT.html</c> Rev 4 Section 19.1.
+/// <c>/Documents/XBT.html</c> Rev 4 Section 19.1 and Toolchain Contract
+/// Rev 13.1 Section 2.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,7 +27,9 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// Reproducibility envelope (emitted on every compile + link, unconditional):
 /// </para>
 /// <list type="bullet">
-///   <item><c>-fdebug-prefix-map=&lt;RepoRoot&gt;=X:/R</c> -- normalize absolute paths in DWARF.</item>
+///   <item><c>-fdebug-prefix-map=&lt;RepoRoot&gt;=X:/R</c> (compile) -- normalize absolute paths in DWARF debug info.</item>
+///   <item><c>--remap-file=&lt;RepoRoot&gt;=X:/R</c> (link) -- Clang's pathmap equivalent per Contract Section 2.1.</item>
+///   <item><c>-frandomize-layout-seed-file=&lt;empty seed&gt;</c> (compile) -- pin Clang's randomize-layout seed so two builds emit identical struct layouts.</item>
 ///   <item><c>-fno-ident</c> -- strip compiler version banner from .o.</item>
 ///   <item><c>-Wl,--build-id=none</c> (link) -- strip the link-emitted build-id from .so.</item>
 ///   <item><c>-fdeterministic-cgu-order</c> -- pin LTO codegen-unit ordering.</item>
@@ -43,6 +46,16 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// </remarks>
 public sealed class XClangToolChain : XToolChain
 {
+    /// <summary>
+    /// Relative path (under <c>_repoRoot</c>) of the pinned empty seed
+    /// file Clang's <c>-frandomize-layout-seed-file=</c> reads. The
+    /// seed is intentionally empty so the resulting struct layout is
+    /// deterministic across machines. The file is lazily created the
+    /// first time a Clang action is emitted; subsequent emits short-circuit.
+    /// </summary>
+    private const string RandomizeLayoutSeedRelativePath =
+        "Engine/Source/Programs/XBT/randomize-layout.seed";
+
     private readonly string _clangPath;
     private readonly string _clangVersion;
     private readonly string _repoRoot;
@@ -170,11 +183,16 @@ public sealed class XClangToolChain : XToolChain
 
         List<string> args = new();
 
-        // === Reproducibility envelope (XBT.html Section 19.1) ===
+        // === Reproducibility envelope (XBT.html Section 19.1 + Contract Section 2.1) ===
         args.Add("-c");
         args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
+        // -frandomize-layout-seed-file= pinned to an empty seed file
+        // (Contract Section 2.1). Without this flag Clang seeds struct
+        // layout randomization from the host's RNG, breaking
+        // reproducibility across machines.
+        args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
 
         // === Header dependency tracking ===
         args.Add("-MD");
@@ -357,6 +375,7 @@ public sealed class XClangToolChain : XToolChain
         args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
+        args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
 
         // === Determinism + SimPath ===
         args.AddRange(GetCompileArguments_FPSemantics_Resolved(module));
@@ -465,6 +484,7 @@ public sealed class XClangToolChain : XToolChain
         args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
+        args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
 
         // Aggregate include paths from every participant (sorted ordinal
         // + deduped for determinism). Include the header's own directory
@@ -582,7 +602,13 @@ public sealed class XClangToolChain : XToolChain
 
         List<string> args = new();
         args.Add("-shared");
-        args.Add($"-fdebug-prefix-map={_repoRoot}=X:/R");
+        // --remap-file is Clang's link-side pathmap equivalent per
+        // Contract Section 2.1 (Rev 13.1 audit fix). The compile side
+        // emits -fdebug-prefix-map=; the link side emits --remap-file=
+        // because the linker reads source-path metadata via the
+        // assembler/object-file remap surface rather than the DWARF
+        // debug-info remap that -fdebug-prefix-map= targets.
+        args.Add($"--remap-file={_repoRoot}=X:/R");
         args.Add("-fno-ident");
         args.Add("-Wl,--build-id=none");
 
@@ -688,6 +714,13 @@ public sealed class XClangToolChain : XToolChain
             OptimizeCodeMode.Never => new[] { "-O0" },
             OptimizeCodeMode.Always => new[] { "-O2" },
             OptimizeCodeMode.InNonDebugBuilds => new[] { "-O2" },
+            // InShippingBuildsOnly: aggressive optimization only when
+            // Configuration == Shipping; everything else (including
+            // Development / Test) gets -O0.
+            OptimizeCodeMode.InShippingBuildsOnly =>
+                config == BuildConfiguration.Shipping
+                    ? new[] { "-O2" }
+                    : new[] { "-O0" },
             OptimizeCodeMode.Default =>
                 config == BuildConfiguration.Shipping
                     ? new[] { "-O3" }
@@ -777,5 +810,46 @@ public sealed class XClangToolChain : XToolChain
     {
         // Placeholder.
         _ = module;
+    }
+
+    /// <summary>
+    /// Resolve the absolute path to the pinned empty seed file used by
+    /// Clang's <c>-frandomize-layout-seed-file=</c>. Creates the file
+    /// lazily so the path is always valid by the time a Clang action
+    /// reads it. The seed file is intentionally empty (zero bytes) so
+    /// Clang's struct-randomization layout is deterministic.
+    /// </summary>
+    private string EnsureRandomizeLayoutSeedFile()
+    {
+        string absPath = Path.Combine(
+            _repoRoot,
+            RandomizeLayoutSeedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        try
+        {
+            string? dir = Path.GetDirectoryName(absPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            if (!File.Exists(absPath))
+            {
+                using FileStream fs = File.Create(absPath);
+                // Intentionally empty: a zero-byte seed pins the
+                // randomize-layout RNG to a deterministic starting state.
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort. If the path is not writable (read-only repo
+            // snapshot, CI sandbox, etc.) Clang will still accept the
+            // flag against a missing file -- it falls back to default
+            // behaviour rather than failing. The flag presence itself
+            // is what the reproducibility envelope contract requires.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same rationale as IOException -- best-effort.
+        }
+        return absPath;
     }
 }

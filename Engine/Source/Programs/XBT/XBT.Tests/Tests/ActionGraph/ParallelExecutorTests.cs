@@ -3,8 +3,10 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Simgenics.XPact.XBT.ActionGraph;
 using Simgenics.XPact.XBT.Core;
@@ -234,6 +236,172 @@ public sealed class ParallelExecutorTests : IDisposable
 
         Assert.True(report.AllSucceeded);
         Assert.True(File.Exists(aOut.FullPath));
+    }
+
+    /// <summary>
+    /// <see cref="ParallelExecutor.SweepOrphanedTempFiles"/> deletes
+    /// temp files whose pid is not running, leaves temp files whose pid
+    /// is running, and ignores files outside the
+    /// <c>*.tmp.&lt;pid&gt;.&lt;actionid&gt;</c> naming convention.
+    /// </summary>
+    [Fact]
+    public void SweepOrphanedTempFiles_DeletesOnlyOrphanedTemps()
+    {
+        // Synthesise three files under a fake intermediate-build tree:
+        //   (a) an orphan: pid=int.MaxValue (guaranteed not to exist).
+        //   (b) a live temp: pid=current process pid (must survive).
+        //   (c) a non-temp file (no match) -- must survive.
+        string sweepRoot = Path.Combine(_scratchDir, "sweep");
+        string moduleObjDir = Path.Combine(sweepRoot, "Module", "obj");
+        Directory.CreateDirectory(moduleObjDir);
+
+        string orphanPath = Path.Combine(
+            moduleObjDir,
+            $"Foo.obj.tmp.{int.MaxValue}.42");
+        File.WriteAllText(orphanPath, "stale temp -- pid does not exist");
+
+        int currentPid = Environment.ProcessId;
+        string livePath = Path.Combine(
+            moduleObjDir,
+            $"Bar.obj.tmp.{currentPid}.7");
+        File.WriteAllText(livePath, "live temp -- this process is alive");
+
+        string nonTempPath = Path.Combine(moduleObjDir, "Baz.obj");
+        File.WriteAllText(nonTempPath, "regular non-temp output");
+
+        // Another orphan with a nested module path to exercise the
+        // recursive enumeration.
+        string nestedObjDir = Path.Combine(sweepRoot, "Other", "Sub", "obj");
+        Directory.CreateDirectory(nestedObjDir);
+        string nestedOrphanPath = Path.Combine(
+            nestedObjDir,
+            $"Nested.obj.tmp.{int.MaxValue - 1}.99");
+        File.WriteAllText(nestedOrphanPath, "another stale temp");
+
+        ParallelExecutor.SweepOrphanedTempFiles(sweepRoot);
+
+        Assert.False(File.Exists(orphanPath),
+            "orphan temp file with non-running pid must be swept.");
+        Assert.False(File.Exists(nestedOrphanPath),
+            "orphan temp file in nested subdirectory must be swept.");
+        Assert.True(File.Exists(livePath),
+            "temp file owned by the current pid must be kept.");
+        Assert.True(File.Exists(nonTempPath),
+            "non-temp output file must be left untouched.");
+    }
+
+    /// <summary>
+    /// <see cref="ParallelExecutor.SweepOrphanedTempFiles"/> is a no-op
+    /// against a missing directory (no throw) so callers can invoke it
+    /// unconditionally at startup before any directory exists.
+    /// </summary>
+    [Fact]
+    public void SweepOrphanedTempFiles_MissingDirectory_NoThrow()
+    {
+        string missingRoot = Path.Combine(_scratchDir, "does-not-exist");
+        Assert.False(Directory.Exists(missingRoot));
+        // No throw -- the sweep returns silently.
+        ParallelExecutor.SweepOrphanedTempFiles(missingRoot);
+    }
+
+    /// <summary>
+    /// <see cref="ProcessActionRunner"/> honours mid-run cancellation:
+    /// a sleeping subprocess is killed within a bounded window after the
+    /// cancellation token fires. The previous unconditional
+    /// <c>WaitForExit()</c> would have blocked the worker forever on a
+    /// hung subprocess; the polling loop bounds it to
+    /// <c>WaitForExitPollMs</c>.
+    /// </summary>
+    /// <remarks>
+    /// Spawns a deliberately-slow subprocess (cmd /c timeout on Windows,
+    /// sleep on POSIX). Cancels mid-run; asserts the runner returns
+    /// within 5 seconds (well above the 250 ms poll interval; well below
+    /// the 30-second subprocess sleep so we don't false-pass).
+    /// </remarks>
+    [Fact]
+    public void ProcessActionRunner_CancelledMidRun_ReturnsWithinBoundedTime()
+    {
+        // Construct a slow subprocess. Use cmd's timeout on Win64 (with
+        // /nobreak so it does not error on stdin redirection); use sleep
+        // on POSIX. The subprocess sleeps 30 seconds -- if cancellation
+        // does not honour the kill, the test fails by timeout.
+        (string commandPath, string[] commandArgs) = MakeSlowSubprocess();
+
+        // FileItem path is required by IExternalAction even though our
+        // subprocess does not actually write to it.
+        FileItem produced = MakeFileItem("slow-output");
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.CompileCppAction,
+            PrerequisiteItems = Array.Empty<FileItem>(),
+            ProducedItems = new[] { produced },
+            CommandPath = commandPath,
+            CommandArguments = commandArgs,
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "SlowSubprocess",
+            StatusDescription = "slow",
+            bUseActionHistory = false,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+        });
+
+        // Compose the temp-output map the runner expects.
+        string tempPath = Path.Combine(_scratchDir, "slow-output.tmp.1.1");
+        Dictionary<FileItem, string> tempPaths = new() { [produced] = tempPath };
+
+        using var cts = new CancellationTokenSource();
+        ProcessActionRunner runner = new();
+
+        // Fire cancel from a background timer so the WaitForExit polling
+        // loop observes the cancellation while the subprocess is alive.
+        cts.CancelAfter(TimeSpan.FromMilliseconds(500));
+
+        ActionRunContext ctx = new(
+            Action: action,
+            TempOutputPaths: tempPaths,
+            ProcessId: Environment.ProcessId,
+            ActionId: 1,
+            CancellationToken: cts.Token);
+
+        var sw = Stopwatch.StartNew();
+        OperationCanceledException? caught = null;
+        ActionRunResult? result = null;
+        try
+        {
+            result = runner.RunAction(ctx);
+        }
+        catch (OperationCanceledException oce)
+        {
+            caught = oce;
+        }
+        sw.Stop();
+
+        // The runner must have returned (either via cancellation throw
+        // or via a non-success ActionRunResult) within the bounded
+        // window. 5 seconds is the contract grace period; in practice
+        // the WaitForExitPollMs=250 means we resolve well under 1 second.
+        Assert.True(sw.ElapsedMilliseconds < 5_000,
+            $"ProcessActionRunner did not honour cancellation within 5s " +
+            $"(elapsed={sw.ElapsedMilliseconds}ms).");
+
+        // Either path is acceptable -- the contract is that the worker
+        // does not block forever, not which exception/result shape it
+        // produces. We assert one of them happened.
+        Assert.True(caught is not null || (result is not null && !result.Success),
+            "ProcessActionRunner must either throw OperationCanceledException " +
+            "or return a non-success ActionRunResult on cancellation.");
+    }
+
+    private static (string commandPath, string[] commandArgs) MakeSlowSubprocess()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // cmd /c timeout /t 30 /nobreak >NUL -- sleeps 30 seconds
+            // without consuming stdin. Hosts without cmd.exe will not
+            // be running these tests in practice.
+            return ("cmd.exe", new[] { "/c", "timeout", "/t", "30", "/nobreak" });
+        }
+        return ("/bin/sleep", new[] { "30" });
     }
 
     // ----- Helpers -----

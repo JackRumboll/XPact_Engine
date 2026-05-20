@@ -152,13 +152,18 @@ public enum FPSemantics
 }
 
 /// <summary>
-/// Code-optimization mode per UE-mirror enum. Used by the toolchain
-/// abstraction in <c>XBT.Toolchain</c> when emitting per-TU flag sets.
+/// Code-optimization mode per XBT.html Rev 4 Section 4.1 (UE-mirror
+/// enum). Used by the toolchain abstraction in <c>XBT.Toolchain</c>
+/// when emitting per-TU flag sets. Ordinal order matches the spec
+/// declaration <c>Default, Never, InNonDebugBuilds, InShippingBuildsOnly,
+/// Always</c>; reordering changes both the FBS schema and the
+/// <c>ContractVersion.StructureHash</c>.
 /// </summary>
 public enum OptimizeCodeMode
 {
     Default = 0,
-    Always = 1,
-    Never = 2,
-    InNonDebugBuilds = 3,
+    Never = 1,
+    InNonDebugBuilds = 2,
+    InShippingBuildsOnly = 3,
+    Always = 4,
 }

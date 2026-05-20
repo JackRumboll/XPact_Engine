@@ -250,6 +250,23 @@ public sealed class BuildMode : IToolMode<BuildMode>
         Directory.CreateDirectory(intermediateRoot);
         ActionHistory history = ActionHistory.Open(intermediateRoot, target.Configuration);
 
+        // ---- 11.5 Orphan temp-file sweep (XBT.html Section 6.4) --------
+        // Sweep the entire intermediate-build tree (not just this
+        // target's subtree) so a sibling crashed XBT run targeting a
+        // different config gets cleaned up too. Best-effort: failures
+        // are logged but do not abort the build.
+        try
+        {
+            string intermediateBuildTree = Path.Combine(engineRoot, "Intermediate", "Build");
+            ParallelExecutor.SweepOrphanedTempFiles(intermediateBuildTree);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(
+                $"Orphan temp-file sweep failed: {ex.GetType().Name}: {ex.Message}",
+                new DiagnosticContext { Action = "orphan-sweep" });
+        }
+
         // ---- 12. Execute -----------------------------------------------
         ExecutionReport report = ExecuteGraph(graph, history, cancellationToken);
 

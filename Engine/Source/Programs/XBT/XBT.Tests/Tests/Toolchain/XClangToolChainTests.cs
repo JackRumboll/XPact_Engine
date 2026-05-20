@@ -128,9 +128,12 @@ public sealed class XClangToolChainTests : IDisposable
     }
 
     /// <summary>
-    /// Reproducibility envelope (XBT.html Section 19.1): every Clang
-    /// compile emits -fdebug-prefix-map + -fno-ident; every Clang link
-    /// emits -Wl,--build-id=none.
+    /// Reproducibility envelope (XBT.html Section 19.1 + Contract
+    /// Section 2.1, Rev 13.1): every Clang compile emits
+    /// -fdebug-prefix-map + -fno-ident +
+    /// -frandomize-layout-seed-file=&lt;path&gt;; every Clang link emits
+    /// --remap-file=&lt;repoRoot&gt;=X:/R + -Wl,--build-id=none +
+    /// -fno-ident.
     /// </summary>
     [Fact]
     public void ReproducibilityFlags_PresentOnEveryCompileAndLink()
@@ -148,6 +151,59 @@ public sealed class XClangToolChainTests : IDisposable
         IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
         Assert.Contains("-Wl,--build-id=none", link.CommandArguments);
         Assert.Contains("-fno-ident", link.CommandArguments);
+    }
+
+    /// <summary>
+    /// Contract Rev 13.1 Section 2.1: every Clang compile emits
+    /// <c>-frandomize-layout-seed-file=&lt;abs-path&gt;</c> with the
+    /// path resolving under the repo root. The seed file MUST be at the
+    /// pinned location <c>Engine/Source/Programs/XBT/randomize-layout.seed</c>
+    /// so it is identical across machines and reproducible across runs.
+    /// </summary>
+    [Fact]
+    public void Compile_EmitsRandomizeLayoutSeedFileFlag()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var compileActions = _linuxToolchain.CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir);
+        IExternalAction compile = compileActions.Single();
+
+        // Find the seed-file flag; assert its value contains the pinned
+        // relative path (forward-slash form on Linux).
+        string? seedFlag = compile.CommandArguments
+            .FirstOrDefault(a => a.StartsWith("-frandomize-layout-seed-file=", StringComparison.Ordinal));
+        Assert.NotNull(seedFlag);
+        Assert.Contains(
+            "randomize-layout.seed",
+            seedFlag,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "/home/user/repo",
+            seedFlag,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Contract Rev 13.1 Section 2.1: the Clang link command uses
+    /// <c>--remap-file=&lt;RepoRoot&gt;=X:/R</c> (Clang's pathmap
+    /// equivalent) instead of <c>-fdebug-prefix-map=</c>. The link side
+    /// MUST NOT carry the compile-side debug-info flag because the
+    /// linker's source-path remap surface is a different machinery.
+    /// </summary>
+    [Fact]
+    public void Link_UsesRemapFileInsteadOfFdebugPrefixMap()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
+        IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        Assert.Contains("--remap-file=/home/user/repo=X:/R", link.CommandArguments);
+        Assert.DoesNotContain(
+            "-fdebug-prefix-map=/home/user/repo=X:/R",
+            link.CommandArguments);
     }
 
     /// <summary>

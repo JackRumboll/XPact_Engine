@@ -137,8 +137,12 @@ public sealed class EnumOrdinalAlignmentTests
         where TPoco : struct, Enum
         where TFbs  : struct, Enum
     {
-        string[] pocoNames = Enum.GetNames<TPoco>().OrderBy(n => n).ToArray();
-        string[] fbsNames  = Enum.GetNames<TFbs>().OrderBy(n => n).ToArray();
+        // Ordinal sort: the default culture-sensitive Compare can rank
+        // characters differently on Turkish-locale runners (the famous
+        // i/I dotting case) and on .NET version transitions.
+        // StringComparer.Ordinal is locked across runtimes.
+        string[] pocoNames = Enum.GetNames<TPoco>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        string[] fbsNames  = Enum.GetNames<TFbs>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
         Assert.Equal(pocoNames, fbsNames);
 

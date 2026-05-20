@@ -3,12 +3,20 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 13</title>
+<title>XPact Toolchain Contract &mdash; Rev 13.1</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 13</h1>
+<h1>XPact Toolchain Contract &mdash; Rev 13.1</h1>
 <p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
+
+<p><strong>Rev 13.1 (audit fixes round 1 &mdash; spec-conformance corrections):</strong></p>
+<ul>
+  <li><strong>Section 9.6 deviation (c) clarified.</strong> Reconciles Contract Section 9.6 with XBT.html Rev 4 Section 3.3 deviation (g): the Starlark subset has no <code>def</code> grammar production, so user-level recursion is structurally impossible. The 32-frame evaluation-depth cap applies to expression-internal recursion (nested ternaries, list/dict literal nesting) rather than to function calls. The Rev 13.0 wording "recursive function definitions parse but exceeding the call depth fails" was inconsistent with the grammar production list immediately below the deviations table, which explicitly excludes <code>def</code>.</li>
+  <li><strong>C# ContractSurface mnemonics aligned with Section 13.1 table.</strong> Exit-code mnemonics for codes 20, 24, and 60-63 had drifted between <code>XBT.Manifest.ContractSurface.ExitCodes</code> and the contract's Section 13 table. The C# implementation is now authoritatively aligned with this document (code 20 = DiscoveryFailure, code 24 = PluginNotFound, codes 60-63 = XHT/XIL2CPP subprocess + internal failures). No table changes here; only the C# implementation was wrong.</li>
+  <li><strong>File-ID grammar surface refreshed.</strong> <code>FileIdScheme</code> constant in <code>ContractSurface.cs</code> now mirrors the length-prefixed grammar declared in Section 1.4 (<code>_XID_N&lt;Len&gt;&lt;PluginName&gt;...</code>) rather than the underscore-collapsing format the Rev 13.0 implementation carried. No grammar change here; only the C# surface constant was misaligned.</li>
+  <li><strong>SemanticVersionTag bumped to <code>13.1</code>.</strong> The three changes above (Section 9.6 wording + exit-code mnemonics + FileIdScheme grammar + the parallel <code>OptimizeCodeMode</code> ordinal fix in XBT.html Section 4.1) collectively change the canonical contract-surface byte stream, so <code>ContractVersion.Current</code> moves from <code>13.0+&lt;hash&gt;</code> to <code>13.1+&lt;hash&gt;</code>. ActionHistory + downstream caches treat this as an incompatible bump and recompute on first run.</li>
+</ul>
 
 <p><strong>Rev 13 (small audit-flagged fixes):</strong></p>
 <ul>
@@ -1303,7 +1311,7 @@ b_warnings_as_errors = true</code></pre>
 <ul>
   <li><strong>(a)</strong> No file I/O. The <code>load</code>, <code>print</code>, and any file-reading functions are banned. The interpreter has no concept of "file" in its API surface.</li>
   <li><strong>(b)</strong> No mutation of arguments. Functions are pure: a function may not mutate its parameters, may not mutate any global state, and may not perform side effects observable outside its own return value.</li>
-  <li><strong>(c)</strong> No recursion. The interpreter caps evaluation depth at 32 frames; recursive function definitions parse but exceeding the call depth fails with a diagnostic (exit code 30).</li>
+  <li><strong>(c)</strong> No recursion. The Starlark subset has no <code>def</code> function definitions (see grammar production list below; <code>def</code> is not in the accepted productions), so user-level recursion is structurally impossible. The interpreter additionally caps evaluation depth at 32 frames for expression-internal recursion (e.g.&nbsp;deeply nested ternary expressions, list/dict literal nesting) and fails with a diagnostic (exit code 30) if exceeded. <em>(Rev 13.1 clarification &mdash; reconciled with XBT.html Rev 4 Section 3.3 deviation (g) which already stated <code>def</code> is absent.)</em></li>
   <li><strong>(d)</strong> No string interpolation via <code>%</code>. Only the explicit <code>.format()</code> method on string is supported.</li>
   <li><strong>(e)</strong> Integer overflow is detected, not silently wrapped. Bazel Starlark allows overflow to wrap modulo 2^32 on int operations; the XPact subset detects overflow and fails the build with a diagnostic.</li>
   <li><strong>(f)</strong> Total evaluation budget: 100,000 instructions per top-level expression. Exceeding the budget fails the build with exit code 30 and a diagnostic naming the expression and the budget.</li>
@@ -2060,7 +2068,7 @@ file_extension "fbs.bin";</code></pre>
 
 <hr>
 
-<p><em>End of Toolchain Contract &mdash; Stage A, Rev 12. The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers; the Stage B addendum will automatically bump the ContractStructureHash per Section 10.2. The Step 0.5 addendum will pin the per-file dependency model after XBT (System 1) implementation lands; it too will bump the hash. Rev 12 (reconciliation pass) is alignment-only with XBT.html Rev 2 plus N1&ndash;N7, M1&ndash;M3 audit findings; it does not change which surfaces Stage A locks, only refines their content.</em></p>
+<p><em>End of Toolchain Contract &mdash; Stage A, Rev 13.1. The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers; the Stage B addendum will automatically bump the ContractStructureHash per Section 10.2. The Step 0.5 addendum will pin the per-file dependency model after XBT (System 1) implementation lands; it too will bump the hash. Rev 13.1 (audit fixes round 1) is alignment-only with XBT.html Rev 4 plus implementation drift corrections; it does not change which surfaces Stage A locks, only restores the canonical mnemonic / grammar surface that Rev 13.0's C# implementation had drifted from.</em></p>
 
 </body>
 </html>

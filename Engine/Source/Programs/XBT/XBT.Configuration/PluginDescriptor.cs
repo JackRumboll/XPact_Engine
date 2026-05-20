@@ -75,8 +75,8 @@ public sealed record PluginDescriptor
     /// <summary>
     /// Names of plugins this plugin depends on. Each dependency is
     /// resolved against the deduplicated <c>PluginCatalog</c>;
-    /// unresolved entries fail with exit 60
-    /// (<c>PluginNotFound</c>).
+    /// unresolved entries fail with exit 24
+    /// (<c>PluginNotFound</c> per Contract Rev 13.1 Section 13.1).
     /// </summary>
     public IReadOnlyList<string> Dependencies { get; init; } = new List<string>();
 

@@ -393,18 +393,24 @@ public sealed class BuildCsCompilerTests : IDisposable
 
         string[] dllsAfterFirst = Directory.GetFiles(_cacheDir, "*.dll");
         Assert.Single(dllsAfterFirst);
-        DateTime mtimeAfterFirst = File.GetLastWriteTimeUtc(dllsAfterFirst[0]);
+        // Compare content-addressable identity: a cache hit means the
+        // on-disk DLL bytes are unchanged. mtime is banned for
+        // invalidation engine-wide per Toolchain Contract Rev 13
+        // Section 2.1 (footgun #1); the test must not lean on it
+        // either or it implicitly endorses the very signal the
+        // contract forbids. Content equality is the only true
+        // invariant the cache promises.
+        byte[] bytesAfterFirst = File.ReadAllBytes(dllsAfterFirst[0]);
 
-        // Second call with identical source: cache hit. The DLL's
-        // last-write timestamp must not advance (we never rewrite on
-        // a cache hit). We compare against a precise UTC value.
+        // Second call with identical source: cache hit.
         ModuleRules second = BuildCsCompiler.Compile(path, target, _cacheDir);
         Assert.Equal("Cached", second.Name);
 
         string[] dllsAfterSecond = Directory.GetFiles(_cacheDir, "*.dll");
         Assert.Single(dllsAfterSecond);
         Assert.Equal(dllsAfterFirst[0], dllsAfterSecond[0]);
-        Assert.Equal(mtimeAfterFirst, File.GetLastWriteTimeUtc(dllsAfterSecond[0]));
+        byte[] bytesAfterSecond = File.ReadAllBytes(dllsAfterSecond[0]);
+        Assert.Equal(bytesAfterFirst, bytesAfterSecond);
     }
 
     // ---------------------------------------------------------------------
@@ -450,6 +456,7 @@ public sealed class BuildCsCompilerTests : IDisposable
         string[] dllsV1 = Directory.GetFiles(_cacheDir, "*.dll");
         Assert.Single(dllsV1);
         string hashV1 = Path.GetFileNameWithoutExtension(dllsV1[0]);
+        byte[] bytesV1 = File.ReadAllBytes(dllsV1[0]);
 
         File.WriteAllText(path, sourceV2, new UTF8Encoding(false));
 
@@ -461,6 +468,13 @@ public sealed class BuildCsCompilerTests : IDisposable
         string[] hashesV2 = dllsV2.Select(Path.GetFileNameWithoutExtension).ToArray()!;
         Assert.Contains(hashV1, hashesV2);
         Assert.Contains(hashesV2, h => h != hashV1);
+
+        // The newly-cached DLL must have different bytes from the
+        // original. Pure content comparison -- never mtime -- per
+        // Toolchain Contract Rev 13 Section 2.1.
+        string newDllPath = dllsV2.Single(d => Path.GetFileNameWithoutExtension(d) != hashV1);
+        byte[] bytesV2 = File.ReadAllBytes(newDllPath);
+        Assert.NotEqual(bytesV1, bytesV2);
     }
 
     // ---------------------------------------------------------------------

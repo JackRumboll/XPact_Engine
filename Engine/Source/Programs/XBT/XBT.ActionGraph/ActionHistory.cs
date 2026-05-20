@@ -304,10 +304,13 @@ public sealed class ActionHistory
 
     /// <summary>
     /// Persist the archive to disk. Writes to a sibling
-    /// <c>.tmp.&lt;pid&gt;.&lt;tick&gt;</c> file first and renames into
+    /// <c>.tmp.&lt;pid&gt;.&lt;guid&gt;</c> file first and renames into
     /// place per <c>/Documents/XBT.html</c> Section 6.4 atomic-rename
     /// contract. A torn write leaves the previous archive intact on
-    /// disk.
+    /// disk. The temp-file suffix is a GUID rather than a timestamp
+    /// so the reproducibility envelope (Toolchain Contract Rev 13
+    /// Section 2.1) is honoured -- no clock values leak into any
+    /// artefact name.
     /// </summary>
     public void Save()
     {
@@ -323,10 +326,17 @@ public sealed class ActionHistory
         //             [path UTF-8 length : 4]
         //             [path UTF-8 bytes : N]
         //             [hash : 32]
+        // Temp-file naming: <pid>.<guid> -- no timestamp anywhere.
+        // Per Toolchain Contract Rev 13 Section 2.1 the
+        // reproducibility envelope bans timestamps from any artefact
+        // name engine-wide (footgun #1 preempt); a GUID gives the
+        // collision-avoidance the temp-file naming convention
+        // requires without leaking a clock value. Mirrors the
+        // BuildCsCompiler.WriteAtomically pattern.
         string directory = Path.GetDirectoryName(_archivePath)!;
         int pid = Environment.ProcessId;
-        long tick = DateTime.UtcNow.Ticks;
-        string tempPath = Path.Combine(directory, $"ActionHistory.bin.tmp.{pid}.{tick}");
+        string nonce = Guid.NewGuid().ToString("N");
+        string tempPath = Path.Combine(directory, $"ActionHistory.bin.tmp.{pid}.{nonce}");
 
         using (FileStream stream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
         using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: false))
@@ -343,7 +353,14 @@ public sealed class ActionHistory
             {
                 _partitions[i].Snapshot(out IReadOnlyDictionary<string, IoHash> entries);
                 writer.Write(entries.Count);
-                foreach ((string path, IoHash hash) in entries)
+                // Sort entries by path with StringComparer.Ordinal so
+                // the on-disk byte sequence is invariant across runs.
+                // Dictionary<>.GetEnumerator order is not specified;
+                // relying on it for the serialised output would make
+                // ActionHistory.bin a non-reproducible artefact (cache
+                // hits would depend on iteration order on the writer's
+                // machine).
+                foreach ((string path, IoHash hash) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 {
                     byte[] pathBytes = Encoding.UTF8.GetBytes(path);
                     writer.Write(pathBytes.Length);
@@ -477,15 +494,18 @@ public sealed class ActionHistory
     private static IoHash ComputeCurrentVersion()
     {
         // The schema we hash is the canonical declaration of every
-        // public, instance property on IExternalAction, in source-
-        // declaration order. Reflection cannot retrieve source-declaration
-        // order portably, but MetadataToken increases monotonically for
-        // members declared in source order within a type -- this is a
-        // documented invariant of the C# compiler. We sort by token to
-        // recover the declaration order.
+        // public, instance property on IExternalAction, sorted by
+        // property name with StringComparer.Ordinal. Alphabetical
+        // ordering is stable across Roslyn versions, .NET versions,
+        // and architectures; MetadataToken ordering relies on Roslyn
+        // implementation details that are not spec-guaranteed and can
+        // shift between compiler revisions. Reorder-resilient by
+        // construction: shuffling the property declarations in the
+        // interface source does not change the hash, but adding,
+        // removing, or renaming a property does.
         Type t = typeof(IExternalAction);
         PropertyInfo[] props = t.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-        Array.Sort(props, (a, b) => a.MetadataToken.CompareTo(b.MetadataToken));
+        Array.Sort(props, (a, b) => StringComparer.Ordinal.Compare(a.Name, b.Name));
 
         using Hasher hasher = Hasher.New();
         Span<byte> intBuffer = stackalloc byte[4];

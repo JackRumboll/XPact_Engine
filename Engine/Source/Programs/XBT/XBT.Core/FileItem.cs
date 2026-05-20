@@ -30,12 +30,20 @@ namespace Simgenics.XPact.XBT.Core;
 /// </remarks>
 public sealed class FileItem
 {
+    // Use Ordinal comparison engine-wide. Path canonicalisation
+    // happens in GetItemByPath via Path.GetFullPath, which collapses
+    // Windows case-insensitivity to a single canonical casing per
+    // file. Linux paths are genuinely case-sensitive and MUST NOT
+    // collide on case-only differences -- otherwise /foo/Bar.h and
+    // /foo/bar.h share a FileItem on Linux despite being distinct
+    // files on disk (cross-machine determinism trap on a CI matrix
+    // that mixes Windows and Linux runners).
     private static readonly ConcurrentDictionary<string, FileItem> s_cache =
-        new(StringComparer.OrdinalIgnoreCase);
+        new(StringComparer.Ordinal);
 
     private readonly object _hashGate = new();
     private IoHash _contentHash;
-    private bool _hashComputed;
+    private volatile bool _hashComputed;
     private long _length;
     private DateTime _lastWriteTimeUtc;
     private bool _statLoaded;

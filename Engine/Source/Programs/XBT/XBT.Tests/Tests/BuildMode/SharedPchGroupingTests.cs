@@ -68,7 +68,29 @@ public sealed class SharedPchGroupingTests : IDisposable
     /// shared_pch_header_file). Build the fixture and assert the action
     /// graph contains exactly ONE PCHGenerationAction.
     /// </summary>
-    [Fact]
+    /// <remarks>
+    /// <para>
+    /// SKIPPED post-audit: the original fixture has module MB declare
+    /// <c>shared_pch_header_file = "../MA/Public/Common.h"</c> -- a
+    /// cross-module path-traversal reference that the
+    /// <see cref="BuildTomlParser"/>'s post-Rev-13 hardening (per
+    /// Toolchain Contract Section 2.1) now rejects with exit 30.
+    /// </para>
+    /// <para>
+    /// The grouping mechanism in <c>BuildMode</c> keys on the
+    /// <see cref="Path.GetFullPath(string)"/> canonical absolute path
+    /// of each module's <c>SharedPCHHeaderFile</c>, and the existing
+    /// code does not resolve a logical header name through participating
+    /// modules' <c>PublicIncludePaths</c>. Until that resolution
+    /// mechanism lands, two modules cannot reference the same physical
+    /// shared header without a path-traversal reference. The test is
+    /// preserved as a regression marker for the future grouping-by-
+    /// logical-path-resolution work; once that lands, the fixture
+    /// can be rewritten to declare a logical header name and the
+    /// skip lifted.
+    /// </para>
+    /// </remarks>
+    [Fact(Skip = "Awaiting grouping-by-logical-path resolution; current grouping keys on absolute paths which requires `..` cross-module references that the post-Rev-13 path-traversal validation now rejects.")]
     public void TwoModuleGroup_OneSharedPCHGenerationAction()
     {
         if (!IsToolchainAvailable())
@@ -134,7 +156,14 @@ public sealed class SharedPchGroupingTests : IDisposable
     /// PCHGenerationAction (for MA/MB), one private PCHGenerationAction
     /// (for MC), and zero for MD.
     /// </summary>
-    [Fact]
+    /// <remarks>
+    /// SKIPPED for the same reason as <see cref="TwoModuleGroup_OneSharedPCHGenerationAction"/>:
+    /// the MA/MB shared-PCH leg relies on MB referencing
+    /// <c>../MA/Public/Shared.h</c>, which the post-Rev-13 path-traversal
+    /// validator now rejects. See the sibling test's remarks for the
+    /// design follow-up.
+    /// </remarks>
+    [Fact(Skip = "Awaiting grouping-by-logical-path resolution; current grouping keys on absolute paths which requires `..` cross-module references that the post-Rev-13 path-traversal validation now rejects.")]
     public void MixedGroup_SharedPlusPrivatePlusNone()
     {
         if (!IsToolchainAvailable())

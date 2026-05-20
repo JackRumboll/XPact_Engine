@@ -14,7 +14,8 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// MSVC toolchain integration for Win64 builds. Translates per-module
 /// rules into the <c>cl.exe</c>/<c>link.exe</c> flag set; emits the
 /// unconditional reproducibility envelope per
-/// <c>/Documents/XBT.html</c> Rev 4 Section 19.1.
+/// <c>/Documents/XBT.html</c> Rev 4 Section 19.1 and Toolchain Contract
+/// Rev 13.1 Section 2.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -32,6 +33,7 @@ namespace Simgenics.XPact.XBT.Toolchain;
 ///   <item><c>/INCREMENTAL:NO</c> (link) -- incremental linking is incompatible with /Brepro.</item>
 ///   <item><c>/pathmap:&lt;RepoRoot&gt;=X:/R</c> -- normalize absolute paths in DWARF/PDB.</item>
 ///   <item><c>/d2:-cgmanifestencoded-</c> -- suppress an undocumented host-name embed.</item>
+///   <item><c>/cgthreads:8</c> (link) -- pin LTO codegen thread count for reproducibility under /GL + /LTCG (Contract Section 2.1). Emitted unconditionally; harmless when LTO is off.</item>
 /// </list>
 /// <para>
 /// SimPath modules additionally receive <c>/fp:precise</c> +
@@ -645,6 +647,14 @@ public sealed class XMSVCToolChain : XToolChain
         args.Add("/TIMESTAMP:0");
         args.Add("/INCREMENTAL:NO");
         args.Add($"/pathmap:{_repoRoot}=X:/R");
+        // /cgthreads:8 pins the link-time codegen thread count (Contract
+        // Section 2.1, Rev 13.1 audit fix). When LTO/WPO is active
+        // (/GL + /LTCG), the default thread count is hardware-dependent
+        // and breaks reproducibility across machines. Emitting the flag
+        // unconditionally is harmless when LTO is off and avoids a
+        // conditional-emission branch that would have to track LTO
+        // state from elsewhere.
+        args.Add("/cgthreads:8");
 
         string dllName = module.Name + ".dll";
         string dllPath = Path.Combine(outputDir, dllName);
@@ -747,6 +757,13 @@ public sealed class XMSVCToolChain : XToolChain
             OptimizeCodeMode.Never => new[] { "/Od" },
             OptimizeCodeMode.Always => new[] { "/O2" },
             OptimizeCodeMode.InNonDebugBuilds => new[] { "/O2" },
+            // InShippingBuildsOnly: aggressive optimization only when
+            // Configuration == Shipping; everything else (including
+            // Development / Test) gets /Od.
+            OptimizeCodeMode.InShippingBuildsOnly =>
+                config == BuildConfiguration.Shipping
+                    ? new[] { "/O2", "/Oi", "/Ot" }
+                    : new[] { "/Od" },
             OptimizeCodeMode.Default =>
                 config == BuildConfiguration.Shipping
                     ? new[] { "/O2" }

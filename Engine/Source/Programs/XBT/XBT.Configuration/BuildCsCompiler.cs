@@ -363,17 +363,17 @@ public static class BuildCsCompiler
         {
             File.Move(temp, targetPath, overwrite: true);
         }
-        catch
+        catch (IOException) when (File.Exists(targetPath))
         {
-            // If the rename fails because another process already
-            // staged the same hash, drop our temp file and let the
-            // pre-existing target stand. Hashes are content-addressable
-            // so the existing file is bit-identical to ours.
-            try { File.Delete(temp); } catch { /* best effort */ }
-            if (!File.Exists(targetPath))
-            {
-                throw;
-            }
+            // Narrow catch: only "another writer won the rename race"
+            // is suppressed. The cache is content-addressable -- their
+            // bytes equal ours -- so dropping our temp and adopting
+            // their file is correct. Disk-full, permission-denied,
+            // and other IOExceptions where the target does NOT exist
+            // propagate (no fallback is correct in those cases).
+            // UnauthorizedAccessException, OutOfMemoryException, etc.
+            // also propagate.
+            try { File.Delete(temp); } catch (IOException) { /* best effort */ }
         }
     }
 

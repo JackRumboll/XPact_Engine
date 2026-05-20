@@ -123,9 +123,10 @@ public sealed class XMSVCToolChainTests : IDisposable
     }
 
     /// <summary>
-    /// Reproducibility envelope (XBT.html Section 19.1):
-    /// every MSVC compile emits /Brepro + /pathmap:&lt;root&gt;=X:/R;
-    /// every MSVC link emits /TIMESTAMP:0 + /BREPRO + /INCREMENTAL:NO.
+    /// Reproducibility envelope (XBT.html Section 19.1 + Contract
+    /// Section 2.1, Rev 13.1): every MSVC compile emits
+    /// /Brepro + /pathmap:&lt;root&gt;=X:/R; every MSVC link emits
+    /// /TIMESTAMP:0 + /BREPRO + /INCREMENTAL:NO + /cgthreads:8.
     /// </summary>
     [Fact]
     public void ReproducibilityFlags_PresentOnEveryCompileAndLink()
@@ -145,6 +146,7 @@ public sealed class XMSVCToolChainTests : IDisposable
         Assert.Contains("/BREPRO", link.CommandArguments);
         Assert.Contains("/TIMESTAMP:0", link.CommandArguments);
         Assert.Contains("/INCREMENTAL:NO", link.CommandArguments);
+        Assert.Contains("/cgthreads:8", link.CommandArguments);
     }
 
     /// <summary>

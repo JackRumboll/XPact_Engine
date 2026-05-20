@@ -188,4 +188,41 @@ public sealed class FileItemTests : IDisposable
         FileItem item = FileItem.GetItemByPath(path);
         Assert.Equal(contents.Length, item.Length);
     }
+
+    /// <summary>
+    /// On a case-sensitive filesystem (Linux/macOS-on-APFS-case-sensitive),
+    /// two paths that differ only in case refer to <strong>distinct</strong>
+    /// files on disk. The <see cref="FileItem"/> cache must NOT collide
+    /// them; otherwise a Linux CI run would silently produce a single
+    /// FileItem (with one hash) for two physically different headers.
+    /// Skipped on Windows where the filesystem is case-insensitive and
+    /// <see cref="Path.GetFullPath"/> canonicalises the casing for us.
+    /// </summary>
+    [Fact]
+    public void GetItemByPath_CaseSensitiveFilesystem_DistinguishesCaseDifferences()
+    {
+        // Windows file systems are case-insensitive; the OS itself maps
+        // /foo/Bar.h and /foo/bar.h to the same canonical entry, so the
+        // test is meaningless there. Skip explicitly.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string upper = WriteScratch("CaseFile.txt", "upper");
+        string lower = Path.Combine(_scratchDir, "casefile.txt");
+        File.WriteAllText(lower, "lower", s_utf8NoBom);
+        Assert.True(File.Exists(upper));
+        Assert.True(File.Exists(lower));
+
+        FileItem upperItem = FileItem.GetItemByPath(upper);
+        FileItem lowerItem = FileItem.GetItemByPath(lower);
+
+        // The two FileItems must NOT be the same cached instance.
+        Assert.NotSame(upperItem, lowerItem);
+        // And the contents differ -- the cache decision actually
+        // matters; collapsing them would surface the wrong hash for
+        // one of the two files.
+        Assert.NotEqual(upperItem.ContentHash, lowerItem.ContentHash);
+    }
 }

@@ -431,4 +431,143 @@ public sealed class BuildTomlParserTests
         Assert.Contains("SimPath", ex.Message);
         Assert.Contains("shared", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    // -----------------------------------------------------------------
+    // Path-traversal validation. Per Toolchain Contract Rev 13 Section
+    // 2.1 every path-typed field must resolve relative to the module's
+    // BaseDirectory. Absolute paths and `..` segments are forbidden;
+    // both rejection forms exit with code 30 (RulesCompileFailed).
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void PchHeaderFile_With_ParentTraversal_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            pch_header_file = "../../../etc/passwd"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("pch_header_file", ex.Message);
+        Assert.Contains("..", ex.Message);
+    }
+
+    [Fact]
+    public void PchHeaderFile_With_AbsolutePath_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            pch_header_file = "/Engine/Source/Other/Other.h"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("pch_header_file", ex.Message);
+        Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PchHeaderFile_WithRelativePath_Accepts()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            pch_header_file = "Public/X.h"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal("Public/X.h", rules.PrivatePCHHeaderFile);
+    }
+
+    [Fact]
+    public void SharedPchHeaderFile_With_AbsolutePath_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "/Engine/Source/Other/Other.h"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("shared_pch_header_file", ex.Message);
+        Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PublicIncludePaths_With_ParentTraversal_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            public_include_paths = ["Public", "../OtherModule/Public"]
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("public_include_paths", ex.Message);
+        Assert.Contains("..", ex.Message);
+    }
+
+    [Fact]
+    public void PublicIncludePaths_With_AbsolutePath_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            public_include_paths = ["/usr/include/foo"]
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("public_include_paths", ex.Message);
+        Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PublicIncludePaths_AllRelative_Accepts()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            public_include_paths = ["Public", "Public/Sub"]
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal(new[] { "Public", "Public/Sub" }, rules.PublicIncludePaths);
+    }
+
+    [Fact]
+    public void PrivateIncludePaths_With_BackslashParentTraversal_Rejects()
+    {
+        // Windows-style separator: the validator must catch `..`
+        // regardless of slash direction.
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            private_include_paths = ["Private\\..\\..\\OtherModule"]
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("private_include_paths", ex.Message);
+        Assert.Contains("..", ex.Message);
+    }
 }
