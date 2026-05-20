@@ -434,7 +434,52 @@ public static class BuildTomlParser
         // Contract Rev 13 Section 2.1 the reproducibility envelope
         // requires all source paths to be machine-portable.
         ValidatePathField("pch_header_file", rules.PrivatePCHHeaderFile, sourcePath);
-        ValidatePathField("shared_pch_header_file", rules.SharedPCHHeaderFile, sourcePath);
+
+        // shared_pch_header_file supports two forms per the UE-style
+        // include-path resolution semantics:
+        //   (a) BARE NAME (no path separator) -- the BuildMode grouping
+        //       pass looks the file up in every module's
+        //       PublicIncludePaths and resolves to a canonical absolute
+        //       path. This is how two modules sharing a single physical
+        //       header (declared by a third "host" module) reference
+        //       the same shared PCH without cross-module `..`
+        //       references. Bare names skip the path-traversal
+        //       validation because there is no path to traverse; the
+        //       resolver in BuildMode rejects unresolved names with
+        //       exit 30.
+        //   (b) RELATIVE PATH (contains '/' or '\\') -- resolved
+        //       relative to the module's BaseDirectory; path-traversal
+        //       and absolute-path checks apply.
+        // The bare-name acceptance is per Toolchain Contract Rev 13.1
+        // Section 1.5 (PCH rules) + /Documents/XBT.html Rev 4
+        // Section 7 (toolchain abstraction).
+        string? sharedPch = rules.SharedPCHHeaderFile;
+        if (!string.IsNullOrEmpty(sharedPch))
+        {
+            if (sharedPch.Contains('/') || sharedPch.Contains('\\'))
+            {
+                // Form (b): relative-path with separator -- subject to
+                // path-traversal + absolute-path validation.
+                ValidatePathField("shared_pch_header_file", sharedPch, sourcePath);
+            }
+            else if (string.IsNullOrWhiteSpace(sharedPch))
+            {
+                // Whitespace-only bare name: reject at parse time. An
+                // empty string was already filtered by IsNullOrEmpty
+                // above; this catches "   " typos before they slip
+                // into the BuildMode resolver.
+                throw new DescriptorParseException(
+                    "Field 'shared_pch_header_file' is whitespace-only; provide a " +
+                    "header name (e.g. \"EngineCommon.h\") or a relative path " +
+                    "(e.g. \"Public/EngineCommon.h\"), or omit the key.",
+                    exitCode: 30,
+                    filePath: sourcePath);
+            }
+            // else: form (a) bare name (no separators, non-whitespace).
+            // The BuildMode grouping pass resolves it via UE-style
+            // PublicIncludePaths lookup; nothing to validate at parse
+            // time.
+        }
         foreach (string p in rules.PublicIncludePaths)
         {
             ValidatePathField("public_include_paths", p, sourcePath);

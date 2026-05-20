@@ -724,9 +724,23 @@ public static class StarlarkEvaluator
 
     private sealed class Interpreter
     {
+        /// <summary>
+        /// Maximum number of nested <see cref="Eval(Node)"/> frames any
+        /// single top-level expression may stack. Per Toolchain Contract
+        /// Rev 13.1 Section 9.6 deviation (c) (amended Round 1): the
+        /// cap applies to expression-internal recursion (nested
+        /// ternaries, nested list / dict literals, deeply chained
+        /// method calls) rather than to function calls. Hitting the
+        /// cap throws <see cref="DescriptorParseException"/> with
+        /// exit 30 instead of letting the CLR raise an uncatchable
+        /// <c>StackOverflowException</c> that crashes the process.
+        /// </summary>
+        private const int MaxEvalDepth = 32;
+
         private readonly Bindings _b;
         private readonly string? _sourcePath;
         private int _instructions;
+        private int _evalDepth;
 
         public Interpreter(Bindings b, string? sourcePath)
         {
@@ -734,6 +748,14 @@ public static class StarlarkEvaluator
             _sourcePath = sourcePath;
         }
 
+        /// <summary>
+        /// Evaluate one AST node. This is the single recursive entry
+        /// point in the interpreter -- every helper (EvalUnary,
+        /// EvalBinary, EvalIn, EvalCall, ListLit walk, ConditionalNode
+        /// branch) recurses back through this method. Depth tracking
+        /// lives here so the entire expression-internal recursion
+        /// surface is covered by one counter.
+        /// </summary>
         public object Eval(Node n)
         {
             _instructions++;
@@ -744,35 +766,58 @@ public static class StarlarkEvaluator
                     filePath: _sourcePath, line: n.Line, column: n.Column);
             }
 
-            switch (n)
+            // Depth gate per Contract Rev 13.1 Section 9.6 deviation (c):
+            // expression-internal recursion (nested ternaries, list /
+            // dict nesting) is capped at 32 frames. Without this guard
+            // a malicious or accidentally-deep expression triggers an
+            // uncatchable CLR StackOverflowException and crashes the
+            // process; with it we surface a DescriptorParseException
+            // and exit 30 cleanly.
+            if (++_evalDepth > MaxEvalDepth)
             {
-                case StringLit s: return s.Value;
-                case IntLit i: return i.Value;
-                case BoolLit b: return b.Value;
-                case NoneLit: return Nothing.Instance;
-                case QualifiedRef q: return ResolveRef(q);
-                case ListLit l:
-                    {
-                        List<object> items = new(l.Items.Count);
-                        foreach (Node item in l.Items)
+                _evalDepth--;
+                throw new DescriptorParseException(
+                    $"Starlark evaluation depth exceeded {MaxEvalDepth} frames " +
+                    "(per Contract Rev 13.1 Section 9.6 deviation (c)). " +
+                    "Reduce nesting in conditional / list / dict expressions.",
+                    filePath: _sourcePath, line: n.Line, column: n.Column);
+            }
+            try
+            {
+                switch (n)
+                {
+                    case StringLit s: return s.Value;
+                    case IntLit i: return i.Value;
+                    case BoolLit b: return b.Value;
+                    case NoneLit: return Nothing.Instance;
+                    case QualifiedRef q: return ResolveRef(q);
+                    case ListLit l:
                         {
-                            items.Add(Eval(item));
+                            List<object> items = new(l.Items.Count);
+                            foreach (Node item in l.Items)
+                            {
+                                items.Add(Eval(item));
+                            }
+                            return items;
                         }
-                        return items;
-                    }
-                case UnaryNode u: return EvalUnary(u);
-                case BinaryNode b: return EvalBinary(b);
-                case InNode inN: return EvalIn(inN);
-                case ConditionalNode c:
-                    {
-                        bool cond = ToBool(Eval(c.Cond), c.Cond);
-                        return cond ? Eval(c.Then) : Eval(c.Else);
-                    }
-                case CallNode call: return EvalCall(call);
-                default:
-                    throw new DescriptorParseException(
-                        $"Unsupported AST node type {n.GetType().Name}.",
-                        filePath: _sourcePath, line: n.Line, column: n.Column);
+                    case UnaryNode u: return EvalUnary(u);
+                    case BinaryNode b: return EvalBinary(b);
+                    case InNode inN: return EvalIn(inN);
+                    case ConditionalNode c:
+                        {
+                            bool cond = ToBool(Eval(c.Cond), c.Cond);
+                            return cond ? Eval(c.Then) : Eval(c.Else);
+                        }
+                    case CallNode call: return EvalCall(call);
+                    default:
+                        throw new DescriptorParseException(
+                            $"Unsupported AST node type {n.GetType().Name}.",
+                            filePath: _sourcePath, line: n.Line, column: n.Column);
+                }
+            }
+            finally
+            {
+                _evalDepth--;
             }
         }
 

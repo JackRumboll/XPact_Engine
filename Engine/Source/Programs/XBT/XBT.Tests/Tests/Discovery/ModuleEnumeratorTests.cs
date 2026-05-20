@@ -181,6 +181,36 @@ public sealed class ModuleEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public void Enumerate_CaseSensitiveFilesystem_DistinguishesCaseDifferences()
+    {
+        // On case-sensitive filesystems (Linux, macOS with case-sensitive
+        // APFS) two directories /Engine/Source/Runtime/Foo and
+        // /Engine/Source/Runtime/foo are distinct, and each may carry
+        // its own .Build.toml. The enumerator's per-directory grouping
+        // must NOT collapse them via an ordinal-ignore-case comparer
+        // (which would arbitrarily drop one descriptor).
+        //
+        // Skipped on Windows: the OS itself case-folds, so even creating
+        // both names winds up writing to the same canonical directory.
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        WriteModule("Engine/Source/Runtime/Foo", "Foo", ModuleTier.Engine);
+        WriteModule("Engine/Source/Runtime/foo", "FooLower", ModuleTier.Engine);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Equal(2, catalog.Count);
+        Assert.True(catalog.TryGet("Foo", out _));
+        Assert.True(catalog.TryGet("FooLower", out _));
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
     public void BuildCs_And_BuildToml_Both_Present_BuildCs_Wins()
     {
         // Per Contract Section 9.6, when a module ships both descriptors

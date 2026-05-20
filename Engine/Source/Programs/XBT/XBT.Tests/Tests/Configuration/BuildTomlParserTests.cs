@@ -504,6 +504,87 @@ public sealed class BuildTomlParserTests
         Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    // -----------------------------------------------------------------
+    // shared_pch_header_file -- UE-style include-path resolution
+    // (Phase 1.4c). The field accepts two forms:
+    //   (a) BARE NAME (no path separator) -- skips path-traversal
+    //       validation; the BuildMode grouping pass resolves it via
+    //       every module's PublicIncludePaths.
+    //   (b) RELATIVE PATH (contains `/` or `\`) -- subject to the
+    //       existing path-traversal + absolute-path checks.
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public void SharedPchHeaderFile_BareName_Accepts()
+    {
+        // Bare-name form: no path separator. The parser accepts the
+        // raw string; the BuildMode resolver looks it up at grouping
+        // time.
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "EngineCommon.h"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal("EngineCommon.h", rules.SharedPCHHeaderFile);
+    }
+
+    [Fact]
+    public void SharedPchHeaderFile_RelativePath_Accepts()
+    {
+        // Relative-path form with no `..` -- accepted by the
+        // path-traversal validator.
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "Public/EngineCommon.h"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal("Public/EngineCommon.h", rules.SharedPCHHeaderFile);
+    }
+
+    [Fact]
+    public void SharedPchHeaderFile_With_ParentTraversal_Rejects_With_Exit30()
+    {
+        // Relative-path form with `..` -- rejected by the path-traversal
+        // validator (the separator triggers the validation branch).
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "../EngineCommon.h"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("shared_pch_header_file", ex.Message);
+        Assert.Contains("..", ex.Message);
+    }
+
+    [Fact]
+    public void SharedPchHeaderFile_WhitespaceOnly_Rejects_With_Exit30()
+    {
+        // Whitespace-only field is a typo; reject at parse to surface
+        // the error early (vs. silently dropping into the resolver).
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "   "
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("shared_pch_header_file", ex.Message);
+        Assert.Contains("whitespace", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void PublicIncludePaths_With_ParentTraversal_Rejects_With_Exit30()
     {

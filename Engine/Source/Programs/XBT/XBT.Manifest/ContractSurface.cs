@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XBT.Manifest;
 
 /// <summary>
 /// Enumeration of the canonical Toolchain Contract surface elements per
-/// Contract Rev 13 Section 10.2 ("ContractVersion auto-derivation"). This
+/// Contract Rev 13.1 Section 10.2 ("ContractVersion auto-derivation"). This
 /// type is the <strong>C# source of truth</strong> for what the contract
 /// locks; if the C# disagrees with <c>/Documents/XToolchainContract.html</c>
 /// the C# wins (the HTML is documentation; this code is the implementation

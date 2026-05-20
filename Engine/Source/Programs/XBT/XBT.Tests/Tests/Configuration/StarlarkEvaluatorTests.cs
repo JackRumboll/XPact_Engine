@@ -236,4 +236,118 @@ public sealed class StarlarkEvaluatorTests
         Assert.Throws<DescriptorParseException>(() =>
             StarlarkEvaluator.Evaluate("\"yes\" if True", StandardBindings()));
     }
+
+    // ----- Depth cap (Contract Rev 13.1 Section 9.6 deviation (c)) -----
+    //
+    // The evaluator's recursive Eval(Node) loop is capped at 32 frames
+    // per Contract Section 9.6 deviation (c). Hitting the cap must throw
+    // DescriptorParseException (exit 30) rather than letting the CLR
+    // raise an uncatchable StackOverflowException and crash the process.
+    //
+    // For nested ternaries the AST shape "0 if True else (next)" walks
+    // one CondNode per nesting level plus one leaf at the bottom, so N
+    // nestings peak at depth N+1. A 31-nesting expression therefore
+    // peaks at depth 32 (succeeds); 32 nestings peak at depth 33 (fails).
+    // The same +1 relationship holds for nested list literals.
+
+    [Fact]
+    public void Depth_NestedTernary_AtCap_Succeeds()
+    {
+        // 31 nested ternaries: peak depth 32 (exactly the cap). Must
+        // evaluate cleanly without the depth gate firing.
+        string expr = BuildNestedTernary(31);
+        object value = StarlarkEvaluator.Evaluate(expr, StandardBindings());
+        Assert.Equal(0L, value);
+    }
+
+    [Fact]
+    public void Depth_NestedTernary_OverCap_Rejects_With_DepthMessage()
+    {
+        // 32 nested ternaries: peak depth 33, one frame past the cap.
+        // Must surface a DescriptorParseException with exit 30 whose
+        // message names "depth", proving the depth gate fired rather
+        // than the instruction budget or a CLR stack overflow.
+        string expr = BuildNestedTernary(32);
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => StarlarkEvaluator.Evaluate(expr, StandardBindings()));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("depth", ex.Message);
+    }
+
+    [Fact]
+    public void Depth_NestedList_OverCap_Rejects()
+    {
+        // 32 nested list literals: [[[ ... [0] ... ]]]. The outer list
+        // is frame 1, walking into its only item is frame 2, ..., the
+        // innermost IntLit is frame 33 -- one frame past the cap.
+        string expr = BuildNestedList(32);
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => StarlarkEvaluator.Evaluate(expr, StandardBindings()));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("depth", ex.Message);
+    }
+
+    [Fact]
+    public void Depth_LenCall_DoesNotInflateDepth_Past_TopLevel()
+    {
+        // A top-level call like len("hello") is two frames at most: the
+        // CallNode itself and the StringLit argument. The depth gate
+        // must NOT fire for a shallow call. This proves the gate
+        // tracks expression-internal recursion (the spec target) rather
+        // than function-call semantics -- a single function-style call
+        // contributes one frame, not the dozens a deeply-nested ternary
+        // would.
+        Assert.Equal(5L, StarlarkEvaluator.Evaluate("len(\"hello\")", StandardBindings()));
+    }
+
+    /// <summary>
+    /// Build "0 if False else (0 if False else (... else 0))" with
+    /// <paramref name="levels"/> nested ternaries. Cond is False at
+    /// every level so the else-branch (the next nested conditional)
+    /// is taken, cascading the recursion to the innermost "0". This
+    /// is the only ternary shape that actually walks every level;
+    /// using cond=True would short-circuit to the then-branch and
+    /// never visit the else recursion. The walk touches one
+    /// ConditionalNode per level, peaking the Eval-depth at
+    /// <c>levels + 1</c> when the innermost IntLit is read.
+    /// </summary>
+    private static string BuildNestedTernary(int levels)
+    {
+        // Pattern: "0 if False else (next)" with the deepest level
+        // collapsing to "0". The parser's ParseConditional() recurses
+        // on the else-branch, which matches our cascade direction.
+        System.Text.StringBuilder sb = new();
+        for (int i = 0; i < levels; i++)
+        {
+            sb.Append("0 if False else (");
+        }
+        sb.Append('0');
+        for (int i = 0; i < levels; i++)
+        {
+            sb.Append(')');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Build "[[[[ ... [0] ... ]]]]" with <paramref name="levels"/>
+    /// nested list literals. Walking a list literal pushes one frame
+    /// for the ListLit node itself; the inner Eval(item) pushes one
+    /// more for the next ListLit. With one item per list, the peak
+    /// depth is <c>levels + 1</c> (the innermost IntLit).
+    /// </summary>
+    private static string BuildNestedList(int levels)
+    {
+        System.Text.StringBuilder sb = new();
+        for (int i = 0; i < levels; i++)
+        {
+            sb.Append('[');
+        }
+        sb.Append('0');
+        for (int i = 0; i < levels; i++)
+        {
+            sb.Append(']');
+        }
+        return sb.ToString();
+    }
 }

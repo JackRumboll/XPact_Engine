@@ -460,7 +460,7 @@ public sealed class XClangToolChain : XToolChain
         }
 
         // Defence-in-depth: SimPath modules cannot share a PCH per
-        // Contract Rev 13 Section 1.5.
+        // Contract Rev 13.1 Section 1.5.
         EnforceSimPathSharedPchGate(participants);
 
         // Group-keyed hash names the on-disk artefact deterministically.

@@ -211,21 +211,27 @@ public static class ModuleEnumerator
         }
 
         // Group TOMLs and CSs by their containing directory so we can
-        // apply the precedence rule per module.
-        Dictionary<string, string> tomlByDir = new(StringComparer.OrdinalIgnoreCase);
+        // apply the precedence rule per module. The comparer is
+        // ordinal (case-sensitive) so on Linux -- where the filesystem
+        // itself distinguishes /Foo/ from /foo/ -- the enumerator
+        // surfaces both as independent modules instead of silently
+        // collapsing one into the other. On Windows the filesystem
+        // case-folds before our keys ever differ, so ordinal vs.
+        // ordinal-ignore-case are observationally equivalent there.
+        Dictionary<string, string> tomlByDir = new(StringComparer.Ordinal);
         foreach (string t in tomlPaths)
         {
             string dir = Path.GetDirectoryName(t) ?? string.Empty;
             tomlByDir[dir] = t;
         }
-        Dictionary<string, string> csByDir = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> csByDir = new(StringComparer.Ordinal);
         foreach (string c in filteredCs)
         {
             string dir = Path.GetDirectoryName(c) ?? string.Empty;
             csByDir[dir] = c;
         }
 
-        HashSet<string> processedDirs = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> processedDirs = new(StringComparer.Ordinal);
 
         // Pass 1: every directory with a .Build.cs. If a TOML also
         // lives in the same directory, the .Build.cs wins per Contract
@@ -249,7 +255,7 @@ public static class ModuleEnumerator
                 Logger.Info(
                     $".Build.cs takes precedence over sibling .Build.toml in {dir}: " +
                     $"compiling {Path.GetFileName(csPath)}; ignoring " +
-                    $"{Path.GetFileName(siblingToml)} per Contract Rev 13 Section 9.6.",
+                    $"{Path.GetFileName(siblingToml)} per Contract Rev 13.1 Section 9.6.",
                     new DiagnosticContext
                     {
                         Action = "discover",

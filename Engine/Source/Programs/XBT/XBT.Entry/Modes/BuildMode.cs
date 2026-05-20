@@ -668,6 +668,27 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// </summary>
     /// <remarks>
     /// <para>
+    /// <b>Header path resolution.</b> The grouping key is the canonical
+    /// absolute path of each module's <c>shared_pch_header_file</c>.
+    /// Two resolution forms per Toolchain Contract Rev 13.1 Section 1.5:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><b>Bare name</b> (no <c>/</c> or <c>\</c>) -- UE-style
+    ///   logical include-path resolution. The
+    ///   <see cref="SharedPchResolver.FindIncludeFile"/> helper
+    ///   searches every module's
+    ///   <see cref="ModuleRules.PublicIncludePaths"/> for the file and
+    ///   returns the first on-disk match. Iteration order matches the
+    ///   alphabetical module ordering established by
+    ///   <see cref="ModuleCatalog"/>, so the choice is deterministic.
+    ///   If no module exposes the file, the resolver throws
+    ///   <see cref="DescriptorParseException"/> with exit 30.</item>
+    ///   <item><b>Relative path</b> (contains <c>/</c> or <c>\</c>) --
+    ///   legacy resolution relative to the module's <c>BaseDirectory</c>.
+    ///   The parser rejects any <c>..</c> traversal so this branch
+    ///   covers intra-module headers exclusively.</item>
+    /// </list>
+    /// <para>
     /// Per Contract Rev 13 Section 1.5 / <c>/Documents/XBT.html</c>
     /// Section 15.4: SimPath modules cannot participate in any shared
     /// PCH group. The parser-side validator rejects SimPath +
@@ -696,10 +717,18 @@ public sealed class BuildMode : IToolMode<BuildMode>
             new(StringComparer.Ordinal);
 
         // ---- 1. Walk modules and bucket by resolved absolute header path ----
+        //
+        // Keys are canonical absolute paths produced by
+        // <see cref="Path.GetFullPath(string)"/>. Path.GetFullPath
+        // preserves case on Windows and is case-sensitive on Linux, so
+        // the dictionary uses StringComparer.Ordinal -- matching the
+        // host filesystem's case sensitivity. (OrdinalIgnoreCase would
+        // collapse case-different-but-physically-distinct paths on
+        // Linux into a single bucket, which is wrong.)
         Dictionary<string, List<ModuleRecord>> groupRecords =
-            new(StringComparer.OrdinalIgnoreCase);
+            new(StringComparer.Ordinal);
         Dictionary<string, string> groupRelativeHeader =
-            new(StringComparer.OrdinalIgnoreCase);
+            new(StringComparer.Ordinal);
 
         foreach (ModuleRecord rec in targetModules)
         {
@@ -710,14 +739,52 @@ public sealed class BuildMode : IToolMode<BuildMode>
             }
 
             string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
-            string headerPath = Path.Combine(moduleDir, module.SharedPCHHeaderFile);
-            string absoluteCanonicalPath = Path.GetFullPath(headerPath);
+            string sharedHeader = module.SharedPCHHeaderFile;
+
+            // Two resolution forms per Toolchain Contract Rev 13.1
+            // Section 1.5 (PCH rules) + XBT Section 7:
+            //   (a) BARE NAME (no separator) -- UE-style logical
+            //       include-path resolution. Search every module's
+            //       PublicIncludePaths for the file; the first
+            //       on-disk match wins (deterministic because the
+            //       module list is sorted alphabetically by
+            //       ModuleCatalog).
+            //   (b) RELATIVE PATH -- legacy relative-to-module-dir
+            //       resolution. Path.GetFullPath collapses the
+            //       (rejected-by-parser) `..` references; only paths
+            //       inside the module's tree pass the parser, so this
+            //       branch handles intra-module headers.
+            string absoluteCanonicalPath;
+            if (!sharedHeader.Contains('/') && !sharedHeader.Contains('\\'))
+            {
+                string? resolved = SharedPchResolver.FindIncludeFile(
+                    sharedHeader, targetModules);
+                if (resolved is null)
+                {
+                    throw new DescriptorParseException(
+                        $"Module '{module.Name}' declared shared_pch_header_file = " +
+                        $"'{sharedHeader}' but the file could not be found in any " +
+                        "module's PublicIncludePaths. Either declare " +
+                        $"'{sharedHeader}' as a file under one of the participants' " +
+                        "PublicIncludePaths directories, or use a relative path " +
+                        "with path separators if the file lives outside any " +
+                        "include path (per Toolchain Contract Rev 13 Section 1.5).",
+                        exitCode: 30,
+                        filePath: rec.DescriptorPath);
+                }
+                absoluteCanonicalPath = resolved;
+            }
+            else
+            {
+                string headerPath = Path.Combine(moduleDir, sharedHeader);
+                absoluteCanonicalPath = Path.GetFullPath(headerPath);
+            }
 
             if (!groupRecords.TryGetValue(absoluteCanonicalPath, out List<ModuleRecord>? list))
             {
                 list = new List<ModuleRecord>();
                 groupRecords[absoluteCanonicalPath] = list;
-                groupRelativeHeader[absoluteCanonicalPath] = module.SharedPCHHeaderFile;
+                groupRelativeHeader[absoluteCanonicalPath] = sharedHeader;
             }
             list.Add(rec);
         }

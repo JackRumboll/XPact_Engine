@@ -16,10 +16,11 @@ namespace Simgenics.XPact.XBT.Tests.Tests.BuildMode;
 
 /// <summary>
 /// End-to-end tests for the shared-PCH grouping pass added to
-/// <see cref="Simgenics.XPact.XBT.Entry.BuildMode"/> in Phase 1.4b.
-/// Each test constructs a synthetic engine tree on disk with several
-/// <c>.Build.toml</c> modules, runs BuildMode programmatically, and
-/// inspects the resulting action graph.
+/// <see cref="Simgenics.XPact.XBT.Entry.BuildMode"/> in Phase 1.4b and
+/// hardened in Phase 1.4c (UE-style include-path resolution for
+/// <c>shared_pch_header_file</c>). Each test constructs a synthetic
+/// engine tree on disk with several <c>.Build.toml</c> modules, runs
+/// BuildMode programmatically, and inspects the resulting action graph.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -64,33 +65,23 @@ public sealed class SharedPchGroupingTests : IDisposable
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Fixture: two modules MA + MB share a header (via
-    /// shared_pch_header_file). Build the fixture and assert the action
-    /// graph contains exactly ONE PCHGenerationAction.
+    /// Fixture: a "host" module XCore exposes <c>Common.h</c> via its
+    /// <c>PublicIncludePaths = ["Public"]</c>. Two participant modules
+    /// MA and MB declare <c>shared_pch_header_file = "Common.h"</c>
+    /// (bare-name form). The grouping pass resolves the bare name via
+    /// the host's PublicIncludePaths and emits ONE shared PCH action
+    /// referenced by both participants.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// SKIPPED post-audit: the original fixture has module MB declare
-    /// <c>shared_pch_header_file = "../MA/Public/Common.h"</c> -- a
-    /// cross-module path-traversal reference that the
-    /// <see cref="BuildTomlParser"/>'s post-Rev-13 hardening (per
-    /// Toolchain Contract Section 2.1) now rejects with exit 30.
-    /// </para>
-    /// <para>
-    /// The grouping mechanism in <c>BuildMode</c> keys on the
-    /// <see cref="Path.GetFullPath(string)"/> canonical absolute path
-    /// of each module's <c>SharedPCHHeaderFile</c>, and the existing
-    /// code does not resolve a logical header name through participating
-    /// modules' <c>PublicIncludePaths</c>. Until that resolution
-    /// mechanism lands, two modules cannot reference the same physical
-    /// shared header without a path-traversal reference. The test is
-    /// preserved as a regression marker for the future grouping-by-
-    /// logical-path-resolution work; once that lands, the fixture
-    /// can be rewritten to declare a logical header name and the
-    /// skip lifted.
+    /// Round-1 audit history: the original fixture used a cross-module
+    /// <c>"../MA/Public/Common.h"</c> reference which the post-Rev-13
+    /// path-traversal validator now rejects with exit 30. Round-2 fix
+    /// (this Phase 1.4c work) adds UE-style include-path resolution so
+    /// the bare-name form works without <c>..</c> references.
     /// </para>
     /// </remarks>
-    [Fact(Skip = "Awaiting grouping-by-logical-path resolution; current grouping keys on absolute paths which requires `..` cross-module references that the post-Rev-13 path-traversal validation now rejects.")]
+    [Fact]
     public void TwoModuleGroup_OneSharedPCHGenerationAction()
     {
         if (!IsToolchainAvailable())
@@ -100,22 +91,30 @@ public sealed class SharedPchGroupingTests : IDisposable
         }
 
         WriteEngineXengine();
-        // Both modules name the same shared header (Common.h sits inside
-        // module MA's Public/ tree but the absolute canonical path is the
-        // grouping key, not the originating module's tree).
+
+        // Host module XCore exposes Public/Common.h via PublicIncludePaths.
         WriteSharedHeader(
-            relativePath: "Source/Runtime/MA/Public/Common.h",
+            relativePath: "Source/Runtime/XCore/Public/Common.h",
             content: "// Copyright Simgenics. All Rights Reserved.\n#include <vector>\n");
+        WriteModuleToml(
+            moduleName: "XCore",
+            tier: "Engine",
+            sharedHeader: null,
+            extraTomlLines: new[] { "public_include_paths = [\"Public\"]" });
+        WriteSampleSource(moduleName: "XCore", sourceFileName: "XCore.cpp");
+
+        // Two participants reference the header by bare name. The
+        // resolver finds it in XCore's PublicIncludePaths.
         WriteModuleToml(
             moduleName: "MA",
             tier: "Engine",
-            sharedHeader: "Public/Common.h",
+            sharedHeader: "Common.h",
             extraTomlLines: null);
         WriteSampleSource(moduleName: "MA", sourceFileName: "ModuleA.cpp");
         WriteModuleToml(
             moduleName: "MB",
             tier: "Engine",
-            sharedHeader: "../MA/Public/Common.h",
+            sharedHeader: "Common.h",
             extraTomlLines: null);
         WriteSampleSource(moduleName: "MB", sourceFileName: "ModuleB.cpp");
 
@@ -132,14 +131,13 @@ public sealed class SharedPchGroupingTests : IDisposable
         Assert.NotNull(pchAction.Module);
         Assert.StartsWith("SharedPCH:", pchAction.Module);
 
-        // Both modules' compile actions reference the same PCH output.
-        int compileCount = result.Actions.Count(a => a.ActionType == XActionType.CompileCppAction);
-        Assert.Equal(2, compileCount);
-
+        // Both MA and MB compiles reference the shared PCH output.
+        // (XCore compiles too but has no PCH.)
         FileItem pchOutput = pchAction.ProducedItems
             .First(p => p.FullPath.EndsWith(".pch", StringComparison.OrdinalIgnoreCase));
         foreach (IExternalAction compile in result.Actions
-                     .Where(a => a.ActionType == XActionType.CompileCppAction))
+                     .Where(a => a.ActionType == XActionType.CompileCppAction
+                                 && (a.Module == "MA" || a.Module == "MB")))
         {
             Assert.Contains(compile.PrerequisiteItems, p => p.FullPath == pchOutput.FullPath);
         }
@@ -151,19 +149,13 @@ public sealed class SharedPchGroupingTests : IDisposable
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Fixture: three modules, MA + MB share a header; MC has a private
-    /// PCH header; MD declares no PCH. Action graph carries one shared
+    /// Fixture: host module XCore exposes <c>Shared.h</c>. MA + MB
+    /// share it via bare-name resolution. MC has a private PCH header.
+    /// MD declares no PCH. Action graph carries one shared
     /// PCHGenerationAction (for MA/MB), one private PCHGenerationAction
-    /// (for MC), and zero for MD.
+    /// (for MC), and zero for MD or XCore.
     /// </summary>
-    /// <remarks>
-    /// SKIPPED for the same reason as <see cref="TwoModuleGroup_OneSharedPCHGenerationAction"/>:
-    /// the MA/MB shared-PCH leg relies on MB referencing
-    /// <c>../MA/Public/Shared.h</c>, which the post-Rev-13 path-traversal
-    /// validator now rejects. See the sibling test's remarks for the
-    /// design follow-up.
-    /// </remarks>
-    [Fact(Skip = "Awaiting grouping-by-logical-path resolution; current grouping keys on absolute paths which requires `..` cross-module references that the post-Rev-13 path-traversal validation now rejects.")]
+    [Fact]
     public void MixedGroup_SharedPlusPrivatePlusNone()
     {
         if (!IsToolchainAvailable())
@@ -173,20 +165,29 @@ public sealed class SharedPchGroupingTests : IDisposable
         }
 
         WriteEngineXengine();
-        // Shared group MA + MB.
+
+        // Host module XCore exposes Public/Shared.h.
         WriteSharedHeader(
-            relativePath: "Source/Runtime/MA/Public/Shared.h",
+            relativePath: "Source/Runtime/XCore/Public/Shared.h",
             content: "// Copyright Simgenics. All Rights Reserved.\n#include <vector>\n");
+        WriteModuleToml(
+            moduleName: "XCore",
+            tier: "Engine",
+            sharedHeader: null,
+            extraTomlLines: new[] { "public_include_paths = [\"Public\"]" });
+        WriteSampleSource(moduleName: "XCore", sourceFileName: "XCore.cpp");
+
+        // Shared group MA + MB via bare-name resolution.
         WriteModuleToml(
             moduleName: "MA",
             tier: "Engine",
-            sharedHeader: "Public/Shared.h",
+            sharedHeader: "Shared.h",
             extraTomlLines: null);
         WriteSampleSource(moduleName: "MA", sourceFileName: "MA.cpp");
         WriteModuleToml(
             moduleName: "MB",
             tier: "Engine",
-            sharedHeader: "../MA/Public/Shared.h",
+            sharedHeader: "Shared.h",
             extraTomlLines: null);
         WriteSampleSource(moduleName: "MB", sourceFileName: "MB.cpp");
 
@@ -323,7 +324,7 @@ public sealed class SharedPchGroupingTests : IDisposable
         WriteModuleToml(
             moduleName: "Unsafe",
             tier: "Engine",
-            sharedHeader: "../Safe/Public/Shared.h",
+            sharedHeader: "Shared.h",
             extraTomlLines: new[]
             {
                 "sim_path = true",
@@ -391,6 +392,200 @@ public sealed class SharedPchGroupingTests : IDisposable
         // not have, so no PCH at all.
         int pchCount = result.Actions.Count(a => a.ActionType == XActionType.PCHGenerationAction);
         Assert.Equal(0, pchCount);
+    }
+
+    // ---------------------------------------------------------------------
+    // 5. UE-style include-path resolution -- new tests for Phase 1.4c
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Bare-name <c>shared_pch_header_file</c> that does not exist in
+    /// any module's <c>PublicIncludePaths</c> is rejected at grouping
+    /// time with exit 30 and a message naming the missing file plus
+    /// "PublicIncludePaths".
+    /// </summary>
+    [Fact]
+    public void BareName_NotFoundInAnyIncludePath_FailsExit30()
+    {
+        if (!IsToolchainAvailable())
+        {
+            Logger.Warning("SharedPchGroupingTests skipped because no compatible toolchain found.");
+            return;
+        }
+
+        WriteEngineXengine();
+
+        // Two participants but no host module exposes Missing.h.
+        WriteModuleToml(
+            moduleName: "MA",
+            tier: "Engine",
+            sharedHeader: "Missing.h",
+            extraTomlLines: null);
+        WriteSampleSource(moduleName: "MA", sourceFileName: "MA.cpp");
+        WriteModuleToml(
+            moduleName: "MB",
+            tier: "Engine",
+            sharedHeader: "Missing.h",
+            extraTomlLines: null);
+        WriteSampleSource(moduleName: "MB", sourceFileName: "MB.cpp");
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(() => RunBuild());
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("Missing.h", ex.Message);
+        Assert.Contains("PublicIncludePaths", ex.Message);
+    }
+
+    /// <summary>
+    /// Two host modules each expose <c>Common.h</c> from their
+    /// respective <c>PublicIncludePaths</c>. The resolver picks the
+    /// first match in iteration order. Per
+    /// <see cref="ModuleCatalog"/> the module list is sorted
+    /// alphabetically, so host module <c>HostA</c> wins over
+    /// <c>HostB</c> deterministically.
+    /// </summary>
+    [Fact]
+    public void BareName_AmbiguousResolution_PicksFirstMatch()
+    {
+        if (!IsToolchainAvailable())
+        {
+            Logger.Warning("SharedPchGroupingTests skipped because no compatible toolchain found.");
+            return;
+        }
+
+        WriteEngineXengine();
+
+        // HostA and HostB both expose Common.h. Alphabetical sort
+        // visits HostA first; that's the winning resolution.
+        WriteSharedHeader(
+            relativePath: "Source/Runtime/HostA/Public/Common.h",
+            content: "// Copyright Simgenics. All Rights Reserved.\n// from HostA\n");
+        WriteModuleToml(
+            moduleName: "HostA",
+            tier: "Engine",
+            sharedHeader: null,
+            extraTomlLines: new[] { "public_include_paths = [\"Public\"]" });
+        WriteSampleSource(moduleName: "HostA", sourceFileName: "HostA.cpp");
+
+        WriteSharedHeader(
+            relativePath: "Source/Runtime/HostB/Public/Common.h",
+            content: "// Copyright Simgenics. All Rights Reserved.\n// from HostB\n");
+        WriteModuleToml(
+            moduleName: "HostB",
+            tier: "Engine",
+            sharedHeader: null,
+            extraTomlLines: new[] { "public_include_paths = [\"Public\"]" });
+        WriteSampleSource(moduleName: "HostB", sourceFileName: "HostB.cpp");
+
+        // Two participants -- both will resolve to HostA's copy.
+        WriteModuleToml(
+            moduleName: "MA",
+            tier: "Engine",
+            sharedHeader: "Common.h",
+            extraTomlLines: null);
+        WriteSampleSource(moduleName: "MA", sourceFileName: "MA.cpp");
+        WriteModuleToml(
+            moduleName: "MB",
+            tier: "Engine",
+            sharedHeader: "Common.h",
+            extraTomlLines: null);
+        WriteSampleSource(moduleName: "MB", sourceFileName: "MB.cpp");
+
+        BuildResult result = RunBuild();
+
+        // Exactly one shared PCH action -- both participants picked
+        // the same first-match resolution and grouped together.
+        IExternalAction pchAction = result.Actions
+            .Single(a => a.ActionType == XActionType.PCHGenerationAction);
+
+        // The PCH input file should live under HostA/Public, not
+        // HostB/Public. Assert by substring match on the path.
+        Assert.Contains(pchAction.PrerequisiteItems,
+            p => p.FullPath.Replace('\\', '/').Contains("/HostA/Public/Common.h"));
+        Assert.DoesNotContain(pchAction.PrerequisiteItems,
+            p => p.FullPath.Replace('\\', '/').Contains("/HostB/Public/Common.h"));
+    }
+
+    /// <summary>
+    /// A whitespace-only <c>shared_pch_header_file</c> field is rejected
+    /// at parse time with exit 30. The parser distinguishes
+    /// whitespace-only from empty (empty == not set, omitted from the
+    /// descriptor).
+    /// </summary>
+    [Fact]
+    public void BareName_WhitespaceOnly_FailsParse()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            shared_pch_header_file = "   "
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("shared_pch_header_file", ex.Message);
+        Assert.Contains("whitespace", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A relative-path <c>shared_pch_header_file</c> (e.g.
+    /// <c>"Public/Common.h"</c>) without any <c>..</c> still works via
+    /// the legacy relative-to-module-dir resolution branch. Two
+    /// modules sharing intra-module relative paths still group into a
+    /// single shared PCH action provided the absolute resolved path
+    /// matches.
+    /// </summary>
+    [Fact]
+    public void RelativePath_StillWorks_WithoutDotDot()
+    {
+        if (!IsToolchainAvailable())
+        {
+            Logger.Warning("SharedPchGroupingTests skipped because no compatible toolchain found.");
+            return;
+        }
+
+        WriteEngineXengine();
+
+        // Host module exposes the header. Two participants each
+        // reference it via relative-path form -- but the participants
+        // are themselves the host plus another module sharing the
+        // same physical header. To get two participants on the same
+        // file without `..`, both must live under the same module's
+        // tree -- equivalent to "the host module + itself" via two
+        // descriptor pointers, which doesn't make sense. Instead use
+        // the single-host pattern: ONE module declares relative-path
+        // shared_pch_header_file, plus a second SECONDARY module
+        // declares the same physical file via the bare-name resolver.
+        // Both code paths converge on the same canonical absolute
+        // path, so the grouping pass merges them.
+        WriteSharedHeader(
+            relativePath: "Source/Runtime/XCore/Public/Common.h",
+            content: "// Copyright Simgenics. All Rights Reserved.\n");
+
+        // XCore declares the relative-path form -- legacy branch.
+        WriteModuleToml(
+            moduleName: "XCore",
+            tier: "Engine",
+            sharedHeader: "Public/Common.h",
+            extraTomlLines: new[] { "public_include_paths = [\"Public\"]" });
+        WriteSampleSource(moduleName: "XCore", sourceFileName: "XCore.cpp");
+
+        // MA declares the bare-name form -- resolver branch lands on
+        // the same canonical absolute path.
+        WriteModuleToml(
+            moduleName: "MA",
+            tier: "Engine",
+            sharedHeader: "Common.h",
+            extraTomlLines: null);
+        WriteSampleSource(moduleName: "MA", sourceFileName: "MA.cpp");
+
+        BuildResult result = RunBuild();
+
+        // Both legs grouped on the same physical file -> ONE shared
+        // PCH action.
+        int pchCount = result.Actions.Count(a => a.ActionType == XActionType.PCHGenerationAction);
+        Assert.Equal(1, pchCount);
     }
 
     // ---------------------------------------------------------------------
