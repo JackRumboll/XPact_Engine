@@ -7,16 +7,29 @@ namespace Simgenics.XPact.XBT.ActionGraph;
 
 /// <summary>
 /// Two distinct actions produced the same <see cref="FileItem"/> with
-/// different commands. Mirrors UE's
+/// divergent payloads. Mirrors UE's
 /// <c>FActionGraph::CheckForConflicts</c> exit but with a typed exception
 /// + structured diagnostic.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Maps to Toolchain Contract Rev 13 Section 13 exit code <c>80</c>
 /// (<c>ActionGraphCycle</c> family -- "internal: should never happen;
 /// symptom of a graph builder bug"). The bug is in whichever subsystem
-/// emitted the two conflicting actions; the diagnostic names the file
-/// and the two action descriptions to point at the source.
+/// emitted the two conflicting actions; the diagnostic names the file,
+/// the two action descriptions, and the specific divergent field to
+/// point at the source.
+/// </para>
+/// <para>
+/// Audit fix R6-C3: <see cref="DivergentField"/> records which payload
+/// element differed -- <c>CommandVersion</c>, <c>PrerequisiteItems</c>,
+/// or <c>WorkingDirectory</c>. This is what the operator needs to
+/// diagnose the source: a divergent CommandVersion points at the
+/// emitter constructing different arguments; a divergent prereq set
+/// points at the emitter declaring different dependencies; a divergent
+/// working dir points at the emitter rooting two actions in different
+/// project subtrees.
+/// </para>
 /// </remarks>
 public sealed class ActionGraphConflictException : XBTException
 {
@@ -29,16 +42,42 @@ public sealed class ActionGraphConflictException : XBTException
     /// <summary>Description of the second (conflicting) producer.</summary>
     public string SecondAction { get; }
 
-    /// <summary>Construct an action-graph conflict.</summary>
-    public ActionGraphConflictException(string conflictPath, string firstAction, string secondAction)
+    /// <summary>
+    /// Audit fix R6-C3: the <see cref="IExternalAction"/> field that
+    /// differed between the two producers. One of
+    /// <c>"CommandVersion"</c>, <c>"PrerequisiteItems"</c>,
+    /// <c>"WorkingDirectory"</c>.
+    /// </summary>
+    public string DivergentField { get; }
+
+    /// <summary>
+    /// Construct an action-graph conflict naming the divergent field.
+    /// </summary>
+    public ActionGraphConflictException(
+        string conflictPath,
+        string firstAction,
+        string secondAction,
+        string divergentField)
         : base(
             $"ActionGraph conflict: file '{conflictPath}' is produced by two actions with "
-            + $"different commands. First: {firstAction}. Second: {secondAction}.",
+            + $"different {divergentField}. First: {firstAction}. Second: {secondAction}.",
             exitCode: 80)
     {
         ConflictPath = conflictPath;
         FirstAction = firstAction;
         SecondAction = secondAction;
+        DivergentField = divergentField;
+    }
+
+    /// <summary>
+    /// Legacy two-action constructor retained for compatibility with
+    /// pre-R6 callers and tests that did not name a divergent field.
+    /// Defaults the divergent-field label to <c>"CommandVersion"</c>
+    /// (the only divergence kind the pre-R6 code detected).
+    /// </summary>
+    public ActionGraphConflictException(string conflictPath, string firstAction, string secondAction)
+        : this(conflictPath, firstAction, secondAction, divergentField: "CommandVersion")
+    {
     }
 }
 

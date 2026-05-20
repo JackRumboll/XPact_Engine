@@ -23,16 +23,27 @@ internal static class ManifestEquality
     {
         Assert.Equal(expected.ContractVersion,                 actual.ContractVersion);
         Assert.Equal(expected.EngineVersion,                   actual.EngineVersion);
-        Assert.Equal(expected.TargetName,                      actual.TargetName);
-        Assert.Equal(expected.TargetType,                      actual.TargetType);
-        Assert.Equal(expected.Configuration,                   actual.Configuration);
-        Assert.Equal(expected.Platform,                        actual.Platform);
         Assert.Equal(expected.RootLocalPath,                   actual.RootLocalPath);
         Assert.Equal(expected.ExternalDependenciesFile,        actual.ExternalDependenciesFile);
-        Assert.Equal(expected.FipsMode,                        actual.FipsMode);
-        Assert.Equal(expected.SimPathConservativeRootsAllowed, actual.SimPathConservativeRootsAllowed);
-        Assert.Equal(expected.StationRole,                     actual.StationRole);
-        Assert.Equal(expected.SimdLevelDefault,                actual.SimdLevelDefault);
+
+        // Per Toolchain Contract Rev 13 Section 10.2 reconciliation:
+        // per-target fields live under the nested Target record so JSON
+        // mirrors the FBS TargetInfo grouping.
+        Assert.NotNull(expected.Target);
+        Assert.NotNull(actual.Target);
+        Assert.Equal(expected.Target.Name,                            actual.Target.Name);
+        Assert.Equal(expected.Target.Type,                            actual.Target.Type);
+        Assert.Equal(expected.Target.Configuration,                   actual.Target.Configuration);
+        Assert.Equal(expected.Target.Platform,                        actual.Target.Platform);
+        // Audit fix C1/C10: ABI envelope fields.
+        Assert.Equal(expected.Target.Architecture,                    actual.Target.Architecture);
+        Assert.Equal(expected.Target.FipsMode,                        actual.Target.FipsMode);
+        Assert.Equal(expected.Target.SimPathConservativeRootsAllowed, actual.Target.SimPathConservativeRootsAllowed);
+        Assert.Equal(expected.Target.StationRole,                     actual.Target.StationRole);
+        Assert.Equal(expected.Target.SimdLevelDefault,                actual.Target.SimdLevelDefault);
+        Assert.Equal(expected.Target.GCRootABI,                       actual.Target.GCRootABI);
+        Assert.Equal(expected.Target.ExceptionABI,                    actual.Target.ExceptionABI);
+        Assert.Equal(expected.Target.ManglingScheme,                  actual.Target.ManglingScheme);
 
         Assert.Equal(expected.Modules.Count, actual.Modules.Count);
         for (int i = 0; i < expected.Modules.Count; i++)

@@ -43,7 +43,11 @@ public sealed class FileItem
 
     private readonly object _hashGate = new();
     private IoHash _contentHash;
-    private volatile bool _hashComputed;
+    // Audit fix M5: every read of _hashComputed and _contentHash now
+    // happens under _hashGate so the previous `volatile` modifier is
+    // unnecessary. The lock provides the release semantics the boolean
+    // alone could not under the .NET memory model on ARM64.
+    private bool _hashComputed;
     private long _length;
     private DateTime _lastWriteTimeUtc;
     private bool _statLoaded;
@@ -79,14 +83,21 @@ public sealed class FileItem
     /// lifetime of this <see cref="FileItem"/> instance. This is the
     /// canonical identity used by XBT.ActionGraph's invalidation rules.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M5: the read path used to short-circuit on a volatile
+    /// <c>_hashComputed</c> boolean and then return <c>_contentHash</c>
+    /// without locking. <see cref="IoHash"/> is 32 bytes; under the .NET
+    /// CLR memory model on ARM64 a reader can observe a half-written
+    /// struct alongside <c>_hashComputed = true</c> because the struct
+    /// store is not atomic and there is no release-barrier guarantee on
+    /// the boolean flag. We now always take the per-instance lock; the
+    /// performance cost is one uncontended-lock acquisition per read
+    /// (hash is computed once, so subsequent reads are fast-path).
+    /// </remarks>
     public IoHash ContentHash
     {
         get
         {
-            if (_hashComputed)
-            {
-                return _contentHash;
-            }
             lock (_hashGate)
             {
                 if (_hashComputed)
@@ -95,7 +106,6 @@ public sealed class FileItem
                 }
                 using FileStream stream = File.OpenRead(FullPath);
                 _contentHash = IoHash.Compute(stream);
-                Thread.MemoryBarrier();
                 _hashComputed = true;
                 return _contentHash;
             }
@@ -115,8 +125,36 @@ public sealed class FileItem
     public static FileItem GetItemByPath(string fullPath)
     {
         ArgumentException.ThrowIfNullOrEmpty(fullPath);
-        string normalized = Path.GetFullPath(fullPath);
+        // Audit fix M4: normalize the drive letter to uppercase on
+        // Windows so two callers asking for "c:\path\foo.h" and
+        // "C:\path\foo.h" get the same FileItem instance. Path.GetFullPath
+        // collapses path traversal but does NOT canonicalize the drive
+        // letter casing -- the case-insensitive FS treats them as one
+        // file but our s_cache (StringComparer.Ordinal) would treat them
+        // as two distinct entries.
+        string normalized = NormalizePathForCache(fullPath);
         return s_cache.GetOrAdd(normalized, static p => new FileItem(p));
+    }
+
+    /// <summary>
+    /// Audit fix M4: canonical-form helper for s_cache keys.
+    /// On Windows, normalises the drive letter to uppercase so the
+    /// case-insensitive filesystem maps to a single canonical key. On
+    /// Linux/macOS the path is genuinely case-sensitive and we preserve
+    /// the input case (e.g. <c>/foo/Bar.h</c> and <c>/foo/bar.h</c> are
+    /// distinct files on disk).
+    /// </summary>
+    private static string NormalizePathForCache(string fullPath)
+    {
+        string canonical = Path.GetFullPath(fullPath);
+        if (OperatingSystem.IsWindows())
+        {
+            if (canonical.Length >= 2 && canonical[1] == ':')
+            {
+                return char.ToUpperInvariant(canonical[0]) + canonical.Substring(1);
+            }
+        }
+        return canonical;
     }
 
     /// <summary>
@@ -143,11 +181,22 @@ public sealed class FileItem
     /// who hold a <see cref="CancellationToken"/>. Reads the file via
     /// <see cref="FileStream"/> async APIs.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M5: always guard <c>_contentHash</c> reads under the
+    /// per-instance lock; no volatile-flag short-circuit. See
+    /// <see cref="ContentHash"/>'s remarks for the ARM64 rationale.
+    /// </remarks>
     public async Task<IoHash> ComputeContentHashAsync(CancellationToken cancellationToken)
     {
-        if (_hashComputed)
+        // Fast path: if the hash was already computed, return it under
+        // the lock. The lock acquisition is uncontended in the common
+        // case (hash is computed once, then read many times).
+        lock (_hashGate)
         {
-            return _contentHash;
+            if (_hashComputed)
+            {
+                return _contentHash;
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -169,8 +218,12 @@ public sealed class FileItem
 
         lock (_hashGate)
         {
+            // Recheck inside the lock (another thread may have raced us).
+            if (_hashComputed)
+            {
+                return _contentHash;
+            }
             _contentHash = hash;
-            Thread.MemoryBarrier();
             _hashComputed = true;
             return _contentHash;
         }

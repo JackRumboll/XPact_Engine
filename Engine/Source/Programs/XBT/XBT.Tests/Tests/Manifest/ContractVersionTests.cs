@@ -30,6 +30,34 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Manifest;
 /// </list>
 public sealed class ContractVersionTests
 {
+    private readonly Xunit.Abstractions.ITestOutputHelper _output;
+
+    public ContractVersionTests(Xunit.Abstractions.ITestOutputHelper output)
+    {
+        _output = output;
+    }
+
+    /// <summary>
+    /// Emits the live <see cref="ContractVersion.Current"/> value to the
+    /// test output so the doc-side subagent can read it back from the
+    /// xUnit log when aligning <c>/Documents/XToolchainContract.html</c>
+    /// references after a Contract revision bump. The assertion only
+    /// pins the shape (<c>"{tag}+{16-hex}"</c>); the literal value is
+    /// intentionally NOT asserted because that's what every other test
+    /// in this file is for, and pinning a literal here would create a
+    /// maintenance footgun (every Rev bump would need a manual update).
+    /// </summary>
+    [Fact]
+    public void ContractVersion_Current_LogsTheValueForDocAlignment()
+    {
+        string current = ContractVersion.Current;
+        _output.WriteLine($"ContractVersion.Current = \"{current}\"");
+
+        int sep = current.IndexOf('+');
+        Assert.True(sep > 0, $"Expected '<tag>+<hex>' shape; got \"{current}\".");
+        Assert.Equal(16, current.Length - (sep + 1));
+    }
+
     /// <summary>
     /// <see cref="ContractVersion.Current"/> begins with the
     /// <see cref="ContractSurface.SemanticVersionTag"/> plus a literal

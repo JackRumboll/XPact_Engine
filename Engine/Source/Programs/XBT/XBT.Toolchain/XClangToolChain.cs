@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Text.RegularExpressions;
 using Simgenics.XPact.XBT.ActionGraph;
 using Simgenics.XPact.XBT.Configuration;
 using Simgenics.XPact.XBT.Core;
@@ -15,7 +17,7 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// per-module rules into the <c>clang</c>/<c>clang++</c> flag set; emits
 /// the unconditional reproducibility envelope per
 /// <c>/Documents/XBT.html</c> Rev 4 Section 19.1 and Toolchain Contract
-/// Rev 13.1 Section 2.1.
+/// Rev 13.2 Section 2.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -28,12 +30,20 @@ namespace Simgenics.XPact.XBT.Toolchain;
 /// </para>
 /// <list type="bullet">
 ///   <item><c>-fdebug-prefix-map=&lt;RepoRoot&gt;=X:/R</c> (compile) -- normalize absolute paths in DWARF debug info.</item>
-///   <item><c>--remap-file=&lt;RepoRoot&gt;=X:/R</c> (link) -- Clang's pathmap equivalent per Contract Section 2.1.</item>
 ///   <item><c>-frandomize-layout-seed-file=&lt;empty seed&gt;</c> (compile) -- pin Clang's randomize-layout seed so two builds emit identical struct layouts.</item>
-///   <item><c>-fno-ident</c> -- strip compiler version banner from .o.</item>
+///   <item><c>-fno-ident</c> (compile + link) -- strip compiler version banner from .o / .so.</item>
 ///   <item><c>-Wl,--build-id=none</c> (link) -- strip the link-emitted build-id from .so.</item>
 ///   <item><c>-fdeterministic-cgu-order</c> -- pin LTO codegen-unit ordering.</item>
 /// </list>
+/// <para>
+/// Note: there is intentionally NO link-side path-remap flag. Audit fix
+/// M1 removed the previous Rev 13.1 emit of <c>--remap-file=</c>, which
+/// is not a valid clang/lld flag and would cause a link failure on
+/// recent lld versions. The compile-side <c>-fdebug-prefix-map=</c>
+/// already normalizes DWARF source paths, and the linker copies DWARF
+/// sections through unmodified, so the link side does not need a
+/// separate remap.
+/// </para>
 /// <para>
 /// SimPath modules additionally receive <c>-ffp-contract=off</c>,
 /// <c>-mno-fma</c>, <c>-fno-fast-math</c>, <c>-fno-finite-math-only</c>,
@@ -89,6 +99,18 @@ public sealed class XClangToolChain : XToolChain
     /// Discover clang on the host. Linux: <c>$LLVM_HOME</c> or
     /// <c>/usr/bin/clang</c>; Android: <c>$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/</c>.
     /// </summary>
+    /// <remarks>
+    /// Audit fix R4-M2: instead of hardcoding <c>"18.0.0"</c>, the
+    /// discoverer now invokes <c>clang -dumpversion</c> to query the
+    /// installed version. The discovered version flows through the
+    /// CacheKeyComponents of every compile action, so a Clang upgrade
+    /// correctly invalidates the cache (mirrors the MSVC
+    /// <c>MsvcVersion=</c> cache-key contribution). Discovery failure
+    /// falls back to <c>"unknown"</c> so a malformed clang installation
+    /// does not abort discovery -- the resulting cache key is still
+    /// distinct from the previous-build value, which is the correct
+    /// failure mode.
+    /// </remarks>
     public static bool TryDiscover(Platform platform, string repoRoot, out XClangToolChain? toolchain)
     {
         toolchain = null;
@@ -102,9 +124,111 @@ public sealed class XClangToolChain : XToolChain
         {
             return false;
         }
-        toolchain = new XClangToolChain(path, "18.0.0", platform, repoRoot);
+        string version = QueryClangVersion(path) ?? "unknown";
+        toolchain = new XClangToolChain(path, version, platform, repoRoot);
         return true;
     }
+
+    /// <summary>
+    /// Invoke <c>clang -dumpversion</c> (and fall back to
+    /// <c>clang --version</c> if <c>-dumpversion</c> fails) and parse
+    /// the version semver. Returns null on any failure; the caller is
+    /// expected to fall back to a sentinel string.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>-dumpversion</c> emits a single line with the bare semver
+    /// (e.g. <c>"18.0.0"</c>) on every clang version &gt;= 7. Older
+    /// versions print the full banner on stderr; we accept either as
+    /// long as the semver pattern resolves.
+    /// </para>
+    /// </remarks>
+    internal static string? QueryClangVersion(string clangPath)
+    {
+        if (string.IsNullOrEmpty(clangPath) || !File.Exists(clangPath))
+        {
+            return null;
+        }
+        // First attempt: -dumpversion (single bare semver).
+        string? dump = TryRunClangAndCapture(clangPath, "-dumpversion");
+        if (!string.IsNullOrWhiteSpace(dump))
+        {
+            string parsed = ExtractSemver(dump);
+            if (!string.IsNullOrEmpty(parsed))
+            {
+                return parsed;
+            }
+        }
+        // Fallback: --version (banner of the form
+        // "clang version 18.0.0 (https://...)").
+        string? banner = TryRunClangAndCapture(clangPath, "--version");
+        if (!string.IsNullOrWhiteSpace(banner))
+        {
+            string parsed = ExtractSemver(banner);
+            if (!string.IsNullOrEmpty(parsed))
+            {
+                return parsed;
+            }
+        }
+        return null;
+    }
+
+    private static string? TryRunClangAndCapture(string clangPath, string argument)
+    {
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = clangPath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.ArgumentList.Add(argument);
+            using Process p = new() { StartInfo = psi };
+            if (!p.Start())
+            {
+                return null;
+            }
+            // -dumpversion is one-line stdout; --version is multi-line.
+            // Read both stdout + stderr; both possible-emit targets.
+            string stdout = p.StandardOutput.ReadToEnd();
+            string stderr = p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(); } catch { }
+                return null;
+            }
+            string combined = string.IsNullOrEmpty(stderr) ? stdout : stdout + "\n" + stderr;
+            return combined;
+        }
+        catch (Exception)
+        {
+            // Best-effort: any failure (file-not-executable, sandbox
+            // restriction, etc.) maps to "no discovered version" which
+            // the caller resolves with the "unknown" sentinel.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Extract an <c>X.Y[.Z]</c> semver from arbitrary text. Returns
+    /// the first match, or null when no plausible version is found.
+    /// </summary>
+    internal static string ExtractSemver(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+        Match m = SemverPattern.Match(text);
+        return m.Success ? m.Value : string.Empty;
+    }
+
+    private static readonly Regex SemverPattern = new(
+        @"\d+\.\d+(?:\.\d+)?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static string? DiscoverLinux()
     {
@@ -253,6 +377,14 @@ public sealed class XClangToolChain : XToolChain
         }
 
         // === Include paths ===
+        // Audit fix C4: PCH header directory first so -include-pch's
+        // implicit lookup + any -include flag resolves against the
+        // header's own directory regardless of consumer-module include
+        // paths.
+        if (pch is not null && !string.IsNullOrEmpty(pch.PchHeaderDirectory))
+        {
+            args.Add($"-I{pch.PchHeaderDirectory}");
+        }
         foreach (string inc in module.PublicIncludePaths)
         {
             args.Add($"-I{inc}");
@@ -338,6 +470,10 @@ public sealed class XClangToolChain : XToolChain
                     $"FipsMode={target.FipsMode}",
                     $"StationRole={target.StationRole}",
                     $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
+                    // Audit fix R4-M2: Clang version contributes to the
+                    // cache key so a toolchain upgrade invalidates
+                    // cached compiles (mirrors MSVC's MsvcVersion=).
+                    $"ClangVersion={_clangVersion}",
                 },
             }),
         };
@@ -602,13 +738,17 @@ public sealed class XClangToolChain : XToolChain
 
         List<string> args = new();
         args.Add("-shared");
-        // --remap-file is Clang's link-side pathmap equivalent per
-        // Contract Section 2.1 (Rev 13.1 audit fix). The compile side
-        // emits -fdebug-prefix-map=; the link side emits --remap-file=
-        // because the linker reads source-path metadata via the
-        // assembler/object-file remap surface rather than the DWARF
-        // debug-info remap that -fdebug-prefix-map= targets.
-        args.Add($"--remap-file={_repoRoot}=X:/R");
+        // Audit fix M1: <c>--remap-file=</c> is NOT a valid clang/lld
+        // flag for source-path remapping. The Rev 13.1 emit was wrong;
+        // ld.lld treats unknown options as a fatal error on recent
+        // versions. The compile-side <c>-fdebug-prefix-map=</c> already
+        // normalizes DWARF source paths into the .o sections; the
+        // linker copies DWARF sections through without modification,
+        // so no link-side path remap is required for the
+        // reproducibility envelope. The link command remains
+        // deterministic via <c>-Wl,--build-id=none</c> + <c>-fno-ident</c>
+        // (no embedded build-id, no GCC banner) which strip the only
+        // host-dependent metadata clang otherwise injects.
         args.Add("-fno-ident");
         args.Add("-Wl,--build-id=none");
 
@@ -673,23 +813,17 @@ public sealed class XClangToolChain : XToolChain
     /// <inheritdoc/>
     protected override IEnumerable<string> GetCompileArguments_FPSemantics(FPSemantics fps)
     {
+        // Audit fix C6/M2: FPSemantics.Default emits no -ffp-* flag.
+        // Compiler default applies. Imprecise maps to -ffp-contract=fast
+        // explicitly (NOT -ffast-math, which silently pulls in
+        // -ffinite-math-only and -funsafe-math-optimizations -- a
+        // determinism risk). Precise maps to -ffp-contract=off.
         return fps switch
         {
-            FPSemantics.Default => new[]
-            {
-                // Non-SimPath default: enable the fast-math family with
-                // explicit -fhonor-infinities + -fno-reciprocal-math
-                // suppressors to keep the codegen tame (per master plan
-                // B.8 spec). Pure -ffast-math would be too aggressive.
-                "-ffast-math",
-                "-fhonor-infinities",
-                "-fno-reciprocal-math",
-            },
+            FPSemantics.Default => Array.Empty<string>(),
             FPSemantics.Imprecise => new[]
             {
-                "-ffast-math",
-                "-fhonor-infinities",
-                "-fno-reciprocal-math",
+                "-ffp-contract=fast",
             },
             FPSemantics.Precise => new[]
             {
@@ -721,10 +855,14 @@ public sealed class XClangToolChain : XToolChain
                 config == BuildConfiguration.Shipping
                     ? new[] { "-O2" }
                     : new[] { "-O0" },
-            OptimizeCodeMode.Default =>
-                config == BuildConfiguration.Shipping
-                    ? new[] { "-O3" }
-                    : new[] { "-O2" },
+            // Audit fix M6: Default maps to the configuration's default
+            // optimization level. Debug/DebugGame already returned -O0
+            // above; Development/Shipping/Test all map to -O2 (the
+            // production baseline). Previously Shipping received -O3
+            // which trades determinism for performance (auto-vectorize
+            // may emit different codegen across host CPUs) -- a risk
+            // the lockstep simulation envelope explicitly disallows.
+            OptimizeCodeMode.Default => new[] { "-O2" },
             _ => Array.Empty<string>(),
         };
     }
@@ -755,14 +893,41 @@ public sealed class XClangToolChain : XToolChain
             };
         }
 
+        // Audit fix R4-M3: every per-level flag set now mirrors the
+        // per-level <c>XBT.html</c> Section 4.6 table. The lower-bound
+        // flag (e.g. <c>-msse2</c>) by itself does NOT prevent Clang
+        // from auto-vectorizing with higher-SIMD intrinsics on hosts
+        // where they're enabled by default; the upper-bound suppression
+        // set is required so the codegen is reproducible across hosts.
         return level switch
         {
             SimdLevel.None => new[] { "-mno-sse" },
-            SimdLevel.SSE2 => new[] { "-msse2" },
-            SimdLevel.SSE42 => new[] { "-msse4.2" },
-            SimdLevel.AVX => new[] { "-mavx" },
-            SimdLevel.AVX2 => new[] { "-mavx2" },
-            SimdLevel.AVX512 => new[] { "-mavx512f" },
+            SimdLevel.SSE2 => new[]
+            {
+                "-msse2",
+                "-mno-sse3", "-mno-ssse3", "-mno-sse4.1", "-mno-sse4.2",
+                "-mno-avx", "-mno-avx2", "-mno-avx512f",
+            },
+            SimdLevel.SSE42 => new[]
+            {
+                "-msse4.2",
+                "-mno-avx", "-mno-avx2", "-mno-avx512f",
+            },
+            SimdLevel.AVX => new[]
+            {
+                "-mavx",
+                "-mno-avx2", "-mno-avx512f",
+            },
+            SimdLevel.AVX2 => new[]
+            {
+                "-mavx2",
+                "-mno-avx512f",
+            },
+            SimdLevel.AVX512 => new[]
+            {
+                "-mavx512f",
+                "-mavx512bw", "-mavx512dq", "-mavx512vl",
+            },
             _ => Array.Empty<string>(),
         };
     }

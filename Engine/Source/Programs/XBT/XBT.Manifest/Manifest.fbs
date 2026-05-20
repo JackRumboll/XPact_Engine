@@ -81,11 +81,17 @@ table TargetInfo {
     target_type: TargetType;
     configuration: Configuration;
     platform: Platform;
-    architecture: string;     // "x86_64" or "aarch64"
+    architecture: string;     // "x86_64" or "aarch64" -- sourced from TargetRules.Architecture (audit fix C1).
     station_role: StationRole = None;
     simd_level_default: SimdLevel = SSE42;
     fips_mode: bool = false;
     sim_path_conservative_roots_allowed: bool = false;
+    // ABI envelope fields per Toolchain Contract Rev 13 Section 10.2 +
+    // audit fix C10. Appended (never reordered) so existing readers
+    // tolerate older buffers.
+    gc_root_abi: string;            // e.g. "Span-based v1"
+    exception_abi: string;          // e.g. "Tier1-Shim/Tier2-Direct"
+    mangling_scheme: string;        // e.g. "Itanium-LengthPrefixed-v1"
 }
 
 table ModuleDep {

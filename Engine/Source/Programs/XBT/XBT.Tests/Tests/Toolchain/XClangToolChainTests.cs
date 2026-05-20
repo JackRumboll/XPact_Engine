@@ -78,11 +78,13 @@ public sealed class XClangToolChainTests : IDisposable
     }
 
     /// <summary>
-    /// Non-SimPath module with FPSemantics.Default emits the
-    /// -ffast-math-family flags.
+    /// Audit fix C6/M2: Non-SimPath module with FPSemantics.Default
+    /// emits NO <c>-ffp-*</c>/<c>-ffast-math</c> flag. Compiler default
+    /// applies (Clang defaults to IEEE-precise). Imprecise still maps
+    /// to <c>-ffp-contract=fast</c>; Precise to <c>-ffp-contract=off</c>.
     /// </summary>
     [Fact]
-    public void NonSimPathModule_FpDefault_EmitsFastMath()
+    public void NonSimPathModule_FpDefault_EmitsNoFpFlag()
     {
         ModuleRules module = NewModule(simPath: false);
         TargetRules target = NewTarget(Platform.Linux);
@@ -90,7 +92,9 @@ public sealed class XClangToolChainTests : IDisposable
         var actions = _linuxToolchain.CompileSource(module, target, MakeSource("XRenderer.cpp"), _scratchDir);
         IExternalAction compile = actions.Single();
 
-        Assert.Contains("-ffast-math", compile.CommandArguments);
+        Assert.DoesNotContain("-ffast-math", compile.CommandArguments);
+        Assert.DoesNotContain("-ffp-contract=fast", compile.CommandArguments);
+        Assert.DoesNotContain("-ffp-contract=off", compile.CommandArguments);
     }
 
     /// <summary>
@@ -129,12 +133,19 @@ public sealed class XClangToolChainTests : IDisposable
 
     /// <summary>
     /// Reproducibility envelope (XBT.html Section 19.1 + Contract
-    /// Section 2.1, Rev 13.1): every Clang compile emits
+    /// Section 2.1): every Clang compile emits
     /// -fdebug-prefix-map + -fno-ident +
     /// -frandomize-layout-seed-file=&lt;path&gt;; every Clang link emits
-    /// --remap-file=&lt;repoRoot&gt;=X:/R + -Wl,--build-id=none +
-    /// -fno-ident.
+    /// -Wl,--build-id=none + -fno-ident.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M1: the previous Rev 13.1 emit included an invalid
+    /// <c>--remap-file=</c> flag on the link line. The flag does not
+    /// exist in clang or lld; -fdebug-prefix-map= on the compile side
+    /// already normalizes DWARF source paths, and the linker copies
+    /// DWARF sections through verbatim. No link-side path remap is
+    /// required for the reproducibility envelope.
+    /// </remarks>
     [Fact]
     public void ReproducibilityFlags_PresentOnEveryCompileAndLink()
     {
@@ -185,14 +196,15 @@ public sealed class XClangToolChainTests : IDisposable
     }
 
     /// <summary>
-    /// Contract Rev 13.1 Section 2.1: the Clang link command uses
-    /// <c>--remap-file=&lt;RepoRoot&gt;=X:/R</c> (Clang's pathmap
-    /// equivalent) instead of <c>-fdebug-prefix-map=</c>. The link side
-    /// MUST NOT carry the compile-side debug-info flag because the
-    /// linker's source-path remap surface is a different machinery.
+    /// Audit fix M1: the Clang link command MUST NOT emit
+    /// <c>--remap-file=</c> (an invalid clang/lld flag that the
+    /// previous Rev 13.1 emit incorrectly included), nor the
+    /// compile-side <c>-fdebug-prefix-map=</c> (the linker copies
+    /// DWARF sections through unmodified, so the compile-side remap
+    /// is sufficient for the reproducibility envelope).
     /// </summary>
     [Fact]
-    public void Link_UsesRemapFileInsteadOfFdebugPrefixMap()
+    public void Link_DoesNotEmitInvalidRemapFlag_NorCompileSidePrefixMap()
     {
         ModuleRules module = NewModule(simPath: false);
         TargetRules target = NewTarget(Platform.Linux);
@@ -200,7 +212,7 @@ public sealed class XClangToolChainTests : IDisposable
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
         IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
 
-        Assert.Contains("--remap-file=/home/user/repo=X:/R", link.CommandArguments);
+        Assert.DoesNotContain(link.CommandArguments, a => a.StartsWith("--remap-file=", StringComparison.Ordinal));
         Assert.DoesNotContain(
             "-fdebug-prefix-map=/home/user/repo=X:/R",
             link.CommandArguments);
@@ -223,6 +235,147 @@ public sealed class XClangToolChainTests : IDisposable
         Assert.Equal("/usr/bin/clang", compile.CommandPath);
         Assert.Equal("Trivial.cpp", compile.StatusDescription);
         Assert.Contains(compile.CommandArguments, a => a.EndsWith("Trivial.cpp", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R4-M3: per-SIMD-level upper-bound suppression flag set.
+    /// SSE2 must emit <c>-msse2</c> AND <c>-mno-sse3 -mno-ssse3
+    /// -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-avx512f</c>.
+    /// Without the suppressions, Clang may auto-vectorize using higher
+    /// SIMD intrinsics on hosts where they're enabled by default.
+    /// </summary>
+    [Fact]
+    public void SimdLevel_SSE2_EmitsFullSuppressionSet()
+    {
+        ModuleRules module = NewModule(simPath: false, simdLevel: SimdLevel.SSE2);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("Sse2.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("-msse2", compile.CommandArguments);
+        Assert.Contains("-mno-sse3", compile.CommandArguments);
+        Assert.Contains("-mno-ssse3", compile.CommandArguments);
+        Assert.Contains("-mno-sse4.1", compile.CommandArguments);
+        Assert.Contains("-mno-sse4.2", compile.CommandArguments);
+        Assert.Contains("-mno-avx", compile.CommandArguments);
+        Assert.Contains("-mno-avx2", compile.CommandArguments);
+        Assert.Contains("-mno-avx512f", compile.CommandArguments);
+    }
+
+    /// <summary>Audit fix R4-M3: SSE42 emits the SSE4.2 floor + AVX/AVX2/AVX512F suppressions.</summary>
+    [Fact]
+    public void SimdLevel_SSE42_EmitsAvxSuppressionSet()
+    {
+        ModuleRules module = NewModule(simPath: false, simdLevel: SimdLevel.SSE42);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("Sse42.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("-msse4.2", compile.CommandArguments);
+        Assert.Contains("-mno-avx", compile.CommandArguments);
+        Assert.Contains("-mno-avx2", compile.CommandArguments);
+        Assert.Contains("-mno-avx512f", compile.CommandArguments);
+    }
+
+    /// <summary>Audit fix R4-M3: AVX emits the AVX floor + AVX2/AVX512F suppressions.</summary>
+    [Fact]
+    public void SimdLevel_AVX_EmitsAvx2AndAvx512Suppressions()
+    {
+        ModuleRules module = NewModule(simPath: false, simdLevel: SimdLevel.AVX);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("Avx.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("-mavx", compile.CommandArguments);
+        Assert.Contains("-mno-avx2", compile.CommandArguments);
+        Assert.Contains("-mno-avx512f", compile.CommandArguments);
+    }
+
+    /// <summary>Audit fix R4-M3: AVX2 emits the AVX2 floor + AVX512F suppression.</summary>
+    [Fact]
+    public void SimdLevel_AVX2_EmitsAvx512Suppression()
+    {
+        ModuleRules module = NewModule(simPath: false, simdLevel: SimdLevel.AVX2);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("Avx2.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("-mavx2", compile.CommandArguments);
+        Assert.Contains("-mno-avx512f", compile.CommandArguments);
+    }
+
+    /// <summary>Audit fix R4-M3: AVX512 emits the AVX512 floor + width-extension flags (bw/dq/vl).</summary>
+    [Fact]
+    public void SimdLevel_AVX512_EmitsWidthExtensionFlags()
+    {
+        ModuleRules module = NewModule(simPath: false, simdLevel: SimdLevel.AVX512);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("Avx512.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("-mavx512f", compile.CommandArguments);
+        Assert.Contains("-mavx512bw", compile.CommandArguments);
+        Assert.Contains("-mavx512dq", compile.CommandArguments);
+        Assert.Contains("-mavx512vl", compile.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix R4-M2: Clang version contributes to the
+    /// CacheKeyComponents string list, mirroring MSVC's
+    /// <c>MsvcVersion=</c>. Two toolchains differing only in
+    /// version emit different cache key strings, which forces
+    /// recompile on toolchain upgrade.
+    /// </summary>
+    [Fact]
+    public void ClangVersion_ContributesToCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        XClangToolChain tcOld = new(
+            clangPath: "/usr/bin/clang",
+            clangVersion: "17.0.0",
+            platform: Platform.Linux,
+            repoRoot: "/home/user/repo");
+        XClangToolChain tcNew = new(
+            clangPath: "/usr/bin/clang",
+            clangVersion: "18.0.0",
+            platform: Platform.Linux,
+            repoRoot: "/home/user/repo");
+
+        IExternalAction oldAction =
+            tcOld.CompileSource(module, target, MakeSource("V.cpp"), _scratchDir).Single();
+        IExternalAction newAction =
+            tcNew.CompileSource(module, target, MakeSource("V.cpp"), _scratchDir).Single();
+
+        Assert.Contains("ClangVersion=17.0.0", oldAction.CacheKeyComponents);
+        Assert.Contains("ClangVersion=18.0.0", newAction.CacheKeyComponents);
+        // The pair of CacheKeyComponents arrays MUST NOT be identical
+        // -- a Clang upgrade must change the cache key.
+        Assert.NotEqual(
+            string.Join("|", oldAction.CacheKeyComponents),
+            string.Join("|", newAction.CacheKeyComponents));
+    }
+
+    /// <summary>
+    /// Audit fix R4-M2: <see cref="XClangToolChain.ExtractSemver"/>
+    /// returns the first plausible semver from arbitrary text. Covers
+    /// the typical clang -dumpversion form ("18.0.0\n") and the
+    /// --version banner form ("clang version 18.0.0 (https://...)").
+    /// </summary>
+    [Fact]
+    public void ExtractSemver_ParsesDumpversionAndBannerForms()
+    {
+        Assert.Equal("18.0.0", XClangToolChain.ExtractSemver("18.0.0\n"));
+        Assert.Equal("18.0.0", XClangToolChain.ExtractSemver(
+            "clang version 18.0.0 (https://github.com/llvm/llvm-project.git ...)"));
+        // No version: empty string.
+        Assert.Equal(string.Empty, XClangToolChain.ExtractSemver("clang version unknown"));
     }
 
     // ----- Helpers -----

@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XBT.Manifest;
 
 /// <summary>
 /// Enumeration of the canonical Toolchain Contract surface elements per
-/// Contract Rev 13.1 Section 10.2 ("ContractVersion auto-derivation"). This
+/// Contract Rev 13.2 Section 10.2 ("ContractVersion auto-derivation"). This
 /// type is the <strong>C# source of truth</strong> for what the contract
 /// locks; if the C# disagrees with <c>/Documents/XToolchainContract.html</c>
 /// the C# wins (the HTML is documentation; this code is the implementation
@@ -42,9 +42,10 @@ public static class ContractSurface
     /// <summary>
     /// Hand-bumped semantic version tag. Tracks the current Toolchain
     /// Contract revision (Rev 13 -> "13.0"; Rev 13.1 = audit-fixes
-    /// round 1 -> "13.1"). Bumped on every contract revision so a
-    /// textually-large but structurally-small revision can still produce
-    /// a new <see cref="ContractVersion.Current"/> string.
+    /// round 1 -> "13.1"; Rev 13.2 = audit-fixes round 2+ -> "13.2").
+    /// Bumped on every contract revision so a textually-large but
+    /// structurally-small revision can still produce a new
+    /// <see cref="ContractVersion.Current"/> string.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -53,19 +54,18 @@ public static class ContractSurface
     /// semantic tag flows before the <c>+</c>, the hash suffix after.
     /// </para>
     /// <para>
-    /// Rev 13.1 (audit fixes round 1): corrected Section 13 exit-code
-    /// mnemonics (24=PluginNotFound; 60-63=XHT/XIL2CPP subprocess +
-    /// internal failures), replaced the underscore-collapsing
-    /// <see cref="FileIdScheme"/> with the Itanium-ABI-style
-    /// length-prefixed grammar from Contract Section 1.4, and aligned
-    /// <c>OptimizeCodeMode</c> enum ordinals with XBT.html Section 4.1.
-    /// All three changes mutate the structure hash so every downstream
-    /// cache layer (ActionHistory, XIL2CPP symbol mangling, XHT
-    /// reflection metadata, manifest verification) treats the surface
-    /// as incompatible and recomputes.
+    /// Rev 13.2 narrative (audit fixes round 2 + round 4 verification):
+    /// completed the ActionType slot table by adding
+    /// <c>Tier2WholeProgramPass</c> (slot 13) and
+    /// <c>BuildPluginManifestAction</c> (slot 16) -- both are emitted
+    /// by XBT in Phase 1 with named slots so renaming them would
+    /// otherwise be a silent contract drift; the audit added them to
+    /// the canonical surface so the auto-derived hash now responds to
+    /// either name change. Per the append-only contract ordinals, this
+    /// mutation of the surface bumps the hash.
     /// </para>
     /// </remarks>
-    public const string SemanticVersionTag = "13.1";
+    public const string SemanticVersionTag = "13.2";
 
     /// <summary>
     /// Itanium-ABI-style length-prefixed mangling rule example per
@@ -215,11 +215,26 @@ public static class ContractSurface
     /// ActionHistory entry).
     /// </summary>
     /// <remarks>
-    /// Slots 9-15 are reserved for forward-compatibility (XPactBuild
-    /// Accelerator + XLiveCoding action types) and are deliberately
-    /// excluded from the contract surface so a Phase 2 addendum that
-    /// appends actions does not retroactively invalidate Phase 1
-    /// ActionHistory.
+    /// <para>
+    /// The list includes every action type that Phase 1 actually emits.
+    /// The pre-reserved Phase 2 slots (9-12 + 14-15) are <em>not</em>
+    /// listed because they are placeholders -- adding a Phase 2 slot
+    /// would invalidate every Phase 1 ActionHistory the moment that
+    /// addendum lands, which defeats the point of the
+    /// append-only-ordinal contract.
+    /// </para>
+    /// <para>
+    /// Audit fix R4-M1: <c>Tier2WholeProgramPass</c> (slot 13) and
+    /// <c>BuildPluginManifestAction</c> (slot 16) are added to the
+    /// surface. Both are declared in <see cref="ActionGraph.XActionType"/>
+    /// with named, non-Reserved_ slots, both can be emitted by XBT in
+    /// Phase 1 (per <c>XActionType.cs</c> Slot-16 declaration and the
+    /// Tier 2 Pass 2 emit), and both rename-actions on either would
+    /// otherwise be a silent contract drift the way the
+    /// <c>StructureHash</c> mechanism is designed to prevent. Slot 17
+    /// (formerly <c>RunPostBuildAction</c>) is RETIRED, not reused;
+    /// it does NOT appear on this surface.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<string> ActionTypes = new[]
     {
@@ -232,6 +247,8 @@ public static class ContractSurface
         "CompileCppAction",
         "StaticAnalysisAction",
         "LinkModuleAction",
+        "Tier2WholeProgramPass",
+        "BuildPluginManifestAction",
     };
 
     /// <summary>

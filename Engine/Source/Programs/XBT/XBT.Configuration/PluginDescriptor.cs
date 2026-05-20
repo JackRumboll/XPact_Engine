@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XBT.Configuration;
 /// In-memory representation of a <c>.xplugin</c> descriptor. Mirrors
 /// Unreal's <c>.uplugin</c> in intent (JSON) with XPact-specific fields
 /// per <c>/Documents/XBT.html</c> Rev 4 Section 17 + Toolchain Contract
-/// Rev 13.1 Section 9.4.
+/// Rev 13.2 Section 9.4.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -76,7 +76,7 @@ public sealed record PluginDescriptor
     /// Names of plugins this plugin depends on. Each dependency is
     /// resolved against the deduplicated <c>PluginCatalog</c>;
     /// unresolved entries fail with exit 24
-    /// (<c>PluginNotFound</c> per Contract Rev 13.1 Section 13.1).
+    /// (<c>PluginNotFound</c> per Contract Rev 13.2 Section 13.1).
     /// </summary>
     public IReadOnlyList<string> Dependencies { get; init; } = new List<string>();
 

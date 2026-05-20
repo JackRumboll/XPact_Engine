@@ -203,6 +203,147 @@ public sealed class ParallelExecutorTests : IDisposable
     }
 
     /// <summary>
+    /// Audit fix R6-C1 regression: after a successful action, every
+    /// raw-source prerequisite's content hash is recorded in the
+    /// <see cref="ActionHistory"/> content-hash partition (the parallel
+    /// map added by audit M3 but previously not wired). Editing the
+    /// raw source's content and re-running causes the action to be
+    /// reported as outdated.
+    /// </summary>
+    [Fact]
+    public void Execute_AfterSuccess_RecordsRawSourceContentHash()
+    {
+        // Layout: rawSrc -> [Compile] -> out
+        // 'rawSrc' is a real on-disk file (no upstream action emits it),
+        // so the executor must record its content hash. Then we touch
+        // the file's content (different bytes) and ask the history if
+        // the action is outdated -- it must say yes.
+        FileItem rawSrc = MakeFileItem("source.cpp");
+        File.WriteAllText(rawSrc.FullPath, "int main() { return 0; }");
+        rawSrc.Invalidate();  // make sure the just-written content is hashed fresh
+        FileItem produced = MakeFileItem("compile.out");
+
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.CompileCppAction,
+            PrerequisiteItems = new[] { rawSrc },
+            ProducedItems = new[] { produced },
+            CommandPath = "/fake/cl.exe",
+            CommandArguments = Array.Empty<string>(),
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "Compile",
+            StatusDescription = "source.cpp",
+            bUseActionHistory = true,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+        });
+
+        var graph = new Simgenics.XPact.XBT.ActionGraph.ActionGraph(new[] { action });
+        graph.Link();
+        graph.DetectCycles();
+        graph.Sort();
+
+        ActionHistory history = ActionHistory.OpenAtPath(
+            Path.Combine(_scratchDir, "history.bin"));
+        var runner = new RecordingActionRunner();
+        var executor = new ParallelExecutor(
+            new ParallelExecutorOptions { WorkerCount = 1 },
+            runner,
+            history);
+        ExecutionReport report = executor.Execute(graph, CancellationToken.None);
+        Assert.True(report.AllSucceeded);
+
+        // The content hash was recorded; GetStoredContentHash for the
+        // raw source must now equal its live content hash.
+        IoHash recordedContentHash = history.GetStoredContentHash(rawSrc);
+        Assert.NotEqual(IoHash.Zero, recordedContentHash);
+        Assert.Equal(rawSrc.ContentHash, recordedContentHash);
+
+        // The action is NOT outdated -- everything matches.
+        var linked = new LinkedAction(action);
+        Assert.False(history.IsActionOutdated(linked));
+
+        // Edit the raw-source's content; invalidate the cached metadata.
+        File.WriteAllText(rawSrc.FullPath, "int main() { return 1; }");
+        rawSrc.Invalidate();
+
+        // Now the action MUST be reported outdated because the stored
+        // content hash no longer matches the live file.
+        Assert.True(history.IsActionOutdated(linked));
+    }
+
+    /// <summary>
+    /// Audit fix R6-C1 regression (negative case): an intermediate
+    /// prerequisite (a file produced by an upstream action in the same
+    /// graph) does NOT have its content hash recorded -- the upstream
+    /// action's own <see cref="ActionHistory.RecordHash"/> covers that
+    /// path through the producer-key map. Recording a content hash
+    /// here would be redundant and would also accidentally pin the
+    /// intermediate's hash before the downstream action re-runs.
+    /// </summary>
+    [Fact]
+    public void Execute_AfterSuccess_DoesNotRecordIntermediateContentHash()
+    {
+        // upstream: source -> upOut; downstream: upOut -> downOut
+        FileItem source = MakeFileItem("upstream-src.cpp");
+        File.WriteAllText(source.FullPath, "src");
+        source.Invalidate();
+        FileItem upOut = MakeFileItem("upstream.out");
+        FileItem downOut = MakeFileItem("downstream.out");
+
+        IExternalAction upAction = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.CompileCppAction,
+            PrerequisiteItems = new[] { source },
+            ProducedItems = new[] { upOut },
+            CommandPath = "/fake/up.exe",
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "Compile",
+            StatusDescription = "upstream",
+            bUseActionHistory = true,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+        });
+        IExternalAction downAction = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.LinkModuleAction,
+            PrerequisiteItems = new[] { upOut },
+            ProducedItems = new[] { downOut },
+            CommandPath = "/fake/down.exe",
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "Link",
+            StatusDescription = "downstream",
+            bUseActionHistory = true,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+        });
+
+        var graph = new Simgenics.XPact.XBT.ActionGraph.ActionGraph(new[] { upAction, downAction });
+        graph.Link();
+        graph.DetectCycles();
+        graph.Sort();
+
+        ActionHistory history = ActionHistory.OpenAtPath(
+            Path.Combine(_scratchDir, "history.bin"));
+        var runner = new RecordingActionRunner();
+        var executor = new ParallelExecutor(
+            new ParallelExecutorOptions { WorkerCount = 1 },
+            runner,
+            history);
+        ExecutionReport report = executor.Execute(graph, CancellationToken.None);
+        Assert.True(report.AllSucceeded);
+
+        // 'source' is raw -- its content hash IS recorded.
+        Assert.NotEqual(IoHash.Zero, history.GetStoredContentHash(source));
+
+        // 'upOut' is an intermediate (produced by upAction) -- the
+        // executor MUST NOT record a content hash for it. Its producer
+        // key lives in the producer-key map (RecordHash); the
+        // content-hash partition entry remains Zero.
+        Assert.Equal(IoHash.Zero, history.GetStoredContentHash(upOut));
+    }
+
+    /// <summary>
     /// CanExecuteRemotely is observed but does not change Phase 1 dispatch:
     /// an action with CanExecuteRemotely = false still runs locally
     /// without error.
@@ -302,6 +443,56 @@ public sealed class ParallelExecutorTests : IDisposable
         Assert.False(Directory.Exists(missingRoot));
         // No throw -- the sweep returns silently.
         ParallelExecutor.SweepOrphanedTempFiles(missingRoot);
+    }
+
+    /// <summary>
+    /// Audit fix R4-C1: <see cref="ParallelExecutor.SweepOrphanedTempFiles"/>
+    /// must accept the GUID-suffix style produced by the manifest writer
+    /// helpers (<c>ManifestJson.AtomicWriteAllBytes</c>,
+    /// <c>ManifestFbs.AtomicWriteAllBytes</c>) and by
+    /// <c>ActionHistory.Save</c>. Previously the sweeper required an
+    /// all-digit actionid suffix and silently left every GUID-suffix
+    /// temp file behind (leak on every interrupted manifest write).
+    /// </summary>
+    [Fact]
+    public void SweepOrphanedTempFiles_AcceptsGuidActionIdSuffix()
+    {
+        string sweepRoot = Path.Combine(_scratchDir, "sweep-guid");
+        string moduleObjDir = Path.Combine(sweepRoot, "Module", "obj");
+        Directory.CreateDirectory(moduleObjDir);
+
+        // An orphan temp file using the GUID-suffix shape produced by
+        // ManifestJson.AtomicWriteAllBytes. Pid is int.MaxValue so the
+        // process-alive probe returns false.
+        string guidNonce = Guid.NewGuid().ToString("N");
+        string orphanGuidPath = Path.Combine(
+            moduleObjDir,
+            $"Manifest.json.tmp.{int.MaxValue}.{guidNonce}");
+        File.WriteAllText(orphanGuidPath, "stale manifest temp");
+
+        // An orphan temp using the legacy all-digit actionid form (the
+        // ParallelExecutor.RunAction style). Both shapes must sweep.
+        string orphanDigitPath = Path.Combine(
+            moduleObjDir,
+            $"Foo.obj.tmp.{int.MaxValue}.42");
+        File.WriteAllText(orphanDigitPath, "stale obj temp");
+
+        // A temp file whose pid is the current process must survive
+        // regardless of the actionid shape.
+        int currentPid = Environment.ProcessId;
+        string liveGuidPath = Path.Combine(
+            moduleObjDir,
+            $"ActionHistory.bin.tmp.{currentPid}.{Guid.NewGuid().ToString("N")}");
+        File.WriteAllText(liveGuidPath, "live ActionHistory temp");
+
+        ParallelExecutor.SweepOrphanedTempFiles(sweepRoot);
+
+        Assert.False(File.Exists(orphanGuidPath),
+            "GUID-suffix orphan temp must be swept (audit fix R4-C1).");
+        Assert.False(File.Exists(orphanDigitPath),
+            "decimal-suffix orphan temp must continue to be swept.");
+        Assert.True(File.Exists(liveGuidPath),
+            "GUID-suffix temp file owned by current pid must be kept.");
     }
 
     /// <summary>

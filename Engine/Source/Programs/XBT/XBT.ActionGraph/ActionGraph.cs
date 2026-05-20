@@ -98,6 +98,15 @@ public sealed class ActionGraph
     {
         ArgumentNullException.ThrowIfNull(actions);
         _all = new List<LinkedAction>();
+        // Audit fix C3: producer-map keys are FileItem.FullPath. Every
+        // FileItem in the build goes through FileItem.GetItemByPath which
+        // normalizes the drive letter to uppercase on Windows
+        // (NormalizePathForCache; audit fix M4). So a producer at
+        // "C:\Build\Foo.obj" and a prerequisite at "c:\build\Foo.obj"
+        // (entered through different code paths) reach this map under
+        // the same canonical key. StringComparer.Ordinal is therefore
+        // correct on both Win64 (case-insensitive FS, normalised to
+        // uppercase) and Linux/Android (genuinely case-sensitive).
         _producerByPath = new Dictionary<string, LinkedAction>(StringComparer.Ordinal);
         foreach (IExternalAction action in actions)
         {
@@ -110,14 +119,31 @@ public sealed class ActionGraph
     /// and resolve each action's <see cref="LinkedAction.PrerequisiteActions"/>
     /// from the map. Throws <see cref="ActionGraphConflictException"/>
     /// (exit 80) on a duplicate-producer with different
-    /// <see cref="IExternalAction.CommandVersion"/>.
+    /// <see cref="IExternalAction.CommandVersion"/>,
+    /// <see cref="IExternalAction.PrerequisiteItems"/>, or
+    /// <see cref="IExternalAction.WorkingDirectory"/>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Two actions producing the same file with the <em>same</em>
-    /// <see cref="IExternalAction.CommandVersion"/> are tolerated -- they
-    /// are byte-for-byte identical and one is a redundant declaration.
-    /// In practice this case is rare; XBT subsystems should not duplicate
-    /// emission. The first occurrence wins.
+    /// <see cref="IExternalAction.CommandVersion"/>, prerequisite set, and
+    /// working directory are tolerated -- they are byte-for-byte identical
+    /// and one is a redundant declaration. In practice this case is rare;
+    /// XBT subsystems should not duplicate emission. The first occurrence
+    /// wins.
+    /// </para>
+    /// <para>
+    /// Audit fix R6-C3: <see cref="IExternalAction.CommandVersion"/> alone
+    /// is not sufficient to declare two producers byte-identical. Two
+    /// actions can share a command-line + working-directory + cache-key
+    /// payload (so <see cref="IExternalAction.CommandVersion"/> matches)
+    /// yet differ in their prerequisite set -- e.g. one declares a header
+    /// dependency the other does not. The differing prerequisites mean
+    /// the two actions WOULD invalidate under different conditions, so
+    /// silently dropping one would suppress staleness signals. Each
+    /// extra check below names the divergent field in its exception
+    /// message so a future graph builder bug is easier to diagnose.
+    /// </para>
     /// </remarks>
     public void Link()
     {
@@ -134,10 +160,46 @@ public sealed class ActionGraph
                         throw new ActionGraphConflictException(
                             produced.FullPath,
                             firstAction: existing.Description,
-                            secondAction: linked.Description);
+                            secondAction: linked.Description,
+                            divergentField: "CommandVersion");
                     }
-                    // Same command version -- byte-identical duplicate.
-                    // Keep the first; do not double-register.
+                    // Audit fix R6-C3: same CommandVersion but
+                    // divergent prerequisite-item sets means the two
+                    // actions would invalidate under different
+                    // conditions. Surface this as a conflict, not a
+                    // warning -- silently dropping one suppresses real
+                    // staleness signals.
+                    if (!PrerequisiteSetsEqual(existing.Action, linked.Action))
+                    {
+                        throw new ActionGraphConflictException(
+                            produced.FullPath,
+                            firstAction: existing.Description,
+                            secondAction: linked.Description,
+                            divergentField: "PrerequisiteItems");
+                    }
+                    if (!string.Equals(
+                            existing.Action.WorkingDirectory,
+                            linked.Action.WorkingDirectory,
+                            StringComparison.Ordinal))
+                    {
+                        throw new ActionGraphConflictException(
+                            produced.FullPath,
+                            firstAction: existing.Description,
+                            secondAction: linked.Description,
+                            divergentField: "WorkingDirectory");
+                    }
+                    // Audit fix M16: byte-identical duplicates are
+                    // tolerated (keeping the first), but no longer
+                    // silently. Emit a warning so the duplicate
+                    // emission shows up in the build log -- a subsystem
+                    // double-registering an action is almost always a
+                    // bug worth investigating.
+                    Logger.Warning(
+                        $"Action graph: byte-identical duplicate producer for " +
+                        $"'{produced.FullPath}'. First: '{existing.Description}'; " +
+                        $"duplicate: '{linked.Description}'. Keeping the first; " +
+                        "subsystem may be double-emitting.",
+                        new DiagnosticContext { Action = "action-graph-link" });
                     continue;
                 }
                 _producerByPath.Add(produced.FullPath, linked);
@@ -158,6 +220,105 @@ public sealed class ActionGraph
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Audit fix R6-C6: proactively validate that every produced /
+    /// prerequisite path on Windows fits in MAX_PATH. cl.exe and
+    /// link.exe surface MAX_PATH overflow as cryptic "cannot open file"
+    /// or "path not found" errors deep inside the compile / link;
+    /// checking up front emits an actionable diagnostic naming the
+    /// offending path and the action it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On Linux / macOS this is a no-op -- paths can run to 4096 bytes
+    /// (PATH_MAX) and the toolchains correctly fail with ENAMETOOLONG
+    /// at the actual offender.
+    /// </para>
+    /// <para>
+    /// Exit code 71 (<c>LinkFailed</c>) is the closest existing code in
+    /// the Toolchain Contract Section 13 surface: a path-length-induced
+    /// failure manifests as a link-stage failure on Windows because
+    /// link.exe is most often the offender (intermediate object paths
+    /// + library search paths combine to exceed MAX_PATH long before
+    /// any individual source file does). The contract does not have a
+    /// dedicated "path too long" code; 71 is the appropriate proxy
+    /// rather than introducing a new code that would bump the
+    /// contract surface.
+    /// </para>
+    /// </remarks>
+    public void CheckPathLengths()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const int WindowsMaxPath = 260;
+        List<string> offenders = new();
+        foreach (LinkedAction linked in _all)
+        {
+            foreach (FileItem produced in linked.Action.ProducedItems)
+            {
+                if (produced.FullPath.Length > WindowsMaxPath)
+                {
+                    offenders.Add(
+                        $"  Produced item ({produced.FullPath.Length} chars) " +
+                        $"of action '{linked.Description}':\n" +
+                        $"    {produced.FullPath}");
+                }
+            }
+            foreach (FileItem prereq in linked.Action.PrerequisiteItems)
+            {
+                if (prereq.FullPath.Length > WindowsMaxPath)
+                {
+                    offenders.Add(
+                        $"  Prerequisite ({prereq.FullPath.Length} chars) " +
+                        $"of action '{linked.Description}':\n" +
+                        $"    {prereq.FullPath}");
+                }
+            }
+        }
+
+        if (offenders.Count == 0)
+        {
+            return;
+        }
+
+        string message =
+            $"ActionGraph: {offenders.Count} path(s) exceed the Windows MAX_PATH limit ({WindowsMaxPath} characters). " +
+            "MSVC and link.exe surface this as cryptic 'cannot open file' / 'path not found' errors deep inside " +
+            "compile / link. Shorten the path (move the engine / project closer to the drive root) or enable " +
+            "long-path support engine-wide (Toolchain Contract Section 13 exit code 71 -- LinkFailed -- is the " +
+            "closest existing code; a path-length failure manifests as a link-stage failure in practice).\n" +
+            string.Join("\n", offenders);
+        throw new XBTException(message, exitCode: 71);
+    }
+
+    /// <summary>
+    /// Audit fix R6-C3 helper: compare two actions' prerequisite-item
+    /// lists by path. Returns true iff both lists are the same length
+    /// and contain the same paths in the same order. Both lists are
+    /// guaranteed sorted by <see cref="ExternalAction.Create"/>'s
+    /// invariant check, so a sequential ordinal compare is sufficient.
+    /// </summary>
+    private static bool PrerequisiteSetsEqual(IExternalAction a, IExternalAction b)
+    {
+        IReadOnlyList<FileItem> ap = a.PrerequisiteItems;
+        IReadOnlyList<FileItem> bp = b.PrerequisiteItems;
+        if (ap.Count != bp.Count)
+        {
+            return false;
+        }
+        for (int i = 0; i < ap.Count; i++)
+        {
+            if (!string.Equals(ap[i].FullPath, bp[i].FullPath, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>

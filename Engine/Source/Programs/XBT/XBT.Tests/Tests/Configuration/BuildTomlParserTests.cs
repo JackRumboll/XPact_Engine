@@ -651,4 +651,67 @@ public sealed class BuildTomlParserTests
         Assert.Contains("private_include_paths", ex.Message);
         Assert.Contains("..", ex.Message);
     }
+
+    /// <summary>
+    /// Audit fix R4-M5: <c>engine_version_compat</c> is a recognized
+    /// top-level field. Previously the parser rejected it with exit 30
+    /// (unknown key); only the Roslyn <c>.Build.cs</c> escape hatch
+    /// could set <c>ModuleRules.EngineVersionCompat</c>. The TOML
+    /// surface now accepts the field at parse time and surfaces the
+    /// value on the POCO.
+    /// </summary>
+    [Fact]
+    public void EngineVersionCompat_Parses_From_Toml()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            engine_version_compat = "^0.1"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal("^0.1", rules.EngineVersionCompat);
+    }
+
+    /// <summary>
+    /// Audit fix R4-M5: when <c>engine_version_compat</c> is absent the
+    /// POCO default ("*" = any-version-compatible) applies. This is the
+    /// safe default that does not constrain consumers.
+    /// </summary>
+    [Fact]
+    public void EngineVersionCompat_Absent_Defaults_To_Star()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+        Assert.Equal("*", rules.EngineVersionCompat);
+    }
+
+    /// <summary>
+    /// Audit fix R4-M5: round-trip <c>engine_version_compat</c> through
+    /// the serializer + parser pair. Serialize emits the field only when
+    /// non-default; parse recovers the value.
+    /// </summary>
+    [Fact]
+    public void EngineVersionCompat_Roundtrips_NonDefault()
+    {
+        ModuleRules input = new()
+        {
+            Name = "X",
+            Tier = ModuleTier.Engine,
+            ModuleType = ModuleType.Runtime,
+            EngineVersionCompat = "^0.1",
+        };
+
+        string toml = BuildTomlSerializer.Serialize(input);
+        Assert.Contains("engine_version_compat = \"^0.1\"", toml);
+
+        ModuleRules output = BuildTomlParser.Parse(toml);
+        Assert.Equal("^0.1", output.EngineVersionCompat);
+    }
 }

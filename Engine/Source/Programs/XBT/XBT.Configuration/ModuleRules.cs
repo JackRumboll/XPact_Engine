@@ -324,6 +324,24 @@ public class ModuleRules
     /// </summary>
     public string? MinimumToolchainVersion { get; init; } = null;
 
+    /// <summary>
+    /// Optional engine-version compatibility specifier. Default <c>"*"</c>
+    /// (any-version-compatible). Per-module versioning so a single
+    /// module can declare a tighter compatibility range than the plugin
+    /// containing it. Surfaced into the manifest's
+    /// <c>Module.EngineVersionCompat</c> field.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix M8: previously hardcoded to <c>"*"</c> at manifest
+    /// emission time. The field is declared here so a future
+    /// <c>.Build.toml</c> / <c>.Build.cs</c> parser revision can author
+    /// it; XBT's BuildMode surfaces this value into the manifest when
+    /// set, otherwise falls back to <c>"*"</c>.
+    /// </para>
+    /// </remarks>
+    public string EngineVersionCompat { get; init; } = "*";
+
     // -----------------------------------------------------------------
     // Typed build hooks (Contract Rev 12 Section 9.5)
     // -----------------------------------------------------------------

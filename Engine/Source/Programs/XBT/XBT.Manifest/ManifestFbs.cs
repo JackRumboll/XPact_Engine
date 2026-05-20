@@ -85,10 +85,10 @@ public sealed record FbsVerifierLimits
 /// both come from the same POCO and have structurally equivalent content.
 /// </para>
 /// <para>
-/// The Manifest POCO declared in <see cref="ManifestSchema"/> flattens
-/// the target-info fields directly onto <see cref="Manifest"/>; the FBS
-/// schema groups them under a nested <c>table TargetInfo</c>. This
-/// converter packs / unpacks the nested grouping transparently.
+/// The POCO declared in <see cref="ManifestSchema"/> and the FBS schema
+/// both group per-target fields under a nested <c>TargetInfo</c> table;
+/// this converter maps <see cref="Manifest.Target"/> directly onto the
+/// FBS <c>TargetInfo</c>.
 /// </para>
 /// <para>
 /// The four-byte FlatBuffers <c>file_identifier</c> at offset +4 of the buffer
@@ -108,9 +108,20 @@ public static class ManifestFbs
 
     /// <summary>
     /// Architecture string written into the FBS <c>TargetInfo.architecture</c>
-    /// field when the source POCO does not carry an architecture choice.
-    /// The Phase 1 default is x86_64 per Toolchain Contract Rev 13 Section 4.
+    /// field when the source POCO carries an empty architecture string.
+    /// The Phase 1 fallback is x86_64 per Toolchain Contract Rev 13 Section 4.
+    /// Tests and synthetic call sites that construct a Manifest POCO
+    /// without an Architecture value see this default.
     /// </summary>
+    /// <remarks>
+    /// Audit fix C1: the architecture is now sourced from
+    /// <see cref="TargetInfo.Architecture"/> on the POCO (via
+    /// <see cref="Manifest.Target"/>). The <c>architecture</c> overload
+    /// parameter remains as a back-compat override for callers that want
+    /// to inject the value explicitly (e.g. WriteManifestAction for
+    /// cross-arch manifests). When the POCO carries a non-empty
+    /// architecture, the overload parameter is ignored.
+    /// </remarks>
     public const string DefaultArchitecture = "x86_64";
 
     /// <summary>
@@ -120,8 +131,10 @@ public static class ManifestFbs
     /// <param name="manifest">The manifest to encode. Must not be null.</param>
     /// <param name="architecture">
     /// Optional CPU architecture for the FBS <c>TargetInfo.architecture</c>
-    /// field. Defaults to <see cref="DefaultArchitecture"/> because the POCO
-    /// does not carry architecture in Phase 1.
+    /// field. Used only when
+    /// <paramref name="manifest"/>.<see cref="Manifest.Target"/>.<see cref="TargetInfo.Architecture"/>
+    /// is empty (the POCO's value wins when set). Defaults to
+    /// <see cref="DefaultArchitecture"/>.
     /// </param>
     /// <param name="dynamicModuleNames">
     /// Optional set of module names that the writer should mark
@@ -139,7 +152,15 @@ public static class ManifestFbs
     {
         ArgumentNullException.ThrowIfNull(manifest);
 
-        FbsManifest root = ToFbs(manifest, architecture, dynamicModuleNames ?? new HashSet<string>(StringComparer.Ordinal));
+        // Audit fix C1: prefer the POCO's Architecture when set; fall
+        // back to the legacy parameter only when the POCO field is empty.
+        // After the Rev 13 reconciliation per-target fields live under
+        // Manifest.Target so we read through the nested record.
+        string pocoArchitecture = manifest.Target?.Architecture ?? string.Empty;
+        string effectiveArchitecture = !string.IsNullOrEmpty(pocoArchitecture)
+            ? pocoArchitecture
+            : architecture;
+        FbsManifest root = ToFbs(manifest, effectiveArchitecture, dynamicModuleNames ?? new HashSet<string>(StringComparer.Ordinal));
 
         // FlatSharp emits a pre-generated Serializer per (fs_serializer)-tagged
         // table; for Manifest that property is FbsManifest.Serializer. The
@@ -172,7 +193,9 @@ public static class ManifestFbs
     /// <param name="destinationPath">Absolute filesystem path of the output file.</param>
     /// <param name="architecture">
     /// Optional CPU architecture for the FBS <c>TargetInfo.architecture</c>
-    /// field. Defaults to <see cref="DefaultArchitecture"/>.
+    /// field. Used only when the POCO's
+    /// <see cref="Manifest.Target"/>.<see cref="TargetInfo.Architecture"/>
+    /// is empty (audit fix C1). Defaults to <see cref="DefaultArchitecture"/>.
     /// </param>
     /// <param name="dynamicModuleNames">
     /// Optional set of module names marked <c>is_dynamic = true</c>.
@@ -194,11 +217,16 @@ public static class ManifestFbs
 
     /// <summary>
     /// Atomic write helper: write to a uniquely-named temp file in the
-    /// destination directory, then rename over the target. Mirrors
-    /// <c>ManifestJson</c>'s implementation; both forms must use the
-    /// same temp-file pattern so an external observer cannot see a
+    /// destination directory, flush to disk, then rename over the target.
+    /// Mirrors <c>ManifestJson</c>'s implementation; both forms must use
+    /// the same temp-file pattern so an external observer cannot see a
     /// partially-written manifest.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M12: <see cref="System.IO.FileStream.Flush(bool)"/>
+    /// with <c>flushToDisk = true</c> issues fsync before the rename so
+    /// a power loss after rename cannot leave a corrupt destination.
+    /// </remarks>
     private static void AtomicWriteAllBytes(string destinationPath, byte[] bytes)
     {
         string? directory = System.IO.Path.GetDirectoryName(destinationPath);
@@ -214,8 +242,20 @@ public static class ManifestFbs
         string baseName = System.IO.Path.GetFileName(destinationPath);
         string tempPath = System.IO.Path.Combine(parent, $"{baseName}.tmp.{pid}.{nonce}");
 
-        System.IO.File.WriteAllBytes(tempPath, bytes);
-        System.IO.File.Move(tempPath, destinationPath, overwrite: true);
+        using (System.IO.FileStream fs = new(
+            tempPath,
+            System.IO.FileMode.Create,
+            System.IO.FileAccess.Write,
+            System.IO.FileShare.None))
+        {
+            fs.Write(bytes, 0, bytes.Length);
+            // Audit fix M12: fsync before rename.
+            fs.Flush(flushToDisk: true);
+        }
+        // Audit fix R6-C5: AV-retry wrapper -- same rationale as
+        // ManifestJson.AtomicWriteAllBytes.
+        Simgenics.XPact.XBT.Core.FileSystemOps.RetryOnTransientIOException(
+            () => System.IO.File.Move(tempPath, destinationPath, overwrite: true));
     }
 
     /// <summary>
@@ -308,8 +348,11 @@ public static class ManifestFbs
 
         if (root.Target is { } target)
         {
-            CheckString(target.Name,         "TargetInfo.name",         limits);
-            CheckString(target.Architecture, "TargetInfo.architecture", limits);
+            CheckString(target.Name,            "TargetInfo.name",            limits);
+            CheckString(target.Architecture,    "TargetInfo.architecture",    limits);
+            CheckString(target.GcRootAbi,       "TargetInfo.gc_root_abi",     limits);
+            CheckString(target.ExceptionAbi,    "TargetInfo.exception_abi",   limits);
+            CheckString(target.ManglingScheme,  "TargetInfo.mangling_scheme", limits);
         }
 
         IList<FbsModule>? modules = root.Modules;
@@ -403,24 +446,36 @@ public static class ManifestFbs
             EngineVersion            = m.EngineVersion,
             RootLocalPath            = m.RootLocalPath,
             ExternalDependenciesFile = m.ExternalDependenciesFile ?? string.Empty,
-            Target                   = ToFbsTarget(m, architecture),
+            Target                   = ToFbsTarget(m.Target, architecture),
             Modules                  = m.Modules.Select(mod => ToFbs(mod, dynamicModuleNames)).ToList(),
         };
     }
 
-    private static FbsTargetInfo ToFbsTarget(Manifest m, string architecture)
+    private static FbsTargetInfo ToFbsTarget(TargetInfo t, string architecture)
     {
+        // Audit fix R4-p3: defensive null/empty guard. The caller is
+        // expected to resolve a non-empty architecture before this
+        // point (SerializeToFbs derives the effective architecture by
+        // preferring the POCO's TargetInfo.Architecture when non-empty
+        // and falling back to the parameter), but a future regression
+        // in that derivation should surface as an ArgumentException
+        // immediately rather than as a malformed FBS payload downstream.
+        ArgumentException.ThrowIfNullOrEmpty(architecture);
         return new FbsTargetInfo
         {
-            Name                            = m.TargetName,
-            TargetType                      = (FbsTargetType)(int)m.TargetType,
-            Configuration                   = (FbsConfiguration)(int)m.Configuration,
-            Platform                        = (FbsPlatform)(int)m.Platform,
+            Name                            = t.Name,
+            TargetType                      = (FbsTargetType)(int)t.Type,
+            Configuration                   = (FbsConfiguration)(int)t.Configuration,
+            Platform                        = (FbsPlatform)(int)t.Platform,
             Architecture                    = architecture,
-            StationRole                     = (FbsStationRole)(int)m.StationRole,
-            SimdLevelDefault                = (FbsSimdLevel)(int)m.SimdLevelDefault,
-            FipsMode                        = m.FipsMode,
-            SimPathConservativeRootsAllowed = m.SimPathConservativeRootsAllowed,
+            StationRole                     = (FbsStationRole)(int)t.StationRole,
+            SimdLevelDefault                = (FbsSimdLevel)(int)t.SimdLevelDefault,
+            FipsMode                        = t.FipsMode,
+            SimPathConservativeRootsAllowed = t.SimPathConservativeRootsAllowed,
+            // Audit fix C10: ABI envelope fields.
+            GcRootAbi                       = t.GCRootABI,
+            ExceptionAbi                    = t.ExceptionABI,
+            ManglingScheme                  = t.ManglingScheme,
         };
     }
 
@@ -481,22 +536,77 @@ public static class ManifestFbs
 
     private static Manifest FromFbs(FbsManifest m)
     {
-        FbsTargetInfo? target = m.Target;
         return new Manifest(
             ContractVersion:                 m.ContractVersion ?? string.Empty,
             EngineVersion:                   m.EngineVersion   ?? string.Empty,
-            TargetName:                      target?.Name      ?? string.Empty,
-            TargetType:                      target is null ? default : (BuildTargetType)(int)target.TargetType,
-            Configuration:                   target is null ? default : (BuildConfiguration)(int)target.Configuration,
-            Platform:                        target is null ? default : (Platform)(int)target.Platform,
+            Target:                          FromFbsTarget(m.Target),
             RootLocalPath:                   m.RootLocalPath ?? string.Empty,
             ExternalDependenciesFile:        string.IsNullOrEmpty(m.ExternalDependenciesFile) ? null : m.ExternalDependenciesFile,
-            FipsMode:                        target?.FipsMode ?? false,
-            SimPathConservativeRootsAllowed: target?.SimPathConservativeRootsAllowed ?? false,
-            StationRole:                     target is null ? default : (StationRole)(int)target.StationRole,
-            SimdLevelDefault:                target is null ? SimdLevel.SSE42 : (SimdLevel)(int)target.SimdLevelDefault,
             Modules:                         (m.Modules ?? new List<FbsModule>()).Select(FromFbs).ToList());
     }
+
+    /// <summary>
+    /// Reconstruct the per-target POCO from an FBS <c>TargetInfo</c>.
+    /// When the FBS payload omits the target sub-table entirely (older
+    /// buffers), the POCO is filled with default-but-shape-preserving
+    /// values so downstream consumers see a non-null target with the
+    /// Phase 1 ABI baseline. Audit fix C10: empty / missing ABI fields
+    /// map to the Phase 1 defaults so the POCO is always populated.
+    /// </summary>
+    private static TargetInfo FromFbsTarget(FbsTargetInfo? target)
+    {
+        if (target is null)
+        {
+            return new TargetInfo(
+                Name:                            string.Empty,
+                Type:                            default,
+                Platform:                        default,
+                Configuration:                   default,
+                Architecture:                    string.Empty,
+                GCRootABI:                       DefaultGCRootABI,
+                ExceptionABI:                    DefaultExceptionABI,
+                ManglingScheme:                  DefaultManglingScheme,
+                FipsMode:                        false,
+                SimPathConservativeRootsAllowed: false,
+                SimdLevelDefault:                SimdLevel.SSE42,
+                StationRole:                     default);
+        }
+
+        return new TargetInfo(
+            Name:                            target.Name ?? string.Empty,
+            Type:                            (BuildTargetType)(int)target.TargetType,
+            Platform:                        (Platform)(int)target.Platform,
+            Configuration:                   (BuildConfiguration)(int)target.Configuration,
+            Architecture:                    target.Architecture ?? string.Empty,
+            // Audit fix C10: ABI envelope fields. Empty strings on absent
+            // FBS values map to Phase 1 defaults so older binaries still
+            // surface a usable Manifest POCO.
+            GCRootABI:                       string.IsNullOrEmpty(target.GcRootAbi) ? DefaultGCRootABI : target.GcRootAbi,
+            ExceptionABI:                    string.IsNullOrEmpty(target.ExceptionAbi) ? DefaultExceptionABI : target.ExceptionAbi,
+            ManglingScheme:                  string.IsNullOrEmpty(target.ManglingScheme) ? DefaultManglingScheme : target.ManglingScheme,
+            FipsMode:                        target.FipsMode,
+            SimPathConservativeRootsAllowed: target.SimPathConservativeRootsAllowed,
+            SimdLevelDefault:                (SimdLevel)(int)target.SimdLevelDefault,
+            StationRole:                     (StationRole)(int)target.StationRole);
+    }
+
+    /// <summary>
+    /// Phase 1 default for <see cref="TargetInfo.GCRootABI"/>. Per audit
+    /// fix C10 locked policy: <c>"Span-based v1"</c>.
+    /// </summary>
+    public const string DefaultGCRootABI = "Span-based v1";
+
+    /// <summary>
+    /// Phase 1 default for <see cref="TargetInfo.ExceptionABI"/>. Per audit
+    /// fix C10 locked policy: <c>"Tier1-Shim/Tier2-Direct"</c>.
+    /// </summary>
+    public const string DefaultExceptionABI = "Tier1-Shim/Tier2-Direct";
+
+    /// <summary>
+    /// Phase 1 default for <see cref="TargetInfo.ManglingScheme"/>. Per
+    /// audit fix C10 locked policy: <c>"Itanium-LengthPrefixed-v1"</c>.
+    /// </summary>
+    public const string DefaultManglingScheme = "Itanium-LengthPrefixed-v1";
 
     private static Module FromFbs(FbsModule m)
     {

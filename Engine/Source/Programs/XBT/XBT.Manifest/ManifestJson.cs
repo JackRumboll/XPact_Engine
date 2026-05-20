@@ -97,9 +97,18 @@ public static class ManifestJson
 
     /// <summary>
     /// Atomic write helper: write to a uniquely-named temp file in the
-    /// destination directory, fsync, then rename over the target. The
-    /// rename is atomic on every supported filesystem (NTFS, ext4, APFS).
+    /// destination directory, flush to disk, then rename over the target.
+    /// The rename is atomic on every supported filesystem (NTFS, ext4,
+    /// APFS).
     /// </summary>
+    /// <remarks>
+    /// Audit fix M12: <see cref="FileStream.Flush(bool)"/> with
+    /// <c>flushToDisk = true</c> issues an fsync before the rename, so
+    /// a power loss after rename cannot leave a zero-byte
+    /// post-allocation hole in the destination. Without fsync the
+    /// rename can complete while the data still sits in the OS page
+    /// cache; a power loss in that window leaves a corrupt destination.
+    /// </remarks>
     private static void AtomicWriteAllBytes(string destinationPath, byte[] bytes)
     {
         string? directory = Path.GetDirectoryName(destinationPath);
@@ -117,8 +126,20 @@ public static class ManifestJson
         string baseName = Path.GetFileName(destinationPath);
         string tempPath = Path.Combine(parent, $"{baseName}.tmp.{pid}.{nonce}");
 
-        File.WriteAllBytes(tempPath, bytes);
-        File.Move(tempPath, destinationPath, overwrite: true);
+        using (FileStream fs = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            fs.Write(bytes, 0, bytes.Length);
+            // Audit fix M12: fsync before rename so the rename's atomic
+            // window does not include an empty / partially-flushed file.
+            fs.Flush(flushToDisk: true);
+        }
+        // Audit fix R6-C5: wrap File.Move in the AV-retry helper. Windows
+        // Defender (and other AV products) transiently lock just-written
+        // files for scanning, causing IOException sharing violations on
+        // the rename. FileSystemOps.RetryOnTransientIOException retries
+        // on the documented backoff schedule before surrendering.
+        Simgenics.XPact.XBT.Core.FileSystemOps.RetryOnTransientIOException(
+            () => File.Move(tempPath, destinationPath, overwrite: true));
     }
 
     /// <summary>
@@ -204,9 +225,21 @@ public static class ManifestJson
     {
         CheckString(m.ContractVersion, nameof(m.ContractVersion));
         CheckString(m.EngineVersion, nameof(m.EngineVersion));
-        CheckString(m.TargetName, nameof(m.TargetName));
         CheckString(m.RootLocalPath, nameof(m.RootLocalPath));
         CheckOptionalString(m.ExternalDependenciesFile, nameof(m.ExternalDependenciesFile));
+        // Per Toolchain Contract Rev 13 Section 10.2: per-target fields
+        // live under the nested Target object so they mirror the FBS
+        // TargetInfo table.
+        if (m.Target is null)
+        {
+            throw new ManifestMalformedException($"{nameof(m.Target)} is null (required).");
+        }
+        CheckString(m.Target.Name, $"{nameof(m.Target)}.{nameof(m.Target.Name)}");
+        // Audit fix C1/C10: ABI envelope fields.
+        CheckString(m.Target.Architecture, $"{nameof(m.Target)}.{nameof(m.Target.Architecture)}");
+        CheckString(m.Target.GCRootABI, $"{nameof(m.Target)}.{nameof(m.Target.GCRootABI)}");
+        CheckString(m.Target.ExceptionABI, $"{nameof(m.Target)}.{nameof(m.Target.ExceptionABI)}");
+        CheckString(m.Target.ManglingScheme, $"{nameof(m.Target)}.{nameof(m.Target.ManglingScheme)}");
 
         if (m.Modules.Count > MaxArrayCount)
         {

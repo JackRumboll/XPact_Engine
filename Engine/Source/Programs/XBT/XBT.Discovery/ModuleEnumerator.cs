@@ -255,7 +255,7 @@ public static class ModuleEnumerator
                 Logger.Info(
                     $".Build.cs takes precedence over sibling .Build.toml in {dir}: " +
                     $"compiling {Path.GetFileName(csPath)}; ignoring " +
-                    $"{Path.GetFileName(siblingToml)} per Contract Rev 13.1 Section 9.6.",
+                    $"{Path.GetFileName(siblingToml)} per Contract Rev 13.2 Section 9.6.",
                     new DiagnosticContext
                     {
                         Action = "discover",

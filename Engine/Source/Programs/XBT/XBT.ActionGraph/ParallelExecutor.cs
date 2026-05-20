@@ -56,6 +56,22 @@ public sealed class ParallelExecutor
     }
 
     /// <summary>
+    /// Audit fix R6-C4: subprocess lifetime guard. A
+    /// <see cref="WindowsJobObject"/> with
+    /// <c>KILL_ON_JOB_CLOSE | BREAKAWAY_OK</c> is created once per
+    /// <see cref="Execute"/> call; every spawned subprocess is assigned
+    /// to it. When the executor returns -- normal exit or unhandled
+    /// throw -- the using-disposal closes the handle and the OS
+    /// terminates every process still in the job.
+    /// </summary>
+    /// <remarks>
+    /// On Linux / macOS the wrapper is a no-op stub (POSIX uses process
+    /// groups via <c>setpgid</c>; Phase 1's Linux executor is short-
+    /// lived enough not to need this protection).
+    /// </remarks>
+    internal WindowsJobObject? CurrentJobObject { get; private set; }
+
+    /// <summary>
     /// Run every action in the graph in topological order, respecting
     /// dependencies. Returns the per-action result for each linked
     /// action in <see cref="ActionGraph.SortedActions"/> order.
@@ -70,6 +86,46 @@ public sealed class ParallelExecutor
     {
         ArgumentNullException.ThrowIfNull(graph);
         IReadOnlyList<LinkedAction> sorted = graph.SortedActions;
+
+        // Audit fix R6-C4: create a per-execute job object that every
+        // spawned subprocess will be assigned to. The using statement
+        // around the entire Execute body ensures the handle closes on
+        // any exit path (normal return, exception, cancellation) --
+        // closing the last handle to a JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        // job triggers the OS to kill every process still in the job,
+        // which is exactly the orphan-prevention guarantee we want.
+        //
+        // On Linux / macOS WindowsJobObject is a no-op shell;
+        // IsAvailable returns false and AssignProcess is a no-op.
+        using WindowsJobObject jobObject = new();
+        jobObject.Create();
+        CurrentJobObject = jobObject;
+        try
+        {
+            return ExecuteInternal(graph, sorted, cancellationToken);
+        }
+        finally
+        {
+            CurrentJobObject = null;
+        }
+    }
+
+    private ExecutionReport ExecuteInternal(
+        ActionGraph graph,
+        IReadOnlyList<LinkedAction> sorted,
+        CancellationToken cancellationToken)
+    {
+        // Audit fix R6-C1: snapshot the producer map keyed on
+        // FileItem.FullPath. The post-action hook (RecordContentHashes)
+        // consults this set to classify each prerequisite as either
+        // raw-source (record content hash) or producer-output (skip --
+        // the upstream action's own RecordHash covers that path). Stored
+        // as a HashSet so the look-up is O(1) per prereq.
+        HashSet<string> producedPaths = new(StringComparer.Ordinal);
+        foreach (string path in graph.ProducerByPath.Keys)
+        {
+            producedPaths.Add(path);
+        }
 
         Dictionary<LinkedAction, ActionResult> results = new(sorted.Count);
         Dictionary<LinkedAction, int> remainingDeps = new(sorted.Count);
@@ -154,7 +210,7 @@ public sealed class ParallelExecutor
                     }
 
                     long thisActionId = Interlocked.Increment(ref actionId);
-                    ActionResult result = RunAction(node, thisActionId, cancellationToken);
+                    ActionResult result = RunAction(node, thisActionId, producedPaths, cancellationToken);
 
                     lock (completionGate)
                     {
@@ -234,7 +290,11 @@ public sealed class ParallelExecutor
             cancelled);
     }
 
-    private ActionResult RunAction(LinkedAction linked, long actionId, CancellationToken cancellationToken)
+    private ActionResult RunAction(
+        LinkedAction linked,
+        long actionId,
+        IReadOnlySet<string> producedPaths,
+        CancellationToken cancellationToken)
     {
         IExternalAction action = linked.Action;
         if (cancellationToken.IsCancellationRequested)
@@ -267,7 +327,13 @@ public sealed class ParallelExecutor
             TempOutputPaths: tempPaths,
             ProcessId: pid,
             ActionId: actionId,
-            CancellationToken: cancellationToken);
+            CancellationToken: cancellationToken)
+        {
+            // Audit fix R6-C4: hand the runner the executor's job
+            // object so any spawned subprocess can be assigned to it
+            // for kill-on-exit protection.
+            JobObject = CurrentJobObject,
+        };
 
         try
         {
@@ -299,7 +365,13 @@ public sealed class ParallelExecutor
                         ExitCode: 70,
                         ErrorMessage: $"action {linked.Description} did not produce temp output {tempPath}");
                 }
-                File.Move(tempPath, produced.FullPath, overwrite: true);
+                // Audit fix R6-C5: wrap the rename in the AV-retry helper.
+                // Compiler output is the textbook AV-scan target on Win64;
+                // a transient lock here is the most common failure mode.
+                string capturedTemp = tempPath;
+                string capturedDest = produced.FullPath;
+                FileSystemOps.RetryOnTransientIOException(
+                    () => File.Move(capturedTemp, capturedDest, overwrite: true));
                 // FileItem caches metadata; drop it so the next access
                 // picks up the new content.
                 produced.Invalidate();
@@ -312,6 +384,51 @@ public sealed class ParallelExecutor
                 foreach (FileItem produced in action.ProducedItems)
                 {
                     _history.RecordHash(produced, actionKey);
+                }
+
+                // Audit fix R6-C1: record the content hash of every raw-
+                // source prerequisite (a prereq whose path is NOT a
+                // producer's output). Producer-output prereqs are
+                // intentionally skipped -- their upstream action's
+                // RecordHash above covers staleness through the producer-
+                // key map; recording a content hash for them would be a
+                // redundant lookup that adds no diagnostic value and
+                // costs an extra read of the producer-emitted bytes.
+                //
+                // This wires up the otherwise-unused content-hash map
+                // (audit fix M3) so the IsActionOutdated rule 4 in
+                // ActionHistory has data to compare against the live
+                // file. Without this, raw-source change detection falls
+                // back to FileItem mtime, which the contract bans.
+                foreach (FileItem prereq in action.PrerequisiteItems)
+                {
+                    if (producedPaths.Contains(prereq.FullPath))
+                    {
+                        continue;
+                    }
+                    if (!File.Exists(prereq.FullPath))
+                    {
+                        // Raw-source prereq that vanished mid-build. The
+                        // command somehow succeeded without it (or the
+                        // toolchain reads the file via a path our
+                        // FileItem does not normalise to). Skip rather
+                        // than crash -- the next staleness check will
+                        // surface the divergence via IsActionOutdated.
+                        continue;
+                    }
+                    try
+                    {
+                        _history.RecordContentHash(prereq, prereq.ContentHash);
+                    }
+                    catch (IOException)
+                    {
+                        // Best-effort: a transient read failure on a
+                        // raw-source prereq should not fail the action,
+                        // since the action itself already succeeded.
+                        // The next IsActionOutdated call will see no
+                        // recorded content hash and conservatively
+                        // re-run, which is the safe direction.
+                    }
                 }
             }
 
@@ -487,6 +604,25 @@ public sealed class ParallelExecutor
     /// name. Returns false for any name that does not match the exact
     /// convention.
     /// </summary>
+    /// <remarks>
+    /// Audit fix R4-C1: the actionid suffix segment must be hex (digits +
+    /// a-f/A-F) with no further dots. Two emit styles co-exist in
+    /// production:
+    /// <list type="bullet">
+    ///   <item>Decimal counter -- the <see cref="ParallelExecutor"/>'s
+    ///   per-instance counter via <c>RunAction</c>. Yields an all-digit
+    ///   suffix (e.g. <c>5</c>).</item>
+    ///   <item>GUID nonce ("N" format = 32 hex chars) -- the manifest
+    ///   writer's <see cref="ManifestJson.AtomicWriteAllBytes"/> and
+    ///   <see cref="ManifestFbs.AtomicWriteAllBytes"/> helpers, plus
+    ///   <see cref="ActionHistory.Save"/>. Yields a hex-with-letters
+    ///   suffix (e.g. <c>5e8a3b...</c>).</item>
+    /// </list>
+    /// Accepting either style guarantees both producer paths get swept
+    /// when their pid is no longer alive. The pid segment must remain
+    /// decimal because <see cref="Environment.ProcessId"/> is a 32-bit
+    /// integer; the OS process identifier surface itself is decimal.
+    /// </remarks>
     private static bool TryParseTempFilePid(string fileName, out int pid)
     {
         pid = 0;
@@ -513,22 +649,28 @@ public sealed class ParallelExecutor
         {
             return false;
         }
-        // The actionid suffix after the pid must be all digits with no
-        // further dots (a strict per-spec match).
+        // The actionid suffix after the pid must be hex (digits + a-f /
+        // A-F) with no further dots. This accepts both producer styles
+        // (decimal counter from RunAction; 32-hex-char GUID nonce from
+        // the manifest writers + ActionHistory).
         string actionIdSegment = fileName[(pidEnd + 1)..];
         if (actionIdSegment.Length == 0
-            || !IsAllDigits(actionIdSegment))
+            || !IsHexString(actionIdSegment))
         {
             return false;
         }
         return int.TryParse(pidSegment, out pid) && pid > 0;
     }
 
-    private static bool IsAllDigits(string s)
+    private static bool IsHexString(string s)
     {
         for (int i = 0; i < s.Length; i++)
         {
-            if (s[i] < '0' || s[i] > '9')
+            char c = s[i];
+            bool isHex = (c >= '0' && c <= '9')
+                      || (c >= 'a' && c <= 'f')
+                      || (c >= 'A' && c <= 'F');
+            if (!isHex)
             {
                 return false;
             }
@@ -537,11 +679,30 @@ public sealed class ParallelExecutor
     }
 
     /// <summary>
-    /// Test whether a pid corresponds to a live process. On Win64 and
-    /// POSIX, <see cref="Process.GetProcessById"/> throws when the pid
-    /// is not running; we map both the not-running and access-denied
-    /// outcomes to "not alive" so the orphan sweep deletes the file.
+    /// Test whether a pid corresponds to a live process.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix M11: cross-platform behaviour. Both Windows and POSIX
+    /// use <see cref="Process.GetProcessById"/> as the probe -- the
+    /// .NET CLR maps to <c>OpenProcess</c> on Windows and reads
+    /// <c>/proc/&lt;pid&gt;</c> on Linux -- but the error categories
+    /// each surface differ:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Windows: <see cref="ArgumentException"/> when the pid is
+    ///   gone; <see cref="System.ComponentModel.Win32Exception"/> with
+    ///   <c>ERROR_ACCESS_DENIED (5)</c> when the process exists but is
+    ///   owned by another user. The access-denied case maps to "alive
+    ///   but not ours" -- we conservatively treat it as alive so we do
+    ///   not delete another user's sibling-XBT temp files.</item>
+    ///   <item>Linux: <see cref="ArgumentException"/> when the pid is
+    ///   gone or unreadable; <see cref="UnauthorizedAccessException"/>
+    ///   when the proc entry exists but is owned by another user.
+    ///   Treated the same as the Windows access-denied path: conservative
+    ///   "alive but not ours".</item>
+    /// </list>
+    /// </remarks>
     private static bool IsProcessAlive(int pid)
     {
         try
@@ -565,9 +726,16 @@ public sealed class ParallelExecutor
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            // Access denied or other OS error -- treat as "not ours,
-            // leave alone" to be conservative (deleting another user's
-            // sibling temp could break their build).
+            // Windows access-denied / other OS error -- treat as "alive
+            // but not ours" so we do not delete another user's sibling
+            // temp files.
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Linux equivalent of Windows access-denied: the process
+            // exists in /proc but we cannot read its metadata. Same
+            // conservative treatment.
             return true;
         }
     }
@@ -580,13 +748,27 @@ public sealed class ParallelExecutor
             {
                 if (File.Exists(path))
                 {
-                    File.Delete(path);
+                    // Audit fix R6-C5: wrap in the AV-retry helper.
+                    // Windows Defender may have the just-failed write
+                    // locked while it scans the partial bytes; the
+                    // Delete then raises a sharing-violation IOException
+                    // that we want to retry through rather than leave
+                    // the temp lying around for the startup sweep.
+                    string captured = path;
+                    FileSystemOps.RetryOnTransientIOException(
+                        () => File.Delete(captured));
                 }
             }
             catch (IOException)
             {
-                // Best-effort -- a missing temp is fine; a stuck temp
-                // gets cleaned by the startup sweep next run.
+                // Best-effort even after the retry schedule -- a
+                // missing temp is fine; a stuck temp gets cleaned by
+                // the startup sweep next run.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // AV quarantine that did not clear within the retry
+                // window. Same best-effort treatment as IOException.
             }
         }
     }
@@ -654,7 +836,18 @@ public sealed record ActionRunContext(
     IReadOnlyDictionary<FileItem, string> TempOutputPaths,
     int ProcessId,
     long ActionId,
-    CancellationToken CancellationToken);
+    CancellationToken CancellationToken)
+{
+    /// <summary>
+    /// Audit fix R6-C4: the executor's per-build job object, or null
+    /// when running on a non-Windows host (where the wrapper is a
+    /// no-op) or when the job-object creation failed. The runner
+    /// assigns its spawned subprocess to this job after
+    /// <c>Process.Start</c> so the OS kills the subprocess when XBT
+    /// exits.
+    /// </summary>
+    public WindowsJobObject? JobObject { get; init; }
+}
 
 /// <summary>
 /// The runner's per-action outcome. <c>Success = true</c> means the
@@ -703,6 +896,16 @@ public sealed class ProcessActionRunner : IActionRunner
     /// </summary>
     internal const int WaitForExitPollMs = 250;
 
+    /// <summary>
+    /// Audit fix M10: cap stdout/stderr capture per subprocess at this
+    /// many UTF-8 bytes (16 MiB). Output beyond the cap is replaced by a
+    /// truncation marker. Sized so that two concurrent compile
+    /// subprocesses cannot push process memory past 32 MiB of captured
+    /// diagnostics, while still preserving enough context for a typical
+    /// compile-error report.
+    /// </summary>
+    internal const int MaxCaptureBytes = 16 * 1024 * 1024;
+
     /// <inheritdoc/>
     public ActionRunResult RunAction(ActionRunContext context)
     {
@@ -725,8 +928,11 @@ public sealed class ProcessActionRunner : IActionRunner
         }
 
         using Process process = new() { StartInfo = psi };
-        StringBuilder stdout = new();
-        StringBuilder stderr = new();
+        // Audit fix M10: cap stdout/stderr captures at 16 MB each. A
+        // misbehaving compiler producing 100+ MB of diagnostics would
+        // otherwise OOM XBT.
+        BoundedStringBuilder stdout = new(MaxCaptureBytes);
+        BoundedStringBuilder stderr = new(MaxCaptureBytes);
         process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
@@ -736,6 +942,14 @@ public sealed class ProcessActionRunner : IActionRunner
             {
                 return new ActionRunResult(false, 1, "Process.Start returned false");
             }
+            // Audit fix R6-C4: assign the freshly-started subprocess to
+            // the executor's job object before BeginOutputReadLine so
+            // the kill-on-job-close guarantee applies as early as
+            // possible. Failure (process already exited, nested-job
+            // restrictions, ...) is logged inside AssignProcess and
+            // proceeds best-effort -- the orphan-temp-file sweep at
+            // next startup compensates for missed kills.
+            context.JobObject?.AssignProcess(process);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
@@ -763,6 +977,17 @@ public sealed class ProcessActionRunner : IActionRunner
                 }
             }
 
+            // Audit fix R4-C2: WaitForExit(int) returns when the process
+            // has exited but does NOT wait for the async output / error
+            // handlers to drain their queues. The parameterless
+            // WaitForExit() overload is documented to additionally wait
+            // for the OutputDataReceived / ErrorDataReceived
+            // EventHandlers to flush their pending events. Without this
+            // call, the subsequent stderr.ToString() at "exit code !=0"
+            // can race a still-arriving error line and observe a
+            // partially-populated capture buffer.
+            process.WaitForExit();
+
             int exitCode = process.ExitCode;
             if (exitCode == 0)
             {
@@ -771,7 +996,7 @@ public sealed class ProcessActionRunner : IActionRunner
             return new ActionRunResult(
                 false,
                 exitCode,
-                $"{action.CommandDescription} exit {exitCode}: {stderr}");
+                $"{action.CommandDescription} exit {exitCode}: {stderr.ToString()}");
         }
         catch (OperationCanceledException)
         {
@@ -783,6 +1008,85 @@ public sealed class ProcessActionRunner : IActionRunner
         catch (Exception ex)
         {
             return new ActionRunResult(false, 1, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+}
+
+/// <summary>
+/// Audit fix M10: bounded <see cref="StringBuilder"/> wrapper that caps
+/// total appended bytes at a configurable ceiling. Once the cap is
+/// reached, every subsequent <see cref="AppendLine"/> is dropped and a
+/// one-time truncation marker is appended.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Thread-safety contract (audit fix R4-C2).</b> Instances are
+/// shared between the worker thread that owns the
+/// <see cref="ProcessActionRunner"/> and the ThreadPool threads
+/// <see cref="Process.OutputDataReceived"/> and
+/// <see cref="Process.ErrorDataReceived"/> dispatch on. All access to
+/// the mutable state (<see cref="_sb"/>, <see cref="_approxBytes"/>,
+/// <see cref="_droppedBytes"/>, <see cref="_truncationMarkerEmitted"/>)
+/// is serialized through <see cref="_gate"/>. The reading thread
+/// (<see cref="ToString"/>) MUST only read after the subprocess has
+/// fully exited AND its handler queue has been drained via
+/// <see cref="Process.WaitForExit()"/> (the parameterless overload,
+/// which waits for handler completion in addition to process exit).
+/// Without that drain, a read may race a pending handler invocation.
+/// </para>
+/// </remarks>
+internal sealed class BoundedStringBuilder
+{
+    private readonly StringBuilder _sb;
+    private readonly int _maxBytes;
+    private readonly object _gate = new();
+    private int _approxBytes;
+    private long _droppedBytes;
+    private bool _truncationMarkerEmitted;
+
+    public BoundedStringBuilder(int maxBytes)
+    {
+        _maxBytes = maxBytes;
+        _sb = new StringBuilder();
+    }
+
+    public void AppendLine(string line)
+    {
+        if (line is null) return;
+        // UTF-8 bytes for ASCII lines == char count + 1 for the line
+        // terminator. We approximate to char count to avoid a full
+        // utf-8 measurement on the hot path; the cap is intentionally
+        // loose (the real ceiling is ~maxBytes, not exactly maxBytes).
+        int lineSize = line.Length + 1;
+        lock (_gate)
+        {
+            if (_approxBytes + lineSize <= _maxBytes)
+            {
+                _sb.AppendLine(line);
+                _approxBytes += lineSize;
+                return;
+            }
+            // Capped out. Emit a truncation marker once, then count
+            // dropped bytes.
+            if (!_truncationMarkerEmitted)
+            {
+                _sb.AppendLine();
+                _sb.AppendLine($"...[output truncated at {_maxBytes} bytes]...");
+                _truncationMarkerEmitted = true;
+            }
+            _droppedBytes += lineSize;
+        }
+    }
+
+    public override string ToString()
+    {
+        lock (_gate)
+        {
+            if (_truncationMarkerEmitted && _droppedBytes > 0)
+            {
+                return _sb.ToString() + $"[{_droppedBytes} bytes elided total]" + Environment.NewLine;
+            }
+            return _sb.ToString();
         }
     }
 }

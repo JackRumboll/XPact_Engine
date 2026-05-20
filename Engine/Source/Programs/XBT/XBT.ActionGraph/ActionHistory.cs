@@ -62,8 +62,14 @@ public sealed class ActionHistory
     /// <summary>Magic prefix on the file header for format identification.</summary>
     private static readonly byte[] s_magic = Encoding.ASCII.GetBytes("XAH1");
 
-    /// <summary>File format version. Bumped on any breaking format change.</summary>
-    private const int FormatVersion = 1;
+    /// <summary>
+    /// File format version. Bumped on any breaking format change. Audit
+    /// fix M3 bumped from 1 to 2 to add the parallel content-hash map.
+    /// Version-1 archives loaded under v2 deserialise the producer-key
+    /// map only and leave the content-hash map empty; the next save
+    /// rewrites the archive in the v2 layout.
+    /// </summary>
+    private const int FormatVersion = 2;
 
     /// <summary>
     /// Auto-derived BLAKE3 of the <see cref="IExternalAction"/> property
@@ -249,57 +255,82 @@ public sealed class ActionHistory
             }
         }
 
-        // 4. No prerequisite's content hash may have changed since record.
-        //    We use a content-hash subkey approach: a prerequisite's
-        //    stored key is the IoHash that was assigned when its
-        //    producer action recorded it. We compare against the live
-        //    file's hash; if they differ the producer's output has
-        //    changed since record (or was modified externally).
+        // 4. Audit fix M3: every raw-source prereq's recorded content
+        //    hash must match the live file's hash. Producer-intermediate
+        //    prereqs are NOT consulted here (the producer's own action
+        //    key was already verified in rule 3 via its own
+        //    IsActionOutdated when its turn came around upstream of us
+        //    in the topo order). The dedicated content-hash map ensures
+        //    we don't confuse an action key with a content hash; the
+        //    previous Rev 13 behaviour compared the stored action key
+        //    against the live content hash, which never matched and
+        //    always forced re-runs.
         foreach (FileItem prereq in action.PrerequisiteItems)
         {
-            // For prerequisites that have no producer in this build
-            // (raw source files), the stored key is the prereq's own
-            // content hash; the comparison is content-hash-against-
-            // content-hash. We do not consult the file's previous
-            // content hash from this archive -- we trust the file's
-            // current content hash as the live truth.
-            //
-            // For prerequisites that ARE producers in this build
-            // (intermediate outputs), their stored entry equals the
-            // producer's CurrentVersion-keyed value; the producer
-            // action is itself checked by its own IsActionOutdated.
-            //
-            // In either case, the "key changed" rule (item 3) catches
-            // the staleness; this leaf check only matters for raw
-            // source files that XBT has previously hashed via
-            // RecordHash on the prerequisite item directly.
-            IoHash recorded = GetStoredHash(prereq);
-            if (recorded != IoHash.Zero)
+            IoHash recordedContent = GetStoredContentHash(prereq);
+            if (recordedContent == IoHash.Zero)
             {
-                if (!File.Exists(prereq.FullPath))
-                {
-                    return true;
-                }
-                // Read the prerequisite's current content hash. We
-                // re-stat through FileItem -- the recorded hash is
-                // either the prereq's content hash (raw source) or
-                // its producer-derived key; if neither matches we
-                // are stale.
-                IoHash live = prereq.ContentHash;
-                if (live != recorded)
-                {
-                    // Producer-derived keys won't match a content
-                    // hash; fall through to item 3 which has already
-                    // run and returned true if the producer's key
-                    // changed. If item 3 didn't flag this, the
-                    // recorded value IS the content hash and we are
-                    // stale.
-                    return true;
-                }
+                continue;
+            }
+            if (!File.Exists(prereq.FullPath))
+            {
+                return true;
+            }
+            IoHash live = prereq.ContentHash;
+            if (live != recordedContent)
+            {
+                return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Audit fix M3: read the content-hash entry for a raw-source
+    /// prerequisite. Returns <see cref="IoHash.Zero"/> when no entry
+    /// exists. Separate from <see cref="GetStoredHash"/> (which returns
+    /// the producer-key for produced intermediates).
+    /// </summary>
+    public IoHash GetStoredContentHash(FileItem file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        Partition partition = _partitions[PartitionOf(file.FullPath)];
+        return partition.TryGetContentHash(file.FullPath, out IoHash hash) ? hash : IoHash.Zero;
+    }
+
+    /// <summary>
+    /// Audit fix M3: record a raw-source prerequisite's content hash.
+    /// Distinct from <see cref="RecordHash"/> which records a producer's
+    /// action key against its produced item.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix R6-C1: wired into <see cref="ParallelExecutor"/>'s
+    /// post-action-success hook. After a successful action, the
+    /// executor walks <see cref="IExternalAction.PrerequisiteItems"/>
+    /// and calls <see cref="RecordContentHash"/> for each prereq whose
+    /// path does NOT appear in the action graph's producer map (i.e.,
+    /// the raw-source files the build consumes, not the intermediate
+    /// outputs another action produced). The producer-output path is
+    /// already covered by <see cref="RecordHash"/>; recording a content
+    /// hash for it would be redundant.
+    /// </para>
+    /// <para>
+    /// With both maps populated, <see cref="IsActionOutdated"/> rule 4
+    /// becomes load-bearing: a raw-source edit invalidates downstream
+    /// actions through the content-hash compare, not through the
+    /// FileItem mtime check (which the contract bans). This is the
+    /// Phase-1 wire-up for what becomes the Phase 2
+    /// XPactBuildAccelerator's content-addressable cache key per
+    /// prerequisite.
+    /// </para>
+    /// </remarks>
+    public void RecordContentHash(FileItem file, IoHash hash)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        Partition partition = _partitions[PartitionOf(file.FullPath)];
+        partition.SetContentHash(file.FullPath, hash);
     }
 
     /// <summary>
@@ -339,35 +370,54 @@ public sealed class ActionHistory
         string tempPath = Path.Combine(directory, $"ActionHistory.bin.tmp.{pid}.{nonce}");
 
         using (FileStream stream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
-        using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: false))
         {
-            writer.Write(s_magic);
-            writer.Write(FormatVersion);
-
-            byte[] versionBytes = CurrentVersion.ToByteArray();
-            writer.Write(versionBytes);
-
-            writer.Write(PartitionCount);
-
-            for (int i = 0; i < PartitionCount; i++)
+            using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
             {
-                _partitions[i].Snapshot(out IReadOnlyDictionary<string, IoHash> entries);
-                writer.Write(entries.Count);
-                // Sort entries by path with StringComparer.Ordinal so
-                // the on-disk byte sequence is invariant across runs.
-                // Dictionary<>.GetEnumerator order is not specified;
-                // relying on it for the serialised output would make
-                // ActionHistory.bin a non-reproducible artefact (cache
-                // hits would depend on iteration order on the writer's
-                // machine).
-                foreach ((string path, IoHash hash) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                writer.Write(s_magic);
+                writer.Write(FormatVersion);
+
+                byte[] versionBytes = CurrentVersion.ToByteArray();
+                writer.Write(versionBytes);
+
+                writer.Write(PartitionCount);
+
+                for (int i = 0; i < PartitionCount; i++)
                 {
-                    byte[] pathBytes = Encoding.UTF8.GetBytes(path);
-                    writer.Write(pathBytes.Length);
-                    writer.Write(pathBytes);
-                    writer.Write(hash.ToByteArray());
+                    // ----- Producer-key map (v1 + v2) -----
+                    _partitions[i].Snapshot(out IReadOnlyDictionary<string, IoHash> entries);
+                    writer.Write(entries.Count);
+                    // Sort entries by path with StringComparer.Ordinal so
+                    // the on-disk byte sequence is invariant across runs.
+                    // Dictionary<>.GetEnumerator order is not specified;
+                    // relying on it for the serialised output would make
+                    // ActionHistory.bin a non-reproducible artefact (cache
+                    // hits would depend on iteration order on the writer's
+                    // machine).
+                    foreach ((string path, IoHash hash) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                    {
+                        byte[] pathBytes = Encoding.UTF8.GetBytes(path);
+                        writer.Write(pathBytes.Length);
+                        writer.Write(pathBytes);
+                        writer.Write(hash.ToByteArray());
+                    }
+
+                    // ----- Content-hash map (v2; audit fix M3) -----
+                    _partitions[i].SnapshotContent(out IReadOnlyDictionary<string, IoHash> contentEntries);
+                    writer.Write(contentEntries.Count);
+                    foreach ((string path, IoHash hash) in contentEntries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                    {
+                        byte[] pathBytes = Encoding.UTF8.GetBytes(path);
+                        writer.Write(pathBytes.Length);
+                        writer.Write(pathBytes);
+                        writer.Write(hash.ToByteArray());
+                    }
                 }
             }
+            // Audit fix M12: fsync before rename so a power-loss after
+            // rename cannot leave a torn ActionHistory archive. The
+            // BinaryWriter has left the FileStream open (leaveOpen=true)
+            // so the Flush call here observes every queued write.
+            stream.Flush(flushToDisk: true);
         }
 
         // Atomic rename. File.Move(overwrite=true) maps to MoveFileEx
@@ -375,8 +425,11 @@ public sealed class ActionHistory
         // 6.4). On Linux we rely on the underlying rename(2) call,
         // which is atomic when source and destination are on the same
         // volume -- guaranteed here because both live in the same
-        // directory.
-        File.Move(tempPath, _archivePath, overwrite: true);
+        // directory. Audit fix R6-C5: wrapped in the AV-retry helper
+        // because Windows Defender transiently locks the just-written
+        // archive while it scans the post-flush content.
+        FileSystemOps.RetryOnTransientIOException(
+            () => File.Move(tempPath, _archivePath, overwrite: true));
     }
 
     /// <summary>
@@ -385,6 +438,13 @@ public sealed class ActionHistory
     /// schema has changed; old entries are invalid). Corrupt or
     /// truncated file = empty archive + a one-time warning.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M15: stage partition reads into a local
+    /// <see cref="Dictionary{TKey,TValue}"/> array; only commit to
+    /// <see cref="_partitions"/> after every partition reads
+    /// successfully. A torn-read mid-load no longer leaves a
+    /// half-populated archive in memory.
+    /// </remarks>
     private void LoadFromDisk()
     {
         if (!File.Exists(_archivePath))
@@ -392,6 +452,7 @@ public sealed class ActionHistory
             return;
         }
 
+        Dictionary<string, IoHash>[]? staged = null;
         try
         {
             using FileStream stream = new(_archivePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -403,8 +464,12 @@ public sealed class ActionHistory
                 return;
             }
 
+            // Audit fix M3: accept v1 (producer-key map only) AND v2
+            // (producer-key + content-hash maps). v1 archives are
+            // treated as having an empty content map; the next save
+            // rewrites in v2 layout.
             int format = reader.ReadInt32();
-            if (format != FormatVersion)
+            if (format != 1 && format != FormatVersion)
             {
                 return;
             }
@@ -427,44 +492,63 @@ public sealed class ActionHistory
                 return;
             }
 
+            // Audit fix M15: stage reads into a local array. Commit
+            // to _partitions only after every partition loads cleanly.
+            // Audit fix M3: stage both maps (producer-key and content-
+            // hash) in parallel so a torn partial read leaves the live
+            // archive untouched.
+            staged = new Dictionary<string, IoHash>[partitionCount];
+            Dictionary<string, IoHash>[] stagedContent =
+                new Dictionary<string, IoHash>[partitionCount];
+
             for (int i = 0; i < partitionCount; i++)
             {
-                int entryCount = reader.ReadInt32();
-                if (entryCount < 0)
+                staged[i] = new Dictionary<string, IoHash>(StringComparer.Ordinal);
+                stagedContent[i] = new Dictionary<string, IoHash>(StringComparer.Ordinal);
+
+                if (!ReadPathToHashMap(reader, staged[i]))
                 {
                     return;
                 }
-                for (int j = 0; j < entryCount; j++)
+
+                // v2 only: content-hash map follows.
+                if (format == FormatVersion)
                 {
-                    int pathLen = reader.ReadInt32();
-                    if (pathLen < 0 || pathLen > 4096)
+                    if (!ReadPathToHashMap(reader, stagedContent[i]))
                     {
                         return;
                     }
-                    byte[] pathBytes = reader.ReadBytes(pathLen);
-                    if (pathBytes.Length != pathLen)
-                    {
-                        return;
-                    }
-                    string path = Encoding.UTF8.GetString(pathBytes);
-                    byte[] hashBytes = reader.ReadBytes(IoHash.Length);
-                    if (hashBytes.Length != IoHash.Length)
-                    {
-                        return;
-                    }
-                    IoHash hash = new(hashBytes);
+                }
+            }
+
+            // All partitions loaded; commit atomically.
+            for (int i = 0; i < partitionCount; i++)
+            {
+                foreach ((string path, IoHash hash) in staged[i])
+                {
                     _partitions[i].Set(path, hash);
+                }
+                foreach ((string path, IoHash hash) in stagedContent[i])
+                {
+                    _partitions[i].SetContentHash(path, hash);
                 }
             }
         }
         catch (EndOfStreamException)
         {
-            // Truncated -- treat as empty.
+            // Truncated -- staged partitions are dropped (they live in
+            // local variables and never reached _partitions). LoadFromDisk
+            // is called from the Open() constructor, so _partitions is
+            // already empty when this catch fires; ClearAllPartitions()
+            // is still invoked explicitly as defence-in-depth to maintain
+            // the hard postcondition that no torn entries leak into the
+            // live archive even if a future refactor moves the call site.
             ClearAllPartitions();
         }
         catch (IOException)
         {
             // Treat as empty archive; the next Save() will overwrite.
+            // staged partitions never reached _partitions.
         }
     }
 
@@ -474,6 +558,44 @@ public sealed class ActionHistory
         {
             _partitions[i].Clear();
         }
+    }
+
+    /// <summary>
+    /// Audit fix M3 helper: read one length-prefixed
+    /// <c>path -&gt; IoHash</c> map from <paramref name="reader"/> into
+    /// <paramref name="dest"/>. Returns false on any structural error
+    /// (negative count, oversized path, truncated input). Caller treats
+    /// false as "abort the load, leave the archive untouched".
+    /// </summary>
+    private static bool ReadPathToHashMap(BinaryReader reader, Dictionary<string, IoHash> dest)
+    {
+        int entryCount = reader.ReadInt32();
+        if (entryCount < 0)
+        {
+            return false;
+        }
+        for (int j = 0; j < entryCount; j++)
+        {
+            int pathLen = reader.ReadInt32();
+            if (pathLen < 0 || pathLen > 4096)
+            {
+                return false;
+            }
+            byte[] pathBytes = reader.ReadBytes(pathLen);
+            if (pathBytes.Length != pathLen)
+            {
+                return false;
+            }
+            string path = Encoding.UTF8.GetString(pathBytes);
+            byte[] hashBytes = reader.ReadBytes(IoHash.Length);
+            if (hashBytes.Length != IoHash.Length)
+            {
+                return false;
+            }
+            IoHash hash = new(hashBytes);
+            dest[path] = hash;
+        }
+        return true;
     }
 
     /// <summary>
@@ -558,10 +680,20 @@ public sealed class ActionHistory
     /// in the same partition don't race. Cross-partition writes are
     /// unconditional.
     /// </summary>
+    /// <remarks>
+    /// Audit fix M3: each partition carries two parallel maps. The
+    /// producer-key map stores producer-action keys keyed on the
+    /// produced FileItem's path. The content-hash map stores raw-source
+    /// content hashes keyed on the source FileItem's path. The two are
+    /// kept distinct because the IsActionOutdated rule 4 needs the
+    /// content hash to compare against the live file; mixing them was
+    /// the previous Rev 13 bug.
+    /// </remarks>
     private sealed class Partition
     {
         private readonly object _gate = new();
         private readonly Dictionary<string, IoHash> _map = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, IoHash> _contentMap = new(StringComparer.Ordinal);
 
         public bool TryGet(string path, out IoHash hash)
         {
@@ -584,6 +716,22 @@ public sealed class ActionHistory
             }
         }
 
+        public bool TryGetContentHash(string path, out IoHash hash)
+        {
+            lock (_gate)
+            {
+                return _contentMap.TryGetValue(path, out hash);
+            }
+        }
+
+        public void SetContentHash(string path, IoHash hash)
+        {
+            lock (_gate)
+            {
+                _contentMap[path] = hash;
+            }
+        }
+
         public void Snapshot(out IReadOnlyDictionary<string, IoHash> snapshot)
         {
             lock (_gate)
@@ -592,11 +740,20 @@ public sealed class ActionHistory
             }
         }
 
+        public void SnapshotContent(out IReadOnlyDictionary<string, IoHash> snapshot)
+        {
+            lock (_gate)
+            {
+                snapshot = new Dictionary<string, IoHash>(_contentMap, StringComparer.Ordinal);
+            }
+        }
+
         public void Clear()
         {
             lock (_gate)
             {
                 _map.Clear();
+                _contentMap.Clear();
             }
         }
     }

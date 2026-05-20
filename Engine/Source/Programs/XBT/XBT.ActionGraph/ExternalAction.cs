@@ -99,6 +99,16 @@ public sealed record ExternalAction : IExternalAction
     /// <inheritdoc/>
     public Platform Platform { get; init; }
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Phase 1 implementations leave this null. The interface property
+    /// exists so its later population by Phase 2 toolchains (which will
+    /// emit <c>-MD</c>/<c>-MF</c> <c>.d</c> files for Clang and
+    /// <c>/sourceDependencies</c> JSON for MSVC) does not produce a
+    /// schema bump in <see cref="ActionHistory.CurrentVersion"/>.
+    /// </remarks>
+    public FileItem? DependencyListFile { get; init; }
+
     /// <summary>
     /// Single-cell reference holding the lazily-computed
     /// <see cref="CommandVersion"/>. Read with <c>Volatile.Read</c>; the

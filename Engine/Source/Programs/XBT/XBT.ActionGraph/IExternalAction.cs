@@ -190,4 +190,31 @@ public interface IExternalAction
 
     /// <summary>Target platform the action runs against.</summary>
     Platform Platform { get; }
+
+    /// <summary>
+    /// Optional path the toolchain emits header-dependency information to
+    /// (e.g. Clang's <c>-MD</c>/<c>-MF</c> <c>.d</c> output, MSVC's
+    /// <c>/sourceDependencies</c> JSON). The cache layer parses this file
+    /// to detect when a header that was <c>#include</c>d by the action's
+    /// translation unit -- but which never appeared in
+    /// <see cref="PrerequisiteItems"/> -- has been edited, so the action
+    /// can be invalidated without re-running a full scan.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Phase 1:</b> always null. The action graph + executor do not yet
+    /// parse depfiles; the property exists so its addition does not bump
+    /// <see cref="ActionHistory.CurrentVersion"/> a second time when the
+    /// Phase 2 depfile pipeline lands (the auto-derivation hashes
+    /// <c>IExternalAction</c>'s property set).
+    /// </para>
+    /// <para>
+    /// <b>Phase 2:</b> toolchains emit a <c>.d</c> / <c>.json</c> file
+    /// alongside the produced object; the cache layer reads the file at
+    /// staleness-check time, walks the included header set, and adds
+    /// each header's content hash to the prerequisite set used by
+    /// <see cref="ActionHistory.IsActionOutdated"/>.
+    /// </para>
+    /// </remarks>
+    FileItem? DependencyListFile { get; }
 }

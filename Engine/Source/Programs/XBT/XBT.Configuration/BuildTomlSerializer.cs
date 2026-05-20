@@ -237,6 +237,15 @@ public static class BuildTomlSerializer
                     EmitStringField(sb, key, r.MinimumToolchainVersion);
                 }
                 break;
+            case "engine_version_compat":
+                // Audit fix R4-M5: emitted only when non-default ("*" =
+                // any-version-compatible POCO default). The smallest
+                // round-trip form omits it.
+                if (emitDefaults || !string.Equals(r.EngineVersionCompat, "*", StringComparison.Ordinal))
+                {
+                    EmitStringField(sb, key, r.EngineVersionCompat);
+                }
+                break;
             case "public_dependency_modules":
                 if (emitDefaults || r.PublicDependencyModuleNames.Count > 0)
                 {

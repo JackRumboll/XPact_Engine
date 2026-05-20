@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Simgenics.XPact.XBT.ActionGraph;
@@ -68,7 +69,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
     ///   <item><c>-Platform=Win64|Linux|Android</c></item>
     ///   <item><c>-StationRole=None|Engineer|Instructor|Trainee</c></item>
     ///   <item><c>-FipsMode</c></item>
-    ///   <item><c>-Engine=&lt;path&gt;</c> (override the engine root discovery)</item>
+    ///   <item><c>-EngineRoot=&lt;path&gt;</c> (override the engine root discovery; spec-canonical)</item>
+    ///   <item><c>-Engine=&lt;path&gt;</c> (legacy alias of <c>-EngineRoot=</c>)</item>
     ///   <item><c>-Project=&lt;path&gt;</c> (override the project root discovery)</item>
     ///   <item><c>-Studio=&lt;path&gt;</c> (override the studio root discovery)</item>
     /// </list>
@@ -156,6 +158,146 @@ public sealed class BuildMode : IToolMode<BuildMode>
             $"engine='{engineRoot}'.",
             new DiagnosticContext { Action = "build" });
 
+        // Audit fix R6-C7: acquire a per-(engineRoot, target, config,
+        // platform) named mutex BEFORE touching the intermediate /
+        // build tree. Two concurrent xbt builds against the same target
+        // would otherwise race on ActionHistory.bin and likely corrupt
+        // it. Mutex name is hashed so paths with spaces / case /
+        // separator quirks all reduce to one canonical name.
+        //
+        // On Linux the System.Threading.Mutex maps to a CLR-internal
+        // named primitive that is process-tree scoped, not file-system
+        // scoped; the same canonical name therefore still works across
+        // sibling xbt processes on POSIX.
+        string mutexName = ComposeBuildMutexName(
+            engineRoot,
+            options.TargetName,
+            options.Configuration,
+            options.Platform);
+        using Mutex buildMutex = new(initiallyOwned: false, name: mutexName, out _);
+
+        bool mutexAcquired;
+        try
+        {
+            // Block unless -NoMutexWait was passed; in that case fail
+            // immediately with exit 1 (GenericFailure) so an IDE wrapper
+            // can detect a concurrent build instead of blocking
+            // indefinitely.
+            mutexAcquired = options.NoMutexWait
+                ? buildMutex.WaitOne(TimeSpan.Zero)
+                : WaitMutexWithProgressLog(buildMutex, cancellationToken);
+        }
+        catch (AbandonedMutexException)
+        {
+            // The previous holder died without releasing. We took
+            // ownership anyway. AbandonedMutexException is "warning,
+            // not failure" -- the cache may be in a half-state but the
+            // ActionHistory loader tolerates that (Audit fix M15: torn
+            // reads leave the live archive untouched and the next save
+            // rewrites cleanly).
+            Logger.Warning(
+                "Previous XBT build process exited without releasing the build mutex. " +
+                "Proceeding -- ActionHistory.bin is self-healing on a torn read.",
+                new DiagnosticContext { Action = "build-mutex" });
+            mutexAcquired = true;
+        }
+
+        if (!mutexAcquired)
+        {
+            // -NoMutexWait was set AND another build is in progress.
+            throw new XBTException(
+                $"Another XBT build is already in progress for target='{options.TargetName}' " +
+                $"config={options.Configuration} platform={options.Platform} (engine='{engineRoot}'). " +
+                "Wait for it to finish, or omit -NoMutexWait to block until it releases.",
+                exitCode: 1);
+        }
+
+        try
+        {
+            return RunInternalLocked(options, engineRoot, studioRoot, projectRoot, projectRoots, sw, cancellationToken);
+        }
+        finally
+        {
+            buildMutex.ReleaseMutex();
+        }
+    }
+
+    /// <summary>
+    /// Audit fix R6-C7: emit a periodic progress log while blocked on
+    /// the build mutex. WaitOne(Timeout.Infinite) with a cancellation
+    /// token expects a WaitHandle. Mutex inherits from WaitHandle so we
+    /// can poll with a small timeout and re-emit a "still waiting"
+    /// message every few seconds so the operator knows the build hasn't
+    /// hung silently.
+    /// </summary>
+    private static bool WaitMutexWithProgressLog(Mutex mutex, CancellationToken cancellationToken)
+    {
+        // Poll every 2.5 s. The poll interval is short enough that the
+        // operator sees the "waiting" message within a few seconds of
+        // running; long enough that it doesn't spam the log.
+        TimeSpan poll = TimeSpan.FromMilliseconds(2_500);
+        bool emittedNotice = false;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (mutex.WaitOne(poll))
+            {
+                return true;
+            }
+            if (!emittedNotice)
+            {
+                Logger.Info(
+                    "Another XBT build is already in progress for the same target+config+platform. Waiting...",
+                    new DiagnosticContext { Action = "build-mutex" });
+                emittedNotice = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Compose a global mutex name from the build's identity. The name
+    /// is the literal prefix <c>XBT_Build_</c> + the first 32 hex
+    /// characters of a BLAKE3 of <c>(engineRoot, target, config, platform)</c>.
+    /// </summary>
+    /// <remarks>
+    /// Hashing the identity avoids the OS-name validity rules (Win32
+    /// mutex names cannot contain backslashes outside of the
+    /// <c>Global\</c> / <c>Local\</c> prefix; Linux ipc names have
+    /// their own restrictions) and gives a deterministic name that two
+    /// concurrent invocations from the same engine root collide on.
+    /// </remarks>
+    internal static string ComposeBuildMutexName(
+        string engineRoot,
+        string targetName,
+        BuildConfiguration configuration,
+        Platform platform)
+    {
+        // Canonicalize the engineRoot so two callers using different
+        // casing on Windows agree. On Linux we preserve case.
+        string canonicalRoot = OperatingSystem.IsWindows()
+            ? Path.GetFullPath(engineRoot).ToUpperInvariant()
+            : Path.GetFullPath(engineRoot);
+
+        string identity = $"{canonicalRoot}|{targetName}|{configuration}|{platform}";
+        IoHash hash = IoHash.Compute(System.Text.Encoding.UTF8.GetBytes(identity));
+        // First 32 hex chars (128 bits) of the BLAKE3 digest -- a
+        // mutex-name collision over the engine's lifetime is
+        // astronomically unlikely. The "XBT_Build_" prefix is
+        // descriptive so an operator inspecting tasklist / lsof can
+        // identify the mutex's owner.
+        return "XBT_Build_" + hash.ToString().Substring(0, 32);
+    }
+
+    private static BuildResult RunInternalLocked(
+        BuildOptions options,
+        string engineRoot,
+        string? studioRoot,
+        string? projectRoot,
+        IReadOnlyList<string> projectRoots,
+        Stopwatch sw,
+        CancellationToken cancellationToken)
+    {
+
         // ---- 2. Engine semver discovery ---------------------------------
         SemanticVersion engineVersion = EngineVersionValidator.DiscoverEngineVersion(engineRoot);
         Logger.Info(
@@ -175,12 +317,19 @@ public sealed class BuildMode : IToolMode<BuildMode>
             new DiagnosticContext { Action = "build" });
 
         // ---- 4. Construct TargetRules ----------------------------------
+        // Audit fix M14: honour an explicit -Architecture= override
+        // when provided; otherwise pick a platform-appropriate default
+        // (x86_64 on Win64/Linux, aarch64 on Android).
+        string architecture = options.Architecture
+            ?? DefaultArchitectureForPlatform(options.Platform);
+
         TargetRules target = new()
         {
             Name = options.TargetName,
             TargetType = options.TargetType,
             Configuration = options.Configuration,
             Platform = options.Platform,
+            Architecture = architecture,
             StationRole = options.StationRole,
             FipsMode = options.FipsMode,
         };
@@ -214,6 +363,13 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // ---- 8. Construct the toolchain --------------------------------
         XToolChain toolchain = ConstructToolchain(target, engineRoot);
 
+        // ---- 8.5 Validate MinimumToolchainVersion per module -----------
+        // Audit fix C7: every module's declared
+        // MinimumToolchainVersion must be <= the live
+        // toolchain.ToolchainVersion. Mismatch fails the build with exit
+        // 23 (EngineOrToolchainVersionMismatch).
+        ValidateMinimumToolchainVersion(modules, toolchain);
+
         // ---- 9. Emit per-module actions --------------------------------
         IReadOnlyList<ModuleRecord> targetModules = SelectTargetModules(modules, target);
         if (targetModules.Count == 0)
@@ -239,6 +395,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
             toolchain,
             targetModules,
             fileSetByModule,
+            cancellationToken,
             out IReadOnlyList<IExternalAction> emittedForReport);
 
         // ---- 9.5 Emit the manifest (Step 0.5 addendum + Contract Section 8) ----
@@ -256,23 +413,53 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // For Phase 1 the simpler direct-emission path is sufficient
         // because the manifest's content hash is not yet a CacheKeyComponent
         // for downstream actions.
-        string intermediateBuildDir = Path.Combine(
+        string defaultIntermediateBuildDir = Path.Combine(
             engineRoot, "Intermediate", "Build", target.Name,
             target.Configuration.ToString());
-        Directory.CreateDirectory(intermediateBuildDir);
+        // Round-6 final-cleanup M2: -Out=<dir> on write-manifest plumbs
+        // through BuildOptions.ManifestOutputDirectory. When set, the
+        // manifest is emitted to the override directory; otherwise the
+        // default intermediate-build directory is used.
+        string manifestOutputDir = options.ManifestOutputDirectory ?? defaultIntermediateBuildDir;
+        Directory.CreateDirectory(manifestOutputDir);
         EmitManifest(
             engineRoot,
             target,
             engineVersion,
             targetModules,
             fileSetByModule,
-            intermediateBuildDir);
+            manifestOutputDir);
+
+        // Audit fix C11 (write-manifest mode): when ManifestOnly is set,
+        // skip the action graph + executor pump entirely. The manifest
+        // is the only deliverable.
+        if (options.ManifestOnly)
+        {
+            sw.Stop();
+            return new BuildResult(
+                Success: true,
+                ActionsRan: 0,
+                ActionsCached: 0,
+                ActionsFailed: 0,
+                FirstFailingExitCode: 0,
+                Duration: sw.Elapsed,
+                Actions: emittedForReport);
+        }
 
         // ---- 10. Build the action graph --------------------------------
         Simgenics.XPact.XBT.ActionGraph.ActionGraph graph = new(actions);
         graph.Link();
         graph.DetectCycles();
         graph.Sort();
+
+        // Audit fix R6-C6: proactively flag any produced / prerequisite
+        // path that exceeds the Windows MAX_PATH limit (260 chars).
+        // No-op on Linux / macOS. The check throws XBTException with
+        // exit code 71 (LinkFailed) and a diagnostic naming the
+        // offending path and its action, instead of letting cl.exe /
+        // link.exe surface a cryptic "cannot open file" error deep
+        // inside the compile.
+        graph.CheckPathLengths();
 
         // ---- 11. Open ActionHistory ------------------------------------
         string intermediateRoot = Path.Combine(engineRoot, "Intermediate", "Build", target.Name);
@@ -348,6 +535,22 @@ public sealed class BuildMode : IToolMode<BuildMode>
     // ---------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Audit fix M14: per-platform default architecture used when no
+    /// explicit <c>-Architecture=</c> override is supplied. Windows
+    /// and Linux default to <c>x86_64</c>; Android defaults to
+    /// <c>aarch64</c> (the dominant Android ABI; Phase 2 may add
+    /// <c>armeabi-v7a</c> / <c>x86_64</c> as additional architectures).
+    /// </summary>
+    private static string DefaultArchitectureForPlatform(Platform platform)
+    {
+        return platform switch
+        {
+            Platform.Android => "aarch64",
+            _ => "x86_64",
+        };
+    }
 
     private static string DiscoverEngineRoot()
     {
@@ -496,6 +699,74 @@ public sealed class BuildMode : IToolMode<BuildMode>
         }
     }
 
+    /// <summary>
+    /// Audit fix C7: validate every module's
+    /// <see cref="ModuleRules.MinimumToolchainVersion"/> against the
+    /// live <see cref="XToolChain.ToolchainVersion"/>. Mismatches batch
+    /// into a single diagnostic and fail with exit 23
+    /// (<c>EngineOrToolchainVersionMismatch</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Version comparison uses the existing
+    /// <see cref="SemanticVersion"/> parser. A module that declares a
+    /// malformed semver, or whose minimum exceeds the live toolchain,
+    /// is recorded as an offender. Empty / null
+    /// <c>MinimumToolchainVersion</c> means "no constraint" and is
+    /// skipped.
+    /// </para>
+    /// </remarks>
+    private static void ValidateMinimumToolchainVersion(
+        ModuleCatalog modules,
+        XToolChain toolchain)
+    {
+        string liveVersionString = toolchain.ToolchainVersion;
+        if (!SemanticVersion.TryParse(liveVersionString, out SemanticVersion liveVersion))
+        {
+            Logger.Warning(
+                $"Toolchain version '{liveVersionString}' is not in MAJOR.MINOR.PATCH form; " +
+                "skipping per-module MinimumToolchainVersion checks.",
+                new DiagnosticContext { Action = "validate-toolchain-version" });
+            return;
+        }
+
+        List<string> offenders = new();
+        foreach (ModuleRecord rec in modules.Modules)
+        {
+            string? min = rec.Rules.MinimumToolchainVersion;
+            if (string.IsNullOrEmpty(min))
+            {
+                continue;
+            }
+            if (!SemanticVersion.TryParse(min, out SemanticVersion minVersion))
+            {
+                offenders.Add(
+                    $"Module '{rec.Rules.Name}' declares malformed " +
+                    $"MinimumToolchainVersion = '{min}'. Expected semver " +
+                    "in MAJOR.MINOR.PATCH form.");
+                continue;
+            }
+            if (liveVersion.CompareTo(minVersion) < 0)
+            {
+                offenders.Add(
+                    $"Module '{rec.Rules.Name}' requires toolchain " +
+                    $">= {minVersion} but the active toolchain is " +
+                    $"{liveVersion}.");
+            }
+        }
+
+        if (offenders.Count > 0)
+        {
+            StringBuilder sb = new();
+            sb.AppendLine("MinimumToolchainVersion check failed for the following module(s):");
+            foreach (string offender in offenders)
+            {
+                sb.AppendLine("  " + offender);
+            }
+            throw new XBTException(sb.ToString().TrimEnd(), exitCode: 23);
+        }
+    }
+
     private static XToolChain ConstructToolchain(TargetRules target, string engineRoot)
     {
         switch (target.Platform)
@@ -524,9 +795,16 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 return clang;
 
             default:
+                // Audit fix M9: exit 10 was wrong here -- exit 10 is for
+                // CLI argument errors, but the platform value reached
+                // ConstructToolchain after Parse already accepted it.
+                // Mapping to exit 23 (EngineOrToolchainVersionMismatch)
+                // mirrors the "no compatible toolchain" failures on
+                // platforms that DO parse but lack a backend.
                 throw new XBTException(
-                    $"Unsupported platform: {target.Platform}.",
-                    exitCode: 10);
+                    $"Unsupported platform: {target.Platform}. " +
+                    "No XToolChain backend is registered for this platform.",
+                    exitCode: 23);
         }
     }
 
@@ -545,10 +823,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
             {
                 continue;
             }
-            if (rec.Rules.bIsTestModule && target.TargetType != BuildTargetType.Editor)
+            // Audit fix C8: test modules are included ONLY when
+            // Configuration == Test. Previous logic included them in
+            // every Editor build regardless of configuration, including
+            // Shipping Editor -- a leak that put test-only code into
+            // shipped binaries. The stricter interpretation matches the
+            // spec: bIsTestModule belongs in test builds, full stop.
+            if (rec.Rules.bIsTestModule && target.Configuration != BuildConfiguration.Test)
             {
-                // Test modules ship only into Editor / dev builds, never
-                // into Game / Server.
                 continue;
             }
             selected.Add(rec);
@@ -562,8 +844,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
         XToolChain toolchain,
         IReadOnlyList<ModuleRecord> targetModules,
         Dictionary<string, ModuleFileSet> fileSetByModule,
+        CancellationToken cancellationToken,
         out IReadOnlyList<IExternalAction> emittedForReport)
     {
+        // Audit fix C9: the cancellation token is now plumbed through
+        // every per-module and per-source iteration so a long emit pass
+        // honours Ctrl-C / IDE-cancellation requests promptly.
+        cancellationToken.ThrowIfCancellationRequested();
+
         List<IExternalAction> actions = new();
         List<FileItem> allSourceFiles = new();
         List<IExternalAction> reportActions = new();
@@ -582,6 +870,9 @@ public sealed class BuildMode : IToolMode<BuildMode>
 
         foreach (ModuleRecord rec in targetModules)
         {
+            // Audit fix C9: cancellation point at every module iteration.
+            cancellationToken.ThrowIfCancellationRequested();
+
             ModuleRules module = rec.Rules;
             string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
 
@@ -620,7 +911,11 @@ public sealed class BuildMode : IToolMode<BuildMode>
             List<FileItem> objectFiles = new();
             foreach (FileItem source in sourceFiles)
             {
-                cancellationToken_ThrowIfNoOpFastPath();
+                // Audit fix C9: real cancellation token replaces the
+                // previous no-op stub. Honored at every per-source
+                // iteration so a long compile-action emit pass yields
+                // promptly on Ctrl-C / IDE cancellation.
+                cancellationToken.ThrowIfCancellationRequested();
                 IReadOnlyList<IExternalAction> compileActions =
                     toolchain.CompileSource(module, target, source, moduleObjDir, pchBinding);
                 foreach (IExternalAction compile in compileActions)
@@ -650,6 +945,26 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 actions.Add(link);
                 reportActions.Add(link);
             }
+
+            // Audit fix M7: lift module-declared PreBuildHooks /
+            // PostBuildHooks into the action graph. Each hook's
+            // CreateAction(context) returns an object the caller must
+            // cast to IExternalAction. A non-conforming return (cast
+            // failure) or a hook with no OutputFiles fails the build
+            // with exit 81 (BuildHookOutputMismatch) per Contract
+            // Section 13.
+            string moduleIntermediate = Path.Combine(
+                engineRoot, "Intermediate", "Build", target.Name,
+                target.Configuration.ToString(), target.Platform.ToString(), module.Name);
+            string moduleOutputDir = Path.Combine(engineRoot, "Binaries", target.Platform.ToString());
+            BuildHookContext hookContext = new(
+                Module: module,
+                Target: new ReadOnlyTargetRules(target),
+                IntermediateDir: moduleIntermediate,
+                OutputDir: moduleOutputDir,
+                Cancellation: cancellationToken);
+            LiftHooks(module.PreBuildHooks, module.Name, "pre", hookContext, actions, reportActions);
+            LiftHooks(module.PostBuildHooks, module.Name, "post", hookContext, actions, reportActions);
         }
 
         // One ValidateCopyrightAction for the whole build, fed the union
@@ -681,11 +996,67 @@ public sealed class BuildMode : IToolMode<BuildMode>
     }
 
     /// <summary>
-    /// Marker so future maintainers see the cancellation-check pattern
-    /// even though we currently do not pass the token through this leaf
-    /// per the existing API.
+    /// Audit fix M7: lift one module's pre/post build hooks into the
+    /// action graph. Per Contract Section 9.5, every hook's
+    /// CreateAction(context) MUST return an
+    /// <see cref="IExternalAction"/> with non-empty
+    /// <see cref="IExternalAction.ProducedItems"/>. Failing either
+    /// invariant throws <see cref="XBTException"/> with exit 81
+    /// (<c>BuildHookOutputMismatch</c>).
     /// </summary>
-    private static void cancellationToken_ThrowIfNoOpFastPath() { }
+    private static void LiftHooks(
+        IReadOnlyList<IBuildHook> hooks,
+        string moduleName,
+        string hookKind,
+        BuildHookContext context,
+        List<IExternalAction> actions,
+        List<IExternalAction> reportActions)
+    {
+        if (hooks is null || hooks.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < hooks.Count; i++)
+        {
+            IBuildHook hook = hooks[i];
+            object created;
+            try
+            {
+                created = hook.CreateAction(context);
+            }
+            catch (Exception ex)
+            {
+                throw new XBTException(
+                    $"Module '{moduleName}': {hookKind}-build hook[{i}] " +
+                    $"({hook.GetType().FullName}) CreateAction threw " +
+                    $"{ex.GetType().Name}: {ex.Message}",
+                    exitCode: 81);
+            }
+
+            if (created is not IExternalAction asAction)
+            {
+                throw new XBTException(
+                    $"Module '{moduleName}': {hookKind}-build hook[{i}] " +
+                    $"({hook.GetType().FullName}) CreateAction returned " +
+                    $"{created?.GetType().FullName ?? "null"}, which is not an IExternalAction.",
+                    exitCode: 81);
+            }
+
+            if (asAction.ProducedItems is null || asAction.ProducedItems.Count == 0)
+            {
+                throw new XBTException(
+                    $"Module '{moduleName}': {hookKind}-build hook[{i}] " +
+                    $"({hook.GetType().FullName}) returned an action with no " +
+                    "ProducedItems. Hooks must declare every file they write " +
+                    "so the action graph can track outputs.",
+                    exitCode: 81);
+            }
+
+            actions.Add(asAction);
+            reportActions.Add(asAction);
+        }
+    }
 
     /// <summary>
     /// Per-module file enumeration produced by
@@ -818,10 +1189,16 @@ public sealed class BuildMode : IToolMode<BuildMode>
 
             // Merge public + private include paths for the manifest;
             // consumers see one flat list per Section 9.1.
+            //
+            // Audit fix C2: declared order preserved (Public then Private,
+            // in declaration order). The compiler emits flags in declared
+            // order; sorting the manifest would create a two-way drift
+            // where the manifest claimed one order while the compile
+            // command used another, defeating the manifest's purpose as
+            // an auditable record of what the compiler saw.
             List<string> includePaths = new();
             includePaths.AddRange(m.PublicIncludePaths);
             includePaths.AddRange(m.PrivateIncludePaths);
-            includePaths.Sort(StringComparer.Ordinal);
 
             List<string> publicDefines = m.PublicDefinitions
                 .OrderBy(s => s, StringComparer.Ordinal)
@@ -834,6 +1211,15 @@ public sealed class BuildMode : IToolMode<BuildMode>
             // walk; pass through what the descriptor parser populated.
             // For modules without a parser-authored list, an empty
             // string[] is the honest answer.
+            // Audit fix M8: per-module EngineVersionCompat is sourced
+            // from the ModuleRules field when set; otherwise defaults
+            // to "*" (any-version-compatible). Phase 1 TOML/Roslyn
+            // parsers do not author this field yet -- the default flows
+            // through unchanged for now.
+            string engineVersionCompat = string.IsNullOrEmpty(m.EngineVersionCompat)
+                ? "*"
+                : m.EngineVersionCompat;
+
             Simgenics.XPact.XBT.Manifest.Module manifestModule = new(
                 Name: m.Name,
                 Tier: m.Tier,
@@ -850,7 +1236,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 ModuleDependencies: deps,
                 GeneratedCPPFilenameBase: m.Name + ".gen",
                 SimPath: m.SimPath,
-                EngineVersionCompat: "*",
+                EngineVersionCompat: engineVersionCompat,
                 SimdLevel: m.SimdLevel,
                 PCHUsage: m.PCHUsage,
                 ExcludeFromSharedPCH: m.bExcludeFromSharedPCH,
@@ -861,19 +1247,31 @@ public sealed class BuildMode : IToolMode<BuildMode>
             manifestModules.Add(manifestModule);
         }
 
+        // Audit fix C1/C10 + Rev 13 reconciliation: per-target fields
+        // (architecture / ABI envelope / SimPath + station policy) live
+        // under the nested Manifest.Target record so the JSON shape
+        // mirrors the FBS TargetInfo grouping. The Phase 1 ABI defaults
+        // (GCRootABI, ExceptionABI, ManglingScheme) feed Manifest.Target.
+        Manifest.TargetInfo targetInfo = new(
+            Name: target.Name,
+            Type: target.TargetType,
+            Platform: target.Platform,
+            Configuration: target.Configuration,
+            Architecture: target.Architecture,
+            GCRootABI: ManifestFbs.DefaultGCRootABI,
+            ExceptionABI: ManifestFbs.DefaultExceptionABI,
+            ManglingScheme: ManifestFbs.DefaultManglingScheme,
+            FipsMode: target.FipsMode,
+            SimPathConservativeRootsAllowed: target.SimPathConservativeRootsAllowed,
+            SimdLevelDefault: target.SimdLevelDefault,
+            StationRole: target.StationRole);
+
         Manifest.Manifest manifest = new(
             ContractVersion: ContractVersion.Current,
             EngineVersion: engineVersion.ToString(),
-            TargetName: target.Name,
-            TargetType: target.TargetType,
-            Configuration: target.Configuration,
-            Platform: target.Platform,
+            Target: targetInfo,
             RootLocalPath: NormalisePathForward(engineRoot),
             ExternalDependenciesFile: null,
-            FipsMode: target.FipsMode,
-            SimPathConservativeRootsAllowed: target.SimPathConservativeRootsAllowed,
-            StationRole: target.StationRole,
-            SimdLevelDefault: target.SimdLevelDefault,
             Modules: manifestModules);
 
         string manifestJsonPath = Path.Combine(intermediateBuildDir, "Manifest.json");
@@ -1346,6 +1744,60 @@ internal sealed record BuildOptions
     public string? EngineRoot { get; init; }
     public string? StudioRoot { get; init; }
     public string? ProjectRoot { get; init; }
+    /// <summary>
+    /// Architecture override, e.g. <c>"x86_64"</c> or <c>"aarch64"</c>.
+    /// When null, the value from <see cref="TargetRules.Architecture"/>
+    /// is used (defaults to <c>"x86_64"</c>). Per audit fix M14: needed
+    /// for Android cross-compile (aarch64 / armeabi-v7a / x86_64 hosts).
+    /// </summary>
+    public string? Architecture { get; init; }
+
+    /// <summary>
+    /// Audit fix C11: when true, BuildMode emits the manifest and then
+    /// stops -- no action graph build, no executor pump, no compiles.
+    /// Used by the dedicated <c>write-manifest</c> mode for IDE
+    /// integration ("give me a manifest I can read" without paying for
+    /// a full build).
+    /// </summary>
+    public bool ManifestOnly { get; init; }
+
+    /// <summary>
+    /// Round-6 final-cleanup M2: optional output directory for the
+    /// manifest emission. When null the manifest is written to the
+    /// default
+    /// <c>Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/Manifest.json</c>
+    /// path. When set, <c>Manifest.json</c> and <c>Manifest.fbs.bin</c>
+    /// are emitted into the specified directory instead (the directory
+    /// is created if missing). Used by <c>write-manifest -Out=&lt;dir&gt;</c>
+    /// for IDE wrappers that want the manifest written to a known
+    /// location outside the build tree.
+    /// </summary>
+    public string? ManifestOutputDirectory { get; init; }
+
+    /// <summary>
+    /// Audit fix R6-C7: when true, BuildMode fails immediately (exit 1)
+    /// if another XBT build is in progress for the same (engineRoot,
+    /// target, config, platform) tuple, instead of blocking on the
+    /// build mutex until the sibling releases. Wrapper / CI usage where
+    /// the caller does not want an indefinite wait sets this.
+    /// </summary>
+    public bool NoMutexWait { get; init; }
+
+    /// <summary>
+    /// Audit fix M14: the set of CLI flags we accept-and-warn rather
+    /// than reject. These are documented spec flags whose action-graph
+    /// integration has not yet landed; ignoring them lets a forward-
+    /// compatible IDE wrapper pass them in without breaking the build.
+    /// </summary>
+    private static readonly string[] s_acceptedButUnimplemented = new[]
+    {
+        "-NoCompile",
+        "-DryRun",
+        "-WarningsAsErrors",
+        "-Modules",
+        "-Workers",
+        "-LiveCoding",
+    };
 
     public static BuildOptions Parse(string[] args)
     {
@@ -1358,6 +1810,8 @@ internal sealed record BuildOptions
         string? engineRoot = null;
         string? studioRoot = null;
         string? projectRoot = null;
+        string? architecture = null;
+        bool noMutexWait = false;
 
         foreach (string arg in args)
         {
@@ -1408,8 +1862,15 @@ internal sealed record BuildOptions
             {
                 fips = true;
             }
+            else if (arg.StartsWith("-EngineRoot=", StringComparison.OrdinalIgnoreCase))
+            {
+                // Round-6 final-cleanup M2: spec-canonical name per
+                // XBT.html Section 1.2.
+                engineRoot = arg["-EngineRoot=".Length..];
+            }
             else if (arg.StartsWith("-Engine=", StringComparison.OrdinalIgnoreCase))
             {
+                // Legacy alias preserved for backwards compatibility.
                 engineRoot = arg["-Engine=".Length..];
             }
             else if (arg.StartsWith("-Studio=", StringComparison.OrdinalIgnoreCase))
@@ -1419,6 +1880,28 @@ internal sealed record BuildOptions
             else if (arg.StartsWith("-Project=", StringComparison.OrdinalIgnoreCase))
             {
                 projectRoot = arg["-Project=".Length..];
+            }
+            else if (arg.StartsWith("-Architecture=", StringComparison.OrdinalIgnoreCase))
+            {
+                // Audit fix M14: -Architecture= is wired through to
+                // TargetRules.Architecture, surfacing into the manifest.
+                architecture = arg["-Architecture=".Length..];
+            }
+            else if (arg.Equals("-NoMutexWait", StringComparison.OrdinalIgnoreCase))
+            {
+                // Audit fix R6-C7: opt out of blocking on the build
+                // mutex. Concurrent xbt builds for the same target +
+                // config + platform fail immediately instead of waiting.
+                noMutexWait = true;
+            }
+            else if (IsAcceptedButUnimplemented(arg))
+            {
+                // Audit fix M14: accept-and-warn for forward-compat spec
+                // flags not yet implemented. Lets a wrapper pass them
+                // in without failing the parse.
+                Logger.Warning(
+                    $"CLI flag '{arg}' is accepted but not yet implemented in Phase 1; ignoring.",
+                    new DiagnosticContext { Action = "build-options-parse" });
             }
             else
             {
@@ -1443,7 +1926,30 @@ internal sealed record BuildOptions
             EngineRoot = engineRoot,
             StudioRoot = studioRoot,
             ProjectRoot = projectRoot,
+            Architecture = architecture,
+            NoMutexWait = noMutexWait,
         };
+    }
+
+    /// <summary>
+    /// Audit fix M14: helper for accept-and-warn behaviour on spec
+    /// flags whose action-graph integration is deferred. Matches
+    /// <c>-Foo=</c> as well as <c>-Foo</c> bare.
+    /// </summary>
+    private static bool IsAcceptedButUnimplemented(string arg)
+    {
+        foreach (string prefix in s_acceptedButUnimplemented)
+        {
+            if (arg.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (arg.StartsWith(prefix + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Platform DefaultHostPlatform()

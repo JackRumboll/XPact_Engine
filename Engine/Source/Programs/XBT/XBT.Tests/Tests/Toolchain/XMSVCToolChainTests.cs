@@ -77,13 +77,31 @@ public sealed class XMSVCToolChainTests : IDisposable
     }
 
     /// <summary>
-    /// Non-SimPath module with FPSemantics.Default resolves to /fp:fast
-    /// (non-SimPath production default).
+    /// Audit fix C6: Non-SimPath module with FPSemantics.Default emits
+    /// NO <c>/fp:</c> flag. The compiler-default <c>/fp:precise</c>
+    /// applies; this delegation is the locked Phase 1 policy.
     /// </summary>
     [Fact]
-    public void NonSimPathModule_FpDefault_EmitsFpFast()
+    public void NonSimPathModule_FpDefault_EmitsNoFpFlag()
     {
         ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        var actions = _toolchain.CompileSource(module, target, MakeSource("XRenderer.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.DoesNotContain("/fp:fast", compile.CommandArguments);
+        Assert.DoesNotContain("/fp:precise", compile.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix C6: explicit FPSemantics.Imprecise still emits /fp:fast
+    /// when the module opts in. (Default no longer maps to Imprecise.)
+    /// </summary>
+    [Fact]
+    public void NonSimPathModule_FpImprecise_EmitsFpFast()
+    {
+        ModuleRules module = NewModule(simPath: false, fp: FPSemantics.Imprecise);
         TargetRules target = NewTarget();
 
         var actions = _toolchain.CompileSource(module, target, MakeSource("XRenderer.cpp"), _scratchDir);

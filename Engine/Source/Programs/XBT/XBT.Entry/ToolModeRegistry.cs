@@ -63,7 +63,8 @@ internal static class ToolModeRegistry
         // Scan every assembly currently loaded. XBT.Entry has the
         // built-in modes; out-of-tree additions can be registered by
         // loading their assembly before invocation. The set is finite
-        // (Phase 1 ships ~4 modes), so the cost is negligible.
+        // (all 9 Phase 1 modes + 2 Phase 2 stub modes), so the cost is
+        // negligible.
         foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
         {
             Type[] types;

@@ -108,6 +108,7 @@ public static class BuildTomlParser
             "short_name",
             "deprecation_message",
             "minimum_toolchain_version",
+            "engine_version_compat",
             "pch_header_file",
             "shared_pch_header_file",
             // Enum-string keys -- the result must be a string, then
@@ -154,6 +155,10 @@ public static class BuildTomlParser
             "b_is_test_module",
             "deprecation_message",
             "minimum_toolchain_version",
+            // Audit fix R4-M5: engine_version_compat declared as a
+            // top-level field. Previously ModuleRules.EngineVersionCompat
+            // was reachable only via the Roslyn .Build.cs escape hatch.
+            "engine_version_compat",
             "public_dependency_modules",
             "private_dependency_modules",
             "dynamically_loaded_modules",
@@ -405,6 +410,10 @@ public static class BuildTomlParser
             bIsTestModule = ReadBool(model, "b_is_test_module", sourcePath) ?? false,
             DeprecationMessage = ReadString(model, "deprecation_message", sourcePath),
             MinimumToolchainVersion = ReadString(model, "minimum_toolchain_version", sourcePath),
+            // Audit fix R4-M5: engine_version_compat parsed from TOML.
+            // Defaults to "*" (any-version-compatible) when the key is
+            // absent so existing fixtures remain valid without edits.
+            EngineVersionCompat = ReadString(model, "engine_version_compat", sourcePath) ?? "*",
             PublicDependencyModuleNames = ReadDepList(model, "public_dependency_modules", sourcePath, allowInterfaceFlag: true),
             PrivateDependencyModuleNames = ReadDepList(model, "private_dependency_modules", sourcePath, allowInterfaceFlag: true),
             DynamicallyLoadedModuleNames = ReadDepList(model, "dynamically_loaded_modules", sourcePath, allowInterfaceFlag: false),

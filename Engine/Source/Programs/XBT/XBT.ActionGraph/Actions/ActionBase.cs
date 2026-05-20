@@ -108,6 +108,16 @@ public abstract class ActionBase : IExternalAction
     /// <inheritdoc/>
     public virtual Platform Platform => default;
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Phase 1 XBT-internal actions (copyright validation, in-process
+    /// emit-only passes) do not emit depfiles, so the default is null.
+    /// Subclasses whose subprocess emits an MSVC <c>/sourceDependencies</c>
+    /// JSON or a Clang <c>-MF</c> <c>.d</c> file override this with the
+    /// emitted file path; the cache layer will parse it in Phase 2.
+    /// </remarks>
+    public virtual FileItem? DependencyListFile => null;
+
     /// <summary>
     /// Single-cell reference holding the lazily-computed
     /// <see cref="CommandVersion"/>. Read with <c>Volatile.Read</c>; the

@@ -225,4 +225,35 @@ public sealed class FileItemTests : IDisposable
         // one of the two files.
         Assert.NotEqual(upperItem.ContentHash, lowerItem.ContentHash);
     }
+
+    /// <summary>
+    /// Audit fix M4 (and C3 by extension): on Windows, two
+    /// <see cref="FileItem.GetItemByPath(string)"/> calls that differ
+    /// only in drive-letter case map to the same cached instance. Without
+    /// the normalisation, ActionGraph.Link would silently mis-link a
+    /// producer at <c>C:\Build\Foo.obj</c> against a prerequisite at
+    /// <c>c:\build\Foo.obj</c> -- the case-insensitive filesystem maps
+    /// both to the same file, but <c>StringComparer.Ordinal</c> on the
+    /// producer-map keys would not.
+    /// </summary>
+    [Fact]
+    public void GetItemByPath_WindowsDriveLetter_CanonicalizedToUppercase()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        string path = WriteScratch("driveletter.txt", "x");
+        // Path starts with "C:\" or similar -- mutate to lowercase drive
+        // letter and confirm we still get the same canonical instance.
+        if (path.Length < 2 || path[1] != ':')
+        {
+            return;
+        }
+        string lowercase = char.ToLowerInvariant(path[0]) + path.Substring(1);
+
+        FileItem direct  = FileItem.GetItemByPath(path);
+        FileItem flipped = FileItem.GetItemByPath(lowercase);
+        Assert.Same(direct, flipped);
+    }
 }

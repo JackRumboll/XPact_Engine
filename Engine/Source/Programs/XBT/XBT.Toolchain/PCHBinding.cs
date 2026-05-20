@@ -1,5 +1,6 @@
 // Copyright Simgenics. All Rights Reserved.
 
+using System.IO;
 using Simgenics.XPact.XBT.ActionGraph;
 using Simgenics.XPact.XBT.Core;
 
@@ -39,4 +40,22 @@ public sealed record PCHBinding(
     IExternalAction Action,
     FileItem PchHeaderFile,
     string PchHeaderName,
-    FileItem PchOutputFile);
+    FileItem PchOutputFile)
+{
+    /// <summary>
+    /// Absolute path to the directory containing the PCH header file.
+    /// Threaded into the consumer's <c>/I</c> (MSVC) or <c>-I</c>
+    /// (Clang) list so the platform's <c>/FI</c>/<c>-include</c>
+    /// resolves regardless of the consumer module's own include-path
+    /// declarations.
+    /// </summary>
+    /// <remarks>
+    /// Audit fix C4: in the shared-PCH case the header may live under
+    /// a participant's tree that other participants do not include.
+    /// Storing the directory on the binding (rather than re-deriving it
+    /// from <see cref="PchHeaderFile"/> at every consume site) keeps
+    /// the consumer-side flag emission cheap and unambiguous.
+    /// </remarks>
+    public string PchHeaderDirectory { get; } =
+        Path.GetDirectoryName(PchHeaderFile.FullPath) ?? string.Empty;
+}

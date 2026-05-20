@@ -120,19 +120,26 @@ internal static class ManifestFixtures
             DeprecationMessage:       null,
             MinimumToolchainVersion:  "1.7.0");
 
+        TargetInfo target = new(
+            Name:                            "MiningTrainingEditor",
+            Type:                            BuildTargetType.Editor,
+            Platform:                        Platform.Win64,
+            Configuration:                   BuildConfiguration.Development,
+            Architecture:                    "x86_64",
+            GCRootABI:                       ManifestFbs.DefaultGCRootABI,
+            ExceptionABI:                    ManifestFbs.DefaultExceptionABI,
+            ManglingScheme:                  ManifestFbs.DefaultManglingScheme,
+            FipsMode:                        false,
+            SimPathConservativeRootsAllowed: false,
+            SimdLevelDefault:                SimdLevel.SSE42,
+            StationRole:                     StationRole.Engineer);
+
         return new ManifestRecord(
             ContractVersion:                 ContractVersion.Current,
             EngineVersion:                   "0.1.0",
-            TargetName:                      "MiningTrainingEditor",
-            TargetType:                      BuildTargetType.Editor,
-            Configuration:                   BuildConfiguration.Development,
-            Platform:                        Platform.Win64,
+            Target:                          target,
             RootLocalPath:                   "C:/repo/XPact_Engine",
             ExternalDependenciesFile:        "Intermediate/Build/MiningTrainingEditor/Development/ExternalDeps.json",
-            FipsMode:                        false,
-            SimPathConservativeRootsAllowed: false,
-            StationRole:                     StationRole.Engineer,
-            SimdLevelDefault:                SimdLevel.SSE42,
             Modules:                         new List<Module> { xCore, xScoring, xbtPrograms });
     }
 
@@ -148,19 +155,26 @@ internal static class ManifestFixtures
         Module projectMod = MakeMinimalModule("ProjectGame",  ModuleTier.Project, ModuleType.Runtime);
         Module programsMod = MakeMinimalModule("XBT.Manifest", ModuleTier.Engine, ModuleType.Programs);
 
+        TargetInfo target = new(
+            Name:                            "SmokeTarget",
+            Type:                            BuildTargetType.Game,
+            Platform:                        Platform.Win64,
+            Configuration:                   BuildConfiguration.Development,
+            Architecture:                    "x86_64",
+            GCRootABI:                       ManifestFbs.DefaultGCRootABI,
+            ExceptionABI:                    ManifestFbs.DefaultExceptionABI,
+            ManglingScheme:                  ManifestFbs.DefaultManglingScheme,
+            FipsMode:                        false,
+            SimPathConservativeRootsAllowed: false,
+            SimdLevelDefault:                SimdLevel.SSE42,
+            StationRole:                     StationRole.Instructor);
+
         return new ManifestRecord(
             ContractVersion:                 ContractVersion.Current,
             EngineVersion:                   "0.1.0",
-            TargetName:                      "SmokeTarget",
-            TargetType:                      BuildTargetType.Game,
-            Configuration:                   BuildConfiguration.Development,
-            Platform:                        Platform.Win64,
+            Target:                          target,
             RootLocalPath:                   "C:/repo/XPact_Engine",
             ExternalDependenciesFile:        null,
-            FipsMode:                        false,
-            SimPathConservativeRootsAllowed: false,
-            StationRole:                     StationRole.Instructor,
-            SimdLevelDefault:                SimdLevel.SSE42,
             Modules:                         new List<Module> { engineMod, studioMod, projectMod, programsMod });
     }
 
