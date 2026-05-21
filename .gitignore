@@ -71,3 +71,12 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# .NET test output artifacts (xUnit / Microsoft.NET.Test.Sdk write into
+# TestResults/, sometimes as siblings of .csproj; never commit)
+# ---------------------------------------------------------------------------
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
