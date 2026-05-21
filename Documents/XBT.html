@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 9)</title>
+<title>XPact Build Tool (XBT) &mdash; System Specification (Rev 10)</title>
 </head>
 <body>
 
@@ -14,10 +14,15 @@
   <strong>Layer:</strong> 0 (Build &amp; Tooling) &nbsp;|&nbsp;
   <strong>Tier:</strong> Engine &nbsp;|&nbsp;
   <strong>Language:</strong> C# (.NET 8 standalone) &nbsp;|&nbsp;
-  <strong>Revision:</strong> Rev 9 &nbsp;|&nbsp;
+  <strong>Revision:</strong> Rev 10 &nbsp;|&nbsp;
   <strong>Plan reference:</strong> <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10 &nbsp;|&nbsp;
-  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 13.5 (Stage A).
+  <strong>Contract reference:</strong> <code>/Documents/XToolchainContract.html</code> Rev 13.6 (Stage A).
 </p>
+
+<p><strong>Rev 10 (XHT Rev 3 cross-review alignment &mdash; <code>bCanExecuteRemotely</code> &rarr; <code>CanExecuteRemotely</code> rename):</strong></p>
+<ul>
+  <li><strong>Section 5.2 / 5.6 / 6.3 / 11 &mdash; property rename <code>bCanExecuteRemotely</code> &rarr; <code>CanExecuteRemotely</code>.</strong> The actual <code>IExternalAction.cs</code> code uses <code>CanExecuteRemotely</code> (no <code>b</code> prefix); the Contract Section 10.3 + the Addendum Section 4.1 already use the un-prefixed form. XBT.html had drifted to the <code>b</code>-prefixed UE-convention naming through Rev 9; XHT.html Rev 3 surfaced the discrepancy during its cross-doc audit. Rev 10 applies the rename at every site to match code reality + Contract reality. <strong>No code impact, no surface impact:</strong> the C# property in <code>IExternalAction.cs:119</code> has always been <code>CanExecuteRemotely</code> (no <code>b</code> prefix); the Rev 10 change is purely doc text aligning XBT.html with code + Contract Section 10.3 + Addendum Section 4.1, which never carried the <code>b</code> prefix. <code>ContractVersion.Current</code> and the internal <code>ActionHistory.CurrentVersion</code> digest are <strong>unchanged</strong> &mdash; no on-disk caches invalidate. <strong>Contract reference bump to Rev 13.6 + Addendum Revision 5</strong> in lockstep with XHT.html Rev 3.</li>
+</ul>
 
 <p><strong>Rev 9 (XHT Rev 2 cross-review alignment &mdash; &sect;9.2 output-shape correction):</strong></p>
 <ul>
@@ -90,6 +95,10 @@
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>Rev 10</strong></td>
+      <td><strong>XHT Rev 3 cross-review alignment &mdash; <code>bCanExecuteRemotely</code> &rarr; <code>CanExecuteRemotely</code> rename.</strong> Sections 5.2 / 5.6 / 6.3 / 11 had drifted to the <code>b</code>-prefixed UE-convention spelling through Rev 9; the actual <code>IExternalAction.cs:119</code> property is <code>CanExecuteRemotely</code> (no <code>b</code> prefix), and Contract Section 10.3 + Addendum Section 4.1 never carried the <code>b</code>. Rev 10 applies the doc-only rename at every site to match code reality + Contract reality. <strong>No code impact, no surface impact:</strong> the C# property name was always un-prefixed; the change is purely doc text. <code>ContractVersion.Current</code> and the internal <code>ActionHistory.CurrentVersion</code> digest are <strong>unchanged</strong> &mdash; no on-disk caches invalidate. Contract reference bumped to Rev 13.6 + Addendum Revision 5 in lockstep with XHT.html Rev 3. <strong>Rev 4 cross-doc additions (XHT.html Rev 3 &rarr; Rev 4 Round-2 audit closure):</strong> &sect;8.3 stale <code>ClassesHeaders</code> field-table row dropped per Addendum Revision 5 §10 item 5 + §8.6 Phase 1 reality caveat (the field is not in the implemented Module schema; <code>Manifest.fbs</code> omits it). No other XBT-side changes required by the XHT.html Rev 4 round.</td>
+    </tr>
     <tr>
       <td><strong>Rev 9</strong></td>
       <td><strong>XHT Rev 2 cross-review alignment.</strong> XHT's per-module output shape corrected at &sect;9.2 + &sect;9.4 to match XHT.html Rev 2 Section 8: per-header <code>.gen.h</code> + per-header <code>.gen.cpp</code> + per-module <code>&lt;Module&gt;.init.gen.cpp</code> aggregator + per-module <code>&lt;Module&gt;.gen.manifest</code>. Rev 8's single-<code>&lt;Module&gt;.gen.cpp</code> aggregator wording was stale relative to UE precedent (<code>UhtHeaderCodeGeneratorCppFile.cs</code> per-header + <code>UhtPackageCodeGeneratorCppFile.cs</code> per-module) and the actual XHT emit model. <code>EmitReflectionAction</code>'s <code>ProducedItems</code> shape grows accordingly. No <code>ContractSurface</code> changes (action-type enum unchanged; produced-items list is internal to the action). <code>ContractVersion.Current</code> still <code>"13.2+b04ae3cc84cdd9f3"</code>. Test count unchanged at 377 (the XHT-side fixtures and golden snapshots reflect the per-header shape; XBT.Tests are not affected).</td>
@@ -793,7 +802,7 @@ allow = false                      # SimPath; default-disable hot-reload
 
     // Scheduling.
     int Weight { get; }
-    bool bCanExecuteRemotely { get; }
+    bool CanExecuteRemotely { get; }      // Rev 10: un-prefixed (matches IExternalAction.cs + Contract Section 10.3 + Addendum Section 4.1)
     string CacheBucket { get; }
     ArtifactMode ArtifactMode { get; }
 
@@ -807,7 +816,7 @@ allow = false                      # SimPath; default-disable hot-reload
 
 public enum ArtifactMode { None, Cacheable, NotShareable }</code></pre>
 
-<p><strong>Flat <code>bCanExecuteRemotely</code> flag.</strong> UBT carries a per-executor matrix (<code>bCanExecuteRemotelyWithSNDBS</code>, <code>bCanExecuteRemotelyWithXGE</code>, <code>bCanExecuteRemotelyWithUBA</code>). XPact flattens to one flag because there is exactly one Phase 2 distributed executor (XPactBuildAccelerator), and exposing per-vendor flags calcifies the design against a single vendor &mdash; the same trap UBT fell into.</p>
+<p><strong>Flat <code>CanExecuteRemotely</code> flag</strong> (Rev 10 rename from <code>bCanExecuteRemotely</code> &mdash; un-prefixed form per <code>IExternalAction.cs</code> + Contract Section 10.3). UBT carries a per-executor matrix (<code>bCanExecuteRemotelyWithSNDBS</code>, <code>bCanExecuteRemotelyWithXGE</code>, <code>bCanExecuteRemotelyWithUBA</code>). XPact flattens to one flag because there is exactly one Phase 2 distributed executor (XPactBuildAccelerator), and exposing per-vendor flags calcifies the design against a single vendor &mdash; the same trap UBT fell into. The un-prefixed XPact naming also avoids the UE <code>b</code>-prefix convention which doesn't apply to interface-property names in XBT's C# discipline.</p>
 
 <p><strong><code>DependencyListFile</code> (NEW Rev 8 &mdash; Round-6).</strong> The field is the schema-stable Phase 2 hook for header-dependency tracking. The C# signature is <code>FileItem? DependencyListFile { get; init; }</code> (nullable <code>FileItem</code>, not nullable <code>string</code>): the file path goes through XBT's <code>FileItem</code> intern table so it shares the same identity discipline as every other prerequisite or produced item. <strong>Phase 1 status:</strong> every Phase 1 emit site (MSVC compile, Clang compile, PCH generation, link) sets <code>DependencyListFile = null</code>; no Phase 1 consumer reads the field. The Clang toolchain already emits a <code>.d</code> depfile via <code>-MD -MF</code> and declares it as a <code>ProducedItem</code> &mdash; the <code>DependencyListFile</code> property is the place a Phase 2 patch will <em>also</em> reference that same file so the post-execute step at Section 15.3 can parse it. MSVC will gain a parallel <code>/sourceDependencies</code> emission at Phase 2 with the resulting JSON pointed at by the same field. <strong>Schema impact:</strong> the field is part of <code>IExternalAction</code>'s reflected property set used by <code>ActionHistory.ComputeCurrentVersion</code> (Section 5.4), so its addition rotated the internal schema digest at the Round-6 commit &mdash; existing <code>ActionHistory.bin</code> files were treated as empty on first run (a deliberate one-time recompute). The field is intentionally <em>not</em> in <code>ContractSurface</code>: only the enum surface + the explicit element list drive the public <code>ContractVersion</code> (Section 8.1), and <code>IExternalAction</code>'s reflected properties are part of the internal schema digest only. <code>ContractVersion.Current</code> therefore remained <code>"13.2+b04ae3cc84cdd9f3"</code> across Round 6.</p>
 
@@ -847,7 +856,7 @@ var action = new CompileCppAction
     CommandDescription = "Compile",
     StatusDescription = "XScoring.cpp",
     Weight = 1,
-    bCanExecuteRemotely = true,
+    CanExecuteRemotely = true,           // Rev 10 rename: un-prefixed
     CacheBucket = "Compile.XScoring",
     ArtifactMode = ArtifactMode.Cacheable,
 
@@ -938,9 +947,9 @@ public sealed record BuildHookContext(
 
 <p>Each action runs in its own subprocess (or in-process when both XHT and XIL2CPP are loaded as libraries &mdash; XBT picks subprocess for Phase 1 simplicity, in-process is a Phase 2 perf option). A non-zero exit code captures stderr to the build log and emits a streaming JSON error record (Section 21.2) and marks the action failed. Failure propagates: dependent actions are skipped, the build's final exit code reflects the worst category encountered (per Contract Section 13). <strong>One action's failure never corrupts another's outputs</strong>: each action writes to a temp file <code>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</code> in the <strong>same directory as the final output</strong> (same-volume guarantee, atomic rename), and atomically renames into place on success. On failure, the temp is deleted.</p>
 
-<h3>6.3 The <code>bCanExecuteRemotely</code> flag</h3>
+<h3>6.3 The <code>CanExecuteRemotely</code> flag</h3>
 
-<p>Present on <code>IExternalAction</code> but ignored at Phase 1. <strong>Phase 2:</strong> <code>XPactBuildAccelerator</code> (plan Section 3 Layer 0 Rev 7) will consume the flag and dispatch eligible actions to a worker pool of remote machines. XBT must not preclude this; the executor surface in <code>XBT.Executor</code> is an interface, not a single class, so Phase 2 can register a second implementation alongside <code>ParallelExecutor</code>.</p>
+<p>Present on <code>IExternalAction</code> (Rev 10 rename from <code>bCanExecuteRemotely</code> &mdash; un-prefixed per code reality at <code>IExternalAction.cs</code> + Contract Section 10.3) but ignored at Phase 1. <strong>Phase 2:</strong> <code>XPactBuildAccelerator</code> (plan Section 3 Layer 0 Rev 7) will consume the flag and dispatch eligible actions to a worker pool of remote machines. XBT must not preclude this; the executor surface in <code>XBT.Executor</code> is an interface, not a single class, so Phase 2 can register a second implementation alongside <code>ParallelExecutor</code>.</p>
 
 <h3>6.4 Cancellation + atomic-rename contract (REVISED Rev 2 &mdash; audit finding #1)</h3>
 
@@ -1187,7 +1196,7 @@ extern "C" float  XSleef_cosf  (float);
     <tr><td><code>BaseDirectory</code></td><td>string</td><td>Module root, relative to <code>RootLocalPath</code>.</td></tr>
     <tr><td><code>SourceFiles.Cpp</code></td><td>string[]</td><td>All .cpp under this module.</td></tr>
     <tr><td><code>SourceFiles.CSharp</code></td><td>string[]</td><td>All .cs under this module.</td></tr>
-    <tr><td><code>PublicHeaders</code> / <code>PrivateHeaders</code> / <code>InternalHeaders</code> / <code>ClassesHeaders</code></td><td>string[]</td><td>Header categories. Mirror UE.</td></tr>
+    <tr><td><code>PublicHeaders</code> / <code>PrivateHeaders</code> / <code>InternalHeaders</code></td><td>string[]</td><td>Header categories. Mirror UE. <strong>Rev 10 correction (cross-doc with XHT.html Rev 4):</strong> the prior <code>ClassesHeaders</code> entry in this row is REMOVED &mdash; the field is not in the implemented Module schema (<code>Manifest.fbs</code> omits it per Addendum Revision 5 §10 item 5 + §8.6 Phase 1 reality caveat below the table). UE-style <code>Classes/</code> headers, when present, land in <code>SourceFiles</code> with <code>IsHeader = true</code>.</td></tr>
     <tr><td><code>IncludePaths</code></td><td>string[]</td><td>Public + private + propagated from <code>InterfaceModule</code>-flagged dependencies.</td></tr>
     <tr><td><code>PublicDefines</code></td><td>string[]</td><td></td></tr>
     <tr><td><code>ModuleDependencies</code></td><td>list of <code>{Name, InterfaceModule}</code></td><td>Transitively resolved typed-struct entries (Contract Section 9.1).</td></tr>
@@ -2183,7 +2192,7 @@ public enum QuiescePriority
     <tr><td>Per-toolchain action patcher (not per-executable-name matching)</td><td>Section 7.6 of this spec; footgun #5.</td></tr>
     <tr><td>Per-scope descriptor cache (Engine / per-Plugin / per-Project), not one giant engine assembly</td><td>Section 3.4 of this spec; footgun #2.</td></tr>
     <tr><td>ActionHistory <code>CurrentVersion</code> auto-derived from field-set hash</td><td>Section 5.4 of this spec; footgun #8.</td></tr>
-    <tr><td>Flat <code>bCanExecuteRemotely</code> flag (not per-executor matrix)</td><td>Section 5.2 of this spec; preempts vendor lock-in.</td></tr>
+    <tr><td>Flat <code>CanExecuteRemotely</code> flag (not per-executor matrix; Rev 10 rename from <code>bCanExecuteRemotely</code>)</td><td>Section 5.2 of this spec; preempts vendor lock-in.</td></tr>
     <tr><td>Fail-fast on plugin EngineVersion mismatch (not warn-and-continue)</td><td>Section 17.3 of this spec.</td></tr>
     <tr><td>File ID decoupled from on-disk path (uses logical plugin path)</td><td>Contract Section 1.4.</td></tr>
     <tr><td>Mixed-language modules (one DLL contains <code>.h</code> + <code>.cpp</code> + <code>.cs</code>)</td><td>Plan Section 2 Module composition row; Contract Section 10.2.</td></tr>
@@ -2228,11 +2237,11 @@ public enum QuiescePriority
   <li><strong>Roslyn escape hatch (Rev 3).</strong> A fixture module shipping a <code>.Build.cs</code> alongside (or instead of) a <code>.Build.toml</code> builds successfully via the Phase 1 Roslyn fallback. A pure-TOML build of the rest of the fixture does not page Roslyn in (asserted by observing process memory / module-load events).</li>
 </ol>
 
-<p>This list is the contract between XBT.html and the implementation that follows. Every item is realisable from the structures above and from the Toolchain Contract Rev 13.5.</p>
+<p>This list is the contract between XBT.html and the implementation that follows. Every item is realisable from the structures above and from the Toolchain Contract Rev 13.6.</p>
 
 <hr>
 
-<p><em>End of XBT system specification (Rev 8). Rev 8 is the Round-6 Phase 1 hardening capture &mdash; the UBT-comparison audit's recommended Phase-1 robustness items have landed in the implementation and are documented here. The substantive additions relative to Rev 7: (1) <code>IExternalAction.DependencyListFile</code> property added (defaults to <code>null</code> in Phase 1; Sections 5.2 / 5.4 / 15.3). It is the schema-stable hook for Phase 2's <code>CppDependencyCache</code>: Clang will point it at the <code>-MF</code>-emitted <code>.d</code> file; MSVC at the <code>/sourceDependencies</code> JSON. The field is part of <code>IExternalAction</code>'s reflected property set (rotating <code>ActionHistory.CurrentVersion</code>'s internal schema digest) but intentionally NOT part of <code>ContractSurface</code> (XBT.html Section 8.1 exclusion list), so <code>ContractVersion.Current</code> stayed at <code>"13.2+b04ae3cc84cdd9f3"</code>. (2) <code>ActionHistory.RecordContentHash</code> wired into <code>ParallelExecutor</code> (Section 5.4 / 15.2): every successful action records raw-source prerequisite content hashes; producer outputs are skipped (the upstream's own <code>RecordHash</code> covers them). Closes the latent mtime-fallback gap that violated the Contract Section 2.1 mtime ban. (3) <code>ActionGraph.Link</code> conflict-detection extended to compare prereq-item sets and working directory in addition to command-version (Section 5.3). (4) New Section 19.3 documents Windows Job Object integration on <code>ParallelExecutor</code> (<code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code>); Linux / Mac no-op for Phase 1. (5) New Section 19.4 documents the antivirus-retry helper <code>FileSystemOps.RetryOnTransientIOException</code> applied to 5 file-write sites (manifest JSON, manifest FBS, <code>ActionHistory.Save</code>, executor temp-file move/delete, PCH wrapper write); schedule <code>[100ms, 200ms, 1000ms, 5000ms]</code>. (6) New Section 19.5 documents <code>ActionGraph.CheckPathLengths</code> proactive Windows MAX_PATH validation; exits 71 (<code>LinkFailed</code> reused as the closest-fit code pending a dedicated <code>PathTooLong</code> mnemonic). (7) New <code>-NoMutexWait</code> CLI flag (Sections 1.1 / 1.2) and Section 6.5 documents the per-build <code>SingleInstance</code> mutex (name: <code>XBT_Build_&lt;HashOf(engineRoot+target+config+platform)&gt;</code>) preventing two concurrent builds from racing on <code>ActionHistory.bin</code>. (8) Section 1.3 exit-code-71 description updated for the new dual meaning. (9) Contract reference bumped to Rev 13.5 (a documentation-only revision that captures the same items on the Contract side). Test count moved 363 &rarr; 377. Earlier Rev 7 / Rev 6 / Rev 5 / Rev 4 / Rev 3 / Rev 2 changes carry forward unchanged unless explicitly rescinded above. Exit codes remain owned by the Contract; XBT.html cross-references Contract Section 13.</em></p>
+<p><em>End of XBT system specification (Rev 10). Rev 10 lands the <code>bCanExecuteRemotely</code> &rarr; <code>CanExecuteRemotely</code> rename in lockstep with XHT.html Rev 3 + Contract Rev 13.6 + Addendum Revision 5; the rename is doc-only (matches the implementation already at <code>IExternalAction.cs</code> + Contract Section 10.3 + Addendum Section 4.1), no test-count change, no <code>ContractVersion</code> rotation (the rename is in <code>IExternalAction</code>'s reflected property set which is intentionally not in <code>ContractSurface</code>; it does rotate the internal <code>ActionHistory.CurrentVersion</code> digest forcing a one-time recompute on first run after Rev 10 lands). Rev 9 is the XHT Rev 2 cross-review alignment for the per-header <code>.gen.cpp</code> + per-module <code>.init.gen.cpp</code> aggregator shape. Rev 8 is the Round-6 Phase 1 hardening capture &mdash; the UBT-comparison audit's recommended Phase-1 robustness items have landed in the implementation and are documented here. The substantive additions relative to Rev 7: (1) <code>IExternalAction.DependencyListFile</code> property added (defaults to <code>null</code> in Phase 1; Sections 5.2 / 5.4 / 15.3). It is the schema-stable hook for Phase 2's <code>CppDependencyCache</code>: Clang will point it at the <code>-MF</code>-emitted <code>.d</code> file; MSVC at the <code>/sourceDependencies</code> JSON. The field is part of <code>IExternalAction</code>'s reflected property set (rotating <code>ActionHistory.CurrentVersion</code>'s internal schema digest) but intentionally NOT part of <code>ContractSurface</code> (XBT.html Section 8.1 exclusion list), so <code>ContractVersion.Current</code> stayed at <code>"13.2+b04ae3cc84cdd9f3"</code>. (2) <code>ActionHistory.RecordContentHash</code> wired into <code>ParallelExecutor</code> (Section 5.4 / 15.2): every successful action records raw-source prerequisite content hashes; producer outputs are skipped (the upstream's own <code>RecordHash</code> covers them). Closes the latent mtime-fallback gap that violated the Contract Section 2.1 mtime ban. (3) <code>ActionGraph.Link</code> conflict-detection extended to compare prereq-item sets and working directory in addition to command-version (Section 5.3). (4) New Section 19.3 documents Windows Job Object integration on <code>ParallelExecutor</code> (<code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code>); Linux / Mac no-op for Phase 1. (5) New Section 19.4 documents the antivirus-retry helper <code>FileSystemOps.RetryOnTransientIOException</code> applied to 5 file-write sites (manifest JSON, manifest FBS, <code>ActionHistory.Save</code>, executor temp-file move/delete, PCH wrapper write); schedule <code>[100ms, 200ms, 1000ms, 5000ms]</code>. (6) New Section 19.5 documents <code>ActionGraph.CheckPathLengths</code> proactive Windows MAX_PATH validation; exits 71 (<code>LinkFailed</code> reused as the closest-fit code pending a dedicated <code>PathTooLong</code> mnemonic). (7) New <code>-NoMutexWait</code> CLI flag (Sections 1.1 / 1.2) and Section 6.5 documents the per-build <code>SingleInstance</code> mutex (name: <code>XBT_Build_&lt;HashOf(engineRoot+target+config+platform)&gt;</code>) preventing two concurrent builds from racing on <code>ActionHistory.bin</code>. (8) Section 1.3 exit-code-71 description updated for the new dual meaning. (9) Contract reference bumped to Rev 13.5 (a documentation-only revision that captures the same items on the Contract side). Test count moved 363 &rarr; 377. Earlier Rev 7 / Rev 6 / Rev 5 / Rev 4 / Rev 3 / Rev 2 changes carry forward unchanged unless explicitly rescinded above. Exit codes remain owned by the Contract; XBT.html cross-references Contract Section 13.</em></p>
 
 </body>
 </html>

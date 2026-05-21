@@ -43,7 +43,7 @@ public enum XActionType
     /// <summary>XHT pass 1: per-module token parse from .h/.cpp sources.</summary>
     ParseHeadersAction = 2,
 
-    /// <summary>XHT pass 2: per-module .gen.cpp emit; parallel with ParseHeaders on next module.</summary>
+    /// <summary>XHT pass 2: per-header .gen.cpp + per-module .init.gen.cpp aggregator emit; parallel with ParseHeaders on next module.</summary>
     EmitReflectionAction = 3,
 
     /// <summary>XIL2CPP per-module transpile (.cs -> .cs.cpp + .cs.h).</summary>
