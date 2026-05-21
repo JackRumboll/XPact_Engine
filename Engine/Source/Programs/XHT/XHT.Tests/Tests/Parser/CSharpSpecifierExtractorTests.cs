@@ -16,7 +16,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 /// <summary>
 /// Tests for <see cref="CSharpSpecifierExtractor"/>. Argument-form
 /// recognition + registry validation per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.2 + Section 7.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.2 + Section 7.2.
 /// </summary>
 public class CSharpSpecifierExtractorTests
 {
@@ -145,9 +145,13 @@ public class Foo { }
     }
 
     [Fact]
-    public void RegisteredSpecifierInWrongContext_EmitsXHT111()
+    public void RegisteredSpecifierInWrongContext_EmitsXHT066()
     {
-        // 'EditAnywhere' is PropertyMember-only. Use it in Function context.
+        // 'EditAnywhere' is PropertyMember-only. Use it in Function
+        // context. Renamed from EmitsXHT111 per C8 audit -- the
+        // parser-band code was relocated from XHT111 to XHT066 to free
+        // the validator-band slot for FunctionSpecifierConflict
+        // (XHT.html Rev 8 Section 12.3).
         (IReadOnlyList<Specifier> specs, List<DiagnosticRecord> diags) = Extract(
             "EditAnywhere", SpecifierContext.Function);
         Assert.Single(specs);

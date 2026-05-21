@@ -6,7 +6,7 @@
     XHT.AST, XHT.Tables, XHT.Parser, XHT.Resolver, XHT.Emitter, XHT.Entry,
     XHT.Tests).
 
-    Per /Documents/XHT.html Rev 7 Section 2 and Section 2.5: XHT is a
+    Per /Documents/XHT.html Rev 8 Section 2 and Section 2.5: XHT is a
     .NET 8 standalone tool, mirroring XBT's discipline at
     /Engine/Source/Programs/XBT/Directory.Build.props.
 

@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 /// <summary>
 /// Extracts <see cref="Specifier"/> records from a Roslyn
 /// <see cref="AttributeSyntax"/>'s argument list per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.2 (Roslyn-based C# parser)
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.2 (Roslyn-based C# parser)
 /// + Section 7.2 (specifier parsing). The C# side mirrors the C++ side
 /// (<c>CppSpecifierParser</c>) in role and diagnostic vocabulary:
 /// </summary>
@@ -66,7 +66,10 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 ///   </description></item>
 ///   <item><description>
 ///     On context mismatch (registered but not legal in this context):
-///     emit <see cref="DiagSpecifierIllegalInContext"/> (XHT111).
+///     emit <see cref="DiagSpecifierIllegalInContext"/> (XHT066, per
+///     C8 audit renumbering in XHT.html Rev 8 Section 12.3 -- relocated
+///     from XHT111 to free the validator-band slot for
+///     <see cref="DiagnosticCodes.FunctionSpecifierConflict"/>).
 ///   </description></item>
 ///   <item><description>
 ///     On grammar error inside the argument (e.g.
@@ -86,8 +89,17 @@ public static class CSharpSpecifierExtractor
     /// <summary>Diagnostic code: specifier name not found in registry.</summary>
     public const string DiagUnknownSpecifier = "XHT110";
 
-    /// <summary>Diagnostic code: specifier registered but not legal in this context.</summary>
-    public const string DiagSpecifierIllegalInContext = "XHT111";
+    /// <summary>
+    /// Diagnostic code: specifier registered but not legal in this
+    /// context. Per C8 audit (XHT.html Rev 8 Section 12.3): renumbered
+    /// from XHT111 to <see cref="DiagnosticCodes.SpecifierIllegalInContext"/>
+    /// (XHT066) to resolve a numeric-slot collision with the
+    /// validator-band <c>DiagnosticCodes.FunctionSpecifierConflict</c>
+    /// (Server+Client+NetMulticast mutex). Kept as a callsite alias for
+    /// test-vocabulary stability; the wire value is sourced from the
+    /// central catalog.
+    /// </summary>
+    public const string DiagSpecifierIllegalInContext = DiagnosticCodes.SpecifierIllegalInContext;
 
     /// <summary>
     /// Diagnostic code: grammar error inside the attribute argument
@@ -286,7 +298,8 @@ public static class CSharpSpecifierExtractor
         ISpecifierRegistry registry)
     {
         // Registry lookup mirrors CppSpecifierParser: distinguish miss
-        // (XHT110) from context-mismatch (XHT111).
+        // (XHT110) from context-mismatch (XHT066; was XHT111 pre-C8
+        // audit, see XHT.html Rev 8 Section 12.3).
         if (registry.Resolve(key, context) is null)
         {
             if (registry.Resolve(key, SpecifierContext.All) is null)

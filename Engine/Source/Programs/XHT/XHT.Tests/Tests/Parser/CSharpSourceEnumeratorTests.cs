@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 
 /// <summary>
 /// Tests for <see cref="CSharpSourceEnumerator"/>. Determinism gate for
-/// C# source-file ordering per <c>/Documents/XHT.html</c> Rev 7
+/// C# source-file ordering per <c>/Documents/XHT.html</c> Rev 8
 /// Section 11.4 (byte-identical output under parallelism).
 /// </summary>
 public class CSharpSourceEnumeratorTests

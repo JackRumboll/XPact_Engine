@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Classification of the C++ keywords the XHT tokenizer needs to recognise
-/// per <c>/Documents/XHT.html</c> Rev 7 Section 3.4 (the marker-driven
+/// per <c>/Documents/XHT.html</c> Rev 8 Section 3.4 (the marker-driven
 /// dispatcher). The kind drives parser branching: the C++ parser consults
 /// the <c>Kind</c> of a recognised keyword to decide whether the token
 /// starts a declaration (<see cref="Type"/>), modifies an existing

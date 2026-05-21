@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One reflected struct (<c>XSTRUCT</c> / <c>[XStruct]</c>). Per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.1.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 // XBT manifest input DTOs. The shape mirrors
 // /Engine/Source/Programs/XBT/XBT.Manifest/ManifestSchema.cs verbatim
 // for the fields XHT needs at parse time, per /Documents/XHT.html
-// Rev 7 Section 9.1 + Contract Section 10.2.
+// Rev 8 Section 9.1 + Contract Section 10.2.
 //
 // XHT does NOT link XBT.Manifest at runtime per XHT.html Section 2 +
 // the architectural decision in Section 25.2 item 1 (standalone-tool
@@ -209,7 +209,7 @@ public sealed record XbtModuleDep(
 /// <summary>
 /// One reflected module's manifest entry. The set of fields here is a
 /// strict subset of XBT's <c>Module</c> record -- the subset XHT actually
-/// needs at parse time per <c>/Documents/XHT.html</c> Rev 7 Section 9.1.
+/// needs at parse time per <c>/Documents/XHT.html</c> Rev 8 Section 9.1.
 /// </summary>
 /// <param name="Name">Module name (e.g. <c>XScoring</c>).</param>
 /// <param name="Tier">Tier (Engine / Studio / Project).</param>
@@ -310,7 +310,7 @@ public sealed record XbtManifest(
 
 /// <summary>
 /// Reader for the XBT manifest XHT consumes per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 9.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 9.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -376,7 +376,7 @@ public static class XbtManifestReader
 
         if (!File.Exists(manifestJsonPath))
         {
-            // XHT001 -- Manifest missing per /Documents/XHT.html Rev 7
+            // XHT001 -- Manifest missing per /Documents/XHT.html Rev 8
             // Section 23.2. The catalog-anchored code lets the entry-point
             // catch surface "error XHT001: ..." instead of the generic
             // XHT050 shim so operators can distinguish missing-file from
@@ -428,7 +428,7 @@ public static class XbtManifestReader
         // TODO Phase 1c: wire up FlatSharp greedy-materialised reader.
         // Schema-compile step lands in XHT.Manifest.csproj's FlatSharp.targets
         // mirroring /Engine/Source/Programs/XBT/XBT.Manifest/FlatSharp.targets.
-        // Phase 1b is JSON-only per /Documents/XHT.html Rev 7 Section 9.1.
+        // Phase 1b is JSON-only per /Documents/XHT.html Rev 8 Section 9.1.
         return null;
     }
 
@@ -534,7 +534,7 @@ public static class XbtManifestReader
     /// Verify the manifest's <see cref="XbtManifest.ContractVersion"/>
     /// matches XHT's compile-time
     /// <see cref="XhtVersion.ContractVersion"/> per
-    /// <c>/Documents/XHT.html</c> Rev 7 Section 23.2 (diagnostic
+    /// <c>/Documents/XHT.html</c> Rev 8 Section 23.2 (diagnostic
     /// <c>XHT002</c>). Comparison is an ordinal string-equality check
     /// over the full composite <c>&lt;tag&gt;+&lt;hash&gt;</c> form
     /// (e.g. <c>"13.2+b04ae3cc84cdd9f3"</c>).
@@ -614,7 +614,7 @@ public static class XbtManifestReader
 
     /// <summary>
     /// Find a module by name. Returns null when the module is not present.
-    /// Per <c>/Documents/XHT.html</c> Rev 7 Section 1.3, a module-not-in-
+    /// Per <c>/Documents/XHT.html</c> Rev 8 Section 1.3, a module-not-in-
     /// manifest lookup failure is the caller's signal to exit
     /// <see cref="Simgenics.XPact.XHT.Core.ExitCodes.ManifestMalformed"/>
     /// (50).

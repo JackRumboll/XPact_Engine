@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Tables;
 /// Tests for <see cref="SpecifierRegistry"/>: registration, case-insensitive
 /// lookup, context-intersection semantics, and the conflict-detection rule
 /// (identical-warn vs non-identical-throw) per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 18.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 18.1.
 /// </summary>
 public class SpecifierRegistryTests
 {

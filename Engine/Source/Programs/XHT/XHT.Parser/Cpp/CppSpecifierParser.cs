@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
 /// Parser for the parenthesised specifier list following an XHT marker
-/// per <c>/Documents/XHT.html</c> Rev 7 Section 7.2. Consumes
+/// per <c>/Documents/XHT.html</c> Rev 8 Section 7.2. Consumes
 /// <c>(Foo, Bar=Baz, meta=(K="V"))</c> token sequences and emits a list
 /// of <see cref="Specifier"/> records the resolver / validator pass
 /// inspects in Phase 1d.
@@ -43,9 +43,12 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 /// the registry under the caller-supplied
 /// <see cref="SpecifierContext"/>. Resolution misses emit
 /// <c>XHT110 (UnknownSpecifier)</c>; context-mismatch hits emit
-/// <c>XHT111 (SpecifierIllegalInContext)</c>. The Specifier record is
-/// still emitted on miss so the downstream AST shape is stable -- the
-/// validator pass owns the suppress / promote decisions.
+/// <c>XHT066 (SpecifierIllegalInContext)</c> (per C8 audit renumbering
+/// in XHT.html Rev 8 Section 12.3 -- relocated from XHT111 to free the
+/// validator-band slot for <c>FunctionSpecifierConflict</c>). The
+/// Specifier record is still emitted on miss so the downstream AST
+/// shape is stable -- the validator pass owns the suppress / promote
+/// decisions.
 /// </para>
 /// </remarks>
 public sealed class CppSpecifierParser
@@ -58,8 +61,17 @@ public sealed class CppSpecifierParser
     /// <summary>Diagnostic code: specifier name not found in registry (XHT.html Section 12.3 validator band).</summary>
     public const string DiagUnknownSpecifier = "XHT110";
 
-    /// <summary>Diagnostic code: specifier registered but not legal in this context.</summary>
-    public const string DiagSpecifierIllegalInContext = "XHT111";
+    /// <summary>
+    /// Diagnostic code: specifier registered but not legal in this
+    /// context. Per C8 audit (XHT.html Rev 8 Section 12.3): renumbered
+    /// from XHT111 to <see cref="DiagnosticCodes.SpecifierIllegalInContext"/>
+    /// (XHT066) to resolve a numeric-slot collision with the
+    /// validator-band <c>DiagnosticCodes.FunctionSpecifierConflict</c>
+    /// (Server+Client+NetMulticast mutex). Kept as a callsite alias for
+    /// test-vocabulary stability; the wire value is sourced from the
+    /// central catalog.
+    /// </summary>
+    public const string DiagSpecifierIllegalInContext = DiagnosticCodes.SpecifierIllegalInContext;
 
     /// <summary>
     /// Diagnostic code: pipe-syntax alternative list (deprecated form).
@@ -353,12 +365,13 @@ public sealed class CppSpecifierParser
         SourceSpan span,
         SpecifierContext context)
     {
-        // Registry lookup: emit XHT110 / XHT111 on miss / context-mismatch
+        // Registry lookup: emit XHT110 / XHT066 on miss / context-mismatch
         // but still record the specifier so downstream AST shape holds.
+        // (XHT066 was XHT111 pre-C8 audit; see XHT.html Rev 8 Section 12.3.)
         if (_registry.Resolve(key, context) is null)
         {
             // Try a context-blind lookup to distinguish "unknown name"
-            // (XHT110) from "wrong context" (XHT111).
+            // (XHT110) from "wrong context" (XHT066).
             if (_registry.Resolve(key, SpecifierContext.All) is null)
             {
                 diagnostics.Add(new DiagnosticRecord(

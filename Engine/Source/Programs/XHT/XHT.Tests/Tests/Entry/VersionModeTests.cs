@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="VersionMode"/>. Per <c>/Documents/XHT.html</c>
-/// Rev 7 Section 1.1.
+/// Rev 8 Section 1.1.
 /// </summary>
 [Collection(nameof(VersionModeTests))]
 [CollectionDefinition(nameof(VersionModeTests), DisableParallelization = true)]

@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Prints XHT's version banner (semver + contract version + .NET
-/// runtime) per <c>/Documents/XHT.html</c> Rev 7 Section 1.1. Useful for
+/// runtime) per <c>/Documents/XHT.html</c> Rev 8 Section 1.1. Useful for
 /// CI dashboards and bug reports.
 /// </summary>
 [XhtMode("version")]

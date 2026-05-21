@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 
 /// <summary>
 /// Reader for the XHT-produced per-module <c>.gen.manifest</c> file per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 9.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 9.2.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -306,7 +306,7 @@ public static class GenManifestReader
     /// XHT's compile-time pin <see cref="XhtVersion.ContractVersion"/>.
     /// Mirrors <c>XbtManifestReader.ValidateContractVersion</c> on the
     /// XHT-output side per Round 5 R4-MA5 (<c>/Documents/XHT.html</c>
-    /// Rev 7 Section 23.2 -- diagnostic <c>XHT006</c>).
+    /// Rev 8 Section 23.2 -- diagnostic <c>XHT006</c>).
     /// </summary>
     /// <param name="actual">The ContractVersion read from the manifest.</param>
     /// <exception cref="ManifestMalformedException">

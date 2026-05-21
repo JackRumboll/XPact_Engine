@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Resolver</RootNamespace>
     <AssemblyName>XHT.Resolver</AssemblyName>
-    <Description>Seven-active-phase symbol-resolution pipeline (None &#8594; Pairings &#8594; InvalidCheck &#8594; BindSuperAndBases &#8594; ResolveBases &#8594; Properties &#8594; RecursiveStructCheck &#8594; Final) plus symbol-table population pass and validator pass. Per /Documents/XHT.html Rev 7 Section 5 and Section 6.</Description>
+    <Description>Seven-active-phase symbol-resolution pipeline (None &#8594; Pairings &#8594; InvalidCheck &#8594; BindSuperAndBases &#8594; ResolveBases &#8594; Properties &#8594; RecursiveStructCheck &#8594; Final) plus symbol-table population pass and validator pass. Per /Documents/XHT.html Rev 8 Section 5 and Section 6.</Description>
   </PropertyGroup>
 
   <ItemGroup>

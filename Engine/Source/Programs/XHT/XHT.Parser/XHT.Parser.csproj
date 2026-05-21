@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Parser</RootNamespace>
     <AssemblyName>XHT.Parser</AssemblyName>
-    <Description>Two parser engines, one shared registration model. C++ side: handwritten single-pass tokenizer with column-precise spans. C# side: Roslyn-based (Microsoft.CodeAnalysis.CSharp; parse-only, no semantic-model use, no analyzer hosting). Both feed a unified token stream consumed by the marker-driven dispatcher. Per /Documents/XHT.html Rev 7 Section 3.</Description>
+    <Description>Two parser engines, one shared registration model. C++ side: handwritten single-pass tokenizer with column-precise spans. C# side: Roslyn-based (Microsoft.CodeAnalysis.CSharp; parse-only, no semantic-model use, no analyzer hosting). Both feed a unified token stream consumed by the marker-driven dispatcher. Per /Documents/XHT.html Rev 8 Section 3.</Description>
   </PropertyGroup>
 
   <ItemGroup>

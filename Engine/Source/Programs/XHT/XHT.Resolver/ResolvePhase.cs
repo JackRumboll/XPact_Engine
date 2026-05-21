@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Resolver;
 
 /// <summary>
 /// The seven-active-phase resolve pipeline state per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 5.1 (Model A; Round-2 audit
+/// <c>/Documents/XHT.html</c> Rev 8 Section 5.1 (Model A; Round-2 audit
 /// C3 phase-reorder). The enum identifies the lifecycle phase
 /// a <see cref="ResolverPipeline"/> instance is currently in (or has
 /// completed) as it walks the populated symbol table.

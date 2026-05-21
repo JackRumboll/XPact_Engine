@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Emitter;
 
 /// <summary>
 /// Per-reflected-header <c>.gen.h</c> emitter per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 8.1 + Section 8.4 (empty
+/// <c>/Documents/XHT.html</c> Rev 8 Section 8.1 + Section 8.4 (empty
 /// sentinel form) + Contract Section 1.3 (body-macro suffix vocabulary) +
 /// Contract Section 1.4 (FileId mangling).
 /// </summary>

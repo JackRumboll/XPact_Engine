@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 
 /// <summary>
 /// Determinism gate for C# source-file enumeration per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 11.4 (byte-identical-output
+/// <c>/Documents/XHT.html</c> Rev 8 Section 11.4 (byte-identical-output
 /// under parallelism, "Roslyn determinism -- partial class file
 /// ordering"). C# source files within a module must be enumerated in
 /// <see cref="StringComparer.Ordinal"/> order before invoking the Roslyn

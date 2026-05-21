@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Tables;
 
 /// <summary>
 /// Tests for <see cref="CppKeywordTable"/>: exact case-sensitive lookup
-/// + XHT marker recognition per Contract Section 1.1 + XHT.html Rev 7
+/// + XHT marker recognition per Contract Section 1.1 + XHT.html Rev 8
 /// Section 3.4.
 /// </summary>
 public class CppKeywordTableTests

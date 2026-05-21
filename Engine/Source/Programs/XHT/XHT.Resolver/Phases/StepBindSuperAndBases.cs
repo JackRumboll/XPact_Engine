@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// and <see cref="XhtInterface.SuperIdentifier"/> via the caseless
 /// symbol table. Populates <see cref="ResolverContext.ResolvedSupers"/>.
 /// Mirrors UHT's <c>StepBindSuperAndBases</c> at
-/// <c>UhtSession.cs:1460</c> per <c>/Documents/XHT.html</c> Rev 7
+/// <c>UhtSession.cs:1460</c> per <c>/Documents/XHT.html</c> Rev 8
 /// Section 5.1 + Section 5.3.
 /// </summary>
 /// <remarks>

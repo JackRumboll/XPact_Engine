@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tables;
 /// Default thread-safe <see cref="ISpecifierRegistry"/> implementation.
 /// Backed by a <see cref="ConcurrentDictionary{TKey, TValue}"/> keyed by the
 /// case-folded specifier name (<c>StringComparer.OrdinalIgnoreCase</c>) per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 7.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 7.2.
 /// </summary>
 /// <remarks>
 /// <para>

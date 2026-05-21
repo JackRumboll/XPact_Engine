@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Emitter;
 /// The reflected-type roles XHT's singleton-getter and ConstInit naming
 /// surfaces distinguish. Maps to the <c>&lt;Kind&gt;</c> component in the
 /// <c>Z_Construct_X&lt;Kind&gt;_&lt;Module&gt;_&lt;Type&gt;</c> format per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 10.2 + Contract Section 2.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 10.2 + Contract Section 2.2.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -54,7 +54,7 @@ public enum EngineRole
 
 /// <summary>
 /// Symbol-name builders for XHT's emit surface per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 10 + Contract Section 1.4 +
+/// <c>/Documents/XHT.html</c> Rev 8 Section 10 + Contract Section 1.4 +
 /// Contract Section 2.2.
 /// </summary>
 /// <remarks>

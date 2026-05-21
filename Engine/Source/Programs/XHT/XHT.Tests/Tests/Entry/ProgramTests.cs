@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="Program"/>'s mode dispatch + exit-code path per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.3.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.3.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -189,7 +189,7 @@ public sealed class ProgramTests : IDisposable
     // ---------------------------------------------------------------------
     // Round 5 R4-CR2: end-to-end tests that exercise Program.Main's catch
     // surface for catalog-anchored manifest-malformed diagnostic codes per
-    // /Documents/XHT.html Rev 7 Section 23.2. Each test:
+    // /Documents/XHT.html Rev 8 Section 23.2. Each test:
     //   (a) writes a synthetic manifest condition to disk (or omits the
     //       file entirely),
     //   (b) invokes Program.Main with the parse-module mode,

@@ -10,7 +10,7 @@ using Xunit;
 namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 
 /// <summary>
-/// Tests for <see cref="Logger"/>. Per <c>/Documents/XHT.html</c> Rev 7
+/// Tests for <see cref="Logger"/>. Per <c>/Documents/XHT.html</c> Rev 8
 /// Section 1.4 + Section 12: MSBuild text format on stderr, optional
 /// streaming JSON channel, thread-safe counters.
 /// </summary>

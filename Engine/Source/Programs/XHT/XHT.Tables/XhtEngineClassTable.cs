@@ -7,7 +7,7 @@ using System.Collections.Generic;
 namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
-/// Anchor-type table per <c>/Documents/XHT.html</c> Rev 7 Section 2 (the
+/// Anchor-type table per <c>/Documents/XHT.html</c> Rev 8 Section 2 (the
 /// XHT.Tables module description -- <c>XhtEngineClassTable</c>: "core
 /// engine roles -- XObject, XClass, XStruct, XInterface -- mapped
 /// to their reflected representations; Rev 2 addition mirroring UHT's

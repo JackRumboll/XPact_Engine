@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 /// Integration tests that exercise the C++ and C# parsers running
 /// against the same <see cref="SymbolTable"/>. Verifies the
 /// cross-language registration model per <c>/Documents/XHT.html</c>
-/// Rev 7 Section 3.3 + Section 5.7 (cross-language type-reference
+/// Rev 8 Section 3.3 + Section 5.7 (cross-language type-reference
 /// checks). Round-2 directive removed the A / U / I / F prefix-strip;
 /// engine source uses XPact's permanent <c>X</c> prefix.
 /// </summary>

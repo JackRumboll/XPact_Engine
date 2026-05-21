@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Frozen lookup table of every C++ keyword the XHT tokenizer recognises,
-/// per <c>/Documents/XHT.html</c> Rev 7 Section 3.1 + Section 3.4 +
+/// per <c>/Documents/XHT.html</c> Rev 8 Section 3.1 + Section 3.4 +
 /// Contract Section 1.1 (the XHT marker macros).
 /// </summary>
 /// <remarks>

@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 /// <summary>
 /// Tests for <see cref="StringUtils.StripCppPrefix"/> +
 /// <see cref="StringUtils.ToCaselessKey"/> per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.3 (engine-name convention)
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.3 (engine-name convention)
 /// + Section 5.4 (caseless symbol-table population).
 /// </summary>
 /// <remarks>

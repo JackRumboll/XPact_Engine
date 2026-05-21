@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Read / write surface of the specifier registry per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 7 + Section 18.1. The default
+/// <c>/Documents/XHT.html</c> Rev 8 Section 7 + Section 18.1. The default
 /// implementation is <see cref="SpecifierRegistry"/>; the interface exists so
 /// the parser (Phase 1c.2) and the resolver / validator passes (Phase 1d)
 /// can take a dependency on the registry abstraction rather than the
@@ -27,7 +27,9 @@ namespace Simgenics.XPact.XHT.Tables;
 /// returns the registered definition iff the caller-supplied <c>context</c>
 /// intersects the definition's
 /// <see cref="SpecifierDefinition.ApplicableTo"/> mask. Callers (the parser)
-/// emit <c>XHT110</c> on miss and <c>XHT111</c> on a context-mismatch hit;
+/// emit <c>XHT110</c> on miss and <c>XHT066</c> on a context-mismatch hit
+/// (per C8 audit renumbering, XHT.html Rev 8 Section 12.3 -- was XHT111
+/// pre-C8);
 /// the registry surface itself does not emit diagnostics.
 /// </para>
 /// </remarks>

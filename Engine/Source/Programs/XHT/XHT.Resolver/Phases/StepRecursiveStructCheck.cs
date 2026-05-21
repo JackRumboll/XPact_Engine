@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// over BOTH the <c>Super</c> chain AND the value-typed-field-reference
 /// graph. Mirrors UHT's <c>UhtSession.cs:2880-2932</c>
 /// (<c>TopologicalStructVisit</c>) but extends to field types per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 5.5.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 5.5.
 /// </summary>
 /// <remarks>
 /// <para>

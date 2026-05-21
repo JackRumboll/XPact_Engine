@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Manifest;
 
 /// <summary>
 /// Tests for <see cref="XbtManifestReader"/>. The reader consumes XBT's
-/// <c>Manifest.json</c> per <c>/Documents/XHT.html</c> Rev 7
+/// <c>Manifest.json</c> per <c>/Documents/XHT.html</c> Rev 8
 /// Section 9.1 + Contract Section 10.2.
 /// </summary>
 public class XbtManifestReaderTests : IDisposable
@@ -288,7 +288,7 @@ public class XbtManifestReaderTests : IDisposable
     }
 
     // ---------------------------------------------------------------------
-    // ContractVersion-mismatch detection per /Documents/XHT.html Rev 7
+    // ContractVersion-mismatch detection per /Documents/XHT.html Rev 8
     // Section 23.2 + Section 12.3 (diagnostic XHT002). These tests verify
     // the Round-3 audit M1 fix: XHT must not silently accept a manifest
     // whose ContractVersion does not match XHT's compile-time pin.
@@ -364,7 +364,7 @@ public class XbtManifestReaderTests : IDisposable
         //  (a) be a ManifestMalformedException,
         //  (b) carry exit code 50 (ManifestMalformed),
         //  (c) carry the catalog-anchored diagnostic code "XHT002"
-        //      (per /Documents/XHT.html Rev 7 Section 12.3 + Section 23.2),
+        //      (per /Documents/XHT.html Rev 8 Section 12.3 + Section 23.2),
         //  (d) name BOTH the observed and the expected values in the
         //      message so operators can decide which side to rebuild.
         const string mismatchedVersion = "99.99+deadbeefcafebabe";
@@ -521,7 +521,7 @@ public class XbtManifestReaderTests : IDisposable
     // ---------------------------------------------------------------------
     // Round 5 R4-CR1: every throw site in XbtManifestReader now anchors a
     // diagnostic code. These tests verify the catalog assignments per
-    // /Documents/XHT.html Rev 7 Section 23.2 (XHT001 manifest missing,
+    // /Documents/XHT.html Rev 8 Section 23.2 (XHT001 manifest missing,
     // XHT003 verifier-limit rejection).
     // ---------------------------------------------------------------------
 

@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 
 /// <summary>
 /// Phase 2 (<see cref="ResolvePhase.InvalidCheck"/>): narrow sanity
-/// checks per <c>/Documents/XHT.html</c> Rev 7 Section 5.1 + UHT
+/// checks per <c>/Documents/XHT.html</c> Rev 8 Section 5.1 + UHT
 /// precedent. Specifier-conflict checks do NOT run here; they run in
 /// <see cref="StepResolveFinal"/> per the Rev 2 + UHT
 /// <c>StepResolveValidate</c> placement.

@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Manifest</RootNamespace>
     <AssemblyName>XHT.Manifest</AssemblyName>
-    <Description>Reads the JSON + FlatBuffers manifest XBT emits (Toolchain Contract Section 10.2). Prefers the FBS binary sidecar via FlatSharp; falls back to JSON. Does not depend on XBT.Manifest at runtime &#8212; the schema is shared by reference. Per /Documents/XHT.html Rev 7 Section 2 and Section 25.2 item 2.</Description>
+    <Description>Reads the JSON + FlatBuffers manifest XBT emits (Toolchain Contract Section 10.2). Prefers the FBS binary sidecar via FlatSharp; falls back to JSON. Does not depend on XBT.Manifest at runtime &#8212; the schema is shared by reference. Per /Documents/XHT.html Rev 8 Section 2 and Section 25.2 item 2.</Description>
   </PropertyGroup>
 
   <ItemGroup>

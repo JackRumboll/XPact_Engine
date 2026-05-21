@@ -3,7 +3,7 @@
 namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
-/// One entry in the specifier registry per <c>/Documents/XHT.html</c> Rev 7
+/// One entry in the specifier registry per <c>/Documents/XHT.html</c> Rev 8
 /// Section 7 + Section 18.1. Mirrors UHT's <c>UhtSpecifier</c> at
 /// <c>EpicGames.UHT/Tables/UhtSpecifierTable.cs</c> but with the XHT
 /// vocabulary reductions documented on <see cref="SpecifierValueKind"/> and

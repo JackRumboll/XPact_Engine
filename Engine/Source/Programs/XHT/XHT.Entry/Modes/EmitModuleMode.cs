@@ -19,7 +19,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1e implementation of the <c>emit-module</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1 + Section 8.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.1 + Section 8.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -56,7 +56,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 /// controls behaviour when a referenced source file is missing on disk.
 /// Strict (the production default): exit 50 with diagnostic <c>XHT072</c>
 /// (Required source file missing in strict mode) per /Documents/XHT.html
-/// Rev 7 Section 12.3 emit-band catalog. Lenient (test default): emit an
+/// Rev 8 Section 12.3 emit-band catalog. Lenient (test default): emit an
 /// <c>XHT070</c> warning per missing source and continue with an empty
 /// AST for that file. Lenient mode is the path the Phase 1e test suite
 /// uses against synthetic manifests where the referenced sources don't
@@ -110,7 +110,7 @@ public sealed class EmitModuleMode : IToolMode
         if (module is null)
         {
             // XHT004 -- Module not in manifest per /Documents/XHT.html
-            // Rev 7 Section 23.2. The X-CR1 remap (Rev 3) routed this to
+            // Rev 8 Section 23.2. The X-CR1 remap (Rev 3) routed this to
             // exit 50 (manifest-coherence concern); the catalog-anchored
             // code carries through so the entry-point catch surfaces
             // "error XHT004: ..." instead of the generic XHT050 shim.

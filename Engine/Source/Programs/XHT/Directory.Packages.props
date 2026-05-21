@@ -4,7 +4,7 @@
   <!--
     Central NuGet package version management for the XHT solution.
 
-    Per /Documents/XHT.html Rev 7 Section 2.5: XHT pins NuGet packages
+    Per /Documents/XHT.html Rev 8 Section 2.5: XHT pins NuGet packages
     via Directory.Packages.props. Individual csproj files reference
     packages with <PackageReference Include="..." /> (no Version
     attribute); MSBuild resolves the version from <PackageVersion>

@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Emitter</RootNamespace>
     <AssemblyName>XHT.Emitter</AssemblyName>
-    <Description>ConstInit-style emission (Toolchain Contract Section 7.1). Three emit targets per module: per-reflected-header {Header}.gen.h + per-reflected-header {Header}.gen.cpp + per-module {Module}.init.gen.cpp + per-module {Module}.gen.manifest. All writes use the atomic temp-file + rename pattern. Per /Documents/XHT.html Rev 7 Sections 8 and 9.</Description>
+    <Description>ConstInit-style emission (Toolchain Contract Section 7.1). Three emit targets per module: per-reflected-header {Header}.gen.h + per-reflected-header {Header}.gen.cpp + per-module {Module}.init.gen.cpp + per-module {Module}.gen.manifest. All writes use the atomic temp-file + rename pattern. Per /Documents/XHT.html Rev 8 Sections 8 and 9.</Description>
   </PropertyGroup>
 
   <ItemGroup>

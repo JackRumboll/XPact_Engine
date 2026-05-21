@@ -5,7 +5,7 @@
     <RootNamespace>Simgenics.XPact.XHT.Entry</RootNamespace>
     <AssemblyName>xht</AssemblyName>
     <OutputType>Exe</OutputType>
-    <Description>XHT executable: Main, mode dispatcher, CLI parser, contract-imported exit-code surface, JSON build-log writer, streaming JSON diagnostic channel writer. Phase 1a scaffold returns 0 unconditionally; real CLI ships in Phase 1b. Per /Documents/XHT.html Rev 7 Sections 1 and 2.</Description>
+    <Description>XHT executable: Main, mode dispatcher, CLI parser, contract-imported exit-code surface, JSON build-log writer, streaming JSON diagnostic channel writer. Phase 1a scaffold returns 0 unconditionally; real CLI ships in Phase 1b. Per /Documents/XHT.html Rev 8 Sections 1 and 2.</Description>
 
     <!--
       Release-time single-file publish properties per XHT.html Section 2.5.

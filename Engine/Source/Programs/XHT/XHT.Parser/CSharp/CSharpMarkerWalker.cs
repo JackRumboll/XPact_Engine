@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 
 /// <summary>
 /// Roslyn-based reflection-marker walker for one C# source file per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.2 (Roslyn-based C# parser)
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.2 (Roslyn-based C# parser)
 /// + Section 3.3 (cross-language considerations) + Section 7 (markers).
 /// The C# peer of <c>Cpp.CppMarkerScanner</c>: walks the syntax tree,
 /// recognises the X-attribute family (<c>[XClass]</c>, <c>[XStruct]</c>,
@@ -75,8 +75,17 @@ public sealed class CSharpMarkerWalker
     /// <summary>Diagnostic code: caseless symbol-table collision.</summary>
     public const string DiagDuplicateType = "XHT040";
 
-    /// <summary>Diagnostic code: marker followed by declaration we don't recognise.</summary>
-    public const string DiagMalformedMarkerDeclaration = "XHT115";
+    /// <summary>
+    /// Diagnostic code: marker followed by declaration we don't
+    /// recognise. Per C8 audit (XHT.html Rev 8 Section 12.3):
+    /// renumbered from XHT115 to
+    /// <see cref="DiagnosticCodes.MalformedMarkerDeclaration"/> (XHT067)
+    /// to resolve a numeric-slot collision with the validator-band
+    /// <c>DiagnosticCodes.IntrinsicWithGeneratedBody</c>. Kept as a
+    /// callsite alias for test-vocabulary stability; the wire value is
+    /// sourced from the central catalog.
+    /// </summary>
+    public const string DiagMalformedMarkerDeclaration = DiagnosticCodes.MalformedMarkerDeclaration;
 
     /// <summary>
     /// Diagnostic code: a generic-attribute form is not supported by
@@ -134,9 +143,10 @@ public sealed class CSharpMarkerWalker
 
     /// <summary>
     /// Diagnostics accumulated during the walk. Includes specifier-
-    /// extraction diagnostics (XHT110/111/114), marker-context errors
-    /// (XHT115), and caseless symbol-table collisions (XHT040). The
-    /// list is appended in walk order.
+    /// extraction diagnostics (XHT110/XHT066/XHT065), marker-shape
+    /// errors (XHT067 -- relocated from XHT115 per C8 audit, see
+    /// XHT.html Rev 8 Section 12.3), and caseless symbol-table
+    /// collisions (XHT040). The list is appended in walk order.
     /// </summary>
     public IReadOnlyList<DiagnosticRecord> Diagnostics => _diagnostics;
 
@@ -384,7 +394,7 @@ public sealed class CSharpMarkerWalker
                 }
             }
 
-            // Per /Documents/XHT.html Rev 7 Section 7.5: C# attribute
+            // Per /Documents/XHT.html Rev 8 Section 7.5: C# attribute
             // anchored types always have generated body in XPact's model
             // (no XGENERATED_BODY equivalent is needed because Roslyn
             // gives the walker the target directly). Set
@@ -612,7 +622,7 @@ public sealed class CSharpMarkerWalker
             // delegate-declaration time (Action / Func vs custom delegate
             // type); a future [XMulticastDelegate] attribute (parallel
             // to the C++ DECLARE_DYNAMIC_MULTICAST_DELEGATE_* macros)
-            // would flip this. See XHT.html Rev 7 Section 7 marker table.
+            // would flip this. See XHT.html Rev 8 Section 7 marker table.
             XhtDelegate del = new(
                 Name: name,
                 FullyQualifiedName: fqn,

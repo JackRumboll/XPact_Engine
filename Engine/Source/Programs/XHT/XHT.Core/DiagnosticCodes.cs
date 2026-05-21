@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Core;
 
 /// <summary>
 /// Centralised catalog of every <c>XHT&lt;NNN&gt;</c> diagnostic code
-/// XHT can emit, per <c>/Documents/XHT.html</c> Rev 7 Section 12.3
+/// XHT can emit, per <c>/Documents/XHT.html</c> Rev 8 Section 12.3
 /// (band allocations) + Section 23.2 (catalog entries). Round 7 R6-XH2
 /// pulled all in-line string literals into this class so a typo
 /// (e.g., <c>"XTH001"</c> swapping H and T) fails to compile rather
@@ -17,7 +17,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// <list type="bullet">
 ///   <item><description><b>XHT000-XHT009</b> -- Logger / entry-point infrastructure (Logger info/warning/error sentinel, manifest-not-found, CV mismatch, verifier rejection, module-not-in-manifest, .gen.manifest CV mismatch, .gen.manifest structural).</description></item>
 ///   <item><description><b>XHT040-XHT049</b> -- C# marker walker (duplicate-type, unsupported attribute shapes).</description></item>
-///   <item><description><b>XHT060-XHT069</b> -- C++ tokenizer / specifier-parser (lex-level diagnostics).</description></item>
+///   <item><description><b>XHT060-XHT069</b> -- C++ tokenizer / specifier-parser / marker-scanner (lex + AST-shape diagnostics; XHT066/067/068 relocated here from the validator band per C8 audit, XHT.html Rev 8 Section 12.3).</description></item>
 ///   <item><description><b>XHT070-XHT099</b> -- Emit-band: source-file IO, missing files, gen.* write failures.</description></item>
 ///   <item><description><b>XHT100-XHT124</b> -- Validator-band: parser + resolver semantic diagnostics.</description></item>
 ///   <item><description><b>XHT130</b> -- Cancellation (operator Ctrl-C).</description></item>
@@ -98,6 +98,42 @@ public static class DiagnosticCodes
 
     /// <summary>XHT065 -- Specifier-list syntax error (malformed key-value pair, unbalanced brackets, etc.).</summary>
     public const string SpecifierSyntaxError = "XHT065";
+
+    /// <summary>
+    /// XHT066 -- Specifier registered but not legal in the active
+    /// <c>SpecifierContext</c> (e.g., <c>EditAnywhere</c> on a class).
+    /// Per C8 audit renumbering (XHT.html Rev 8 Section 12.3):
+    /// relocated from XHT111 to XHT066 to resolve a numeric-slot
+    /// collision with the validator-band
+    /// <see cref="FunctionSpecifierConflict"/> (Server+Client+NetMulticast
+    /// mutex). Emitted by <c>CppSpecifierParser</c> +
+    /// <c>CSharpSpecifierExtractor</c> during the registry-lookup-with-context
+    /// step.
+    /// </summary>
+    public const string SpecifierIllegalInContext = "XHT066";
+
+    /// <summary>
+    /// XHT067 -- Reflection marker (XCLASS / XSTRUCT / XENUM / XFUNCTION
+    /// / XPROPERTY / XDELEGATE) is followed by a declaration shape the
+    /// scanner does not recognise (missing identifier, malformed enum
+    /// header, empty XPROPERTY declaration, etc.). Per C8 audit
+    /// renumbering (XHT.html Rev 8 Section 12.3): relocated from XHT115
+    /// to XHT067 to resolve a numeric-slot collision with the
+    /// validator-band <see cref="IntrinsicWithGeneratedBody"/>. Emitted
+    /// by <c>CppMarkerScanner</c> + <c>CSharpMarkerWalker</c>.
+    /// </summary>
+    public const string MalformedMarkerDeclaration = "XHT067";
+
+    /// <summary>
+    /// XHT068 -- Reflection marker appeared in the wrong syntactic
+    /// context (e.g., <c>XFUNCTION</c> outside a reflected class /
+    /// struct / interface body). Per C8 audit renumbering (XHT.html Rev
+    /// 8 Section 12.3): relocated from XHT116 to XHT068 to resolve a
+    /// numeric-slot collision with the validator-band
+    /// <see cref="MinimalApiWithRequiredApi"/>. Emitted by
+    /// <c>CppMarkerScanner</c>.
+    /// </summary>
+    public const string MarkerContextError = "XHT068";
 
     // -----------------------------------------------------------------
     // Emit band (XHT070-XHT099).

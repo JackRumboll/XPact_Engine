@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// Source language tag carried by every AST node per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.1.
 /// </summary>
 /// <remarks>
 /// <para>

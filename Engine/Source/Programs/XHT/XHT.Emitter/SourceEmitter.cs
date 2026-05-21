@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Emitter;
 
 /// <summary>
 /// Per-reflected-header <c>.gen.cpp</c> emitter per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 8.2 + Section 8.4 (empty
+/// <c>/Documents/XHT.html</c> Rev 8 Section 8.2 + Section 8.4 (empty
 /// sentinel form) + Contract Section 7.1 (ConstInit emit mode).
 /// </summary>
 /// <remarks>

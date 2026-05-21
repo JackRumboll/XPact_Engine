@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 /// <summary>
 /// Tests for <see cref="CppSpecifierParser"/>. Specifier grammar
 /// recognition + context validation per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 7.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 7.2.
 /// </summary>
 public class CppSpecifierParserTests
 {
@@ -122,10 +122,13 @@ public class CppSpecifierParserTests
     }
 
     [Fact]
-    public void KnownSpecifierWrongContext_EmitsXHT111()
+    public void KnownSpecifierWrongContext_EmitsXHT066()
     {
         // EditAnywhere is legal on PropertyMember; using it on Class
-        // triggers XHT111 (context-mismatch).
+        // triggers XHT066 (context-mismatch). Renamed from EmitsXHT111
+        // per C8 audit -- the parser-band code was relocated from
+        // XHT111 to XHT066 to free the validator-band slot for
+        // FunctionSpecifierConflict (XHT.html Rev 8 Section 12.3).
         (IReadOnlyList<Specifier> specs, List<DiagnosticRecord> diags) = ParseSpecifiers(
             "EditAnywhere)",
             SpecifierContext.Class);

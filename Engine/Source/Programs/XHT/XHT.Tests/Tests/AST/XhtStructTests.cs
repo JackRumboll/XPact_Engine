@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.AST;
 
 /// <summary>
 /// Tests for <see cref="XhtStruct"/>. Per <c>/Documents/XHT.html</c>
-/// Rev 7 Section 4.1 + Section 19.5 FastArraySerializer detection.
+/// Rev 8 Section 4.1 + Section 19.5 FastArraySerializer detection.
 /// </summary>
 public class XhtStructTests
 {

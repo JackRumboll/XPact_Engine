@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.Core;
 
 /// <summary>
 /// String utilities for XHT's symbol-table model. Per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.3 (engine-name convention)
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.3 (engine-name convention)
 /// + Section 5.4 (caseless symbol-table population). No culture-specific
 /// case folding: identifiers are UTF-8 source per the engine-wide UTF-8
 /// commitment (Contract Section 6), and the caseless symbol-table keys
@@ -47,7 +47,7 @@ public static class StringUtils
 
     /// <summary>
     /// Compute the caseless symbol-table key for an identifier per
-    /// <c>/Documents/XHT.html</c> Rev 7 Section 5.4. UTF-8 source is
+    /// <c>/Documents/XHT.html</c> Rev 8 Section 5.4. UTF-8 source is
     /// assumed; no culture-specific case folding (
     /// <see cref="CultureInfo.InvariantCulture"/> would be redundant on
     /// the lowercase invariant path).

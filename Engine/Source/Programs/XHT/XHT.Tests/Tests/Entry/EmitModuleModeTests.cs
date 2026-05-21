@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="EmitModuleMode"/>. Per <c>/Documents/XHT.html</c>
-/// Rev 7 Section 1.1; verifies the load-bearing <c>.gen.manifest</c>
+/// Rev 8 Section 1.1; verifies the load-bearing <c>.gen.manifest</c>
 /// emit path works end-to-end.
 /// </summary>
 [Collection(nameof(EmitModuleModeTests))]
@@ -143,7 +143,7 @@ public sealed class EmitModuleModeTests : IDisposable
     {
         // R4-CR1 anchor verification: the module-not-in-manifest throw
         // now carries DiagnosticCode = "XHT004" per /Documents/XHT.html
-        // Rev 7 Section 23.2.
+        // Rev 8 Section 23.2.
         string manifestPath = TestManifestBuilder.WriteOneModuleManifest(_tempDir, "Existing");
         string outDir = Path.Combine(_tempDir, "Generated");
 
@@ -166,7 +166,7 @@ public sealed class EmitModuleModeTests : IDisposable
     {
         // R4-MA4 verification: strict-mode-missing-source now fires
         // diagnostic XHT072 (Required source file missing in strict
-        // mode) per /Documents/XHT.html Rev 7 Section 12.3 emit-band
+        // mode) per /Documents/XHT.html Rev 8 Section 12.3 emit-band
         // catalog, NOT XHT050 (which is an EXIT code, not a diagnostic
         // catalog entry).
         using StringWriter sw = new();

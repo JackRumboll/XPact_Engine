@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Identifies the value-shape a specifier expects when it appears in source,
-/// per <c>/Documents/XHT.html</c> Rev 7 Section 7.2 (specifier parsing).
+/// per <c>/Documents/XHT.html</c> Rev 8 Section 7.2 (specifier parsing).
 /// </summary>
 /// <remarks>
 /// <para>

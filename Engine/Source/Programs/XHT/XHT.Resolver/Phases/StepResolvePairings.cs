@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// <summary>
 /// Phase 1 (<see cref="ResolvePhase.Pairings"/>): pair each XINTERFACE
 /// with its companion XCLASS, and merge C# partial-class duplicates per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.5 (interface pairing) and
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.5 (interface pairing) and
 /// the partial-class merge rule per the brief.
 /// </summary>
 /// <remarks>

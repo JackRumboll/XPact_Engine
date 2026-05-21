@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 /// <summary>
 /// Tests for <see cref="ToolModeRegistry"/>. The registry discovers
 /// <see cref="XhtModeAttribute"/>-marked mode classes via reflection per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1 + Section 2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1 + Section 2.
 /// </summary>
 public class ToolModeRegistryTests
 {
@@ -20,7 +20,7 @@ public class ToolModeRegistryTests
     {
         IReadOnlyDictionary<string, IToolMode> modes = ToolModeRegistry.Build();
 
-        // Per /Documents/XHT.html Rev 7 Section 1.1: 6 Phase 1 modes +
+        // Per /Documents/XHT.html Rev 8 Section 1.1: 6 Phase 1 modes +
         // 1 Phase 2 stub = 7 modes total in Phase 1b.
         string[] expected = new[]
         {

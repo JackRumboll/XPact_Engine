@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.AST;
 /// <summary>
 /// Tests for <see cref="SymbolTable"/>. The caseless lookup model is
 /// the core of cross-language reflection pairing per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.3 + Section 5.4. Round-2
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.3 + Section 5.4. Round-2
 /// directive removed the A / U / I / F prefix-strip; the engine-name is
 /// the source identifier lowercased verbatim.
 /// </summary>

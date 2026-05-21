@@ -10,7 +10,7 @@ using Simgenics.XPact.XHT.Tables;
 namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
-/// Marker-driven AST builder per <c>/Documents/XHT.html</c> Rev 7
+/// Marker-driven AST builder per <c>/Documents/XHT.html</c> Rev 8
 /// Section 3.4 + Section 7. Walks a <see cref="CppTokenizer"/> token
 /// stream, tracks namespace + outer-class scope, recognises the 10 XHT
 /// reflection markers (<c>XCLASS</c>, <c>XSTRUCT</c>, <c>XENUM</c>,
@@ -90,9 +90,11 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 /// </list>
 /// <para>
 /// <b>Error recovery.</b> An unknown declaration shape after a marker
-/// emits <c>XHT115 (MalformedMarkerDeclaration)</c> and the scanner
+/// emits <c>XHT067 (MalformedMarkerDeclaration)</c> and the scanner
 /// advances to the next <c>;</c> or <c>}</c>. The scan continues; one
-/// malformed marker does not abort the file.
+/// malformed marker does not abort the file. (XHT067 was XHT115 pre-C8
+/// audit; renumbered to free the validator-band slot for
+/// <c>IntrinsicWithGeneratedBody</c>. See XHT.html Rev 8 Section 12.3.)
 /// </para>
 /// <para>
 /// <b>Symbol-table registration.</b> Each top-level reflected type
@@ -106,11 +108,28 @@ public sealed class CppMarkerScanner
     /// <summary>Diagnostic code: caseless symbol-table collision.</summary>
     public const string DiagDuplicateType = "XHT040";
 
-    /// <summary>Diagnostic code: marker followed by declaration we don't recognise.</summary>
-    public const string DiagMalformedMarkerDeclaration = "XHT115";
+    /// <summary>
+    /// Diagnostic code: marker followed by declaration we don't
+    /// recognise. Per C8 audit (XHT.html Rev 8 Section 12.3):
+    /// renumbered from XHT115 to
+    /// <see cref="DiagnosticCodes.MalformedMarkerDeclaration"/> (XHT067)
+    /// to resolve a numeric-slot collision with the validator-band
+    /// <c>DiagnosticCodes.IntrinsicWithGeneratedBody</c>. Kept as a
+    /// callsite alias for test-vocabulary stability; the wire value is
+    /// sourced from the central catalog.
+    /// </summary>
+    public const string DiagMalformedMarkerDeclaration = DiagnosticCodes.MalformedMarkerDeclaration;
 
-    /// <summary>Diagnostic code: marker context error (e.g. XFUNCTION outside class).</summary>
-    public const string DiagMarkerContextError = "XHT116";
+    /// <summary>
+    /// Diagnostic code: marker context error (e.g. XFUNCTION outside
+    /// class). Per C8 audit (XHT.html Rev 8 Section 12.3): renumbered
+    /// from XHT116 to <see cref="DiagnosticCodes.MarkerContextError"/>
+    /// (XHT068) to resolve a numeric-slot collision with the
+    /// validator-band <c>DiagnosticCodes.MinimalApiWithRequiredApi</c>.
+    /// Kept as a callsite alias for test-vocabulary stability; the wire
+    /// value is sourced from the central catalog.
+    /// </summary>
+    public const string DiagMarkerContextError = DiagnosticCodes.MarkerContextError;
 
     private readonly string _sourcePath;
     private readonly string _sourceText;
@@ -154,8 +173,10 @@ public sealed class CppMarkerScanner
     /// <summary>
     /// Diagnostics accumulated during the scan. Includes tokenizer-side
     /// diagnostics (XHT060-XHT063 lexer band) + scanner-side diagnostics
-    /// (XHT040 duplicate, XHT110-XHT114 specifier, XHT115-XHT116 marker
-    /// band). The list is appended in scan order.
+    /// (XHT040 duplicate, XHT110/XHT066/XHT064/XHT065 specifier,
+    /// XHT067/XHT068 marker shape + context band -- per C8 audit
+    /// renumbering, see XHT.html Rev 8 Section 12.3). The list is
+    /// appended in scan order.
     /// </summary>
     public IReadOnlyList<DiagnosticRecord> Diagnostics => _diagnostics;
 

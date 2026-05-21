@@ -35,7 +35,7 @@ public sealed record EmitResult(
 
 /// <summary>
 /// Top-level orchestrator for per-module emit per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 8 + Section 9.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 8 + Section 9.2.
 /// </summary>
 /// <remarks>
 /// <para>

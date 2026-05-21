@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Emitter;
 
 /// <summary>
 /// Shared state passed through the per-header and per-module emitters per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 8 + Section 11.3 (parallel
+/// <c>/Documents/XHT.html</c> Rev 8 Section 8 + Section 11.3 (parallel
 /// emit). Carries the resolver context (post-resolve type metadata), the
 /// XBT manifest (for path-stripping + module-dep lookups), the target
 /// module entry, the output directory, and a shared diagnostics

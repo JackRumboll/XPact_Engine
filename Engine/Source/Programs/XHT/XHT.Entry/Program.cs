@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Entry;
 /// XHT process entry point. Parses the first positional argument as the
 /// mode name, looks it up in <see cref="ToolModeRegistry"/>, dispatches
 /// <see cref="IToolMode.ExecuteAsync"/>, and returns the mode's exit
-/// code per <c>/Documents/XHT.html</c> Rev 7 Section 1.3.
+/// code per <c>/Documents/XHT.html</c> Rev 8 Section 1.3.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -53,7 +53,7 @@ public static class Program
 {
     /// <summary>
     /// Process entry point. Returns the exit code per Section 1.3 of
-    /// <c>/Documents/XHT.html</c> Rev 7.
+    /// <c>/Documents/XHT.html</c> Rev 8.
     /// </summary>
     /// <param name="args">Command-line arguments.</param>
     /// <returns>Process exit code.</returns>
@@ -83,7 +83,7 @@ public static class Program
             // to strip them out of the args passed downstream.
             (PreFlags pre, string[] residualArgs) = ParsePreFlags(args);
 
-            // -JsonFd= activation per /Documents/XHT.html Rev 7 Section 1.4.
+            // -JsonFd= activation per /Documents/XHT.html Rev 8 Section 1.4.
             // The Logger configures itself from the FD; we do not own the
             // FileStream's lifetime past the mode invocation (the OS
             // closes inherited FDs on process exit). Phase 1c may extend
@@ -143,7 +143,7 @@ public static class Program
             // ContractVersion mismatch, XHT003 verifier-limit violation,
             // XHT004 module-not-in-manifest, XHT005 .gen.manifest
             // CV mismatch -- the full catalog per /Documents/XHT.html
-            // Rev 7 Section 23.2).
+            // Rev 8 Section 23.2).
             //
             // Round 5 R4-CR1: every ManifestMalformedException throw site
             // in XHT.Manifest, XHT.Entry.Modes, etc. now carries a

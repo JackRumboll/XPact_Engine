@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// <summary>
 /// Process-global structured logger for XHT. Mirrors XBT.Core's logger
 /// pattern (dual-channel emit to stderr in MSBuild diagnostic format +
-/// optional streaming JSON channel) per <c>/Documents/XHT.html</c> Rev 7
+/// optional streaming JSON channel) per <c>/Documents/XHT.html</c> Rev 8
 /// Section 1.4 + Section 12.
 /// </summary>
 /// <remarks>
@@ -56,7 +56,7 @@ public static class Logger
 {
     /// <summary>
     /// Windows / Linux-fallback sentinel prefix on stdout lines per
-    /// <c>/Documents/XHT.html</c> Rev 7 Section 1.4. Includes the
+    /// <c>/Documents/XHT.html</c> Rev 8 Section 1.4. Includes the
     /// trailing space that delimits the sentinel from the JSON payload.
     /// </summary>
     public const string SentinelPrefix = "@@XHT-JSON@@ ";
@@ -198,7 +198,7 @@ public static class Logger
     /// <summary>
     /// Install a <see cref="StreamWriter"/> as the streaming JSON channel.
     /// Records emit as single-line JSON per
-    /// <c>/Documents/XHT.html</c> Rev 7 Section 1.4. When
+    /// <c>/Documents/XHT.html</c> Rev 8 Section 1.4. When
     /// <paramref name="useSentinel"/> is true, every line is prefixed
     /// with <see cref="SentinelPrefix"/> (Windows / Linux-fallback mode);
     /// when false, lines are bare JSON (FD-based mode).
@@ -339,7 +339,7 @@ public static class Logger
 }
 
 /// <summary>
-/// JSON channel activation mode per <c>/Documents/XHT.html</c> Rev 7
+/// JSON channel activation mode per <c>/Documents/XHT.html</c> Rev 8
 /// Section 1.4 + Section 12.4. Returned by
 /// <see cref="Logger.DecideJsonChannelMode(int)"/>.
 /// </summary>

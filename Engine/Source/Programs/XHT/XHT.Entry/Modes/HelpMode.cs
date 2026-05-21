@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Lists every registered XHT mode with a one-line description per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1. Always returns
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.1. Always returns
 /// <see cref="ExitCodes.Success"/>; defensive code path so the operator
 /// can recover from a malformed CLI even when other modes are broken.
 /// </summary>

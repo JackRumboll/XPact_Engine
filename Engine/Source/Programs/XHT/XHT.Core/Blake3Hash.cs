@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// <summary>
 /// 32-byte content-addressable hash used by XHT. Phase 1b uses SHA-256
 /// as a placeholder implementation; the algorithm swap to vendored
-/// BLAKE3 is tracked at <c>/Documents/XHT.html</c> Rev 7 Section 16
+/// BLAKE3 is tracked at <c>/Documents/XHT.html</c> Rev 8 Section 16
 /// (cache-key invalidation + content-hash discipline) and Section 25.1
 /// (vendored BLAKE3 pattern shared with XBT).
 /// </summary>
@@ -29,7 +29,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// <b>Hex16 format.</b> The 16-char lowercase hex prefix is the canonical
 /// hash form in the per-module <c>.gen.manifest</c>'s
 /// <c>[Generated]</c> + <c>[Inputs]</c> sections per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 9.2: "Hashes in the
+/// <c>/Documents/XHT.html</c> Rev 8 Section 9.2: "Hashes in the
 /// <c>[Generated]</c> section are the 16-hex prefix of BLAKE3" -- the
 /// truncation discipline XBT uses for <c>ContractStructureHash</c> and
 /// per-action cache keys.
@@ -157,7 +157,7 @@ public readonly struct IoHash : IEquatable<IoHash>
     /// <summary>
     /// Return the 16-character lowercase hex of the first 8 bytes of
     /// the digest -- the manifest hash format per
-    /// <c>/Documents/XHT.html</c> Rev 7 Section 9.2.
+    /// <c>/Documents/XHT.html</c> Rev 8 Section 9.2.
     /// </summary>
     /// <returns>16 lowercase hex characters (64 bits of collision resistance).</returns>
     public string Hex16()

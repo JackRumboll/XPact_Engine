@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="ValidateOnlyMode"/>. Per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.1.
 /// </summary>
 [Collection(nameof(ValidateOnlyModeTests))]
 [CollectionDefinition(nameof(ValidateOnlyModeTests), DisableParallelization = true)]

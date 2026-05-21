@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 
 /// <summary>
 /// Tests for <see cref="DiagnosticRecord"/> JSON serialisation per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.4 + Section 12.4 + MSBuild
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.4 + Section 12.4 + MSBuild
 /// format per Section 12.1.
 /// </summary>
 public class DiagnosticRecordTests

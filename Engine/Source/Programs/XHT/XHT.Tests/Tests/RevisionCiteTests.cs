@@ -44,7 +44,7 @@ public class RevisionCiteTests
     /// The currently-published XHT.html revision. Hand-bump in lockstep
     /// with the XHT.html doc header on every revision.
     /// </summary>
-    private const int CurrentXhtRevision = 7;
+    private const int CurrentXhtRevision = 8;
 
     [Fact]
     public void XHT_Source_Tree_Contains_No_StaleXHTHtml_CurrentCites()

@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Role of an engine-anchor type in the reflection hierarchy per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 2 (the XHT.Tables module
+/// <c>/Documents/XHT.html</c> Rev 8 Section 2 (the XHT.Tables module
 /// description -- <c>XhtEngineClassTable</c>: "core engine roles --
 /// XObject, XClass, XStruct, XInterface -- mapped to their reflected
 /// representations").

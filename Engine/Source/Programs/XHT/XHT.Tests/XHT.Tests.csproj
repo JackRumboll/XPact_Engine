@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Tests</RootNamespace>
     <AssemblyName>XHT.Tests</AssemblyName>
-    <Description>xUnit tests for every XHT module. Phase 1a contains only a scaffold smoke test verifying the test harness runs; the unit / integration / golden-output / fuzz / benchmark suites ship in Phase 1b+. Per /Documents/XHT.html Rev 7 Section 21.</Description>
+    <Description>xUnit tests for every XHT module. Phase 1a contains only a scaffold smoke test verifying the test harness runs; the unit / integration / golden-output / fuzz / benchmark suites ship in Phase 1b+. Per /Documents/XHT.html Rev 8 Section 21.</Description>
 
     <!--
       Test projects are not publishable; suppress the warning the SDK

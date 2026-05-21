@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1b stub of the <c>parse-module</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -71,7 +71,7 @@ public sealed class ParseModuleMode : IToolMode
         if (module is null)
         {
             // XHT004 -- Module not in manifest per /Documents/XHT.html
-            // Rev 7 Section 23.2. The X-CR1 remap (Rev 3) routed this to
+            // Rev 8 Section 23.2. The X-CR1 remap (Rev 3) routed this to
             // exit 50 (manifest-coherence concern, not XBT's
             // RulesCompileFailed code 30); the catalog-anchored code
             // carries through so the entry-point catch surfaces

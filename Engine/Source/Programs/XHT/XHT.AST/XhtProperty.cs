@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// <summary>
 /// One reflected property (<c>XPROPERTY</c> / <c>[XProperty]</c>) on a
 /// class, struct, or function parameter list. Per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.7.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.7.
 /// </summary>
 /// <remarks>
 /// <para>

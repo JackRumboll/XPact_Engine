@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// <summary>
 /// Phase 7 (<see cref="ResolvePhase.Final"/>, serial): cross-language
 /// consistency walk, specifier-conflict validators, and cross-tier
-/// module-dep validation per <c>/Documents/XHT.html</c> Rev 7
+/// module-dep validation per <c>/Documents/XHT.html</c> Rev 8
 /// Section 5.6 + Section 5.7 + Section 6.2.
 /// </summary>
 /// <remarks>

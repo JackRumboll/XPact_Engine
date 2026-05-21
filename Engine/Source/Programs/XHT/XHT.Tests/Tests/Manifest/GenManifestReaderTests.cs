@@ -345,7 +345,7 @@ public class GenManifestReaderTests : IDisposable
     // against XhtVersion.ContractVersion (the symmetric counterpart of the
     // XbtManifestReader R3 fix). A stale cached .gen.manifest written by
     // an older XHT cannot be silently accepted after a Contract bump.
-    // Diagnostic XHT006 per /Documents/XHT.html Rev 7 Section 23.2.
+    // Diagnostic XHT006 per /Documents/XHT.html Rev 8 Section 23.2.
     // ---------------------------------------------------------------------
 
     [Fact]

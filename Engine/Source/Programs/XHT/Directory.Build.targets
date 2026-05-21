@@ -4,7 +4,7 @@
   <!--
     Shared MSBuild targets for every XHT project.
 
-    Per /Documents/XHT.html Rev 7 Section 2.5: this file hosts the
+    Per /Documents/XHT.html Rev 8 Section 2.5: this file hosts the
     git-tag-derived Version property used by XHT.Entry's `version` mode
     (Section 1.1) to compose the printed
         XHT v{semver}+{git-short-hash} ...

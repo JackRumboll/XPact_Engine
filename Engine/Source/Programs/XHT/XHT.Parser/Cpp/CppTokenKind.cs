@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
 /// Kind discriminator for one <see cref="CppToken"/> per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.1 (handwritten C++ tokenizer).
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.1 (handwritten C++ tokenizer).
 /// Modelled as a single flat enum -- all punctuator forms appear as
 /// dedicated kinds rather than as a sub-payload on a generic
 /// <c>Punctuator</c> kind, so consumers can switch on punctuator

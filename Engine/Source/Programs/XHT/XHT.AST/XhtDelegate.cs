@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// <summary>
 /// One reflected delegate signature (<c>XDELEGATE</c> /
 /// <c>XMULTICASTDELEGATE</c> / <c>[XDelegate]</c>). Per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.6.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.6.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Identifies the syntactic site at which a specifier may legally appear,
-/// per <c>/Documents/XHT.html</c> Rev 7 Section 7 (markers + specifiers) and
+/// per <c>/Documents/XHT.html</c> Rev 8 Section 7 (markers + specifiers) and
 /// Section 18.1 (table inheritance + the PropertyMember vs PropertyArgument
 /// split).
 /// </summary>
@@ -21,7 +21,7 @@ namespace Simgenics.XPact.XHT.Tables;
 /// legal use.
 /// </para>
 /// <para>
-/// <b>PropertyMember vs PropertyArgument split (XHT.html Rev 7 Section 18.1).
+/// <b>PropertyMember vs PropertyArgument split (XHT.html Rev 8 Section 18.1).
 /// </b> UHT distinguishes specifiers valid on function parameters
 /// (call-site argument descriptor -- <c>ConstParm</c>, <c>OutParm</c>,
 /// <c>ReferenceParm</c>) from specifiers valid on class fields (persisted
@@ -31,7 +31,9 @@ namespace Simgenics.XPact.XHT.Tables;
 /// <em>both</em> contexts (the base property table); a specifier whose
 /// <c>ApplicableTo</c> includes only <see cref="PropertyMember"/> or only
 /// <see cref="PropertyArgument"/> is legal in just one. The validator pass
-/// (Section 6.2) catches context mismatches and emits <c>XHT111</c>.
+/// (Section 6.2) catches context mismatches and emits <c>XHT066</c>
+/// (per C8 audit renumbering, XHT.html Rev 8 Section 12.3 -- was XHT111
+/// pre-C8).
 /// </para>
 /// </remarks>
 [Flags]

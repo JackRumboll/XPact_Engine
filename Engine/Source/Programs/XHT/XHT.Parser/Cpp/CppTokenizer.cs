@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
 /// Single-pass, hand-written C++ tokenizer per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 3.1. Recognises the subset
+/// <c>/Documents/XHT.html</c> Rev 8 Section 3.1. Recognises the subset
 /// of C++ relevant to XHT marker extraction: identifiers / keywords /
 /// XHT markers, integer + floating literals (decimal, hex, binary,
 /// octal, hex-float, digit-separator), char + string literals (including

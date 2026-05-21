@@ -11,14 +11,14 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 /// Parsed CLI options shared by the module-targeting modes
 /// (<c>parse-module</c>, <c>emit-module</c>, <c>validate-only</c>,
 /// <c>dump-ast</c>, <c>query-symbols</c>) per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 1.2.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 1.2.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Required flags are validated by <see cref="Parse"/>; missing or
 /// malformed values throw <see cref="CliArgumentException"/> which
 /// <c>Program</c> maps to <see cref="ExitCodes.CliArgumentError"/> (10).
-/// Per <c>/Documents/XHT.html</c> Rev 7 Section 1.3.
+/// Per <c>/Documents/XHT.html</c> Rev 8 Section 1.3.
 /// </para>
 /// </remarks>
 /// <param name="ManifestPath">Absolute path to XBT's <c>Manifest.json</c>.</param>

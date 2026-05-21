@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// Column-precise source location for an AST node per
-/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1 + Section 12.1.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 4.1 + Section 12.1.
 /// </summary>
 /// <remarks>
 /// <para>
