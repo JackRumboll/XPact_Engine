@@ -388,6 +388,25 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 Actions: Array.Empty<IExternalAction>());
         }
 
+        // ---- 9 prelude: resolve the manifest output directory ----
+        // The Phase 1f wiring of XHT actions (XBT.html Section 9.4 +
+        // XHT.html Section 9) requires every ParseHeadersAction /
+        // EmitReflectionAction to reference the eventual Manifest.json
+        // path. The manifest itself is still written at step 9.5 below,
+        // BEFORE the executor pump dispatches any action, so the on-disk
+        // file is in place when XHT actually runs; we just need to know
+        // the path during action emission to wire it into the action
+        // graph as a prerequisite of each XHT action.
+        string defaultIntermediateBuildDir = Path.Combine(
+            engineRoot, "Intermediate", "Build", target.Name,
+            target.Configuration.ToString());
+        // Round-6 final-cleanup M2: -Out=<dir> on write-manifest plumbs
+        // through BuildOptions.ManifestOutputDirectory. When set, the
+        // manifest is emitted to the override directory; otherwise the
+        // default intermediate-build directory is used.
+        string manifestOutputDir = options.ManifestOutputDirectory ?? defaultIntermediateBuildDir;
+        Directory.CreateDirectory(manifestOutputDir);
+
         Dictionary<string, ModuleFileSet> fileSetByModule = new(StringComparer.Ordinal);
         List<IExternalAction> actions = EmitActions(
             engineRoot,
@@ -395,6 +414,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
             toolchain,
             targetModules,
             fileSetByModule,
+            manifestOutputDir,
             cancellationToken,
             out IReadOnlyList<IExternalAction> emittedForReport);
 
@@ -413,15 +433,6 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // For Phase 1 the simpler direct-emission path is sufficient
         // because the manifest's content hash is not yet a CacheKeyComponent
         // for downstream actions.
-        string defaultIntermediateBuildDir = Path.Combine(
-            engineRoot, "Intermediate", "Build", target.Name,
-            target.Configuration.ToString());
-        // Round-6 final-cleanup M2: -Out=<dir> on write-manifest plumbs
-        // through BuildOptions.ManifestOutputDirectory. When set, the
-        // manifest is emitted to the override directory; otherwise the
-        // default intermediate-build directory is used.
-        string manifestOutputDir = options.ManifestOutputDirectory ?? defaultIntermediateBuildDir;
-        Directory.CreateDirectory(manifestOutputDir);
         EmitManifest(
             engineRoot,
             target,
@@ -844,6 +855,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
         XToolChain toolchain,
         IReadOnlyList<ModuleRecord> targetModules,
         Dictionary<string, ModuleFileSet> fileSetByModule,
+        string manifestOutputDir,
         CancellationToken cancellationToken,
         out IReadOnlyList<IExternalAction> emittedForReport)
     {
@@ -855,6 +867,20 @@ public sealed class BuildMode : IToolMode<BuildMode>
         List<IExternalAction> actions = new();
         List<FileItem> allSourceFiles = new();
         List<IExternalAction> reportActions = new();
+
+        // Phase 1f (XHT wiring): the manifest path the eventual XHT
+        // subprocesses read. The manifest itself is written by
+        // EmitManifest at step 9.5 (before the executor dispatches), so
+        // the path is valid by the time XHT actually runs even though
+        // it does not yet exist on disk at action-emission time. We
+        // pre-resolve the XHT executable too: a missing exe means the
+        // current build does NOT have an XHT binary handy and the
+        // reflection-enabled modules will fail at run time -- that is
+        // acceptable for Phase 1f because the build still proceeds with
+        // every module that has no reflection markers. Modules that DO
+        // have markers will fail loudly at executor-dispatch time.
+        string manifestJsonPath = Path.Combine(manifestOutputDir, "Manifest.json");
+        string? xhtExePath = TryResolveXhtExecutable(engineRoot, target.Platform);
 
         // Shared-PCH grouping pre-pass (Phase 1.4b per Contract Rev 13
         // Section 1.5). Walk the selected modules, group by the resolved
@@ -888,6 +914,56 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 engineRoot, "Intermediate", "Build", target.Name,
                 target.Configuration.ToString(), target.Platform.ToString(), module.Name);
             Directory.CreateDirectory(moduleObjDir);
+
+            // Phase 1f: emit XHT ParseHeadersAction + EmitReflectionAction
+            // for any module that uses reflection markers (XCLASS, XSTRUCT,
+            // XENUM, etc. in .h files; [XClass], [XStruct], etc.
+            // attributes in .cs files). Per XBT.html Section 9.4 + XHT.html
+            // Section 9: ParseHeadersAction is one per module (consumes
+            // headers + .cs sources; produces an opaque token cache);
+            // EmitReflectionAction is one per module (consumes the same
+            // inputs + the parse-stage token cache; produces .gen.h /
+            // .gen.cpp / .init.gen.cpp / .gen.manifest pre-discovered
+            // through the XBT-side XhtOutputNaming mirror).
+            //
+            // Modules without markers skip XHT actions entirely: the
+            // detection heuristic scans the small token vocabulary listed
+            // in Toolchain Contract Rev 13.6 Section 11.2.
+            if (xhtExePath is not null && HasReflectionMarkers(headerFiles, csharpFiles))
+            {
+                IReadOnlyList<string> reflectionHeaderRelativePaths =
+                    BuildReflectionHeaderPaths(moduleDir, headerFiles);
+                IReadOnlyList<FileItem> reflectionInputs = MergeReflectionInputs(headerFiles, csharpFiles);
+
+                // ParseHeadersAction first.
+                ParseHeadersAction parseAction = new(
+                    moduleName: module.Name,
+                    xhtExecutablePath: xhtExePath,
+                    manifestJsonPath: manifestJsonPath,
+                    outputDirectory: moduleObjDir,
+                    sourceFiles: reflectionInputs);
+                actions.Add(parseAction);
+                reportActions.Add(parseAction);
+
+                // EmitReflectionAction depends on the parse action's
+                // produced token cache plus the same source set. Merge
+                // the tokens.bin into the prerequisite list so the
+                // action graph orders the two actions correctly.
+                List<FileItem> emitPrereqs = new(reflectionInputs.Count + parseAction.ProducedItems.Count);
+                emitPrereqs.AddRange(reflectionInputs);
+                emitPrereqs.AddRange(parseAction.ProducedItems);
+
+                EmitReflectionAction emitAction = new(
+                    moduleName: module.Name,
+                    xhtExecutablePath: xhtExePath,
+                    manifestJsonPath: manifestJsonPath,
+                    outputDirectory: moduleObjDir,
+                    reflectionInputs: emitPrereqs,
+                    reflectionHeaderRelativePaths: reflectionHeaderRelativePaths,
+                    generatedCppFilenameBase: module.Name);
+                actions.Add(emitAction);
+                reportActions.Add(emitAction);
+            }
 
             // PCH binding resolution: shared PCH wins if the module is in
             // a shared group; otherwise fall back to the private-PCH
@@ -1664,6 +1740,223 @@ public sealed class BuildMode : IToolMode<BuildMode>
         headers.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         csharpSources.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         return (sources, headers, csharpSources);
+    }
+
+    /// <summary>
+    /// Phase 1f reflection-marker detection heuristic per Toolchain
+    /// Contract Rev 13.6 Section 11.2 (marker macro vocabulary +
+    /// attribute equivalents). A module that uses any reflection marker
+    /// gets the XHT action pair injected into the build graph; a module
+    /// without markers skips XHT entirely.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The detection is a literal-substring scan: we look for either
+    /// <c>XCLASS(</c>, <c>XSTRUCT(</c>, etc. in the header bytes or
+    /// <c>[XClass]</c>, <c>[XStruct]</c>, etc. in the C# bytes. The
+    /// scan is byte-substring not lexer-aware (a marker in a comment
+    /// would still match). This is consistent with UHT's own
+    /// pre-discovery heuristic and is intentionally permissive: a false
+    /// positive emits an XHT action whose run is harmless (the manifest
+    /// is empty if no real markers exist); a false negative would mean
+    /// missing reflection metadata at run time, which is the worse
+    /// failure mode. Phase 2 will replace the heuristic with a proper
+    /// XHT preflight pass.
+    /// </para>
+    /// <para>
+    /// Files that cannot be read (locked, deleted between enumeration
+    /// and scan, etc.) are conservatively treated as containing a
+    /// marker so XHT is invoked rather than risk skipping a module
+    /// that needs it.
+    /// </para>
+    /// </remarks>
+    internal static bool HasReflectionMarkers(
+        IReadOnlyList<FileItem> headerFiles,
+        IReadOnlyList<FileItem> csharpFiles)
+    {
+        foreach (FileItem h in headerFiles)
+        {
+            if (FileContainsAny(h.FullPath, s_cppReflectionMarkers))
+            {
+                return true;
+            }
+        }
+        foreach (FileItem cs in csharpFiles)
+        {
+            if (FileContainsAny(cs.FullPath, s_csharpReflectionMarkers))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// C++ reflection-marker vocabulary per Toolchain Contract Rev 13.6
+    /// Section 11.2 (the parenthesis is part of the marker so a textual
+    /// identifier reference -- e.g. a docstring naming the marker -- does
+    /// not match).
+    /// </summary>
+    private static readonly string[] s_cppReflectionMarkers = new[]
+    {
+        "XCLASS(",
+        "XSTRUCT(",
+        "XENUM(",
+        "XINTERFACE(",
+        "XFUNCTION(",
+        "XPROPERTY(",
+        "XDELEGATE(",
+    };
+
+    /// <summary>
+    /// C# reflection-attribute vocabulary. Square brackets mirror the C#
+    /// attribute syntax; a passing-mention of <c>XClass</c> in
+    /// commentary text does not match.
+    /// </summary>
+    private static readonly string[] s_csharpReflectionMarkers = new[]
+    {
+        "[XClass",
+        "[XStruct",
+        "[XEnum",
+        "[XInterface",
+        "[XFunction",
+        "[XProperty",
+        "[XDelegate",
+    };
+
+    /// <summary>
+    /// Read up to 1 MiB of a file's bytes and check whether any of the
+    /// supplied literal substrings appears in the UTF-8 text. Files
+    /// that cannot be read return true conservatively (so a reflection
+    /// module is not silently skipped). The 1 MiB cap bounds the scan
+    /// cost for pathological large generated files; reflection markers
+    /// always appear within the first few hundred bytes of a real
+    /// source file (next to the type declaration).
+    /// </summary>
+    private static bool FileContainsAny(string path, IReadOnlyList<string> needles)
+    {
+        const int MaxBytes = 1 * 1024 * 1024;
+        try
+        {
+            using FileStream fs = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            int toRead = (int)Math.Min(fs.Length, MaxBytes);
+            byte[] buffer = new byte[toRead];
+            int read = fs.Read(buffer, 0, toRead);
+            string text = Encoding.UTF8.GetString(buffer, 0, read);
+            foreach (string needle in needles)
+            {
+                if (text.Contains(needle, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Build the sorted list of reflection-header relative paths the
+    /// <see cref="EmitReflectionAction"/> consumes for pre-discovery.
+    /// </summary>
+    /// <remarks>
+    /// XHT's per-header output filenames depend only on the header's
+    /// stem (filename without extension); the absolute path is passed
+    /// here so the action's hash captures the full source identity. The
+    /// caller's <paramref name="moduleDir"/> is the relative-path
+    /// anchor; paths inside the module are normalised to forward
+    /// slashes so Windows + Linux produce identical relative-paths.
+    /// </remarks>
+    internal static IReadOnlyList<string> BuildReflectionHeaderPaths(
+        string moduleDir,
+        IReadOnlyList<FileItem> headerFiles)
+    {
+        List<string> paths = new(headerFiles.Count);
+        string moduleDirFull = Path.GetFullPath(moduleDir);
+        foreach (FileItem h in headerFiles)
+        {
+            string rel = Path.GetRelativePath(moduleDirFull, h.FullPath).Replace('\\', '/');
+            paths.Add(rel);
+        }
+        paths.Sort(StringComparer.Ordinal);
+        return paths;
+    }
+
+    /// <summary>
+    /// Merge the per-module header set and C# source set into the union
+    /// the XHT actions consume as <c>PrerequisiteItems</c>. Sorted +
+    /// deduped ordinal so the action's hash is stable.
+    /// </summary>
+    internal static IReadOnlyList<FileItem> MergeReflectionInputs(
+        IReadOnlyList<FileItem> headerFiles,
+        IReadOnlyList<FileItem> csharpFiles)
+    {
+        List<FileItem> merged = new(headerFiles.Count + csharpFiles.Count);
+        merged.AddRange(headerFiles);
+        merged.AddRange(csharpFiles);
+        merged.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+        if (merged.Count > 1)
+        {
+            List<FileItem> deduped = new(merged.Count);
+            string? last = null;
+            foreach (FileItem fi in merged)
+            {
+                if (!string.Equals(last, fi.FullPath, StringComparison.Ordinal))
+                {
+                    deduped.Add(fi);
+                    last = fi.FullPath;
+                }
+            }
+            merged = deduped;
+        }
+        return merged;
+    }
+
+    /// <summary>
+    /// Resolve the XHT executable path for the given platform. Returns
+    /// null when no XHT binary is present at the expected location; the
+    /// caller decides whether absence is fatal (a reflection-enabled
+    /// module without XHT) or harmless (no reflection-enabled modules
+    /// in the build).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Layout per <c>/Documents/XBT.html</c> Section 18.1 + Toolchain
+    /// Contract Section 10.1: XBT + XHT both live under
+    /// <c>&lt;EngineRoot&gt;/Binaries/&lt;Platform&gt;/</c>. The Phase
+    /// 1f resolver is filesystem-based; Phase 2 will resolve through a
+    /// content-addressable lookup (XPactBuildAccelerator).
+    /// </para>
+    /// </remarks>
+    internal static string? TryResolveXhtExecutable(string engineRoot, Platform platform)
+    {
+        bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        string exeName = isWindows ? "xht.exe" : "xht";
+        string platformDir = platform.ToString();
+        string candidate = Path.Combine(engineRoot, "Binaries", platformDir, exeName);
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+        // Fall-back: some test fixtures put the engine root one level up;
+        // try the parent's Binaries directory too.
+        string? parent = Directory.GetParent(engineRoot)?.FullName;
+        if (parent is not null)
+        {
+            string alt = Path.Combine(parent, "Binaries", platformDir, exeName);
+            if (File.Exists(alt))
+            {
+                return alt;
+            }
+        }
+        return null;
     }
 
     private static ExecutionReport ExecuteGraph(

@@ -477,19 +477,22 @@ public sealed class ModeSmokeTests : IDisposable
     // ----- M8: Phase 2 stub modes -----
 
     /// <summary>
-    /// Audit fix R4-M8: <see cref="RunXHTMode"/> returns the
-    /// "tool not found" exit code (24) and is registered under
-    /// the canonical name <c>"run-xht"</c>.
+    /// Phase 1f: <see cref="RunXHTMode"/> registers under
+    /// <c>"run-xht"</c>, exposes the <c>ToolNotFoundExitCode = 24</c>
+    /// constant (closest-fit per Contract Section 13), and rejects an
+    /// empty args vector with exit <c>10</c> (CLI arg error) -- the
+    /// missing-required-flag path. The thorough subprocess-invocation
+    /// coverage lives in <c>Tests/Entry/RunXHTModeTests.cs</c>.
     /// </summary>
     [Fact]
-    public async Task RunXHTMode_Returns_ToolNotFoundExitCode()
+    public async Task RunXHTMode_RejectsEmptyArgsWithExit10()
     {
         Assert.Equal("run-xht", RunXHTMode.Name);
         Assert.Equal(24, RunXHTMode.ToolNotFoundExitCode);
 
         RunXHTMode mode = new();
         int exit = await mode.ExecuteAsync(Array.Empty<string>(), CancellationToken.None);
-        Assert.Equal(24, exit);
+        Assert.Equal(10, exit);
     }
 
     /// <summary>
