@@ -378,6 +378,384 @@ public sealed class XClangToolChainTests : IDisposable
         Assert.Equal(string.Empty, XClangToolChain.ExtractSemver("clang version unknown"));
     }
 
+    // ===== Audit fix R8-C1: Android target triple =====
+
+    /// <summary>
+    /// Audit fix R8-C1: every Clang compile on Android emits
+    /// <c>--target=&lt;arch&gt;-linux-android&lt;API&gt;</c>. Without this flag
+    /// the NDK's generic <c>bin/clang</c> driver defaults to the host
+    /// triple (x86-64 on Win64 / Linux build hosts) and produces .o
+    /// files that won't link into an Android .so.
+    /// </summary>
+    [Fact]
+    public void AndroidCompile_EmitsExplicitTargetTriple()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        var actions = _androidToolchain.CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.Contains("--target=aarch64-linux-android24", compile.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: every Clang link on Android emits the same
+    /// <c>--target=</c> triple as the compile. A triple mismatch
+    /// between compile and link would surface as a runtime ABI failure
+    /// (the linker pulls in arch-specific runtime libs from
+    /// <c>sysroot/usr/lib/&lt;triple&gt;/</c>).
+    /// </summary>
+    [Fact]
+    public void AndroidLink_EmitsExplicitTargetTriple()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "XCore.o"));
+        IExternalAction link = _androidToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        Assert.Contains("--target=aarch64-linux-android24", link.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: GeneratePCH on Android emits the same
+    /// <c>--target=</c> triple as the consumer compiles. A PCH
+    /// compiled for a different triple than its consumers fails with
+    /// "PCH was compiled for a different target".
+    /// </summary>
+    [Fact]
+    public void AndroidGeneratePCH_EmitsExplicitTargetTriple()
+    {
+        ModuleRules module = NewModuleWithPch();
+        TargetRules target = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        // Touch the PCH header file so the toolchain can resolve it.
+        string pchHeaderPath = Path.Combine(_scratchDir, "XCorePCH.h");
+        File.WriteAllText(pchHeaderPath, "// PCH header\n");
+        FileItem pchHeader = FileItem.GetItemByPath(pchHeaderPath);
+
+        PCHBinding binding = _androidToolchain.GeneratePCH(
+            module, target, "XCorePCH.h", pchHeader, _scratchDir);
+
+        Assert.Contains("--target=aarch64-linux-android24", binding.Action.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: the same triple appears on every emit path so
+    /// a compile, PCH, and link for the same target produce object
+    /// files that link together. Triple drift across the three paths
+    /// is the exact failure mode the audit fix prevents.
+    /// </summary>
+    [Fact]
+    public void AndroidCompile_PCH_Link_AllShareSameTargetTriple()
+    {
+        ModuleRules module = NewModuleWithPch();
+        TargetRules target = NewAndroidTarget(architecture: "aarch64", apiLevel: 21);
+
+        string pchHeaderPath = Path.Combine(_scratchDir, "XCorePCH.h");
+        File.WriteAllText(pchHeaderPath, "// PCH header\n");
+        FileItem pchHeader = FileItem.GetItemByPath(pchHeaderPath);
+
+        PCHBinding binding = _androidToolchain.GeneratePCH(
+            module, target, "XCorePCH.h", pchHeader, _scratchDir);
+        IExternalAction compile = _androidToolchain
+            .CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir, binding)
+            .Single();
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "XCore.o"));
+        IExternalAction link = _androidToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        string expected = "--target=aarch64-linux-android21";
+        Assert.Contains(expected, binding.Action.CommandArguments);
+        Assert.Contains(expected, compile.CommandArguments);
+        Assert.Contains(expected, link.CommandArguments);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: Linux Clang does NOT emit <c>--target=</c>.
+    /// The host triple is correct on Linux; emitting an explicit
+    /// triple would force a host-arch override on a non-cross
+    /// toolchain.
+    /// </summary>
+    [Fact]
+    public void LinuxCompile_DoesNotEmitTargetTriple()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        var actions = _linuxToolchain.CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir);
+        IExternalAction compile = actions.Single();
+
+        Assert.DoesNotContain(
+            compile.CommandArguments,
+            a => a.StartsWith("--target=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: Architecture changes rotate the Android target
+    /// triple. <c>aarch64</c> vs <c>armv7a</c> produce different
+    /// triples and hence different cache keys.
+    /// </summary>
+    [Fact]
+    public void AndroidArchitecture_DrivesTargetTripleAndCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules aarch64 = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+        TargetRules armv7a = NewAndroidTarget(architecture: "armv7a", apiLevel: 24);
+
+        IExternalAction a64 = _androidToolchain.CompileSource(module, aarch64, MakeSource("XCore.cpp"), _scratchDir).Single();
+        IExternalAction a32 = _androidToolchain.CompileSource(module, armv7a, MakeSource("XCore.cpp"), _scratchDir).Single();
+
+        Assert.Contains("--target=aarch64-linux-android24", a64.CommandArguments);
+        Assert.Contains("--target=armv7a-linux-androideabi24", a32.CommandArguments);
+        Assert.Contains("AndroidTargetTriple=aarch64-linux-android24", a64.CacheKeyComponents);
+        Assert.Contains("AndroidTargetTriple=armv7a-linux-androideabi24", a32.CacheKeyComponents);
+        Assert.NotEqual(a64.CommandVersion, a32.CommandVersion);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: ApiLevel changes rotate the Android target
+    /// triple. <c>aarch64-linux-android21</c> vs
+    /// <c>aarch64-linux-android24</c> produce different cache keys.
+    /// </summary>
+    [Fact]
+    public void AndroidApiLevel_DrivesTargetTripleAndCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules api21 = NewAndroidTarget(architecture: "aarch64", apiLevel: 21);
+        TargetRules api24 = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        IExternalAction at21 = _androidToolchain.CompileSource(module, api21, MakeSource("XCore.cpp"), _scratchDir).Single();
+        IExternalAction at24 = _androidToolchain.CompileSource(module, api24, MakeSource("XCore.cpp"), _scratchDir).Single();
+
+        Assert.Contains("--target=aarch64-linux-android21", at21.CommandArguments);
+        Assert.Contains("--target=aarch64-linux-android24", at24.CommandArguments);
+        Assert.NotEqual(at21.CommandVersion, at24.CommandVersion);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: an unrecognised Android architecture surfaces
+    /// as exit 23 (EngineOrToolchainVersionMismatch) with a clear
+    /// diagnostic, NOT a silent host-default codegen path. Catching
+    /// the unknown triple up front is the entire point of the audit
+    /// fix.
+    /// </summary>
+    [Fact]
+    public void AndroidUnknownArchitecture_FailsWithExit23()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules badTarget = NewAndroidTarget(architecture: "mips64", apiLevel: 24);
+
+        XBT.Core.XBTException ex = Assert.Throws<XBT.Core.XBTException>(
+            () => _androidToolchain.CompileSource(module, badTarget, MakeSource("XCore.cpp"), _scratchDir));
+        Assert.Equal(23, ex.ExitCode);
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: determinism check -- identical inputs produce
+    /// identical command lines including the <c>--target=</c> flag.
+    /// </summary>
+    [Fact]
+    public void AndroidCompile_IsDeterministicAcrossInvocations()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        IExternalAction first = _androidToolchain.CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir).Single();
+        IExternalAction second = _androidToolchain.CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir).Single();
+
+        Assert.Equal(first.CommandArguments.Count, second.CommandArguments.Count);
+        for (int i = 0; i < first.CommandArguments.Count; i++)
+        {
+            Assert.Equal(first.CommandArguments[i], second.CommandArguments[i]);
+        }
+        Assert.Equal(first.CommandVersion, second.CommandVersion);
+    }
+
+    // ===== Audit fix R8-M2: envelope flags hash =====
+
+    /// <summary>
+    /// Audit fix R8-M2: the envelope-flags hash appears in every
+    /// compile action's CacheKeyComponents. A toolchain upgrade that
+    /// silently changes any envelope flag's default would otherwise
+    /// produce silent staleness; the hash forces invalidation.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction compile = _linuxToolchain
+            .CompileSource(module, target, MakeSource("XCore.cpp"), _scratchDir)
+            .Single();
+
+        Assert.Contains(
+            compile.CacheKeyComponents,
+            c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: the envelope-flags hash on Android differs
+    /// from the envelope-flags hash on Linux because the Android
+    /// emit includes the <c>--target=</c> flag. Two toolchains
+    /// targeting different platforms must produce distinct envelope
+    /// hashes.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_DiffersByPlatform()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules linuxTarget = NewTarget(Platform.Linux);
+        TargetRules androidTarget = NewAndroidTarget(architecture: "aarch64", apiLevel: 24);
+
+        IExternalAction onLinux = _linuxToolchain
+            .CompileSource(module, linuxTarget, MakeSource("Foo.cpp"), _scratchDir).Single();
+        IExternalAction onAndroid = _androidToolchain
+            .CompileSource(module, androidTarget, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        string linuxHash = onLinux.CacheKeyComponents
+            .Single(c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+        string androidHash = onAndroid.CacheKeyComponents
+            .Single(c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+        Assert.NotEqual(linuxHash, androidHash);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: the envelope-flags hash flows through the
+    /// link cache key too, so an envelope flag change rotates link
+    /// keys as well as compile keys.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_AppearsInLinkCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
+
+        IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+        Assert.Contains(
+            link.CacheKeyComponents,
+            c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+    }
+
+    // ===== Audit fix R8-M3: descriptor content hash =====
+
+    /// <summary>
+    /// Audit fix R8-M3: the descriptor content hash flows through
+    /// every compile action's CacheKeyComponents. A descriptor edit
+    /// (even one that doesn't change a single parsed field) rotates
+    /// the hash and invalidates the cache.
+    /// </summary>
+    [Fact]
+    public void DescriptorHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        // Set a synthetic descriptor hash that mirrors the discovery
+        // layer's injection.
+        module.ApplyDescriptorContentHash("0123456789abcdef");
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction compile = _linuxToolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains("DescriptorHash=0123456789abcdef", compile.CacheKeyComponents);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: two modules with different descriptor hashes
+    /// produce different compile cache keys.
+    /// </summary>
+    [Fact]
+    public void DescriptorHash_DifferentValues_ProduceDifferentCacheKeys()
+    {
+        ModuleRules first = NewModule(simPath: false);
+        first.ApplyDescriptorContentHash("aaaaaaaaaaaaaaaa");
+        ModuleRules second = NewModule(simPath: false);
+        second.ApplyDescriptorContentHash("bbbbbbbbbbbbbbbb");
+
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction firstCompile = _linuxToolchain
+            .CompileSource(first, target, MakeSource("F.cpp"), _scratchDir).Single();
+        IExternalAction secondCompile = _linuxToolchain
+            .CompileSource(second, target, MakeSource("F.cpp"), _scratchDir).Single();
+
+        Assert.NotEqual(firstCompile.CommandVersion, secondCompile.CommandVersion);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: when DescriptorContentHash is null (test path
+    /// without a descriptor on disk), the cache key uses a stable
+    /// sentinel so two reads in the same process produce equal keys.
+    /// </summary>
+    [Fact]
+    public void DescriptorHash_NullValue_UsesStableSentinel()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        // No ApplyDescriptorContentHash call -- DescriptorContentHash
+        // remains null.
+        Assert.Null(module.DescriptorContentHash);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction compile = _linuxToolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains("DescriptorHash=(no-descriptor)", compile.CacheKeyComponents);
+    }
+
+    // ===== Audit fix R8-M4: XBT binary hash =====
+
+    /// <summary>
+    /// Audit fix R8-M4: the XBT binary's content hash flows through
+    /// every compile action's CacheKeyComponents. A rebuild of XBT
+    /// itself rotates the hash and invalidates every cached compile.
+    /// </summary>
+    [Fact]
+    public void XbtBinaryHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction compile = _linuxToolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains(
+            compile.CacheKeyComponents,
+            c => c.StartsWith("XbtBinaryHash=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-M4: a synthetic switch of the XBT binary hash via
+    /// the test hook rotates every emitted cache key. Restores the
+    /// override after the assertion so other tests in the suite are
+    /// unaffected.
+    /// </summary>
+    [Fact]
+    public void XbtBinaryHash_TestOverride_RotatesCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget(Platform.Linux);
+
+        string realHash = ToolchainSelfHash.XbtBinaryHash;
+        IExternalAction realKey = _linuxToolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        try
+        {
+            ToolchainSelfHash.__SetForTesting("0000000000000000");
+            IExternalAction overridden = _linuxToolchain
+                .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+            Assert.Contains("XbtBinaryHash=0000000000000000", overridden.CacheKeyComponents);
+            Assert.NotEqual(realKey.CommandVersion, overridden.CommandVersion);
+        }
+        finally
+        {
+            ToolchainSelfHash.__SetForTesting(null);
+        }
+        Assert.Equal(realHash, ToolchainSelfHash.XbtBinaryHash);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(
@@ -407,6 +785,44 @@ public sealed class XClangToolChainTests : IDisposable
             Configuration = BuildConfiguration.Development,
             StationRole = StationRole.Engineer,
             SimdLevelDefault = SimdLevel.SSE42,
+        };
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: build an Android <see cref="TargetRules"/>
+    /// with the architecture + API level set so the toolchain emits
+    /// <c>--target=&lt;arch&gt;-linux-android&lt;API&gt;</c>.
+    /// </summary>
+    private static TargetRules NewAndroidTarget(string architecture, int apiLevel)
+    {
+        return new TargetRules
+        {
+            Name = "TestTarget",
+            TargetType = BuildTargetType.Game,
+            Platform = Platform.Android,
+            Architecture = architecture,
+            AndroidApiLevel = apiLevel,
+            Configuration = BuildConfiguration.Development,
+            StationRole = StationRole.Engineer,
+            SimdLevelDefault = SimdLevel.SSE42,
+        };
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1: build a <see cref="ModuleRules"/> that opts
+    /// into a private PCH so GeneratePCH can be exercised.
+    /// </summary>
+    private static ModuleRules NewModuleWithPch()
+    {
+        return new ModuleRules
+        {
+            Name = "XTest",
+            Tier = ModuleTier.Engine,
+            ModuleType = ModuleType.Runtime,
+            Languages = Languages.Cpp,
+            SimPath = false,
+            PCHUsage = PCHUsageMode.NoSharedPCHs,
+            PrivatePCHHeaderFile = "XCorePCH.h",
         };
     }
 

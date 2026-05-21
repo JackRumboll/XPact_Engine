@@ -32,6 +32,31 @@
 #include <cstdint>
 
 // ---------------------------------------------------------------------
+// xpact_compile_time_streq: constexpr string-literal equality used by
+// XHT-emitted static_asserts that pin the GC root / exception ABI /
+// mangling scheme tags from the manifest to the runtime defines
+// (Round-2 audit C1). The function is C++17-constexpr so it works
+// uniformly across gcc / clang / MSVC without relying on a builtin.
+// ---------------------------------------------------------------------
+
+namespace XPactDetail
+{
+    constexpr bool CompileTimeStrEq(const char* a, const char* b)
+    {
+        // No nullptr inputs accepted; the XHT-emit always passes string
+        // literals so the constexpr path is the only path.
+        if (a == nullptr || b == nullptr) { return false; }
+        while (*a != '\0' && *b != '\0')
+        {
+            if (*a != *b) { return false; }
+            ++a;
+            ++b;
+        }
+        return *a == '\0' && *b == '\0';
+    }
+}
+
+// ---------------------------------------------------------------------
 // XCONSTINIT: the constinit-equivalent attribute the .gen.cpp uses.
 // In C++20 mode, constinit ensures static-initialization happens at
 // compile time. In older modes we degrade to a no-op so the code still
@@ -59,6 +84,41 @@
 #endif
 
 // ---------------------------------------------------------------------
+// XPACT_GC_ROOT_ABI_TAG / XPACT_EXCEPTION_ABI_TAG / XPACT_MANGLING_SCHEME_TAG:
+// string-literal ABI identifiers XHT emits as static_assert pins at .gen.cpp
+// scope (Section 8.2 + Round-2 audit C1). These match the manifest fields
+// XBT writes (Contract Section 10.2). The Phase-1 defaults below MUST match:
+//   - XBT.Manifest.ManifestSchema's default TargetInfo values
+//   - XHT.Manifest.XbtManifestReader's expected ABI strings
+// XCore-4b will redefine these based on the active runtime configuration.
+// ---------------------------------------------------------------------
+
+#ifndef XPACT_GC_ROOT_ABI_TAG
+    #define XPACT_GC_ROOT_ABI_TAG "Span-based v1"
+#endif
+
+#ifndef XPACT_EXCEPTION_ABI_TAG
+    #define XPACT_EXCEPTION_ABI_TAG "Tier1-Shim/Tier2-Direct"
+#endif
+
+#ifndef XPACT_MANGLING_SCHEME_TAG
+    #define XPACT_MANGLING_SCHEME_TAG "Itanium-LengthPrefixed-v1"
+#endif
+
+// ---------------------------------------------------------------------
+// XPACT_PROPERTY_HAS_ACCESSORS: flag indicating XPropertyDescriptor now
+// carries Getter / Setter function-pointer slots per Round-2 audit
+// M-XIL2CPP-Accessor. Phase 1 XHT-emit fills these as nullptr; XIL2CPP
+// Phase 2 wires up real C# property getters/setters into these slots.
+// The XHT-emitted .gen.cpp static_asserts the flag is 1 so a future
+// runtime that drops accessor support fails the build loudly.
+// ---------------------------------------------------------------------
+
+#ifndef XPACT_PROPERTY_HAS_ACCESSORS
+    #define XPACT_PROPERTY_HAS_ACCESSORS 1
+#endif
+
+// ---------------------------------------------------------------------
 // Forward-declared opaque types. XHT-emitted code holds pointers to
 // these; runtime functions in XCore-4b dereference them.
 // ---------------------------------------------------------------------
@@ -82,13 +142,27 @@ struct XDelegateFunction {};
 // persist these structs to disk.
 // ---------------------------------------------------------------------
 
+// XPropertyDescriptor (Round-2 audit M-XIL2CPP-Accessor):
+// adds Getter / Setter function-pointer slots so C# auto-properties and
+// computed properties can be reflected. Phase 1 XHT-emit fills Getter /
+// Setter as nullptr; direct-field properties (the C++ case + C# auto-
+// property case) use Offset for member access. The XIL2CPP Phase 2 emit
+// path will populate Getter / Setter with thunks into managed code so
+// reflection can invoke C# property accessors uniformly.
+//
+// Layout is provisional per XCore-4b's eventual byte-layout freeze; do
+// not persist the struct shape to disk.
 struct XPropertyDescriptor
 {
     const char* Name;
     const char* TypeName;
-    uint32_t Offset;
+    uint32_t Offset;       // Used for direct-field access (C++ field / C# auto-property).
     uint32_t Size;
     uint32_t Flags;
+    // Optional accessor slots (Round-2 audit M-XIL2CPP-Accessor). Phase 1 fills
+    // nullptr; XIL2CPP Phase 2 wires up managed-side getter/setter thunks here.
+    void* (*Getter)(const void* instance);
+    void (*Setter)(void* instance, const void* value);
 };
 
 struct XFunctionDescriptor

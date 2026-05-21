@@ -153,17 +153,60 @@ public sealed record ExternalAction : IExternalAction
     /// </summary>
     /// <exception cref="ArgumentException">
     /// Thrown when any of the file-item lists is not sorted by
-    /// <see cref="FileItem.FullPath"/> ordinal or contains a duplicate.
+    /// <see cref="FileItem.FullPath"/> ordinal or contains a duplicate,
+    /// or when <see cref="ActionType"/> names a reserved Phase 2 slot
+    /// (audit fix R8-Mi3).
     /// </exception>
     public static ExternalAction Create(ExternalAction prototype)
     {
         ArgumentNullException.ThrowIfNull(prototype);
 
+        ValidateNotReservedSlot(prototype.ActionType);
         ValidateSorted(prototype.PrerequisiteItems, nameof(PrerequisiteItems));
         ValidateSorted(prototype.ProducedItems, nameof(ProducedItems));
         ValidateSorted(prototype.DeleteItems, nameof(DeleteItems));
 
         return prototype;
+    }
+
+    /// <summary>
+    /// Audit fix R8-Mi3: reject any <see cref="XActionType"/> whose
+    /// name starts with <c>Reserved_</c>. The reserved slot range
+    /// (9-12, 14-15) exists so Phase 2 systems can land without
+    /// rotating <see cref="ActionHistory.CurrentVersion"/>; an
+    /// accidental Phase 1 emit into a reserved slot would alias a
+    /// legitimate Phase 2 action type at the moment that addendum
+    /// lands, silently invalidating every <c>ActionHistory</c> entry
+    /// that ever used the reserved ordinal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Tests that need to construct reserved-slot actions for
+    /// graph-shape coverage can bypass this gate by constructing the
+    /// record directly (<c>new ExternalAction { ActionType = ... }</c>)
+    /// rather than going through <see cref="Create"/>; the
+    /// determinism-invariant assertion runs only in <see cref="Create"/>.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="actionType"/>'s enum name starts
+    /// with <c>Reserved_</c>.
+    /// </exception>
+    internal static void ValidateNotReservedSlot(XActionType actionType)
+    {
+        string name = actionType.ToString();
+        if (name.StartsWith("Reserved_", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"ExternalAction.Create rejected ActionType={name} (slot {(int)actionType}): " +
+                "the reserved-slot range is preallocated for Phase 2 systems " +
+                "(distributed cache, live coding, etc.) and MUST NOT be emitted " +
+                "by Phase 1 code. Pick an existing named slot from XActionType " +
+                "(CompileCppAction, PCHGenerationAction, ...) appropriate to the " +
+                "action's behaviour, or wait for the Phase 2 addendum that " +
+                "promotes the reserved slot to a named type.",
+                nameof(actionType));
+        }
     }
 
     private static void ValidateSorted(IReadOnlyList<FileItem> items, string fieldName)

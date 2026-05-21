@@ -714,4 +714,49 @@ public sealed class BuildTomlParserTests
         ModuleRules output = BuildTomlParser.Parse(toml);
         Assert.Equal("^0.1", output.EngineVersionCompat);
     }
+
+    /// <summary>
+    /// Audit fix R8-M3: every parsed <see cref="ModuleRules"/> carries
+    /// the descriptor content hash. Two parses of the same TOML body
+    /// produce identical hashes; two parses of different bodies
+    /// produce different hashes.
+    /// </summary>
+    [Fact]
+    public void DescriptorContentHash_DerivedFromTomlBody()
+    {
+        const string baseToml = """
+            name = "XCore"
+            tier = "Engine"
+            module_type = "Runtime"
+            """;
+        const string commentedToml = """
+            # This is a no-op comment
+            name = "XCore"
+            tier = "Engine"
+            module_type = "Runtime"
+            """;
+
+        ModuleRules a = BuildTomlParser.Parse(baseToml);
+        ModuleRules aRepeat = BuildTomlParser.Parse(baseToml);
+        ModuleRules b = BuildTomlParser.Parse(commentedToml);
+
+        Assert.NotNull(a.DescriptorContentHash);
+        Assert.Equal(16, a.DescriptorContentHash!.Length);
+
+        // Same body -> same hash.
+        Assert.Equal(a.DescriptorContentHash, aRepeat.DescriptorContentHash);
+
+        // Different body (comment added) -> different hash. This
+        // proves the audit-fix invariant: a descriptor edit -- even
+        // one that does not affect a single parsed field -- rotates
+        // the hash, which invalidates the cache for every compile in
+        // the module.
+        Assert.NotEqual(a.DescriptorContentHash, b.DescriptorContentHash);
+
+        // Same fields, but the hash captures the raw bytes, so the
+        // parsed shape is irrelevant here.
+        Assert.Equal(a.Name, b.Name);
+        Assert.Equal(a.Tier, b.Tier);
+        Assert.Equal(a.ModuleType, b.ModuleType);
+    }
 }

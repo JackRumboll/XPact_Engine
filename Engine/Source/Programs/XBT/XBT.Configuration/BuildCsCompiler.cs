@@ -164,9 +164,10 @@ public static class BuildCsCompiler
         }
 
         // --- 6. Invoke the constructor.
+        ModuleRules rules;
         try
         {
-            return (ModuleRules)ctor.Invoke(new object[] { target })!;
+            rules = (ModuleRules)ctor.Invoke(new object[] { target })!;
         }
         catch (TargetInvocationException tex) when (tex.InnerException is not null)
         {
@@ -181,6 +182,16 @@ public static class BuildCsCompiler
                 line: line,
                 column: column);
         }
+
+        // --- 7. Audit fix R8-M3: inject the descriptor content hash.
+        // The user's constructor cannot set this because the discovery
+        // layer is the one that holds the descriptor bytes; emit the
+        // first 16 hex chars of the BLAKE3 hash directly off the
+        // sourceBytes we already have in hand.
+        string descriptorHash = IoHash.Compute(sourceBytes).ToString()[..16];
+        rules.ApplyDescriptorContentHash(descriptorHash);
+
+        return rules;
     }
 
     // ---------------------------------------------------------------------

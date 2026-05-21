@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using Simgenics.XPact.XHT.AST;
 
 namespace Simgenics.XPact.XHT.Resolver.Phases;
@@ -168,8 +169,16 @@ internal sealed class StepResolveProperties : IResolverStep
             return;
         }
 
-        // Signature: zero parameters OR exactly one parameter whose
-        // type matches the property's type (or its C++ reference form).
+        // Signature is one of:
+        //   (a) zero parameters
+        //   (b) one parameter whose type matches the property's type (or
+        //       its C++ const-reference form)
+        //   (c) two parameters where param[0] is the old value and
+        //       param[1] is the "delta" view for a static array
+        //       (Round-2 audit M1 / M3). The static-array AST surface
+        //       lands in Phase 2; today we accept the 2-param form
+        //       structurally so the registration succeeds when XBT /
+        //       parser surfaces the static-array flag.
         int paramCount = callback.Parameters?.Count ?? 0;
         if (paramCount == 0)
         {
@@ -179,10 +188,24 @@ internal sealed class StepResolveProperties : IResolverStep
 
         if (paramCount == 1)
         {
-            string paramType = callback.Parameters![0].TypeIdentifier ?? string.Empty;
-            string propertyType = p.TypeIdentifier ?? string.Empty;
-
-            if (RepNotifyTypeCompatible(paramType, propertyType))
+            XhtParam param = callback.Parameters![0];
+            if (RepNotifyTypeCompatible(ctx, p, param))
+            {
+                ctx.ResolvedRepNotifyMethods[p] = callback;
+                return;
+            }
+        }
+        else if (paramCount == 2)
+        {
+            // 2-parm static-array form per Round-2 audit M1 + M3:
+            //   void OnRepFoo(OldT old, const TArray<uint8>& delta)
+            // The first parameter is the old value (same compatibility
+            // rule as the 1-parm form); the second is the delta view.
+            // Phase 1: we accept any 2-parm callback whose param[0]
+            // matches the property type; the delta-view type checker
+            // lands when the static-array AST flag does (Phase 2).
+            XhtParam first = callback.Parameters![0];
+            if (RepNotifyTypeCompatible(ctx, p, first))
             {
                 ctx.ResolvedRepNotifyMethods[p] = callback;
                 return;
@@ -192,37 +215,199 @@ internal sealed class StepResolveProperties : IResolverStep
         PhaseHelpers.Error(
             ctx,
             DiagnosticCodes.RepNotifyInvalidSignature,
-            $"Property '{cls.FullyQualifiedName}.{p.Name}' ReplicatedUsing callback '{callbackName}' has invalid signature; expected zero-param OR one-param matching '{p.TypeIdentifier}'.",
+            $"Property '{cls.FullyQualifiedName}.{p.Name}' ReplicatedUsing callback '{callbackName}' has invalid signature; expected zero-param, one-param matching '{p.TypeIdentifier}', or two-param static-array form (param[0] matches '{p.TypeIdentifier}').",
             p.Span);
     }
 
-    private static bool RepNotifyTypeCompatible(string paramType, string propertyType)
+    /// <summary>
+    /// Decide whether a callback parameter is type-compatible with the
+    /// reflected property per Round-2 audit M1. Compatibility rules:
+    /// </summary>
+    /// <remarks>
+    /// <list type="number">
+    ///   <item><description>If both the property and the parameter
+    ///   resolve to the same reflected type (via
+    ///   <see cref="ResolverContext.ResolvedPropertyTypes"/>),
+    ///   compatibility holds. Reference equality on the resolved
+    ///   <see cref="XhtTypeBase"/> handles complex shapes like
+    ///   <c>TSubclassOf&lt;X&gt;</c> and namespace-qualified spellings
+    ///   that string-normalization cannot.</description></item>
+    ///   <item><description>If neither resolves (both primitives), the
+    ///   normalized primitive vocabulary check applies:
+    ///   <c>int32 == int == Int32</c>, <c>bool == Boolean</c>, etc.
+    ///   (See <see cref="NormalizePrimitive"/>.)</description></item>
+    ///   <item><description>The C++ <c>const T&amp;</c> /
+    ///   <c>T const&amp;</c> / <c>T&amp;</c> reference forms still
+    ///   match the bare <c>T</c> after stripping qualifiers.</description></item>
+    /// </list>
+    /// </remarks>
+    private static bool RepNotifyTypeCompatible(
+        ResolverContext ctx,
+        XhtProperty property,
+        XhtParam param)
     {
-        // Tolerate C++ reference form: "const T&" / "T const&" / "T&"
-        // / "const T &" match the bare "T" property.
-        string normalizedParam = NormalizeTypeForComparison(paramType);
-        string normalizedProp = NormalizeTypeForComparison(propertyType);
+        // 1. Resolved-type reference-equality path. The property's
+        //    resolved type was populated by ResolvePropertyType earlier
+        //    in this same phase. We try to resolve the parameter type
+        //    the same way -- if both resolve to the same node, accept.
+        if (ctx.ResolvedPropertyTypes.TryGetValue(property, out XhtTypeBase? resolvedProp)
+            && resolvedProp is not null)
+        {
+            XhtTypeBase? resolvedParam = ResolveParameterType(ctx, param);
+            if (resolvedParam is not null && ReferenceEquals(resolvedParam, resolvedProp))
+            {
+                return true;
+            }
+        }
 
-        return string.Equals(normalizedParam, normalizedProp, StringComparison.Ordinal);
+        // 2. String-normalization path (primitives + the everything-
+        //    else fallback). The const-reference pattern is collapsed
+        //    via StripQualifiers; the primitive synonyms via
+        //    NormalizePrimitive.
+        string normalizedParam = NormalizePrimitive(StripQualifiers(param.TypeIdentifier));
+        string normalizedProp = NormalizePrimitive(StripQualifiers(property.TypeIdentifier));
+
+        if (string.Equals(normalizedParam, normalizedProp, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
     }
 
-    private static string NormalizeTypeForComparison(string t)
+    /// <summary>
+    /// Resolve a parameter's type identifier the same way property
+    /// resolution does (via the symbol table). Used by RepNotify
+    /// compatibility checks so the parameter type can be compared via
+    /// reference equality against the property's resolved type.
+    /// </summary>
+    private static XhtTypeBase? ResolveParameterType(ResolverContext ctx, XhtParam param)
+    {
+        if (string.IsNullOrEmpty(param.TypeIdentifier))
+        {
+            return null;
+        }
+        string lookup = StripQualifiers(param.TypeIdentifier);
+        if (string.IsNullOrEmpty(lookup))
+        {
+            return null;
+        }
+        return ctx.Symbols.Lookup(lookup);
+    }
+
+    /// <summary>
+    /// Strip C++ qualifiers (<c>const</c> / <c>volatile</c>) and trailing
+    /// indirection markers (<c>*</c> / <c>&amp;</c>) from a raw type
+    /// identifier. Handles <c>const T&amp;</c>, <c>T const&amp;</c>,
+    /// <c>const T*</c>, and the bare-reference / bare-pointer forms.
+    /// </summary>
+    private static string StripQualifiers(string typeIdentifier)
+    {
+        if (string.IsNullOrEmpty(typeIdentifier))
+        {
+            return typeIdentifier;
+        }
+
+        string s = typeIdentifier.Trim();
+
+        // Remove "const " and " const" tokens (whole-word). Avoid the
+        // earlier global Replace("const ", "") which corrupts e.g.
+        // "constField" if such an identifier ever appeared. The
+        // whole-word approach is correct for the C++ surface XHT
+        // accepts.
+        s = RemoveTokenWithSpaces(s, "const");
+        s = RemoveTokenWithSpaces(s, "volatile");
+
+        // Trim trailing indirection markers + whitespace.
+        s = s.TrimEnd();
+        while (s.Length > 0 && (s[^1] == '*' || s[^1] == '&'))
+        {
+            s = s[..^1].TrimEnd();
+        }
+        return s.Trim();
+    }
+
+    /// <summary>
+    /// Remove a whole-word token (with surrounding whitespace) from a
+    /// type string. E.g. <c>"const Foo &amp;"</c> with token
+    /// <c>"const"</c> becomes <c>"Foo &amp;"</c>. Used by
+    /// <see cref="StripQualifiers"/>.
+    /// </summary>
+    private static string RemoveTokenWithSpaces(string input, string token)
+    {
+        // Walk the string identifying token occurrences flanked by
+        // word-boundary characters (whitespace, start/end, or punctuation).
+        StringBuilder sb = new(input.Length);
+        int i = 0;
+        while (i < input.Length)
+        {
+            if (i + token.Length <= input.Length
+                && string.CompareOrdinal(input, i, token, 0, token.Length) == 0
+                && IsTokenBoundary(input, i - 1)
+                && IsTokenBoundary(input, i + token.Length))
+            {
+                // Skip the token + any single trailing whitespace.
+                i += token.Length;
+                if (i < input.Length && input[i] == ' ')
+                {
+                    i++;
+                }
+                // Also drop a single preceding whitespace if any.
+                if (sb.Length > 0 && sb[^1] == ' ')
+                {
+                    sb.Length--;
+                }
+                continue;
+            }
+            sb.Append(input[i]);
+            i++;
+        }
+        return sb.ToString();
+    }
+
+    private static bool IsTokenBoundary(string s, int index)
+    {
+        if (index < 0 || index >= s.Length)
+        {
+            return true;
+        }
+        char c = s[index];
+        return !(char.IsLetterOrDigit(c) || c == '_');
+    }
+
+    /// <summary>
+    /// Collapse primitive-type synonyms to a canonical spelling per
+    /// Round-2 audit M1. Engine spellings (<c>int32</c>, <c>uint8</c>),
+    /// C++ spellings (<c>int</c>, <c>unsigned char</c>), and CLR
+    /// spellings (<c>Int32</c>, <c>Byte</c>) all collapse so a C#
+    /// <c>Int32</c> parameter matches a C++ <c>int32</c> property.
+    /// </summary>
+    /// <remarks>
+    /// Non-primitive inputs pass through unchanged so the function
+    /// remains safe to compose with <see cref="StripQualifiers"/>.
+    /// </remarks>
+    private static string NormalizePrimitive(string t)
     {
         if (string.IsNullOrEmpty(t))
         {
             return t;
         }
-
-        // Strip qualifiers and reference markers.
-        string s = t.Trim();
-        s = s.Replace("const ", string.Empty, StringComparison.Ordinal);
-        s = s.Replace(" const", string.Empty, StringComparison.Ordinal);
-        s = s.Replace("&", string.Empty, StringComparison.Ordinal);
-        // Strip a trailing '*' so pointer-to-T matches T (the
-        // RepNotify-by-value convention covers both).
-        s = s.TrimEnd('*');
-        s = s.Trim();
-        return s;
+        return t switch
+        {
+            "int8" or "sbyte" or "SByte" or "signed char" => "int8",
+            "uint8" or "byte" or "Byte" or "unsigned char" => "uint8",
+            "int16" or "short" or "Int16" or "signed short" => "int16",
+            "uint16" or "ushort" or "UInt16" or "unsigned short" => "uint16",
+            "int" or "int32" or "Int32" or "signed int" => "int32",
+            "uint" or "uint32" or "UInt32" or "unsigned int" or "unsigned" => "uint32",
+            "long" or "int64" or "Int64" or "signed long long" or "signed long" => "int64",
+            "ulong" or "uint64" or "UInt64" or "unsigned long" or "unsigned long long" => "uint64",
+            "bool" or "Boolean" => "bool",
+            "float" or "Single" => "float",
+            "double" or "Double" => "double",
+            "string" or "String" or "FString" => "FString",
+            _ => t,
+        };
     }
 
     /// <summary>

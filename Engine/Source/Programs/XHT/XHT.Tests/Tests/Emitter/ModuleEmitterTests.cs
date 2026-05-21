@@ -2,10 +2,12 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using Simgenics.XPact.XHT.AST;
 using Simgenics.XPact.XHT.Core;
 using Simgenics.XPact.XHT.Emitter;
 using Simgenics.XPact.XHT.Manifest;
+using Simgenics.XPact.XHT.Resolver;
 using Xunit;
 
 namespace Simgenics.XPact.XHT.Tests.Tests.Emitter;
@@ -274,5 +276,64 @@ public sealed class ModuleEmitterTests : IDisposable
         foreach (string p in result.GeneratedCppFiles) { Assert.True(File.Exists(p)); }
         Assert.True(File.Exists(result.ModuleInitCppFile));
         Assert.True(File.Exists(result.GenManifestFile));
+    }
+
+    [Fact]
+    public void EmitModule_UnsupportedManglingScheme_EmitsXht124_AndProducesNoFiles()
+    {
+        // Round-2 audit C1: a manifest declaring a non-Phase-1 scheme
+        // must surface XHT124 and short-circuit emit. No files written;
+        // diagnostics list carries the error so callers can decide
+        // whether to exit-fail.
+        XbtModule mod = TwoHeaderModule();
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
+
+        // Synthesize a manifest with a non-default ManglingScheme.
+        XbtTargetInfo target = new(
+            Name: "TestTarget",
+            Type: BuildTargetType.Editor,
+            Platform: Platform.Win64,
+            Configuration: BuildConfiguration.Development,
+            Architecture: "x86_64",
+            GCRootABI: "Span-based v1",
+            ExceptionABI: "Tier1-Shim/Tier2-Direct",
+            ManglingScheme: "MSVC-LengthSuffixed-vNeverGonnaShip",
+            FipsMode: false,
+            SimPathConservativeRootsAllowed: false,
+            SimdLevelDefault: SimdLevel.SSE42,
+            StationRole: StationRole.None);
+        XbtManifest customManifest = new(
+            ContractVersion: "13.2+test",
+            EngineVersion: "0.0.0",
+            Target: target,
+            RootLocalPath: "C:/test",
+            ExternalDependenciesFile: null,
+            Modules: new[] { mod });
+
+        EmitterContext ctx = EmitterTestHarness.MakeContext(
+            _tempDir,
+            module: mod,
+            typesToRegister: new[] { valve },
+            manifestOverride: customManifest);
+
+        ModuleEmitter emitter = new(ctx);
+        EmitResult result = emitter.EmitModule();
+
+        // No files produced.
+        Assert.Empty(result.GeneratedHeaderFiles);
+        Assert.Empty(result.GeneratedCppFiles);
+        Assert.Equal(string.Empty, result.ModuleInitCppFile);
+        Assert.Equal(string.Empty, result.GenManifestFile);
+
+        // Diagnostic XHT124 surfaces.
+        Assert.Contains(result.Diagnostics,
+            d => d.Code == DiagnosticCodes.UnsupportedManglingScheme
+              && d.Severity == DiagnosticSeverity.Error);
+        DiagnosticRecord xht124 = result.Diagnostics.First(
+            d => d.Code == DiagnosticCodes.UnsupportedManglingScheme);
+        Assert.Contains("MSVC-LengthSuffixed-vNeverGonnaShip", xht124.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(SymbolNaming.Phase1ManglingScheme, xht124.Message,
+            StringComparison.Ordinal);
     }
 }

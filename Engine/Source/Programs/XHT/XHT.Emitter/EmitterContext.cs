@@ -53,4 +53,28 @@ public sealed record EmitterContext(
     /// the record with the desired value via <c>with</c>.
     /// </summary>
     public string PluginName { get; init; } = Module.Tier == ModuleTier.Engine ? "Engine" : Module.Name;
+
+    /// <summary>
+    /// Shortcut for <see cref="XbtTargetInfo.ManglingScheme"/>. Surfaced
+    /// on the context so emitter call-sites don't need to drill through
+    /// the manifest record. Per Round-2 audit C1, the emit pipeline
+    /// validates this against <see cref="SymbolNaming.Phase1ManglingScheme"/>
+    /// before producing symbols; mismatches surface as diagnostic XHT124.
+    /// </summary>
+    public string ManglingScheme => XbtManifest.Target.ManglingScheme;
+
+    /// <summary>
+    /// Shortcut for <see cref="XbtTargetInfo.GCRootABI"/>. Emitted as a
+    /// <c>static_assert</c> pin at <c>.gen.cpp</c> scope so a runtime
+    /// rebuilt against a different ABI fails the compile loudly per
+    /// Round-2 audit C1.
+    /// </summary>
+    public string GCRootABI => XbtManifest.Target.GCRootABI;
+
+    /// <summary>
+    /// Shortcut for <see cref="XbtTargetInfo.ExceptionABI"/>. Emitted as
+    /// a <c>static_assert</c> pin at <c>.gen.cpp</c> scope per
+    /// Round-2 audit C1.
+    /// </summary>
+    public string ExceptionABI => XbtManifest.Target.ExceptionABI;
 }

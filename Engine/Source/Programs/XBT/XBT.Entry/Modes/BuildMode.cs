@@ -530,6 +530,12 @@ public sealed class BuildMode : IToolMode<BuildMode>
             Configuration = options.Configuration,
             Platform = options.Platform,
             Architecture = architecture,
+            // Audit fix R8-C1: thread the Android NDK API level through
+            // so XClangToolChain on Android can emit the correct
+            // --target=<arch>-linux-android<API> flag. The default 21
+            // covers Android 5.0+ (NDK r26's minimum 64-bit target);
+            // higher floors are an opt-in via -AndroidApiLevel=.
+            AndroidApiLevel = options.AndroidApiLevel ?? 21,
             StationRole = options.StationRole,
             FipsMode = options.FipsMode,
         };
@@ -2671,6 +2677,16 @@ internal sealed record BuildOptions
     public string? Architecture { get; init; }
 
     /// <summary>
+    /// Audit fix R8-C1: Android NDK API level override. Only consulted
+    /// when <see cref="Platform"/> == <see cref="Platform.Android"/>;
+    /// flows through to <see cref="TargetRules.AndroidApiLevel"/> which
+    /// composes the per-API-level Clang target triple
+    /// (<c>--target=&lt;arch&gt;-linux-android&lt;API&gt;</c>). When null,
+    /// the <see cref="TargetRules.AndroidApiLevel"/> default (21) applies.
+    /// </summary>
+    public int? AndroidApiLevel { get; init; }
+
+    /// <summary>
     /// Audit fix C11: when true, BuildMode emits the manifest and then
     /// stops -- no action graph build, no executor pump, no compiles.
     /// Used by the dedicated <c>write-manifest</c> mode for IDE
@@ -2729,6 +2745,7 @@ internal sealed record BuildOptions
         string? studioRoot = null;
         string? projectRoot = null;
         string? architecture = null;
+        int? androidApiLevel = null;
         bool noMutexWait = false;
 
         foreach (string arg in args)
@@ -2805,6 +2822,23 @@ internal sealed record BuildOptions
                 // TargetRules.Architecture, surfacing into the manifest.
                 architecture = arg["-Architecture=".Length..];
             }
+            else if (arg.StartsWith("-AndroidApiLevel=", StringComparison.OrdinalIgnoreCase))
+            {
+                // Audit fix R8-C1: -AndroidApiLevel= overrides the
+                // default Android NDK API level. Drives the
+                // `--target=<arch>-linux-android<API>` flag emission in
+                // XClangToolChain. Phase 1 default is 21 (NDK r26's
+                // minimum 64-bit target).
+                string raw = arg["-AndroidApiLevel=".Length..];
+                if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+                                   System.Globalization.CultureInfo.InvariantCulture,
+                                   out int parsed) || parsed <= 0)
+                {
+                    throw new BuildOptionsParseException(
+                        $"Invalid -AndroidApiLevel value '{raw}'. Expected a positive integer.");
+                }
+                androidApiLevel = parsed;
+            }
             else if (arg.Equals("-NoMutexWait", StringComparison.OrdinalIgnoreCase))
             {
                 // Audit fix R6-C7: opt out of blocking on the build
@@ -2845,6 +2879,7 @@ internal sealed record BuildOptions
             StudioRoot = studioRoot,
             ProjectRoot = projectRoot,
             Architecture = architecture,
+            AndroidApiLevel = androidApiLevel,
             NoMutexWait = noMutexWait,
         };
     }

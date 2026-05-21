@@ -190,4 +190,84 @@ public sealed class SourceEmitterTests : IDisposable
         Assert.Equal("XValve.gen.cpp", SourceEmitter.DeriveGenSourceFileName("Public/XValve.h"));
         Assert.Equal("XValve.gen.cpp", SourceEmitter.DeriveGenSourceFileName(@"Public\XValve.hpp"));
     }
+
+    [Fact]
+    public void EmittedGenCpp_PinsGCRootABI_ViaStaticAssert()
+    {
+        // Round-2 audit C1: the emitted .gen.cpp must static_assert that
+        // the manifest's GCRootABI matches the runtime's XPACT_GC_ROOT_ABI_TAG.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        Assert.Contains("XPACT_GC_ROOT_ABI_TAG", content);
+        Assert.Contains("\"Span-based v1\"", content);
+        Assert.Contains("GC root ABI mismatch between manifest and runtime", content);
+    }
+
+    [Fact]
+    public void EmittedGenCpp_PinsExceptionABI_ViaStaticAssert()
+    {
+        // Round-2 audit C1: parallel to GCRootABI for ExceptionABI.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        Assert.Contains("XPACT_EXCEPTION_ABI_TAG", content);
+        Assert.Contains("\"Tier1-Shim/Tier2-Direct\"", content);
+        Assert.Contains("Exception ABI mismatch between manifest and runtime", content);
+    }
+
+    [Fact]
+    public void EmittedGenCpp_PinsManglingScheme_ViaStaticAssert()
+    {
+        // Round-2 audit C1: parallel to GCRootABI for the ManglingScheme.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        Assert.Contains("XPACT_MANGLING_SCHEME_TAG", content);
+        Assert.Contains("\"Itanium-LengthPrefixed-v1\"", content);
+        Assert.Contains("Mangling scheme mismatch between manifest and runtime", content);
+    }
+
+    [Fact]
+    public void EmittedGenCpp_PinsPropertyAccessorSurface_ViaStaticAssert()
+    {
+        // Round-2 audit M-XIL2CPP-Accessor: the emitted .gen.cpp must
+        // static_assert XPACT_PROPERTY_HAS_ACCESSORS == 1 so a runtime
+        // rebuilt without the new XPropertyDescriptor layout fails the
+        // compile.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        Assert.Contains("XPACT_PROPERTY_HAS_ACCESSORS == 1", content);
+    }
+
+    [Fact]
+    public void PropertyDescriptor_EmitsGetterAndSetterNullptrSlots()
+    {
+        // Round-2 audit M-XIL2CPP-Accessor: every XPropertyDescriptor
+        // initializer carries the new Getter / Setter slots (nullptr
+        // in Phase 1; XIL2CPP Phase 2 wires up thunks).
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+
+        XhtProperty p = EmitterTestHarness.MakeProperty("Health", "int32");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", properties: new[] { p });
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        Assert.Contains("/* .Getter      = */ nullptr", content);
+        Assert.Contains("/* .Setter      = */ nullptr", content);
+    }
 }

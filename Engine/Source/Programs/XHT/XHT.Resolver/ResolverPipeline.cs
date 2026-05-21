@@ -12,16 +12,18 @@ namespace Simgenics.XPact.XHT.Resolver;
 
 /// <summary>
 /// Top-level orchestrator for the seven-active-phase resolve pipeline per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 5.1 + Section 5.2.
+/// <c>/Documents/XHT.html</c> Rev 6 Section 5.1 + Section 5.2.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Phase ordering.</b> Phases are invoked in the strict Rev 4 sequence
+/// <b>Phase ordering.</b> Phases are invoked in the strict Rev 6 sequence
 /// (Section 5.2 ordered list): <c>Pairings -> InvalidCheck ->
-/// BindSuperAndBases -> RecursiveStructCheck -> ResolveBases ->
-/// Properties -> Final</c>. The orchestrator enforces ordering: a
+/// BindSuperAndBases -> ResolveBases -> Properties ->
+/// RecursiveStructCheck -> Final</c>. The orchestrator enforces ordering: a
 /// caller cannot skip ahead or run a phase twice via the public surface
-/// of this type.
+/// of this type. The Rev 6 reorder (Round-2 audit C3) moves
+/// <c>RecursiveStructCheck</c> AFTER <c>Properties</c> so the cycle
+/// walker can traverse the resolved field-type graph.
 /// </para>
 /// <para>
 /// <b>Parallelism (Section 11.2).</b> Phase 1d ships sequential. Phases
@@ -99,12 +101,16 @@ public sealed class ResolverPipeline
             return _ctx.Diagnostics;
         }
 
+        // Phase order per Rev 6 (Round-2 audit C3): RecursiveStructCheck
+        // is now AFTER Properties so the cycle walker can traverse the
+        // resolved field-type graph (not just the Super chain). See
+        // /Documents/XHT.html Rev 6 Section 5.1 phase table for rationale.
         Run(ResolvePhase.Pairings, phase, new StepResolvePairings());
         Run(ResolvePhase.InvalidCheck, phase, new StepResolveInvalidCheck());
         Run(ResolvePhase.BindSuperAndBases, phase, new StepBindSuperAndBases());
-        Run(ResolvePhase.RecursiveStructCheck, phase, new StepRecursiveStructCheck());
         Run(ResolvePhase.ResolveBases, phase, new StepResolveBases());
         Run(ResolvePhase.Properties, phase, new StepResolveProperties());
+        Run(ResolvePhase.RecursiveStructCheck, phase, new StepRecursiveStructCheck());
         Run(ResolvePhase.Final, phase, new StepResolveFinal());
 
         return _ctx.Diagnostics;

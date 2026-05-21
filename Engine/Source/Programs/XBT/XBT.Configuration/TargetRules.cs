@@ -58,6 +58,29 @@ public sealed class TargetRules
     public string Architecture { get; init; } = "x86_64";
 
     /// <summary>
+    /// Android NDK API level used to compose the per-API-level Clang
+    /// target triple (e.g. <c>aarch64-linux-android24</c>). Per audit
+    /// fix R8-C1: the NDK ships a generic <c>bin/clang</c> driver that
+    /// defaults to the host triple unless <c>--target=&lt;arch&gt;-linux-android&lt;API&gt;</c>
+    /// is passed explicitly. Without that flag, codegen produces
+    /// host-architecture object files (x86-64 on Win64 / Linux build
+    /// hosts) which the Android linker then refuses to combine into an
+    /// <c>.so</c>. Phase 1 default 21 (Android 5.0 Lollipop, the
+    /// minimum NDK r26 supports for 64-bit targets); per-target
+    /// override via <c>.Target.toml</c> when a project requires a
+    /// higher minimum.
+    /// </summary>
+    /// <remarks>
+    /// Only consulted on <see cref="Platform"/> == <see cref="Platform.Android"/>;
+    /// ignored on Win64 / Linux. <see cref="Architecture"/> drives the
+    /// triple's architecture prefix (e.g. <c>aarch64</c>,
+    /// <c>armv7a</c>, <c>x86_64</c>, <c>i686</c> per NDK r26
+    /// conventions). XPact's primary Android target is
+    /// <c>aarch64</c> per master plan §2.
+    /// </remarks>
+    public int AndroidApiLevel { get; init; } = 21;
+
+    /// <summary>
     /// Station role for Game targets per <c>/Documents/XBT.html</c>
     /// Section 4.10. <see cref="StationRole.None"/> for Editor / Server
     /// targets. Game targets receive the
@@ -177,6 +200,9 @@ public sealed class ReadOnlyTargetRules
 
     /// <summary>CPU architecture; see <see cref="TargetRules.Architecture"/>.</summary>
     public string Architecture => _inner.Architecture;
+
+    /// <summary>Android NDK API level; see <see cref="TargetRules.AndroidApiLevel"/>.</summary>
+    public int AndroidApiLevel => _inner.AndroidApiLevel;
 
     /// <summary>Station role; see <see cref="TargetRules.StationRole"/>.</summary>
     public StationRole StationRole => _inner.StationRole;

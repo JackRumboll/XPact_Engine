@@ -70,6 +70,9 @@ public static class DiagnosticCodes
     /// <summary>XHT121 -- Type reference resolves only through a dynamic-only / interface-only module dependency; not link-visible.</summary>
     public const string DynamicOnlyModuleReference = "XHT121";
 
+    /// <summary>XHT124 -- Manifest declares a mangling scheme this XHT build does not support (Round-2 audit C1).</summary>
+    public const string UnsupportedManglingScheme = "XHT124";
+
     /// <summary>XHT143 -- Partial-class duplicate merged into the canonical entry (informational; no exit).</summary>
     public const string PartialClassMerged = "XHT143";
 }

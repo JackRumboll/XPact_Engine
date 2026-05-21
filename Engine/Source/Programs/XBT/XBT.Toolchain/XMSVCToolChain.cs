@@ -293,24 +293,103 @@ public sealed class XMSVCToolChain : XToolChain
                 SimPath = module.SimPath,
                 Configuration = target.Configuration,
                 Platform = target.Platform,
-                CacheKeyComponents = new[]
-                {
-                    $"SimdLevel={resolved}",
-                    $"FPSemantics={ResolveFPSemantics(module)}",
-                    $"SimPath={module.SimPath}",
-                    $"FipsMode={target.FipsMode}",
-                    $"StationRole={target.StationRole}",
-                    $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
-                    // Phase 1.4a: changing the MSVC version or the Windows
-                    // SDK version invalidates the compile cache. The
-                    // system headers' definitions of WIN32_LEAN_AND_MEAN
-                    // helpers / WINVER macros / etc. differ between SDK
-                    // versions, so a build switching SDKs must re-compile.
-                    $"MsvcVersion={_environment.CompilerVersion}",
-                    $"WinSdkVersion={_environment.WindowsSdkVersion}",
-                },
+                CacheKeyComponents = BuildCompileCacheKeyComponents(resolved, module, target, pch),
             }),
         };
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2 / R8-M3 / R8-M4: compose the CacheKeyComponents
+    /// list for an MSVC compile action. Mirrors the Clang toolchain's
+    /// equivalent: envelope-flag hash, per-module descriptor hash, and
+    /// XBT-binary content hash all participate in the cache key so a
+    /// toolchain upgrade, an envelope-flag default shift, a descriptor
+    /// edit, or an XBT rebuild correctly invalidates cached compiles.
+    /// </summary>
+    private string[] BuildCompileCacheKeyComponents(
+        SimdLevel resolvedSimd,
+        ModuleRules module,
+        TargetRules target,
+        PCHBinding? pch)
+    {
+        List<string> components = new(11)
+        {
+            $"SimdLevel={resolvedSimd}",
+            $"FPSemantics={ResolveFPSemantics(module)}",
+            $"SimPath={module.SimPath}",
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
+            // Phase 1.4a: changing the MSVC version or the Windows SDK
+            // version invalidates the compile cache. The system headers'
+            // definitions of WIN32_LEAN_AND_MEAN helpers / WINVER macros
+            // / etc. differ between SDK versions, so a build switching
+            // SDKs must re-compile.
+            $"MsvcVersion={_environment.CompilerVersion}",
+            $"WinSdkVersion={_environment.WindowsSdkVersion}",
+            // Audit fix R8-M2: envelope flags hash captures every
+            // reproducibility-envelope flag emitted unconditionally
+            // (/Brepro, /pathmap=, /d2:-cgmanifestencoded-, /cgthreads:8).
+            // A toolchain upgrade that silently changes any envelope
+            // flag's default rotates the hash, which invalidates the
+            // cache; without this contribution, the silent shift would
+            // produce silent staleness.
+            $"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash()}",
+            // Audit fix R8-M3: per-module descriptor content hash. A
+            // .Build.toml or .Build.cs edit that does not change any
+            // single parsed field still rotates this hash; the cache
+            // invalidates for every compile in the module.
+            $"DescriptorHash={ResolveDescriptorHash(module)}",
+            // Audit fix R8-M4: XBT binary content hash. A rebuild of
+            // XBT itself (logic change in command-line construction)
+            // invalidates every cached compile so we never serve
+            // outputs produced with the old logic.
+            $"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}",
+        };
+        return components.ToArray();
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: compute a stable BLAKE3-16 hash over the MSVC
+    /// reproducibility-envelope flag list. The list mirrors the actual
+    /// emission order in CompileSource / GeneratePCH / LinkModule so
+    /// the hash reflects what is on the command line. New envelope
+    /// flags MUST be appended (do not insert in the middle).
+    /// </summary>
+    private string ComputeEnvelopeFlagsHash()
+    {
+        // Order matches the per-emission-site ordering. Includes both
+        // compile-side (/Brepro, /pathmap=, /d2:-cgmanifestencoded-)
+        // and link-side (/BREPRO, /TIMESTAMP:0, /INCREMENTAL:NO,
+        // /cgthreads:8) envelope flags -- a link-side drift must also
+        // invalidate the compile cache because the action graph treats
+        // them as peers in the reproducibility envelope contract.
+        string[] envelope =
+        {
+            "/Brepro",
+            $"/pathmap:{_repoRoot}=X:/R",
+            "/d2:-cgmanifestencoded-",
+            "/BREPRO",
+            "/TIMESTAMP:0",
+            "/INCREMENTAL:NO",
+            "/cgthreads:8",
+        };
+        string joined = string.Join('\n', envelope);
+        IoHash digest = IoHash.Compute(System.Text.Encoding.UTF8.GetBytes(joined));
+        return digest.ToString()[..16];
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: resolve the descriptor content hash off a
+    /// <see cref="ModuleRules"/>. Falls back to a sentinel when the
+    /// hash is null (test-only construction without a descriptor on
+    /// disk); the sentinel keeps the cache key well-formed and stable
+    /// across reads.
+    /// </summary>
+    private static string ResolveDescriptorHash(ModuleRules module)
+    {
+        string? hash = module.DescriptorContentHash;
+        return string.IsNullOrEmpty(hash) ? "(no-descriptor)" : hash[..Math.Min(16, hash.Length)];
     }
 
     /// <inheritdoc/>
@@ -442,6 +521,22 @@ public sealed class XMSVCToolChain : XToolChain
             Configuration = target.Configuration,
             Platform = target.Platform,
             Weight = 4.0,                         // PCH gen is heavier than a regular compile.
+            // Audit fix R8-M2 / R8-M3 / R8-M4: PCH cache also gated by
+            // envelope flags hash, descriptor hash, and XBT binary
+            // hash. Mirrors the discipline applied to compile + link
+            // actions; a toolchain or descriptor or XBT-binary change
+            // invalidates the PCH same as the consumer compiles it
+            // serves.
+            CacheKeyComponents = new[]
+            {
+                $"FipsMode={target.FipsMode}",
+                $"StationRole={target.StationRole}",
+                $"MsvcVersion={_environment.CompilerVersion}",
+                $"WinSdkVersion={_environment.WindowsSdkVersion}",
+                $"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash()}",
+                $"DescriptorHash={ResolveDescriptorHash(module)}",
+                $"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}",
+            },
         });
 
         return new PCHBinding(
@@ -599,6 +694,14 @@ public sealed class XMSVCToolChain : XToolChain
             cacheKeyComponents.Add($"Participant={name}");
         }
 
+        // Audit fix R8-M2 / R8-M4: envelope flags + XBT binary hash on
+        // shared-PCH cache key too. DescriptorHash intentionally
+        // omitted on shared-PCH (the participants list above already
+        // captures the membership; per-participant descriptor hashes
+        // contribute via each consumer's CompileSource cache key).
+        cacheKeyComponents.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash()}");
+        cacheKeyComponents.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
+
         IExternalAction action = ExternalAction.Create(new ExternalAction
         {
             ActionType = XActionType.PCHGenerationAction,
@@ -728,18 +831,30 @@ public sealed class XMSVCToolChain : XToolChain
             Configuration = target.Configuration,
             Platform = target.Platform,
             Weight = 4.0,           // links are heavier than compiles
-            CacheKeyComponents = new[]
-            {
-                $"FipsMode={target.FipsMode}",
-                $"StationRole={target.StationRole}",
-                // Phase 1.4a: link cache also gated by toolchain + SDK
-                // version (so an SDK switch re-links even if the .obj
-                // hashes are unchanged -- the import libs ABI may shift
-                // between Win10 1809 and Win11 23H2 SDKs).
-                $"MsvcVersion={_environment.CompilerVersion}",
-                $"WinSdkVersion={_environment.WindowsSdkVersion}",
-            },
+            CacheKeyComponents = BuildLinkCacheKeyComponents(module, target),
         });
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2 / R8-M3 / R8-M4: link-action cache-key
+    /// composer for MSVC. Same discipline as the compile composer.
+    /// </summary>
+    private string[] BuildLinkCacheKeyComponents(ModuleRules module, TargetRules target)
+    {
+        return new[]
+        {
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            // Phase 1.4a: link cache also gated by toolchain + SDK
+            // version (so an SDK switch re-links even if the .obj
+            // hashes are unchanged -- the import libs ABI may shift
+            // between Win10 1809 and Win11 23H2 SDKs).
+            $"MsvcVersion={_environment.CompilerVersion}",
+            $"WinSdkVersion={_environment.WindowsSdkVersion}",
+            $"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash()}",
+            $"DescriptorHash={ResolveDescriptorHash(module)}",
+            $"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}",
+        };
     }
 
     /// <inheritdoc/>

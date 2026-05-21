@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using Simgenics.XPact.XHT.AST;
 
 namespace Simgenics.XPact.XHT.Emitter;
 
@@ -88,6 +89,14 @@ public static class SymbolNaming
     private const string SymbolPrefix = "_XID_";
 
     /// <summary>
+    /// Phase 1 mangling scheme identifier. The only value
+    /// <see cref="SingletonGetter"/> accepts at this revision per
+    /// Round-2 audit C1 + Contract Rev 13.7 Section 10.2. Future schemes
+    /// add additional accepted values + their corresponding emit branch.
+    /// </summary>
+    public const string Phase1ManglingScheme = "Itanium-LengthPrefixed-v1";
+
+    /// <summary>
     /// Encode a body-macro FileId per Contract Section 1.4. The grammar is
     /// <c>_XID_N&lt;PluginNameLen&gt;&lt;PluginName&gt;N&lt;LogicalPathSegCount&gt;{N&lt;SegLen&gt;&lt;SegName&gt;}_L&lt;LineNumber&gt;_&lt;Suffix&gt;</c>.
     /// </summary>
@@ -155,18 +164,57 @@ public static class SymbolNaming
 
     /// <summary>
     /// Build the per-type singleton-getter symbol per XHT.html
-    /// Section 10.2 + Section 13.2. Stable across non-renaming edits;
-    /// Live Coding's patch link uses this name.
+    /// Section 10.2 + Section 13.2 + Round-2 audit C1 / C2. Stable
+    /// across non-renaming edits; Live Coding's patch link uses this
+    /// name.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Language argument (Round-2 audit C2).</b> The Phase-1 emit
+    /// produces a language-agnostic symbol (the engine name post X-strip
+    /// is unique across C++ and C# per Contract Rev 13.7 §10.2). The
+    /// <paramref name="language"/> parameter signals XIL2CPP's
+    /// responsibility for C# types so the future-emit branching surface
+    /// is in place; today the symbol bytes don't change.
+    /// </para>
+    /// <para>
+    /// <b>Mangling-scheme argument (Round-2 audit C1).</b> Phase 1
+    /// supports only <see cref="Phase1ManglingScheme"/>. Other values
+    /// throw <see cref="UnsupportedManglingSchemeException"/> which the
+    /// emit pipeline maps to diagnostic XHT124. Future schemes add a
+    /// branch.
+    /// </para>
+    /// </remarks>
     /// <param name="moduleName">Module name as registered in the manifest. Must not be null / empty.</param>
     /// <param name="typeName">Source type name (case preserved, e.g. <c>XValve</c>). Must not be null / empty.</param>
     /// <param name="role">The reflected-type role.</param>
+    /// <param name="language">Source language of the type (signals XIL2CPP ownership for C# types per Contract Rev 13.7 §10.2; the Phase-1 emit produces identical bytes for both languages).</param>
+    /// <param name="manglingScheme">Mangling-scheme identifier from the XBT manifest's <c>TargetInfo.ManglingScheme</c>. Phase 1 requires <see cref="Phase1ManglingScheme"/>.</param>
     /// <returns>The singleton-getter symbol (e.g. <c>Z_Construct_XClass_XGameFramework_XValve</c>).</returns>
-    /// <exception cref="ArgumentException">If <paramref name="moduleName"/> or <paramref name="typeName"/> is null / empty.</exception>
-    public static string SingletonGetter(string moduleName, string typeName, EngineRole role)
+    /// <exception cref="ArgumentException">If <paramref name="moduleName"/>, <paramref name="typeName"/>, or <paramref name="manglingScheme"/> is null / empty.</exception>
+    /// <exception cref="UnsupportedManglingSchemeException">If <paramref name="manglingScheme"/> is not the Phase 1 supported value.</exception>
+    public static string SingletonGetter(
+        string moduleName,
+        string typeName,
+        EngineRole role,
+        Language language,
+        string manglingScheme)
     {
         ArgumentException.ThrowIfNullOrEmpty(moduleName);
         ArgumentException.ThrowIfNullOrEmpty(typeName);
+        ArgumentException.ThrowIfNullOrEmpty(manglingScheme);
+
+        if (!string.Equals(manglingScheme, Phase1ManglingScheme, StringComparison.Ordinal))
+        {
+            throw new UnsupportedManglingSchemeException(manglingScheme, Phase1ManglingScheme);
+        }
+
+        // Phase 1 emit is language-agnostic per Contract Rev 13.7 §10.2:
+        // the same symbol is produced for C++ and C# types, the Module
+        // field of the manifest's TargetInfo identifies which tool owns
+        // each type's body. Language is captured here for forward-compat;
+        // a future emit branch may diverge.
+        _ = language;
         return $"Z_Construct_{RoleToken(role)}_{moduleName}_{typeName}";
     }
 
@@ -264,5 +312,30 @@ public static class SymbolNaming
         const string lookup = "0123456789abcdef";
         sb.Append(lookup[b >> 4]);
         sb.Append(lookup[b & 0x0F]);
+    }
+}
+
+/// <summary>
+/// Thrown by <see cref="SymbolNaming.SingletonGetter"/> when the supplied
+/// mangling scheme is not supported by this XHT build. The emit pipeline
+/// catches this exception and translates it to diagnostic XHT124 with
+/// the scheme name in the message (Round-2 audit C1).
+/// </summary>
+public sealed class UnsupportedManglingSchemeException : Exception
+{
+    /// <summary>The unsupported scheme value supplied by the caller.</summary>
+    public string RequestedScheme { get; }
+
+    /// <summary>The Phase-1 supported scheme value.</summary>
+    public string SupportedScheme { get; }
+
+    /// <summary>Construct an instance naming the unsupported scheme.</summary>
+    /// <param name="requestedScheme">The unsupported scheme value supplied by the caller.</param>
+    /// <param name="supportedScheme">The Phase-1 supported scheme value.</param>
+    public UnsupportedManglingSchemeException(string requestedScheme, string supportedScheme)
+        : base($"Mangling scheme '{requestedScheme}' is not supported by this XHT build (Phase 1 supports only '{supportedScheme}').")
+    {
+        RequestedScheme = requestedScheme;
+        SupportedScheme = supportedScheme;
     }
 }

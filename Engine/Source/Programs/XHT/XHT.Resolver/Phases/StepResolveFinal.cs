@@ -182,11 +182,13 @@ internal sealed class StepResolveFinal : IResolverStep
 
     /// <summary>
     /// Heuristic: does <paramref name="name"/> look like a name that
-    /// SHOULD be reflected if it exists in source? Per C8 audit, we
-    /// only flag names that follow XPact convention (start with 'X'
-    /// followed by an uppercase letter) or the legacy UE convention
-    /// (A/U/I/F + uppercase). Primitive types like <c>int32</c>,
-    /// <c>float</c>, <c>string</c> are skipped.
+    /// SHOULD be reflected if it exists in source? Per Round-2 audit M4
+    /// + the user-locked Round-1 decision to drop A/U/I/F prefixes: only
+    /// XPact-convention names ('X' + uppercase second char) trigger the
+    /// "should be reflected" heuristic. Legacy UE A/U/I/F prefixes are
+    /// no longer treated as reflectable -- those names appear in XPact
+    /// only as primitive aliases (FString, FName, FText) which are
+    /// explicitly excluded below.
     /// </summary>
     private static bool LooksLikeReflectableTypeName(string name)
     {
@@ -194,14 +196,10 @@ internal sealed class StepResolveFinal : IResolverStep
         {
             return false;
         }
-        char first = name[0];
-        char second = name[1];
-        if ((first == 'X' || first == 'A' || first == 'U' || first == 'I' || first == 'F')
-            && second >= 'A' && second <= 'Z')
-        {
-            return true;
-        }
-        // Built-in primitive set (case-sensitive).
+
+        // Built-in primitive set (case-sensitive) -- never reflectable.
+        // Includes the legacy UE F-prefix aliases the engine still uses
+        // for string / name / text primitive types.
         switch (name)
         {
             case "void":
@@ -226,7 +224,10 @@ internal sealed class StepResolveFinal : IResolverStep
             case "FText":
                 return false;
         }
-        return false;
+
+        char first = name[0];
+        char second = name[1];
+        return first == 'X' && second >= 'A' && second <= 'Z';
     }
 
     private static void CheckCrossTierReferences(ResolverContext ctx, IReadOnlyList<XhtTypeBase> ordered)

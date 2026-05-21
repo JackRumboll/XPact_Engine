@@ -3,11 +3,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 13.6</title>
+<title>XPact Toolchain Contract &mdash; Rev 13.7</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 13.6</h1>
+<h1>XPact Toolchain Contract &mdash; Rev 13.7</h1>
 <p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
 
 <h3>Revision history (Rev 13 family)</h3>
@@ -15,6 +15,12 @@
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>SemanticVersionTag</th><th>ContractVersion.Current</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>13.7</strong></td>
+      <td><code>13.2</code></td>
+      <td><code>13.2+b04ae3cc84cdd9f3</code></td>
+      <td>XHT Rev 6 cross-doc integration pass (Round-2 audit C1 + C2). Section 10.2 gains the cross-language symbol-space clarification: the singleton-getter symbol <code>Z_Construct_X&lt;Kind&gt;_&lt;Module&gt;_&lt;Type&gt;</code> is <strong>language-agnostic</strong> (the engine name post-X-strip is unique across C++ and C#, enforced by the symbol-table's caseless engine-name fold); both languages produce identical bytes for the same engine type. The <code>Module</code> field of the manifest's <code>TargetInfo</code> identifies which tool owns each type's body: XHT emits both declaration and definition for C++-sourced types; XHT emits an <code>extern "C"</code> declaration and XIL2CPP emits the matching definition for C#-sourced types. <strong>XIL2CPP MUST emit exactly the symbol XHT emits an extern for</strong> &mdash; an implicit cross-tool contract Rev 13.7 makes explicit so a future audit doesn't break it. Additionally, Section 10.2's mangling-scheme field is now load-bearing: XHT validates <code>TargetInfo.ManglingScheme</code> against its supported set (Phase 1: <code>"Itanium-LengthPrefixed-v1"</code> only) and surfaces XHT124 when the scheme isn't supported. The Phase-1 emit produces compile-time <code>static_assert</code>s pinning the manifest's GC root / exception / mangling tags to runtime macros in <code>XReflectionRuntime.h</code>. <strong>No surface bytes change:</strong> the <code>Z_Construct_*</code> grammar is intentionally NOT in the auto-derived <code>ContractSurface</code> hash (Section 10.2's "Notably NOT in the surface" list); the Section 10.2 wording is normative-clarification only. <code>ContractVersion.Current</code> remains <code>"13.2+b04ae3cc84cdd9f3"</code>; <code>SemanticVersionTag</code> unchanged at <code>"13.2"</code>.</td>
+    </tr>
     <tr>
       <td><strong>13.6</strong></td>
       <td><code>13.2</code></td>
@@ -59,6 +65,13 @@
     </tr>
   </tbody>
 </table>
+
+<p><strong>Rev 13.7 (XHT Rev 6 cross-doc integration pass &mdash; documentation-only update; no surface change):</strong></p>
+<ul>
+  <li><strong>Section 10.2 cross-tool symbol-space convention added (Round-2 audit C2).</strong> A new subsection inside the JSON-manifest portion of §10.2 documents the language-agnostic <code>Z_Construct_X&lt;Kind&gt;_&lt;Module&gt;_&lt;Type&gt;</code> symbol naming and the cross-tool ownership rule: XHT emits both declaration and definition for C++-sourced types; XHT emits a declaration and XIL2CPP emits the matching definition for C#-sourced types. The Module field of <code>TargetInfo</code> identifies which tool owns each type's body. <strong>XIL2CPP MUST emit exactly the symbol XHT emits an extern for</strong> &mdash; codified here as an explicit cross-tool contract so a future audit doesn't break the implicit alignment that the XHT-emit + XIL2CPP-emit pipelines have always relied on.</li>
+  <li><strong>Section 10.2 mangling-scheme validation behaviour clarified (Round-2 audit C1).</strong> The <code>ManglingScheme</code> field of <code>TargetInfo</code> is now load-bearing: XHT's emit pipeline validates the scheme up-front against its supported set (Phase 1: <code>"Itanium-LengthPrefixed-v1"</code> only). An unsupported scheme surfaces diagnostic <code>XHT124</code> and short-circuits emit. The per-<code>.gen.cpp</code> emit also pins the manifest's <code>GCRootABI</code>, <code>ExceptionABI</code>, and <code>ManglingScheme</code> values to runtime macros in <code>XReflectionRuntime.h</code> via compile-time <code>static_assert</code>s so a runtime rebuilt against a different ABI fails the compile loudly.</li>
+  <li><strong>This revision does not touch <code>ContractSurface.cs</code> &mdash; no <code>SemanticVersionTag</code> bump is warranted.</strong> The <code>Z_Construct_*</code> grammar is intentionally NOT in the auto-derived contract surface (Section 10.2's "Notably NOT in the surface" list); the §10.2 wording is normative-clarification only. <code>ContractVersion.Current</code> at the Rev 13.7 commit is <code>"13.2+b04ae3cc84cdd9f3"</code>, unchanged from Rev 13.6.</li>
+</ul>
 
 <p><strong>Rev 13.6 (XHT Rev 3 cross-doc integration pass &mdash; documentation-only update; no surface change):</strong></p>
 <ul>
@@ -1729,6 +1742,21 @@ b_warnings_as_errors = true
   <li><code>PublicHeaders</code> / <code>InternalHeaders</code> / <code>PrivateHeaders</code> are empty in Phase 1 (the filesystem walk does not split by subtree); <code>SourceFiles</code> carries every header with <code>IsHeader = true</code>. See <code>XToolchainContractAddendum-Step05.html</code> Section 3.4 / Section 10 item 5.</li>
   <li><code>ModuleDependencies</code> entries are typed <code>{Name, InterfaceModule}</code> per Section 9.1. The <code>is_dynamic</code> flag exists only on the FBS-side per-edge surface (populated by XBT's emitter from <code>ModuleRules.DynamicallyLoadedModuleNames</code>); the JSON encodes dynamic vs static via the source list before serialisation.</li>
 </ul>
+
+<h4>Cross-tool symbol-space convention (NEW Rev 13.7, Round-2 audit C2)</h4>
+
+<p>The reflection-registration singleton-getter symbol is shared between XHT and XIL2CPP. Format:</p>
+
+<pre><code>Z_Construct_X&lt;Kind&gt;_&lt;ModuleName&gt;_&lt;TypeName&gt;</code></pre>
+
+<p>Where <code>&lt;Kind&gt;</code> is <code>Class</code> / <code>Struct</code> / <code>Enum</code> / <code>Interface</code> / <code>DelegateFunction</code> / <code>Function</code> / <code>Property</code>. The symbol is <strong>language-agnostic</strong>: the engine name post-X-strip is unique across C++ and C# (the XHT symbol table folds the caseless engine-name key across both languages, see XHT.html Section 5.3), so both languages produce identical bytes for the same engine type. The <strong>Module field of the manifest's <code>TargetInfo</code></strong> identifies which tool owns each type's body:</p>
+
+<ul>
+  <li><strong>C++-declared types</strong> (<code>XCLASS</code> macro): XHT emits both the singleton-getter declaration AND its definition in the per-header <code>.gen.cpp</code> (XHT.html Section 8.2).</li>
+  <li><strong>C#-declared types</strong> (<code>[XClass]</code> attribute): XHT emits the singleton-getter declaration as an <code>extern "C"</code>; XIL2CPP emits the matching definition in its transpiled C++ output (XHT.html Section 17.2). <strong>XIL2CPP MUST emit exactly the symbol XHT emits an extern for</strong> &mdash; this is the cross-tool contract Rev 13.7 makes explicit. If XIL2CPP's symbol bytes diverge from XHT's, the link fails and the resulting error is hard to diagnose; codifying the rule here lets future maintainers catch a divergence at design review.</li>
+</ul>
+
+<p>The <code>ManglingScheme</code> field of <code>TargetInfo</code> (Phase 1 default <code>"Itanium-LengthPrefixed-v1"</code>) selects the FileId / body-macro grammar (see XHT.html Section 10.1). The XHT emit validates the scheme against its supported set and surfaces diagnostic <code>XHT124</code> when the manifest declares an unsupported value. The per-<code>.gen.cpp</code> emit also pins the manifest's GC root / exception / mangling tags to runtime macros in <code>XReflectionRuntime.h</code> via compile-time <code>static_assert</code>s so a runtime rebuilt against a different ABI fails the compile loudly.</p>
 
 <h4>The binary sidecar (FlatBuffers; machine-read) (REVISED Rev 13.2 &mdash; plain filename)</h4>
 

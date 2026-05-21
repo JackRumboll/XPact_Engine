@@ -245,6 +245,32 @@ public static class BuiltInSpecifiers
             "Member is replicated and fires the named OnRep callback (XHT113)."));
         list.Add(new SpecifierDefinition("RepNotify", PM, SpecifierValueKind.Flag, false,
             "Member fires the OnRep callback on replication."));
+
+        // Replication-condition specifiers per Round-2 audit M2. UHT
+        // models each COND_X as its own Flag-form specifier on
+        // PropertyMember (rather than a single KeyEqValue specifier
+        // whose value is the condition name) so the parser surfaces
+        // them uniformly with the other property flags.
+        list.Add(new SpecifierDefinition("COND_OwnerOnly", PM, SpecifierValueKind.Flag, false,
+            "Replicate only to the actor's owning client (UE COND_OwnerOnly)."));
+        list.Add(new SpecifierDefinition("COND_AutonomousOnly", PM, SpecifierValueKind.Flag, false,
+            "Replicate only to the autonomous proxy connection (UE COND_AutonomousOnly)."));
+        list.Add(new SpecifierDefinition("COND_SimulatedOnly", PM, SpecifierValueKind.Flag, false,
+            "Replicate only to simulated proxy connections (UE COND_SimulatedOnly)."));
+        list.Add(new SpecifierDefinition("COND_SkipOwner", PM, SpecifierValueKind.Flag, false,
+            "Replicate to every connection except the owner (UE COND_SkipOwner)."));
+        list.Add(new SpecifierDefinition("COND_InitialOnly", PM, SpecifierValueKind.Flag, false,
+            "Replicate only on initial replication (UE COND_InitialOnly)."));
+        list.Add(new SpecifierDefinition("COND_ReplayOrOwner", PM, SpecifierValueKind.Flag, false,
+            "Replicate on replay or to owner (UE COND_ReplayOrOwner)."));
+        list.Add(new SpecifierDefinition("COND_ReplayOnly", PM, SpecifierValueKind.Flag, false,
+            "Replicate only on replay capture (UE COND_ReplayOnly)."));
+        list.Add(new SpecifierDefinition("COND_SimulatedOrPhysics", PM, SpecifierValueKind.Flag, false,
+            "Replicate to simulated proxies OR when role is SimulatedPhysics (UE COND_SimulatedOrPhysics)."));
+        list.Add(new SpecifierDefinition("COND_InitialOrOwner", PM, SpecifierValueKind.Flag, false,
+            "Replicate on initial replication OR to owner (UE COND_InitialOrOwner)."));
+        list.Add(new SpecifierDefinition("COND_Custom", PM, SpecifierValueKind.Flag, false,
+            "Replicate per custom condition logic (UE COND_Custom)."));
         list.Add(new SpecifierDefinition("GlobalConfig", PM, SpecifierValueKind.Flag, false,
             "Member is persisted in the global config (not the class's own config)."));
         list.Add(new SpecifierDefinition("Localized", PM, SpecifierValueKind.Flag, false,

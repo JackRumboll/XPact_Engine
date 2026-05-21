@@ -122,7 +122,12 @@ public sealed class ModuleInitEmitter
             foreach (HeaderEmitter.TypeEmitInfo info in sorted)
             {
                 string roleToken = SymbolNaming.RoleToken(info.Role);
-                string getter = SymbolNaming.SingletonGetter(moduleName, info.Type.Name, info.Role);
+                string getter = SymbolNaming.SingletonGetter(
+                    moduleName,
+                    info.Type.Name,
+                    info.Role,
+                    info.Type.Language,
+                    _context.ManglingScheme);
                 sb.Append("extern \"C\" const struct ");
                 sb.Append(roleToken);
                 sb.Append("* ");
@@ -152,7 +157,12 @@ public sealed class ModuleInitEmitter
         {
             foreach (HeaderEmitter.TypeEmitInfo info in sorted)
             {
-                string getter = SymbolNaming.SingletonGetter(moduleName, info.Type.Name, info.Role);
+                string getter = SymbolNaming.SingletonGetter(
+                    moduleName,
+                    info.Type.Name,
+                    info.Role,
+                    info.Type.Language,
+                    _context.ManglingScheme);
                 sb.Append("        XReflectionRuntime::RegisterType(");
                 sb.Append(getter);
                 sb.Append("());\n");

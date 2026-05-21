@@ -77,6 +77,73 @@ public sealed class XClangToolChain : XToolChain
     /// <inheritdoc/>
     public override string ToolchainVersion => _clangVersion;
 
+    /// <summary>
+    /// Audit fix R8-C1: compose the Android Clang target triple from
+    /// <see cref="TargetRules.Architecture"/> and
+    /// <see cref="TargetRules.AndroidApiLevel"/>. The generic NDK
+    /// <c>bin/clang</c> driver defaults to the host triple (x86-64 on
+    /// Win64 / Linux build hosts) unless an explicit
+    /// <c>--target=&lt;arch&gt;-linux-android&lt;API&gt;</c> flag is passed;
+    /// without that flag, the produced object files cannot be combined
+    /// into an Android <c>.so</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Architecture-to-triple mapping per NDK r26 conventions:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><c>aarch64</c> / <c>arm64</c> / <c>arm64-v8a</c> &rarr;
+    ///   <c>aarch64-linux-android&lt;API&gt;</c>. XPact's primary
+    ///   Android target per master plan §2.</item>
+    ///   <item><c>armv7a</c> / <c>armeabi-v7a</c> &rarr;
+    ///   <c>armv7a-linux-androideabi&lt;API&gt;</c>. The
+    ///   <c>androideabi</c> environment suffix is required by the NDK
+    ///   for ARM32 targets.</item>
+    ///   <item><c>x86_64</c> &rarr;
+    ///   <c>x86_64-linux-android&lt;API&gt;</c>. Emulator host.</item>
+    ///   <item><c>i686</c> / <c>x86</c> &rarr;
+    ///   <c>i686-linux-android&lt;API&gt;</c>. 32-bit emulator host.</item>
+    /// </list>
+    /// <para>
+    /// Throws <see cref="XBTException"/> with exit 23
+    /// (<c>EngineOrToolchainVersionMismatch</c>) when the architecture
+    /// is unrecognised; an unknown triple silently producing host-arch
+    /// codegen is the precise failure mode this audit fix exists to
+    /// prevent.
+    /// </para>
+    /// </remarks>
+    internal static string ComposeAndroidTargetTriple(string architecture, int apiLevel)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(architecture);
+        if (apiLevel <= 0)
+        {
+            throw new XBTException(
+                $"Android API level must be a positive integer; got {apiLevel}.",
+                exitCode: 23);
+        }
+
+        string archPrefix = architecture.ToLowerInvariant() switch
+        {
+            "aarch64" => "aarch64-linux-android",
+            "arm64" => "aarch64-linux-android",
+            "arm64-v8a" => "aarch64-linux-android",
+            "armv7a" => "armv7a-linux-androideabi",
+            "armeabi-v7a" => "armv7a-linux-androideabi",
+            "x86_64" => "x86_64-linux-android",
+            "i686" => "i686-linux-android",
+            "x86" => "i686-linux-android",
+            _ => throw new XBTException(
+                $"Architecture '{architecture}' is not a recognised Android NDK target. " +
+                "Supported: aarch64 / arm64 / arm64-v8a, armv7a / armeabi-v7a, x86_64, i686 / x86. " +
+                "Without a recognised --target= triple the Clang driver defaults to the host " +
+                "architecture (x86-64 on Win64 / Linux build hosts) which produces object files " +
+                "that cannot link into an Android .so.",
+                exitCode: 23),
+        };
+
+        return archPrefix + apiLevel.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     /// <summary>Construct from a known clang path + version. Production uses <see cref="TryDiscover"/>.</summary>
     public XClangToolChain(string clangPath, string clangVersion, Platform platform, string repoRoot)
     {
@@ -339,6 +406,22 @@ public sealed class XClangToolChain : XToolChain
         // reproducibility across machines.
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
 
+        // === Android target triple (audit fix R8-C1) ===
+        // The NDK ships a generic bin/clang driver; without an explicit
+        // --target= flag the driver defaults to the host triple
+        // (x86-64 on Win64/Linux build hosts) and the resulting object
+        // files cannot be combined into an Android .so. Emit the triple
+        // identically across CompileSource / GeneratePCH /
+        // GenerateSharedPCH / LinkModule so mismatched triples between
+        // a PCH and its consumers, or between an object file and the
+        // link, are impossible.
+        string? androidTriple = null;
+        if (_platform == Platform.Android)
+        {
+            androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
+            args.Add($"--target={androidTriple}");
+        }
+
         // === Header dependency tracking ===
         args.Add("-MD");
         // -MF <depfile> is added below once we know the output path.
@@ -483,21 +566,84 @@ public sealed class XClangToolChain : XToolChain
                 SimPath = module.SimPath,
                 Configuration = target.Configuration,
                 Platform = target.Platform,
-                CacheKeyComponents = new[]
-                {
-                    $"SimdLevel={resolved}",
-                    $"FPSemantics={ResolveFPSemantics(module)}",
-                    $"SimPath={module.SimPath}",
-                    $"FipsMode={target.FipsMode}",
-                    $"StationRole={target.StationRole}",
-                    $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
-                    // Audit fix R4-M2: Clang version contributes to the
-                    // cache key so a toolchain upgrade invalidates
-                    // cached compiles (mirrors MSVC's MsvcVersion=).
-                    $"ClangVersion={_clangVersion}",
-                },
+                CacheKeyComponents = BuildCompileCacheKeyComponents(
+                    resolved,
+                    module,
+                    target,
+                    pch,
+                    androidTriple),
             }),
         };
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1 / R8-M2 / R8-M3 / R8-M4: compose the
+    /// CacheKeyComponents list for a compile action. The Android
+    /// target triple, the envelope-flags hash, the descriptor hash,
+    /// and the XBT binary hash all contribute so a change in any of
+    /// them invalidates cached compiles even when the headline command
+    /// line is unchanged.
+    /// </summary>
+    private string[] BuildCompileCacheKeyComponents(
+        SimdLevel resolvedSimd,
+        ModuleRules module,
+        TargetRules target,
+        PCHBinding? pch,
+        string? androidTriple)
+    {
+        List<string> components = new(12)
+        {
+            $"SimdLevel={resolvedSimd}",
+            $"FPSemantics={ResolveFPSemantics(module)}",
+            $"SimPath={module.SimPath}",
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            $"PCH={(pch is null ? "none" : pch.PchHeaderName)}",
+            // Audit fix R4-M2: Clang version contributes to the cache
+            // key so a toolchain upgrade invalidates cached compiles
+            // (mirrors MSVC's MsvcVersion=).
+            $"ClangVersion={_clangVersion}",
+        };
+
+        if (androidTriple is not null)
+        {
+            // Audit fix R8-C1: the Android target triple is part of
+            // the action's identity. Two builds with different
+            // Architecture or AndroidApiLevel values produce different
+            // object files; without the triple in the cache key, a
+            // switch from aarch64-linux-android21 to
+            // aarch64-linux-android24 (or to armv7a-linux-androideabi21)
+            // would silently serve stale codegen.
+            components.Add($"AndroidTargetTriple={androidTriple}");
+        }
+
+        // Audit fix R8-M2: envelope flags hash. The reproducibility-
+        // envelope flag set (the -fdebug-prefix-map=, -fno-ident,
+        // -fdeterministic-cgu-order, -frandomize-layout-seed-file=,
+        // and Android --target= triple) is emitted unconditionally on
+        // every compile. A toolchain upgrade that silently changed any
+        // envelope flag's default would otherwise produce silent
+        // staleness; folding the hash of the envelope list into the
+        // cache key forces every such change to invalidate.
+        components.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash(androidTriple)}");
+
+        // Audit fix R8-M3: per-module descriptor hash. A .Build.toml
+        // edit that changes anything the toolchain consumes
+        // (PublicDefinitions, include paths, SimdLevel, etc.) must
+        // invalidate every compile in the module even when the
+        // command-line bytes appear unchanged (e.g. a conditional
+        // include path added through Starlark that resolves to nothing
+        // on this build but might on the next).
+        components.Add($"DescriptorHash={ResolveDescriptorHash(module)}");
+
+        // Audit fix R8-M4: XBT binary content hash. A rebuild of XBT
+        // itself (logic change in command-line construction, flag
+        // emission ordering, etc.) must invalidate every cached
+        // compile so we never serve outputs produced with the old
+        // logic.
+        components.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
+
+        return components.ToArray();
     }
 
     /// <inheritdoc/>
@@ -533,6 +679,19 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
+
+        // === Android target triple (audit fix R8-C1) ===
+        // Identical triple emission across CompileSource / GeneratePCH /
+        // LinkModule -- a mismatch between the PCH's target triple and
+        // its consumer TUs' triple would otherwise produce a silent ABI
+        // skew that only surfaces as a link error after the build is
+        // mostly done.
+        string? androidTriple = null;
+        if (_platform == Platform.Android)
+        {
+            androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
+            args.Add($"--target={androidTriple}");
+        }
 
         // === Determinism + SimPath ===
         args.AddRange(GetCompileArguments_FPSemantics_Resolved(module));
@@ -570,6 +729,24 @@ public sealed class XClangToolChain : XToolChain
         args.Add(pchOutputPath);
         args.Add(pchHeaderFile.FullPath);
 
+        // Audit fix R8-M2 / R8-M3 / R8-M4: PCH actions get the same
+        // envelope-flags / descriptor-hash / XBT-binary-hash treatment
+        // as compile actions so the PCH cache invalidates on the same
+        // signals.
+        List<string> pchCacheKey = new(6)
+        {
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            $"ClangVersion={_clangVersion}",
+        };
+        if (androidTriple is not null)
+        {
+            pchCacheKey.Add($"AndroidTargetTriple={androidTriple}");
+        }
+        pchCacheKey.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash(androidTriple)}");
+        pchCacheKey.Add($"DescriptorHash={ResolveDescriptorHash(module)}");
+        pchCacheKey.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
+
         IExternalAction action = ExternalAction.Create(new ExternalAction
         {
             ActionType = XActionType.PCHGenerationAction,
@@ -586,6 +763,7 @@ public sealed class XClangToolChain : XToolChain
             Configuration = target.Configuration,
             Platform = target.Platform,
             Weight = 4.0,
+            CacheKeyComponents = pchCacheKey,
         });
 
         return new PCHBinding(
@@ -642,6 +820,17 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
+
+        // === Android target triple (audit fix R8-C1) ===
+        // Identical to the CompileSource / GeneratePCH emission; a
+        // shared PCH used by Android consumers MUST be compiled for the
+        // same target triple as those consumers.
+        string? androidTriple = null;
+        if (_platform == Platform.Android)
+        {
+            androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
+            args.Add($"--target={androidTriple}");
+        }
 
         // Aggregate include paths from every participant (sorted ordinal
         // + deduped for determinism). Include the header's own directory
@@ -701,11 +890,26 @@ public sealed class XClangToolChain : XToolChain
             $"SharedPCHGroupHash={groupHash}",
             $"FipsMode={target.FipsMode}",
             $"StationRole={target.StationRole}",
+            $"ClangVersion={_clangVersion}",
         };
         foreach (string name in SortedParticipantNames(participants))
         {
             cacheKeyComponents.Add($"Participant={name}");
         }
+
+        // Audit fix R8-C1 / R8-M2 / R8-M4: shared-PCH cache also keys
+        // off the Android target triple + envelope-flags hash + XBT
+        // binary hash. Note: descriptor hash is intentionally omitted
+        // (the participants list above already captures the membership;
+        // the per-participant descriptor hashes contribute via each
+        // consumer's own CompileSource cache key when they consume the
+        // shared PCH).
+        if (androidTriple is not null)
+        {
+            cacheKeyComponents.Add($"AndroidTargetTriple={androidTriple}");
+        }
+        cacheKeyComponents.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash(androidTriple)}");
+        cacheKeyComponents.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
 
         IExternalAction action = ExternalAction.Create(new ExternalAction
         {
@@ -773,6 +977,18 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-fno-ident");
         args.Add("-Wl,--build-id=none");
 
+        // === Android target triple (audit fix R8-C1) ===
+        // Identical to the CompileSource / GeneratePCH emission. The
+        // linker also needs the triple to select the per-arch runtime
+        // libraries (libc++, libunwind, libgcc) the NDK ships under
+        // toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/<triple>/.
+        string? androidTriple = null;
+        if (_platform == Platform.Android)
+        {
+            androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
+            args.Add($"--target={androidTriple}");
+        }
+
         string soName = "lib" + module.Name + ".so";
         string soPath = Path.Combine(outputDir, soName);
         args.Add("-o");
@@ -823,12 +1039,106 @@ public sealed class XClangToolChain : XToolChain
             Configuration = target.Configuration,
             Platform = target.Platform,
             Weight = 4.0,
-            CacheKeyComponents = new[]
-            {
-                $"FipsMode={target.FipsMode}",
-                $"StationRole={target.StationRole}",
-            },
+            CacheKeyComponents = BuildLinkCacheKeyComponents(module, target, androidTriple),
         });
+    }
+
+    /// <summary>
+    /// Audit fix R8-C1 / R8-M2 / R8-M3 / R8-M4: compose the
+    /// CacheKeyComponents list for a link action. Same discipline as
+    /// <see cref="BuildCompileCacheKeyComponents"/>: Android target
+    /// triple, envelope flags hash, descriptor hash, XBT binary hash
+    /// all contribute. A re-link on the same .o set must produce the
+    /// same key when nothing changed and a different key when any of
+    /// these inputs shifts.
+    /// </summary>
+    private string[] BuildLinkCacheKeyComponents(
+        ModuleRules module,
+        TargetRules target,
+        string? androidTriple)
+    {
+        List<string> components = new(7)
+        {
+            $"FipsMode={target.FipsMode}",
+            $"StationRole={target.StationRole}",
+            $"ClangVersion={_clangVersion}",
+        };
+
+        if (androidTriple is not null)
+        {
+            components.Add($"AndroidTargetTriple={androidTriple}");
+        }
+
+        components.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash(androidTriple)}");
+        components.Add($"DescriptorHash={ResolveDescriptorHash(module)}");
+        components.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
+
+        return components.ToArray();
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: compute a stable BLAKE3-16 hash over the
+    /// reproducibility-envelope flag list. The list is fixed at one
+    /// site (this method) so any flag addition / removal / reorder
+    /// rotates the hash, which rotates the cache key, which forces a
+    /// rebuild. The Android target triple participates so a switch
+    /// from aarch64-linux-android21 to aarch64-linux-android24 picks
+    /// up the new triple via the same hash.
+    /// </summary>
+    private string ComputeEnvelopeFlagsHash(string? androidTriple)
+    {
+        // Order MUST match the actual emission order in CompileSource /
+        // GeneratePCH / LinkModule so the hash reflects what is on the
+        // command line. New envelope flags MUST be appended (do not
+        // insert in the middle) so the existing cache entries do not
+        // alias to old emissions.
+        List<string> envelope = new(8)
+        {
+            $"-fdebug-prefix-map={_repoRoot}=X:/R",
+            "-fno-ident",
+            "-fdeterministic-cgu-order",
+            $"-frandomize-layout-seed-file={RandomizeLayoutSeedRelativePath}",
+            // Link-only flag still folded into the envelope hash --
+            // a link-side envelope drift must also invalidate the
+            // compile cache because the action graph treats them as
+            // peers in the reproducibility envelope contract.
+            "-Wl,--build-id=none",
+        };
+        if (androidTriple is not null)
+        {
+            envelope.Add($"--target={androidTriple}");
+        }
+
+        string joined = string.Join('\n', envelope);
+        IoHash digest = IoHash.Compute(System.Text.Encoding.UTF8.GetBytes(joined));
+        // First 16 hex chars: matches the ContractVersion truncation
+        // discipline and keeps the cache-key component readable in
+        // diagnostics.
+        return digest.ToString()[..16];
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: resolve the descriptor hash for the supplied
+    /// module by walking the discovery layer's per-module record.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The descriptor hash is the BLAKE3 content hash of the
+    /// <c>.Build.toml</c> or <c>.Build.cs</c> file. <see cref="ModuleEnumerator"/>
+    /// computes it at discovery time and stores it on
+    /// <see cref="ModuleRecord.ContentHash"/>; the toolchain accesses
+    /// it via <see cref="ModuleRules.DescriptorContentHash"/> (the
+    /// parser plumbs the hash through). When the property is null
+    /// (test-only construction sites where the module was synthesised
+    /// without a descriptor on disk), an empty sentinel is returned
+    /// rather than crashing -- the empty sentinel still differs from a
+    /// real hash so the test path is observable.
+    /// </para>
+    /// </remarks>
+    private static string ResolveDescriptorHash(ModuleRules module)
+    {
+        string? hash = module.DescriptorContentHash;
+        return string.IsNullOrEmpty(hash) ? "(no-descriptor)" : hash[..Math.Min(16, hash.Length)];
     }
 
     /// <inheritdoc/>

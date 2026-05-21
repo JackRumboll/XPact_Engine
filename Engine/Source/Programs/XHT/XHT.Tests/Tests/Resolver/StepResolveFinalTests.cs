@@ -282,4 +282,54 @@ public class StepResolveFinalTests
 
         Assert.Equal(ResolvePhase.Final, pipeline.Context.CurrentPhase);
     }
+
+    // -----------------------------------------------------------------
+    // Round-2 audit M4: confirm A/U/I/F prefix is dropped from the
+    // LooksLikeReflectableTypeName heuristic. Only X-prefix triggers
+    // the "should be reflected" path; legacy UE prefixes don't.
+    // -----------------------------------------------------------------
+
+    [Theory]
+    [InlineData("AActor")]
+    [InlineData("UObject")]
+    [InlineData("IInterface")]
+    [InlineData("FCustomThunkTemplates")]
+    public void LegacyUEPrefix_PropertyTypeReference_NoXht120(string typeName)
+    {
+        // A property type referencing a legacy A/U/I/F-prefixed name
+        // that doesn't resolve in the symbol table must NOT emit XHT120
+        // -- the heuristic only flags X-prefix names per the Round-1
+        // user-locked decision (kept in Round-2 audit M4).
+        XhtProperty p = ResolverTestHarness.MakeProperty("Target", typeName);
+        XhtClass owner = ResolverTestHarness.MakeClass("Valve",
+            properties: new[] { p });
+
+        SymbolTable t = new();
+        t.Register(owner);
+
+        ResolverPipeline pipeline = Pipeline(t);
+        pipeline.ResolveAll();
+
+        Assert.DoesNotContain(pipeline.Context.Diagnostics,
+            d => d.Code == DiagnosticCodes.CrossLanguagePairingMismatch);
+    }
+
+    [Fact]
+    public void XPrefix_UnresolvedPropertyType_EmitsXht120()
+    {
+        // Positive case: an X-prefixed type reference that doesn't
+        // resolve in the symbol table fires XHT120 per the heuristic.
+        XhtProperty p = ResolverTestHarness.MakeProperty("Target", "XPickup");
+        XhtClass owner = ResolverTestHarness.MakeClass("Valve",
+            properties: new[] { p });
+
+        SymbolTable t = new();
+        t.Register(owner);
+
+        ResolverPipeline pipeline = Pipeline(t);
+        pipeline.ResolveAll();
+
+        Assert.Contains(pipeline.Context.Diagnostics,
+            d => d.Code == DiagnosticCodes.CrossLanguagePairingMismatch);
+    }
 }

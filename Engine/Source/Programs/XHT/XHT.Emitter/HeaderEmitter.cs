@@ -149,7 +149,12 @@ public sealed class HeaderEmitter
         sb.Append("// === Forward declarations of singleton-getters ===\n");
         foreach (TypeEmitInfo info in sorted)
         {
-            string getter = SymbolNaming.SingletonGetter(_context.Module.Name, info.Type.Name, info.Role);
+            string getter = SymbolNaming.SingletonGetter(
+                _context.Module.Name,
+                info.Type.Name,
+                info.Role,
+                info.Type.Language,
+                _context.ManglingScheme);
             sb.Append("extern \"C\" const struct ");
             sb.Append(SymbolNaming.RoleToken(info.Role));
             sb.Append("* ");

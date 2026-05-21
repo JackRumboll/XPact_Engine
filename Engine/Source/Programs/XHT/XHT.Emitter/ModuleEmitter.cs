@@ -95,6 +95,34 @@ public sealed class ModuleEmitter
     {
         Directory.CreateDirectory(_context.OutputDirectory);
 
+        // Round-2 audit C1: validate the manifest's mangling scheme before
+        // any emit runs. An unsupported scheme produces a single XHT124
+        // diagnostic up-front; the per-header / per-module emit then
+        // short-circuits to an empty-result form so callers see a
+        // diagnostic without an exception bubbling out.
+        if (!string.Equals(
+                _context.ManglingScheme,
+                SymbolNaming.Phase1ManglingScheme,
+                StringComparison.Ordinal))
+        {
+            _context.Diagnostics.Add(new DiagnosticRecord(
+                Severity: DiagnosticSeverity.Error,
+                Code: DiagnosticCodes.UnsupportedManglingScheme,
+                Message: $"Manifest declares mangling scheme '{_context.ManglingScheme}' which this XHT build does not support (Phase 1 supports only '{SymbolNaming.Phase1ManglingScheme}'). Update XBT or rebuild XHT for the requested scheme.",
+                File: null,
+                Line: null,
+                Column: null,
+                Module: _context.Module.Name,
+                Context: null));
+
+            return new EmitResult(
+                GeneratedHeaderFiles: Array.Empty<string>(),
+                GeneratedCppFiles: Array.Empty<string>(),
+                ModuleInitCppFile: string.Empty,
+                GenManifestFile: string.Empty,
+                Diagnostics: _context.Diagnostics.ToArray());
+        }
+
         // Group reflected types by source header path. The "primary"
         // header set is the SourceFiles entries with IsHeader = true;
         // every such header gets a .gen.h + .gen.cpp pair (sentinel form

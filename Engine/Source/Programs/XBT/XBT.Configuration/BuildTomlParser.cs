@@ -221,7 +221,64 @@ public static class BuildTomlParser
             expressions = BuildExprFile.Load(exprPath);
         }
 
-        return ParseInternal(text, filePath, defaultName, target, expressions, exprPath);
+        // Audit fix R8-M3: compute the descriptor content hash from the
+        // bytes we just read so the value flows into every emitted
+        // action's CacheKeyComponents. A descriptor edit -- even one
+        // that doesn't change any single field the parser reads --
+        // changes this hash, which invalidates the cache for every
+        // compile in the module. The hash spans the TOML bytes + the
+        // sibling .Build.expr bytes (when present) so an expr-only edit
+        // that drives a conditional flag also picks up the change.
+        string descriptorHash = ComputeDescriptorContentHash(text, exprPath);
+
+        return ParseInternal(text, filePath, defaultName, target, expressions, exprPath, descriptorHash);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: compose the first 16 hex characters of the
+    /// BLAKE3 over the canonical descriptor bytes (TOML text + the
+    /// sibling .Build.expr bytes when present). Length-prefixed
+    /// concatenation so the TOML+expr boundary cannot collide with a
+    /// single-file descriptor whose body happens to contain the same
+    /// bytes.
+    /// </summary>
+    private static string ComputeDescriptorContentHash(string tomlText, string? exprPath)
+    {
+        using Blake3.Hasher hasher = Blake3.Hasher.New();
+        Span<byte> intBuffer = stackalloc byte[4];
+
+        byte[] tomlBytes = System.Text.Encoding.UTF8.GetBytes(tomlText);
+        BitConverter.TryWriteBytes(intBuffer, tomlBytes.Length);
+        hasher.Update(intBuffer);
+        hasher.Update(tomlBytes);
+
+        if (!string.IsNullOrEmpty(exprPath) && File.Exists(exprPath))
+        {
+            try
+            {
+                byte[] exprBytes = File.ReadAllBytes(exprPath);
+                BitConverter.TryWriteBytes(intBuffer, exprBytes.Length);
+                hasher.Update(intBuffer);
+                hasher.Update(exprBytes);
+            }
+            catch (IOException)
+            {
+                // Best-effort: an unreadable expr at hash time will
+                // still surface as an error in the BuildExprFile.Load
+                // path called earlier; we don't double-fail here.
+                BitConverter.TryWriteBytes(intBuffer, -1);
+                hasher.Update(intBuffer);
+            }
+        }
+        else
+        {
+            BitConverter.TryWriteBytes(intBuffer, -1);
+            hasher.Update(intBuffer);
+        }
+
+        Span<byte> digest = stackalloc byte[Simgenics.XPact.XBT.Core.IoHash.Length];
+        hasher.Finalize(digest);
+        return new Simgenics.XPact.XBT.Core.IoHash(digest).ToString()[..16];
     }
 
     /// <summary>
@@ -335,7 +392,15 @@ public static class BuildTomlParser
         string? defaultModuleName = null,
         TargetRules? target = null,
         IReadOnlyDictionary<string, string>? expressions = null)
-        => ParseInternal(text, sourcePath, defaultModuleName, target, expressions, exprSourcePath: null);
+    {
+        // Audit fix R8-M3: tests that call this string overload don't
+        // have a sibling .Build.expr on disk; the hash is computed over
+        // the TOML text alone. Production code (ParseFile) goes through
+        // its own ComputeDescriptorContentHash which folds the expr
+        // bytes too.
+        string descriptorHash = ComputeDescriptorContentHash(text, exprPath: null);
+        return ParseInternal(text, sourcePath, defaultModuleName, target, expressions, exprSourcePath: null, descriptorHash);
+    }
 
     private static ModuleRules ParseInternal(
         string text,
@@ -343,7 +408,8 @@ public static class BuildTomlParser
         string? defaultModuleName,
         TargetRules? target,
         IReadOnlyDictionary<string, string>? expressions,
-        string? exprSourcePath)
+        string? exprSourcePath,
+        string descriptorContentHash)
     {
         ArgumentNullException.ThrowIfNull(text);
 
@@ -422,6 +488,12 @@ public static class BuildTomlParser
             PublicDefinitions = ReadStringList(model, "public_definitions", sourcePath),
             PrivateDefinitions = ReadStringList(model, "private_definitions", sourcePath),
         };
+        // Audit fix R8-M3: inject the descriptor content hash via the
+        // in-assembly setter. DescriptorContentHash is private-set so
+        // user-authored .Build.cs subclasses cannot fake the value;
+        // the parser (this method) and BuildCsCompiler are the only
+        // legitimate writers.
+        rules.ApplyDescriptorContentHash(descriptorContentHash);
 
         // PCH-header mutual-exclusion check. A module may declare a
         // private OR a shared PCH header, never both. Per Toolchain

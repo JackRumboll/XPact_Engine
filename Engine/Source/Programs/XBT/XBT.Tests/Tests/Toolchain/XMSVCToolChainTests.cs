@@ -412,6 +412,148 @@ public sealed class XMSVCToolChainTests : IDisposable
         }
     }
 
+    // ===== Audit fix R8-M2 / R8-M3 / R8-M4: cache key strengthening =====
+
+    /// <summary>
+    /// Audit fix R8-M2: every MSVC compile action's
+    /// CacheKeyComponents contains an <c>EnvelopeFlagsHash=</c>
+    /// component. A toolchain upgrade that silently changes any
+    /// envelope flag's default rotates this hash and invalidates
+    /// the cache.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        IExternalAction compile = _toolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains(
+            compile.CacheKeyComponents,
+            c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: same hash on the link action.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_AppearsInLinkCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+
+        IExternalAction link = _toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+        Assert.Contains(
+            link.CacheKeyComponents,
+            c => c.StartsWith("EnvelopeFlagsHash=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-M2: two toolchains differing only in their repo
+    /// root produce different envelope hashes (the /pathmap= flag
+    /// embeds the repo root). This proves the envelope-flag list is
+    /// in fact hashed; constant strings alone would alias.
+    /// </summary>
+    [Fact]
+    public void EnvelopeFlagsHash_DiffersByPathmapRepoRoot()
+    {
+        XMSVCToolChain tcA = new(_env, repoRoot: @"C:\repoA");
+        XMSVCToolChain tcB = new(_env, repoRoot: @"C:\repoB");
+
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        IExternalAction onA = tcA.CompileSource(module, target, MakeSource("F.cpp"), _scratchDir).Single();
+        IExternalAction onB = tcB.CompileSource(module, target, MakeSource("F.cpp"), _scratchDir).Single();
+
+        string hashA = onA.CacheKeyComponents.Single(c => c.StartsWith("EnvelopeFlagsHash="));
+        string hashB = onB.CacheKeyComponents.Single(c => c.StartsWith("EnvelopeFlagsHash="));
+        Assert.NotEqual(hashA, hashB);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: per-module descriptor hash flows through the
+    /// MSVC compile cache key.
+    /// </summary>
+    [Fact]
+    public void DescriptorHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        module.ApplyDescriptorContentHash("abcdef0123456789");
+        TargetRules target = NewTarget();
+
+        IExternalAction compile = _toolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains("DescriptorHash=abcdef0123456789", compile.CacheKeyComponents);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M3: a null descriptor hash maps to a stable
+    /// sentinel so test paths produce well-formed (and stable)
+    /// cache keys.
+    /// </summary>
+    [Fact]
+    public void DescriptorHash_NullValue_UsesStableSentinel()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        Assert.Null(module.DescriptorContentHash);
+        TargetRules target = NewTarget();
+
+        IExternalAction compile = _toolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains("DescriptorHash=(no-descriptor)", compile.CacheKeyComponents);
+    }
+
+    /// <summary>
+    /// Audit fix R8-M4: the XBT binary content hash flows through
+    /// the MSVC compile cache key.
+    /// </summary>
+    [Fact]
+    public void XbtBinaryHash_AppearsInCompileCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        IExternalAction compile = _toolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir).Single();
+
+        Assert.Contains(
+            compile.CacheKeyComponents,
+            c => c.StartsWith("XbtBinaryHash=", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Audit fix R8-M4: synthetic switch of the XBT-binary hash via
+    /// the test hook rotates the MSVC cache key. The override is
+    /// cleared in finally to keep other tests isolated.
+    /// </summary>
+    [Fact]
+    public void XbtBinaryHash_TestOverride_RotatesCacheKey()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        IExternalAction realKey = _toolchain
+            .CompileSource(module, target, MakeSource("F.cpp"), _scratchDir).Single();
+        try
+        {
+            ToolchainSelfHash.__SetForTesting("0000000000000000");
+            IExternalAction overridden = _toolchain
+                .CompileSource(module, target, MakeSource("F.cpp"), _scratchDir).Single();
+            Assert.Contains("XbtBinaryHash=0000000000000000", overridden.CacheKeyComponents);
+            Assert.NotEqual(realKey.CommandVersion, overridden.CommandVersion);
+        }
+        finally
+        {
+            ToolchainSelfHash.__SetForTesting(null);
+        }
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

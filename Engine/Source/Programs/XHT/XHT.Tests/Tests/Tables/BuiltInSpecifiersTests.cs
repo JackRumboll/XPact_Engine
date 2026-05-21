@@ -174,4 +174,47 @@ public class BuiltInSpecifiersTests
         Assert.Throws<System.ArgumentNullException>(
             () => BuiltInSpecifiers.RegisterAllInto(null!));
     }
+
+    // -----------------------------------------------------------------
+    // Round-2 audit M2: replication-condition specifier vocabulary.
+    // -----------------------------------------------------------------
+
+    [Theory]
+    [InlineData("COND_OwnerOnly")]
+    [InlineData("COND_AutonomousOnly")]
+    [InlineData("COND_SimulatedOnly")]
+    [InlineData("COND_SkipOwner")]
+    [InlineData("COND_InitialOnly")]
+    [InlineData("COND_ReplayOrOwner")]
+    [InlineData("COND_ReplayOnly")]
+    [InlineData("COND_SimulatedOrPhysics")]
+    [InlineData("COND_InitialOrOwner")]
+    [InlineData("COND_Custom")]
+    public void ReplicationCondition_Specifier_IsRegisteredAsFlagOnPropertyMember(string name)
+    {
+        SpecifierDefinition? def = Find(name);
+        Assert.NotNull(def);
+        Assert.True((def!.ApplicableTo & SpecifierContext.PropertyMember) != 0,
+            $"Replication-condition specifier '{name}' must apply to PropertyMember.");
+        Assert.Equal(SpecifierValueKind.Flag, def.ValueKind);
+    }
+
+    [Fact]
+    public void ReplicationCondition_Specifiers_RegisterIntoSpecifierRegistry()
+    {
+        // End-to-end: the registry should resolve each COND_* against
+        // PropertyMember context.
+        SpecifierRegistry r = new(registerBuiltIns: true);
+        foreach (string name in new[]
+        {
+            "COND_OwnerOnly", "COND_AutonomousOnly", "COND_SimulatedOnly",
+            "COND_SkipOwner", "COND_InitialOnly", "COND_ReplayOrOwner",
+            "COND_ReplayOnly", "COND_SimulatedOrPhysics", "COND_InitialOrOwner",
+            "COND_Custom",
+        })
+        {
+            SpecifierDefinition? def = r.Resolve(name, SpecifierContext.PropertyMember);
+            Assert.NotNull(def);
+        }
+    }
 }

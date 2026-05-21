@@ -90,6 +90,70 @@ public class ModuleRules
     /// </summary>
     public string? ShortName { get; init; }
 
+    /// <summary>
+    /// Audit fix R8-M3: first 16 hex characters of the BLAKE3 content
+    /// hash of the descriptor file this module was loaded from (the
+    /// <c>.Build.toml</c> or <c>.Build.cs</c> on disk). Flows through
+    /// every toolchain emit site's
+    /// <see cref="ActionGraph.IExternalAction.CacheKeyComponents"/> so
+    /// a descriptor edit -- even one that does not change the parsed
+    /// <see cref="ModuleRules"/> values in any user-visible way (e.g.
+    /// adding a comment, reordering a list, adding a conditional
+    /// include path that resolves to nothing on this build but might
+    /// on the next) -- correctly invalidates the cached compiles for
+    /// the module.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For the TOML parser path: set at construction time by
+    /// <see cref="BuildTomlParser.ParseFile"/>. For the Roslyn
+    /// (.Build.cs) escape-hatch path: set by
+    /// <see cref="BuildCsCompiler.Compile"/> via
+    /// <see cref="ApplyDescriptorContentHash"/> immediately after the
+    /// user's constructor returns (the user's constructor cannot set
+    /// it because the discovery layer is the one that holds the
+    /// descriptor bytes' hash).
+    /// </para>
+    /// <para>
+    /// The setter is <c>private set</c> so user-authored
+    /// <c>.Build.cs</c> code cannot accidentally fake a hash; the
+    /// in-assembly <see cref="ApplyDescriptorContentHash"/> method is
+    /// the only legitimate write path.
+    /// </para>
+    /// <para>
+    /// Test-only construction sites that synthesise a
+    /// <c>ModuleRules</c> without a descriptor on disk leave this
+    /// null; the toolchain's cache-key emit falls back to a sentinel
+    /// in that case (the cache key remains stable across the test
+    /// process so two test reads agree).
+    /// </para>
+    /// <para>
+    /// The hash is truncated to 16 hex chars to match the cache-key
+    /// component readability discipline used by
+    /// <c>EnvelopeFlagsHash</c> / <c>XbtBinaryHash</c>.
+    /// </para>
+    /// </remarks>
+    public string? DescriptorContentHash { get; private set; }
+
+    /// <summary>
+    /// Audit fix R8-M3: set the descriptor content hash on this
+    /// instance. Intentionally not <c>init</c> so the Roslyn escape-
+    /// hatch path (where the user's constructor populates every other
+    /// property and the discovery layer then injects the hash) can
+    /// reach it. The method is internal so user-authored
+    /// <c>.Build.cs</c> code cannot fake the value -- only the
+    /// in-assembly <see cref="BuildTomlParser"/> and
+    /// <see cref="BuildCsCompiler"/> are legitimate writers.
+    /// </summary>
+    /// <param name="descriptorContentHash">
+    /// First 16 hex chars of the descriptor's BLAKE3 hash. Pass null
+    /// to clear (test-only construction).
+    /// </param>
+    internal void ApplyDescriptorContentHash(string? descriptorContentHash)
+    {
+        DescriptorContentHash = descriptorContentHash;
+    }
+
     // -----------------------------------------------------------------
     // Sim-path declaration (Contract Section 4 + XBT.html Section 3.2)
     // -----------------------------------------------------------------

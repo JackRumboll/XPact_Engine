@@ -1,6 +1,7 @@
 // Copyright Simgenics. All Rights Reserved.
 
 using System;
+using Simgenics.XPact.XHT.AST;
 using Simgenics.XPact.XHT.Emitter;
 using Xunit;
 
@@ -122,20 +123,29 @@ public class SymbolNamingTests
     public void SingletonGetter_LockedExample_MatchesContractRev102()
     {
         // From XHT.html Section 10.4: "Z_Construct_XClass_XGameFramework_XValve".
-        string g = SymbolNaming.SingletonGetter("XGameFramework", "XValve", EngineRole.Class);
+        string g = SymbolNaming.SingletonGetter(
+            "XGameFramework", "XValve", EngineRole.Class,
+            Language.Cpp, SymbolNaming.Phase1ManglingScheme);
         Assert.Equal("Z_Construct_XClass_XGameFramework_XValve", g);
     }
 
     [Fact]
     public void SingletonGetter_AllRoles_HaveCorrectXKindToken()
     {
-        Assert.Equal("Z_Construct_XClass_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Class));
-        Assert.Equal("Z_Construct_XStruct_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Struct));
-        Assert.Equal("Z_Construct_XEnum_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Enum));
-        Assert.Equal("Z_Construct_XInterface_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Interface));
-        Assert.Equal("Z_Construct_XDelegateFunction_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Delegate));
-        Assert.Equal("Z_Construct_XFunction_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Function));
-        Assert.Equal("Z_Construct_XProperty_M_T", SymbolNaming.SingletonGetter("M", "T", EngineRole.Property));
+        Assert.Equal("Z_Construct_XClass_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Class, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XStruct_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Struct, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XEnum_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Enum, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XInterface_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Interface, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XDelegateFunction_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Delegate, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XFunction_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Function, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Equal("Z_Construct_XProperty_M_T", SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Property, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
     }
 
     [Fact]
@@ -149,8 +159,40 @@ public class SymbolNamingTests
     [Fact]
     public void SingletonGetter_RejectsEmptyArgs()
     {
-        Assert.Throws<ArgumentException>(() => SymbolNaming.SingletonGetter("", "T", EngineRole.Class));
-        Assert.Throws<ArgumentException>(() => SymbolNaming.SingletonGetter("M", "", EngineRole.Class));
+        Assert.Throws<ArgumentException>(() => SymbolNaming.SingletonGetter(
+            "", "T", EngineRole.Class, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Throws<ArgumentException>(() => SymbolNaming.SingletonGetter(
+            "M", "", EngineRole.Class, Language.Cpp, SymbolNaming.Phase1ManglingScheme));
+        Assert.Throws<ArgumentException>(() => SymbolNaming.SingletonGetter(
+            "M", "T", EngineRole.Class, Language.Cpp, ""));
+    }
+
+    [Fact]
+    public void SingletonGetter_UnsupportedManglingScheme_ThrowsTyped()
+    {
+        // Round-2 audit C1: any scheme other than Phase1ManglingScheme
+        // must surface as UnsupportedManglingSchemeException so the emit
+        // pipeline can translate to XHT124.
+        UnsupportedManglingSchemeException ex = Assert.Throws<UnsupportedManglingSchemeException>(
+            () => SymbolNaming.SingletonGetter(
+                "M", "T", EngineRole.Class,
+                Language.Cpp, "Future-Scheme-v99"));
+        Assert.Equal("Future-Scheme-v99", ex.RequestedScheme);
+        Assert.Equal(SymbolNaming.Phase1ManglingScheme, ex.SupportedScheme);
+        Assert.Contains("Future-Scheme-v99", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SingletonGetter_LanguageArg_ProducesIdenticalBytesAcrossLanguages()
+    {
+        // Round-2 audit C2: Phase 1 emit is language-agnostic (Contract
+        // Rev 13.7 §10.2). The Language parameter signals XIL2CPP
+        // ownership but does NOT change the symbol bytes in Phase 1.
+        string cpp = SymbolNaming.SingletonGetter(
+            "M", "Foo", EngineRole.Class, Language.Cpp, SymbolNaming.Phase1ManglingScheme);
+        string cs = SymbolNaming.SingletonGetter(
+            "M", "Foo", EngineRole.Class, Language.CSharp, SymbolNaming.Phase1ManglingScheme);
+        Assert.Equal(cpp, cs);
     }
 
     [Fact]

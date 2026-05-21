@@ -136,10 +136,24 @@ public sealed class SourceEmitter
         sb.Append("#include \"XCore/Public/XReflectionRuntime.h\"\n");
         sb.Append('\n');
 
-        // 4. Static-assert pinning the active object format per
-        //    Section 8.2 step 3.
-        sb.Append("// Pin the active object format to ConstInit per Contract Section 7.1.\n");
+        // 4. Static-assert pinning the active object format + ABI tags
+        //    per Section 8.2 step 3 + Round-2 audit C1 (Contract Rev 13.7
+        //    §10.2). The XPACT_*_TAG defines come from
+        //    XReflectionRuntime.h; the manifest values are checked via
+        //    constexpr string equality at compile time so a runtime
+        //    rebuilt against a different ABI fails the compile loudly.
+        sb.Append("// Pin the active object format + ABI envelope per Contract Section 7.1 + 10.2 (Round-2 audit C1).\n");
         sb.Append("static_assert(XPACT_WITH_CONSTINIT_XOBJECT, \"XHT emit assumes ConstInit XObject format\");\n");
+        sb.Append("static_assert(XPactDetail::CompileTimeStrEq(XPACT_GC_ROOT_ABI_TAG, ");
+        sb.Append(EncodeCStringLiteral(_context.GCRootABI));
+        sb.Append("), \"GC root ABI mismatch between manifest and runtime\");\n");
+        sb.Append("static_assert(XPactDetail::CompileTimeStrEq(XPACT_EXCEPTION_ABI_TAG, ");
+        sb.Append(EncodeCStringLiteral(_context.ExceptionABI));
+        sb.Append("), \"Exception ABI mismatch between manifest and runtime\");\n");
+        sb.Append("static_assert(XPactDetail::CompileTimeStrEq(XPACT_MANGLING_SCHEME_TAG, ");
+        sb.Append(EncodeCStringLiteral(_context.ManglingScheme));
+        sb.Append("), \"Mangling scheme mismatch between manifest and runtime\");\n");
+        sb.Append("static_assert(XPACT_PROPERTY_HAS_ACCESSORS == 1, \"XPropertyDescriptor must carry accessor slots (XIL2CPP)\");\n");
         sb.Append('\n');
 
         // 5. Empty-link sentinel function.
@@ -209,7 +223,12 @@ public sealed class SourceEmitter
 
             EngineRole role = HeaderEmitter.RoleOf(target);
             string roleToken = SymbolNaming.RoleToken(role);
-            string symbol = SymbolNaming.SingletonGetter(target.ModuleName, target.Name, role);
+            string symbol = SymbolNaming.SingletonGetter(
+                target.ModuleName,
+                target.Name,
+                role,
+                target.Language,
+                _context.ManglingScheme);
             string section = string.Equals(target.ModuleName, thisModule, StringComparison.Ordinal)
                 ? "Same-Module References"
                 : "Cross-Module References";
@@ -288,7 +307,12 @@ public sealed class SourceEmitter
     {
         string roleToken = SymbolNaming.RoleToken(info.Role);
         string constInit = SymbolNaming.ConstInitSymbol(_context.Module.Name, info.Type.Name, info.Role);
-        string getter = SymbolNaming.SingletonGetter(_context.Module.Name, info.Type.Name, info.Role);
+        string getter = SymbolNaming.SingletonGetter(
+            _context.Module.Name,
+            info.Type.Name,
+            info.Role,
+            info.Type.Language,
+            _context.ManglingScheme);
 
         sb.Append("// === ConstInit emit for ");
         sb.Append(info.Type.Name);
@@ -338,6 +362,11 @@ public sealed class SourceEmitter
                 sb.Append("        /* .Offset      = */ 0u,  // STAGE-B (XCore-4b)\n");
                 sb.Append("        /* .Size        = */ 0u,  // STAGE-B (XCore-4b)\n");
                 sb.Append("        /* .Flags       = */ 0u,  // STAGE-B (XCore-4b)\n");
+                // Round-2 audit M-XIL2CPP-Accessor: emit Getter/Setter
+                // function-pointer slots. Phase 1 fills nullptr; XIL2CPP
+                // Phase 2 wires up managed-side thunks for C# properties.
+                sb.Append("        /* .Getter      = */ nullptr,  // TODO(Phase 2 XIL2CPP): C# property getter thunk\n");
+                sb.Append("        /* .Setter      = */ nullptr,  // TODO(Phase 2 XIL2CPP): C# property setter thunk\n");
                 sb.Append("        // resolved -> ");
                 sb.Append(SanitizeForComment(resolved));
                 sb.Append('\n');
