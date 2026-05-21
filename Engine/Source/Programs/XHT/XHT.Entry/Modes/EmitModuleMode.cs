@@ -1,35 +1,64 @@
 // Copyright Simgenics. All Rights Reserved.
 
 using System;
-using System.Collections.Immutable;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Simgenics.XPact.XHT.AST;
 using Simgenics.XPact.XHT.Core;
+using Simgenics.XPact.XHT.Emitter;
 using Simgenics.XPact.XHT.Manifest;
+using Simgenics.XPact.XHT.Parser.Cpp;
+using Simgenics.XPact.XHT.Parser.CSharp;
+using Simgenics.XPact.XHT.Resolver;
+using Simgenics.XPact.XHT.Tables;
 
 namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
-/// Phase 1b stub of the <c>emit-module</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+/// Phase 1e implementation of the <c>emit-module</c> mode per
+/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1 + Section 8.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The Phase 1b stub validates the manifest + module surface and writes
-/// a minimal <c>&lt;Module&gt;.gen.manifest</c> via
-/// <see cref="GenManifestWriter.Write"/>. This is the load-bearing
-/// Phase 1b output -- it verifies the GenManifestWriter integration works
-/// end-to-end via the CLI. Phase 1c+ adds the per-header <c>.gen.h</c>,
-/// per-header <c>.gen.cpp</c>, and per-module <c>.init.gen.cpp</c>
-/// outputs.
+/// <b>Pipeline.</b> The mode wires the full XHT-side flow:
 /// </para>
+/// <list type="number">
+///   <item><description>
+///     Read the XBT manifest (JSON; FBS sidecar is Phase 1c+).
+///   </description></item>
+///   <item><description>
+///     Find the target module; missing -&gt; exit 50.
+///   </description></item>
+///   <item><description>
+///     Construct a <see cref="SymbolTable"/> and
+///     <see cref="SpecifierRegistry"/>.
+///   </description></item>
+///   <item><description>
+///     Parse every header (<see cref="CppMarkerScanner"/>) and every C#
+///     source (<see cref="CSharpMarkerWalker"/>) in the module, populating
+///     the symbol table.
+///   </description></item>
+///   <item><description>
+///     Run the seven-phase <see cref="ResolverPipeline"/>.
+///   </description></item>
+///   <item><description>
+///     Invoke <see cref="ModuleEmitter.EmitModule"/>; that writes the
+///     per-header <c>.gen.h</c> + <c>.gen.cpp</c> pairs, the per-module
+///     <c>.init.gen.cpp</c> aggregator, and the per-module
+///     <c>.gen.manifest</c>.
+///   </description></item>
+/// </list>
 /// <para>
-/// <b>Phase 1b input-hash discipline.</b> Per the brief, every
-/// <c>[Inputs]</c> entry shares the same placeholder hash computed from
-/// <c>IoHash.FromUtf8(Encoding.UTF8.GetBytes("phase1b"))</c>. Phase 1c
-/// computes the real BLAKE3 prefix per Section 9.2.
+/// <b>Strict vs lenient mode.</b> The <c>-Strict=true|false</c> CLI flag
+/// controls behaviour when a referenced source file is missing on disk.
+/// Strict (the production default): exit 50 with <c>XHT050</c>. Lenient
+/// (test default): emit an <c>XHT070</c> warning per missing source and
+/// continue with an empty AST for that file. Lenient mode is the path
+/// the Phase 1e test suite uses against synthetic manifests where the
+/// referenced sources don't physically exist.
 /// </para>
 /// </remarks>
 [XhtMode("emit-module")]
@@ -40,14 +69,14 @@ public sealed class EmitModuleMode : IToolMode
 
     /// <inheritdoc />
     public string Description =>
-        "Emit per-header .gen.h, .gen.cpp, the module .init.gen.cpp + .gen.manifest. Phase 1b stub.";
+        "Emit per-header .gen.h, .gen.cpp, the module .init.gen.cpp + .gen.manifest. Phase 1e implementation.";
 
     /// <inheritdoc />
     public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
     {
         try
         {
-            ModuleModeOptions opts = ModuleModeOptions.Parse(args, requireOutput: true);
+            EmitModuleOptions opts = EmitModuleOptions.Parse(args);
             return Task.FromResult(Run(opts, ct));
         }
         catch (CliArgumentException ex)
@@ -57,7 +86,7 @@ public sealed class EmitModuleMode : IToolMode
         }
     }
 
-    private static int Run(ModuleModeOptions opts, CancellationToken ct)
+    private static int Run(EmitModuleOptions opts, CancellationToken ct)
     {
         if (ct.IsCancellationRequested)
         {
@@ -65,7 +94,6 @@ public sealed class EmitModuleMode : IToolMode
         }
 
         XbtManifest manifest = XbtManifestReader.Read(opts.ManifestPath);
-
         XbtModule? module = XbtManifestReader.FindModule(manifest, opts.ModuleName);
         if (module is null)
         {
@@ -74,58 +102,283 @@ public sealed class EmitModuleMode : IToolMode
         }
 
         ct.ThrowIfCancellationRequested();
-
         Directory.CreateDirectory(opts.OutputDir);
 
-        // Build the [Inputs] section from the manifest's header + C#
-        // source list. Phase 1b uses a single placeholder hash per the
-        // brief; Phase 1c computes real BLAKE3 prefixes.
-        string placeholderHex = IoHash.FromUtf8(Encoding.UTF8.GetBytes("phase1b")).Hex16();
+        // Set up parse-time infrastructure.
+        SymbolTable symbols = new();
+        SpecifierRegistry registry = new(registerBuiltIns: true);
+        List<DiagnosticRecord> diagnostics = new();
 
-        ImmutableArray<GenManifestEntry>.Builder inputsBuilder
-            = ImmutableArray.CreateBuilder<GenManifestEntry>();
+        // Parse C++ headers (in deterministic ordinal order).
+        List<string> headerPaths = new();
         foreach (XbtSourceFile sf in module.SourceFiles)
         {
-            if (sf.IsHeader || sf.IsCSharp)
+            if (sf.IsHeader)
             {
-                inputsBuilder.Add(new GenManifestEntry(sf.RelativePath, placeholderHex));
+                headerPaths.Add(sf.RelativePath.Replace('\\', '/'));
             }
         }
-        // Pre-Phase-1 schema's PublicHeaders / PrivateHeaders /
-        // InternalHeaders / CSharpSources are empty in Phase 1 per the
-        // Addendum Section 10 item 5 caveat, but we walk them for
-        // forward-compat in case a later manifest emitter populates them.
-        foreach (string h in module.PublicHeaders)
+        headerPaths.Sort(StringComparer.Ordinal);
+
+        foreach (string headerRel in headerPaths)
         {
-            inputsBuilder.Add(new GenManifestEntry(h, placeholderHex));
-        }
-        foreach (string h in module.PrivateHeaders)
-        {
-            inputsBuilder.Add(new GenManifestEntry(h, placeholderHex));
-        }
-        foreach (string h in module.InternalHeaders)
-        {
-            inputsBuilder.Add(new GenManifestEntry(h, placeholderHex));
-        }
-        foreach (string c in module.CSharpSources)
-        {
-            inputsBuilder.Add(new GenManifestEntry(c, placeholderHex));
+            ct.ThrowIfCancellationRequested();
+            string absPath = ResolveAbsolutePath(manifest, module, headerRel);
+            if (!File.Exists(absPath))
+            {
+                if (opts.Strict)
+                {
+                    Logger.EmitDiagnostic(new DiagnosticRecord(
+                        DiagnosticSeverity.Error,
+                        Code: "XHT050",
+                        Message: $"Source header '{headerRel}' not found at '{absPath}'.",
+                        File: headerRel,
+                        Module: module.Name));
+                    return ExitCodes.ManifestMalformed;
+                }
+                // Lenient: warn + continue with empty content.
+                diagnostics.Add(new DiagnosticRecord(
+                    DiagnosticSeverity.Warning,
+                    Code: "XHT070",
+                    Message: $"Source header '{headerRel}' not found on disk; emitting sentinel only.",
+                    File: headerRel,
+                    Module: module.Name));
+                continue;
+            }
+
+            string text;
+            try
+            {
+                text = File.ReadAllText(absPath);
+            }
+            catch (IOException ex)
+            {
+                if (opts.Strict)
+                {
+                    Logger.EmitDiagnostic(new DiagnosticRecord(
+                        DiagnosticSeverity.Error,
+                        Code: "XHT050",
+                        Message: $"Failed to read header '{headerRel}': {ex.Message}",
+                        File: headerRel,
+                        Module: module.Name));
+                    return ExitCodes.ManifestMalformed;
+                }
+                diagnostics.Add(new DiagnosticRecord(
+                    DiagnosticSeverity.Warning,
+                    Code: "XHT070",
+                    Message: $"Header '{headerRel}' read failed in lenient mode; skipping: {ex.Message}",
+                    File: headerRel,
+                    Module: module.Name));
+                continue;
+            }
+
+            CppMarkerScanner scanner = new(absPath, text, module.Name, registry, symbols);
+            scanner.Scan();
+            foreach (DiagnosticRecord d in scanner.Diagnostics)
+            {
+                diagnostics.Add(d);
+            }
         }
 
-        GenManifest genManifest = new(
-            XhtSchemaVersion: GenManifestWriter.CurrentSchemaVersion,
-            ContractVersion: XhtVersion.ContractVersion,
-            ModuleName: module.Name,
-            GeneratedAtUtcIso: DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
-            Inputs: inputsBuilder.ToImmutable(),
-            Generated: ImmutableArray<GenManifestEntry>.Empty,
-            Diagnostics: ImmutableArray<GenManifestDiagnostic>.Empty);
+        // Parse C# sources (in deterministic ordinal order; Section 11.4).
+        IReadOnlyList<string> csPaths = CSharpSourceEnumerator.EnumerateOrdered(module);
+        foreach (string csRel in csPaths)
+        {
+            ct.ThrowIfCancellationRequested();
+            string absPath = ResolveAbsolutePath(manifest, module, csRel);
+            if (!File.Exists(absPath))
+            {
+                if (opts.Strict)
+                {
+                    Logger.EmitDiagnostic(new DiagnosticRecord(
+                        DiagnosticSeverity.Error,
+                        Code: "XHT050",
+                        Message: $"Source file '{csRel}' not found at '{absPath}'.",
+                        File: csRel,
+                        Module: module.Name));
+                    return ExitCodes.ManifestMalformed;
+                }
+                diagnostics.Add(new DiagnosticRecord(
+                    DiagnosticSeverity.Warning,
+                    Code: "XHT070",
+                    Message: $"C# source '{csRel}' not found on disk; skipping.",
+                    File: csRel,
+                    Module: module.Name));
+                continue;
+            }
 
-        string genManifestPath = Path.Combine(opts.OutputDir, $"{module.Name}.gen.manifest");
-        GenManifestWriter.Write(genManifest, genManifestPath);
+            string text;
+            try
+            {
+                text = File.ReadAllText(absPath);
+            }
+            catch (IOException ex)
+            {
+                if (opts.Strict)
+                {
+                    Logger.EmitDiagnostic(new DiagnosticRecord(
+                        DiagnosticSeverity.Error,
+                        Code: "XHT050",
+                        Message: $"Failed to read C# source '{csRel}': {ex.Message}",
+                        File: csRel,
+                        Module: module.Name));
+                    return ExitCodes.ManifestMalformed;
+                }
+                diagnostics.Add(new DiagnosticRecord(
+                    DiagnosticSeverity.Warning,
+                    Code: "XHT070",
+                    Message: $"C# source '{csRel}' read failed in lenient mode; skipping: {ex.Message}",
+                    File: csRel,
+                    Module: module.Name));
+                continue;
+            }
 
-        Logger.Info(
-            $"XHT emit-module: {module.Name} (Phase 1b stub - .gen.manifest emitted; .gen.h/.gen.cpp deferred to Phase 1c)");
+            CSharpMarkerWalker walker = new(absPath, text, module.Name, registry, symbols);
+            walker.Walk();
+            foreach (DiagnosticRecord d in walker.Diagnostics)
+            {
+                diagnostics.Add(d);
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        // Resolver pipeline.
+        ResolverPipeline pipeline = new(symbols, registry, manifest, module.Name);
+        IReadOnlyList<DiagnosticRecord> resolverDiagnostics = pipeline.ResolveAll();
+        foreach (DiagnosticRecord d in resolverDiagnostics)
+        {
+            diagnostics.Add(d);
+        }
+
+        ct.ThrowIfCancellationRequested();
+
+        // Emit.
+        EmitterContext emitCtx = new(
+            ResolverContext: pipeline.Context,
+            XbtManifest: manifest,
+            Module: module,
+            OutputDirectory: opts.OutputDir,
+            Diagnostics: diagnostics);
+
+        ModuleEmitter emitter = new(emitCtx);
+        EmitResult result = emitter.EmitModule();
+
+        // Surface any error-severity diagnostics on stderr / JSON channel
+        // (the GenManifest.[Diagnostics] section already records them on
+        // disk; this surfacing is for the human-visible side per
+        // XHT.html Section 12.1).
+        int errorCount = 0;
+        foreach (DiagnosticRecord d in result.Diagnostics)
+        {
+            if (d.Severity == DiagnosticSeverity.Error)
+            {
+                errorCount++;
+                Logger.EmitDiagnostic(d);
+            }
+        }
+
+        if (errorCount > 0)
+        {
+            return ExitCodes.XhtInternalFailure;
+        }
+
+        Logger.Info(string.Format(
+            CultureInfo.InvariantCulture,
+            "XHT emit-module: {0} (generated {1} headers + {2} cpp + 1 init + 1 manifest)",
+            module.Name,
+            result.GeneratedHeaderFiles.Count,
+            result.GeneratedCppFiles.Count));
         return ExitCodes.Success;
+    }
+
+    private static string ResolveAbsolutePath(XbtManifest manifest, XbtModule module, string relativePath)
+    {
+        string root = manifest.RootLocalPath ?? string.Empty;
+        string baseDir = module.BaseDirectory ?? string.Empty;
+        // Try module-relative first (the common case).
+        if (!string.IsNullOrEmpty(root))
+        {
+            string moduleRelative = Path.Combine(root, baseDir, relativePath);
+            if (File.Exists(moduleRelative))
+            {
+                return moduleRelative;
+            }
+            string repoRelative = Path.Combine(root, relativePath);
+            if (File.Exists(repoRelative))
+            {
+                return repoRelative;
+            }
+            // Strict mode reports the module-relative form as the
+            // expected location.
+            return moduleRelative;
+        }
+        return relativePath;
+    }
+}
+
+/// <summary>
+/// Parsed CLI options for the <c>emit-module</c> mode, including the
+/// Phase 1e <c>-Strict=true|false</c> flag controlling missing-source
+/// handling.
+/// </summary>
+/// <param name="ManifestPath">Absolute path to the XBT manifest JSON.</param>
+/// <param name="ManifestBinPath">Absolute path to the FBS sidecar (optional).</param>
+/// <param name="ModuleName">Module to emit.</param>
+/// <param name="OutputDir">Output directory for the gen.* files.</param>
+/// <param name="JsonFd">Streaming JSON channel FD (optional).</param>
+/// <param name="NoMutexWait">True when <c>-NoMutexWait</c> is set.</param>
+/// <param name="Strict">When true (production default), missing source files exit 50; when false, the emit pass tolerates missing files and emits sentinels.</param>
+internal sealed record EmitModuleOptions(
+    string ManifestPath,
+    string? ManifestBinPath,
+    string ModuleName,
+    string OutputDir,
+    int? JsonFd,
+    bool NoMutexWait,
+    bool Strict)
+{
+    /// <summary>
+    /// Parse <paramref name="args"/> into a populated
+    /// <see cref="EmitModuleOptions"/>. Accepts every flag the shared
+    /// <see cref="ModuleModeOptions"/> accepts, plus
+    /// <c>-Strict=true|false</c> (default <c>true</c>).
+    /// </summary>
+    /// <param name="args">CLI arguments.</param>
+    /// <returns>Parsed options.</returns>
+    /// <exception cref="CliArgumentException">On any missing required flag or malformed value.</exception>
+    public static EmitModuleOptions Parse(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        // Split the -Strict flag out of the args; pass the rest through
+        // to the shared parser. Default Strict = true (production).
+        bool strict = true;
+        List<string> filtered = new(args.Length);
+        foreach (string arg in args)
+        {
+            if (arg.StartsWith("-Strict=", StringComparison.OrdinalIgnoreCase))
+            {
+                string raw = arg["-Strict=".Length..];
+                if (bool.TryParse(raw, out bool parsed))
+                {
+                    strict = parsed;
+                    continue;
+                }
+                throw new CliArgumentException($"Invalid -Strict value '{raw}'. Expected true or false.");
+            }
+            filtered.Add(arg);
+        }
+
+        ModuleModeOptions inner = ModuleModeOptions.Parse(filtered.ToArray(), requireOutput: true);
+
+        return new EmitModuleOptions(
+            ManifestPath: inner.ManifestPath,
+            ManifestBinPath: inner.ManifestBinPath,
+            ModuleName: inner.ModuleName,
+            OutputDir: inner.OutputDir,
+            JsonFd: inner.JsonFd,
+            NoMutexWait: inner.NoMutexWait,
+            Strict: strict);
     }
 }

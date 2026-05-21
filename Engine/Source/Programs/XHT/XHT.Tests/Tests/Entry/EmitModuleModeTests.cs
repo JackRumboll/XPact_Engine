@@ -63,6 +63,7 @@ public sealed class EmitModuleModeTests : IDisposable
             $"-Manifest={manifestPath}",
             "-Module=XScoring",
             $"-Out={outDir}",
+            "-Strict=false",
         }, CancellationToken.None);
 
         Assert.Equal(ExitCodes.Success, exit);
@@ -83,6 +84,7 @@ public sealed class EmitModuleModeTests : IDisposable
             $"-Manifest={manifestPath}",
             "-Module=XScoring",
             $"-Out={outDir}",
+            "-Strict=false",
         }, CancellationToken.None);
 
         string genManifestPath = Path.Combine(outDir, "XScoring.gen.manifest");
@@ -105,14 +107,15 @@ public sealed class EmitModuleModeTests : IDisposable
             $"-Manifest={manifestPath}",
             "-Module=XScoring",
             $"-Out={outDir}",
+            "-Strict=false",
         }, CancellationToken.None);
 
         string genManifestPath = Path.Combine(outDir, "XScoring.gen.manifest");
         GenManifest m = GenManifestReader.Read(genManifestPath);
 
-        // The test manifest carries one .h + one .cs source file; the
-        // emit-module stub populates both into [Inputs] with the
-        // placeholder hash.
+        // The test manifest carries one .h + one .cs source file; both
+        // are recorded in [Inputs] (header missing -> sentinel; cs
+        // missing -> warn-and-skip, but still tracked as input).
         Assert.Equal(2, m.Inputs.Length);
     }
 
@@ -130,6 +133,7 @@ public sealed class EmitModuleModeTests : IDisposable
                 $"-Manifest={manifestPath}",
                 "-Module=NotPresent",
                 $"-Out={outDir}",
+                "-Strict=false",
             }, CancellationToken.None);
         });
     }
