@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 
 /// <summary>
 /// One entry in the <c>[Inputs]</c> or <c>[Generated]</c> section of a
-/// per-module <c>.gen.manifest</c> per <c>/Documents/XHT.html</c> Rev 5
+/// per-module <c>.gen.manifest</c> per <c>/Documents/XHT.html</c> Rev 6
 /// Section 9.2.
 /// </summary>
 /// <param name="RelativePath">
@@ -51,7 +51,7 @@ public sealed record GenManifestDiagnostic(
 /// <summary>
 /// The XHT-produced per-module <c>.gen.manifest</c> record. XBT consumes
 /// this file as XHT's opaque output surface per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.2 + Contract Section 7.1.
+/// <c>/Documents/XHT.html</c> Rev 6 Section 9.2 + Contract Section 7.1.
 /// </summary>
 /// <param name="XhtSchemaVersion">Schema version (currently <c>1</c>).</param>
 /// <param name="ContractVersion">Contract version XHT was built against.</param>
@@ -76,7 +76,7 @@ public sealed record GenManifest(
 
 /// <summary>
 /// Writer for the XHT-produced per-module <c>.gen.manifest</c> file per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.2.
+/// <c>/Documents/XHT.html</c> Rev 6 Section 9.2.
 /// </summary>
 /// <remarks>
 /// <para>

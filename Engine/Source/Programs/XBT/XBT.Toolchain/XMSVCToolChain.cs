@@ -248,14 +248,28 @@ public sealed class XMSVCToolChain : XToolChain
         string objPath = Path.Combine(outputDir, objName);
         args.Add($"/Fo{objPath}");
 
-        // === Banned-flag check ===
-        // NOTE: ModuleRules in XBT.Configuration does not yet expose an
-        // AdditionalCompilerArguments collection. When that field lands
-        // we re-enable the banned-flag verify pass against its contents.
-        // Until then SimPath banned-flag enforcement runs only against
-        // the toolchain-emitted flag set (which we control); a user
-        // workaround via Configuration's PublicDefinitions or include
-        // paths cannot smuggle in /fp:fast.
+        // === Header dependency tracking (audit fix R3-C1) ===
+        // /sourceDependencies emits a JSON file alongside the .obj
+        // listing every transitively-included header. CppDependencyCache
+        // parses this file post-compile and records each header so the
+        // next build's IsActionOutdated correctly invalidates when a
+        // transitively-included header (not in the PCH, not in
+        // PrerequisiteItems) changes.
+        //
+        // MSVC 17.4+ is required for /sourceDependencies; XBT's VS 2026
+        // BuildTools floor is 17.10 so the flag is always available in
+        // a supported environment. The path is alongside the .obj so the
+        // orphan-temp-file sweep tracks the same parent directory.
+        string depJsonPath = Path.Combine(outputDir, objName + ".deps.json");
+        args.Add($"/sourceDependencies");
+        args.Add(depJsonPath);
+
+        // === Banned-flag check (audit fix R3-M7) ===
+        // Defence-in-depth pass over the emitted args. Catches a future
+        // refactor that lands a banned flag in any of the emission
+        // helpers. ModuleRules.AdditionalCompilerArguments is still a
+        // Phase 2 addition; this check is independent of that field.
+        VerifyNoBannedFlags(module, args);
 
         // === Source file LAST ===
         args.Add(sourceFile.FullPath);
@@ -276,13 +290,21 @@ public sealed class XMSVCToolChain : XToolChain
             prereqs = new[] { sourceFile };
         }
 
+        // ProducedItems must be sorted ordinal. The .obj path is a prefix
+        // of the .obj.deps.json path so the .obj comes first under
+        // string.CompareOrdinal.
+        FileItem depJsonItem = FileItem.GetItemByPath(depJsonPath);
+        FileItem objItem = FileItem.GetItemByPath(objPath);
+        FileItem[] produced = { objItem, depJsonItem };
+        Array.Sort(produced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
         return new[]
         {
             ExternalAction.Create(new ExternalAction
             {
                 ActionType = XActionType.CompileCppAction,
                 PrerequisiteItems = prereqs,
-                ProducedItems = new[] { FileItem.GetItemByPath(objPath) },
+                ProducedItems = produced,
                 CommandPath = _environment.CompilerPath,
                 CommandArguments = args,
                 WorkingDirectory = _repoRoot,
@@ -294,6 +316,10 @@ public sealed class XMSVCToolChain : XToolChain
                 Configuration = target.Configuration,
                 Platform = target.Platform,
                 CacheKeyComponents = BuildCompileCacheKeyComponents(resolved, module, target, pch),
+                // Audit fix R3-C1: point CppDependencyCache at the .deps.json
+                // so the post-compile parse can discover the transitive
+                // header set.
+                DependencyListFile = depJsonItem,
             }),
         };
     }
@@ -949,23 +975,58 @@ public sealed class XMSVCToolChain : XToolChain
     }
 
     /// <summary>
-    /// Verify the toolchain's banned-flag invariants. Currently a
-    /// placeholder pending the addition of
-    /// <c>ModuleRules.AdditionalCompilerArguments</c> by Subagent A.
-    /// Once that collection lands, this method re-scans it for SimPath
-    /// modules: <c>/fp:fast</c> and <c>/fp:except</c> are banned and
-    /// throw <see cref="ToolchainBannedFlagException"/> (exit 41).
+    /// Audit fix R3-M7: scan an already-emitted command-line argument
+    /// list for banned flags on a SimPath module. Throws
+    /// <see cref="ToolchainBannedFlagException"/> (exit 41) on the first
+    /// banned flag encountered. Mirrors Contract Section 4.2 (MSVC row)
+    /// which bans <c>/fp:fast</c>, <c>/fp:except</c>, and the FMA-
+    /// enabling SIMD shapes on sim-path modules.
     /// </summary>
     /// <remarks>
-    /// At present the only path that could produce a banned flag is the
-    /// internal flag emission code in this class -- which by construction
-    /// does not emit <c>/fp:fast</c> on SimPath modules
-    /// (<see cref="ResolveFPSemantics"/> auto-promotes Default to Precise).
+    /// <para>
+    /// Defence-in-depth against a future refactor of the emission path
+    /// that accidentally lands a banned flag. The check runs after the
+    /// args list is fully constructed (see <see cref="CompileSource"/>);
+    /// a banned flag from any helper -- <see cref="GetCompileArguments_FPSemantics_Resolved"/>,
+    /// <see cref="GetCompileArguments_Simd"/>,
+    /// <see cref="GetCompileArguments_OptimizeCode"/> -- is caught at
+    /// compile-time-emit instead of at sim-runtime where the failure
+    /// surfaces as non-determinism.
+    /// </para>
     /// </remarks>
-    private static void VerifyNoBannedFlags(ModuleRules module)
+    private static void VerifyNoBannedFlags(ModuleRules module, IReadOnlyList<string> args)
     {
-        // Placeholder. See remarks.
-        _ = module;
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(args);
+        if (!module.SimPath)
+        {
+            return;
+        }
+
+        foreach (string a in args)
+        {
+            if (string.IsNullOrEmpty(a))
+            {
+                continue;
+            }
+            // MSVC banned flags per Contract Section 4.2 (MSVC row).
+            // /fp:fast enables FMA contraction; /fp:except enables FP-
+            // exception trapping which is environment-sensitive.
+            if (a == "/fp:fast"
+                || a == "/fp:except"
+                || a == "/fp:except+"
+                || a == "-fp:fast"
+                || a == "-fp:except")
+            {
+                throw new ToolchainBannedFlagException(
+                    $"Module '{module.Name}' is SimPath but its emitted MSVC command line "
+                    + $"contains banned flag '{a}'. Contract Rev 13 Section 4.2 forbids "
+                    + "this flag on sim-path modules because it enables non-deterministic "
+                    + "math contraction or environment-sensitive FP behaviour. Audit the "
+                    + "toolchain emit path (XMSVCToolChain.GetCompileArguments_*) that "
+                    + "produced this flag and remove or guard it.");
+            }
+        }
     }
 
     /// <summary>

@@ -41,18 +41,39 @@ public sealed class ParallelExecutor
     private readonly ParallelExecutorOptions _options;
     private readonly IActionRunner _runner;
     private readonly ActionHistory? _history;
+    private readonly CppDependencyCache? _cppDependencyCache;
 
     /// <summary>Construct an executor with the given options and runner.</summary>
     public ParallelExecutor(
         ParallelExecutorOptions options,
         IActionRunner runner,
         ActionHistory? history = null)
+        : this(options, runner, history, cppDependencyCache: null)
+    {
+    }
+
+    /// <summary>
+    /// Audit fix R3-C1: cache-aware constructor. The executor reads
+    /// <see cref="IExternalAction.DependencyListFile"/> after each
+    /// successful action, parses the depfile via
+    /// <see cref="CppDependencyCache.ParseDepfile"/>, and records the
+    /// discovered header set + each header's live content hash so the
+    /// next build's <see cref="ActionHistory.IsActionOutdated"/> can
+    /// correctly invalidate when a transitively-included header (not
+    /// in <see cref="IExternalAction.PrerequisiteItems"/>) changes.
+    /// </summary>
+    public ParallelExecutor(
+        ParallelExecutorOptions options,
+        IActionRunner runner,
+        ActionHistory? history,
+        CppDependencyCache? cppDependencyCache)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(runner);
         _options = options;
         _runner = runner;
         _history = history;
+        _cppDependencyCache = cppDependencyCache;
     }
 
     /// <summary>
@@ -302,8 +323,15 @@ public sealed class ParallelExecutor
             return new ActionResult(linked, Success: false, Skipped: true, ExitCode: 130, ErrorMessage: "cancelled");
         }
 
-        // Skip if up-to-date (ActionHistory says so).
-        if (_history is not null && action.bUseActionHistory && !_history.IsActionOutdated(linked))
+        // Skip if up-to-date (ActionHistory + CppDependencyCache says so).
+        // The cache-aware overload consults the transitive-header
+        // dependency set when the cache is wired in; without it the
+        // check falls back to the PrerequisiteItems-only signal and
+        // misses transitively-included header edits per the
+        // Round-3 audit.
+        if (_history is not null
+            && action.bUseActionHistory
+            && !_history.IsActionOutdated(linked, _cppDependencyCache))
         {
             return new ActionResult(linked, Success: true, Skipped: true, ExitCode: 0, ErrorMessage: null);
         }
@@ -428,6 +456,70 @@ public sealed class ParallelExecutor
                         // The next IsActionOutdated call will see no
                         // recorded content hash and conservatively
                         // re-run, which is the safe direction.
+                    }
+                }
+
+                // Audit fix R3-C1: when the toolchain emitted a depfile
+                // (Clang -MF or MSVC /sourceDependencies), parse it and
+                // record the discovered transitive-header set so the
+                // next build's IsActionOutdated sees an edit to a header
+                // that was NOT a direct prereq.
+                //
+                // The dependency cache + the action-history live on the
+                // same lifecycle (both Save/Load at BuildMode boundaries)
+                // so a successful record here is paired with the
+                // matching action-history entry. Failure to parse is
+                // best-effort: the warning is emitted inside the parser
+                // and the action's correctness is unaffected by a
+                // missed record (the next staleness check sees no
+                // recorded headers and runs unconditionally, which is
+                // the safe direction).
+                if (_cppDependencyCache is not null
+                    && action.DependencyListFile is not null
+                    && File.Exists(action.DependencyListFile.FullPath))
+                {
+                    // The depfile FileItem may have cached metadata
+                    // from a previous load (the file is among the
+                    // ProducedItems and we just atomic-renamed it). Drop
+                    // the cache so the read picks up the new bytes.
+                    action.DependencyListFile.Invalidate();
+
+                    IReadOnlyList<FileItem> discovered =
+                        _cppDependencyCache.ParseDepfile(action.DependencyListFile);
+
+                    // Record the dependency set keyed on every non-
+                    // producer-output prereq (in practice this is the
+                    // source file; PCH artefacts are producer outputs).
+                    // Keying off the source path mirrors UBT's
+                    // CppDependencyCache where the dependency tree is
+                    // indexed by translation-unit path.
+                    foreach (FileItem prereq in action.PrerequisiteItems)
+                    {
+                        if (producedPaths.Contains(prereq.FullPath))
+                        {
+                            continue;
+                        }
+                        _cppDependencyCache.RecordDependencies(prereq.FullPath, discovered);
+                    }
+
+                    // Record each discovered header's content hash so
+                    // ActionHistory.IsActionOutdated rule 5 can compare
+                    // against the live header on the next build.
+                    foreach (FileItem header in discovered)
+                    {
+                        if (!File.Exists(header.FullPath))
+                        {
+                            continue;
+                        }
+                        try
+                        {
+                            _history.RecordContentHash(header, header.ContentHash);
+                        }
+                        catch (IOException)
+                        {
+                            // Best-effort, same rationale as the raw-
+                            // source prereq block above.
+                        }
                     }
                 }
             }

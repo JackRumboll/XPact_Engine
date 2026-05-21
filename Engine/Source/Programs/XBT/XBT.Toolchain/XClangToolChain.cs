@@ -507,10 +507,13 @@ public sealed class XClangToolChain : XToolChain
             args.Add(pch.PchOutputFile.FullPath);
         }
 
-        // === Banned-flag check ===
-        // NOTE: ModuleRules in XBT.Configuration does not yet expose an
-        // AdditionalCompilerArguments collection. When that field lands
-        // we re-enable the banned-flag verify pass against its contents.
+        // === Banned-flag check (audit fix R3-M7) ===
+        // Defence-in-depth pass over the emitted args. Catches a future
+        // refactor that lands a banned flag in any of the emission
+        // helpers; ModuleRules.AdditionalCompilerArguments is still a
+        // Phase 2 addition, but the emission-path scan is independent
+        // of that field.
+        VerifyNoBannedFlags(module, args);
 
         // === Output ===
         string objName = Path.GetFileNameWithoutExtension(sourceFile.FullPath) + ".o";
@@ -572,6 +575,13 @@ public sealed class XClangToolChain : XToolChain
                     target,
                     pch,
                     androidTriple),
+                // Audit fix R3-C1: point CppDependencyCache at the .d
+                // file so the post-compile Makefile-format parse can
+                // discover the transitive header set. The .d is already
+                // declared as a ProducedItem above (the executor's
+                // atomic-rename and orphan-sweep apply); the
+                // DependencyListFile property is the cache-layer hook.
+                DependencyListFile = FileItem.GetItemByPath(depPath),
             }),
         };
     }
@@ -1294,18 +1304,82 @@ public sealed class XClangToolChain : XToolChain
     }
 
     /// <summary>
-    /// Verify the toolchain's banned-flag invariants. Currently a
-    /// placeholder pending the addition of
-    /// <c>ModuleRules.AdditionalCompilerArguments</c> by Subagent A.
-    /// Once that collection lands, this method re-scans it for SimPath
-    /// modules and rejects <c>-ffast-math</c>, <c>-Ofast</c>,
-    /// <c>-mfma</c>, <c>-funsafe-math-optimizations</c>, and
-    /// <c>-ffp-contract=fast/on</c> with exit 41.
+    /// Audit fix R3-M7: scan an already-emitted command-line argument
+    /// list for banned flags on a SimPath module. Throws
+    /// <see cref="ToolchainBannedFlagException"/> (exit 41) on the first
+    /// banned flag encountered. Mirrors Contract Section 4.2 (Clang
+    /// row) which bans <c>-ffast-math</c>, <c>-Ofast</c>, <c>-mfma</c>,
+    /// <c>-funsafe-math-optimizations</c>, and <c>-ffp-contract=fast</c>
+    /// / <c>-ffp-contract=on</c> on sim-path modules.
     /// </summary>
-    private static void VerifyNoBannedFlags(ModuleRules module)
+    /// <remarks>
+    /// <para>
+    /// The check is defence-in-depth against a future refactor of the
+    /// emission path that accidentally lands a banned flag: even though
+    /// <see cref="GetCompileArguments_SimPath"/> emits the safe set
+    /// today and <see cref="ResolveFPSemantics"/> auto-promotes Default
+    /// to Precise on sim-path, a subsequent edit to
+    /// <see cref="GetCompileArguments_Simd"/> /
+    /// <see cref="GetCompileArguments_FPSemantics"/> /
+    /// <see cref="GetCompileArguments_OptimizeCode"/> could silently
+    /// introduce a banned flag and the only signal would be a
+    /// determinism failure in a downstream sim run. Scanning the
+    /// emitted args here catches the regression at compile-time-emit,
+    /// not at sim-runtime.
+    /// </para>
+    /// <para>
+    /// The scan accepts both <c>-flag=value</c> and <c>-flag value</c>
+    /// shapes (the latter is two argv entries) -- the actual emit uses
+    /// <c>=</c> form so we match against the joined form first, then
+    /// also catch a raw <c>-ffp-contract</c> followed by a separate
+    /// <c>fast</c> / <c>on</c> token.
+    /// </para>
+    /// </remarks>
+    private static void VerifyNoBannedFlags(ModuleRules module, IReadOnlyList<string> args)
     {
-        // Placeholder.
-        _ = module;
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(args);
+        if (!module.SimPath)
+        {
+            return;
+        }
+
+        // Single-token banned flags (Contract Section 4.2 Clang row).
+        for (int i = 0; i < args.Count; i++)
+        {
+            string a = args[i];
+            if (string.IsNullOrEmpty(a))
+            {
+                continue;
+            }
+            if (a == "-ffast-math"
+                || a == "-Ofast"
+                || a == "-mfma"
+                || a == "-funsafe-math-optimizations"
+                || a == "-ffp-contract=fast"
+                || a == "-ffp-contract=on")
+            {
+                throw new ToolchainBannedFlagException(
+                    $"Module '{module.Name}' is SimPath but its emitted Clang command line "
+                    + $"contains banned flag '{a}'. Contract Rev 13 Section 4.2 forbids "
+                    + "this flag on sim-path modules because it enables non-deterministic "
+                    + "math contraction. Audit the toolchain emit path that produced this "
+                    + "flag (XClangToolChain.GetCompileArguments_*) and remove or guard it.");
+            }
+
+            // Two-token form: "-ffp-contract" followed by "fast" / "on".
+            if (a == "-ffp-contract" && i + 1 < args.Count)
+            {
+                string next = args[i + 1];
+                if (next == "fast" || next == "on")
+                {
+                    throw new ToolchainBannedFlagException(
+                        $"Module '{module.Name}' is SimPath but its emitted Clang command line "
+                        + $"contains banned flag pair '-ffp-contract {next}'. Contract Rev 13 "
+                        + "Section 4.2 forbids this on sim-path modules.");
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -1315,6 +1389,23 @@ public sealed class XClangToolChain : XToolChain
     /// reads it. The seed file is intentionally empty (zero bytes) so
     /// Clang's struct-randomization layout is deterministic.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix R3-M4: every IO failure path now emits a
+    /// <see cref="Logger.Warning"/> with the specific exception detail
+    /// so an operator seeing a downstream "cannot open seed file" error
+    /// from Clang can correlate it with the XBT-side failure. The
+    /// previous swallow-and-continue policy left no diagnostic trail
+    /// when the seed-file write failed (read-only repo snapshot, CI
+    /// sandbox, antivirus quarantine, etc.). Clang accepts the flag
+    /// against a missing file (falls back to default behaviour); the
+    /// determinism-envelope contract requires the flag to be present
+    /// in the command line, not the file to exist. We log the IO
+    /// failure but do NOT retry -- the seed file is determinism
+    /// plumbing, not load-bearing, and a retry loop on a permanently
+    /// non-writable path would just delay the build.
+    /// </para>
+    /// </remarks>
     private string EnsureRandomizeLayoutSeedFile()
     {
         string absPath = Path.Combine(
@@ -1334,17 +1425,23 @@ public sealed class XClangToolChain : XToolChain
                 // randomize-layout RNG to a deterministic starting state.
             }
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            // Best-effort. If the path is not writable (read-only repo
-            // snapshot, CI sandbox, etc.) Clang will still accept the
-            // flag against a missing file -- it falls back to default
-            // behaviour rather than failing. The flag presence itself
-            // is what the reproducibility envelope contract requires.
+            Logger.Warning(
+                $"Clang randomize-layout seed file could not be created at '{absPath}': "
+                + $"{ex.GetType().Name}: {ex.Message}. Clang will use its default "
+                + "fall-back; struct layout reproducibility across machines may be "
+                + "affected. Verify the path is writable and not held by an antivirus scan.",
+                new DiagnosticContext { Action = "randomize-layout-seed" });
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
-            // Same rationale as IOException -- best-effort.
+            Logger.Warning(
+                $"Clang randomize-layout seed file could not be created at '{absPath}': "
+                + $"{ex.GetType().Name}: {ex.Message}. Clang will use its default "
+                + "fall-back; struct layout reproducibility across machines may be "
+                + "affected. Verify the running user has write permission on the path.",
+                new DiagnosticContext { Action = "randomize-layout-seed" });
         }
         return absPath;
     }

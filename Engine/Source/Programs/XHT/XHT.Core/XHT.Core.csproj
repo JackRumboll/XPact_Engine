@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Core</RootNamespace>
     <AssemblyName>XHT.Core</AssemblyName>
-    <Description>XHT primitives: FileItems, BLAKE3 content-hashing, atomic IO with pinned temp-file naming, sorted-set utilities, structured logging helpers, streaming JSON channel writer. No knowledge of reflection or build semantics. Per /Documents/XHT.html Rev 5 Section 2.</Description>
+    <Description>XHT primitives: FileItems, BLAKE3 content-hashing, atomic IO with pinned temp-file naming, sorted-set utilities, structured logging helpers, streaming JSON channel writer. No knowledge of reflection or build semantics. Per /Documents/XHT.html Rev 6 Section 2.</Description>
   </PropertyGroup>
 
   <ItemGroup>

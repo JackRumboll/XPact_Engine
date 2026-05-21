@@ -286,4 +286,155 @@ public class XbtManifestReaderTests : IDisposable
             () => XbtManifestReader.DeserializeJsonBytes(huge));
         Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
     }
+
+    // ---------------------------------------------------------------------
+    // ContractVersion-mismatch detection per /Documents/XHT.html Rev 6
+    // Section 23.2 + Section 12.3 (diagnostic XHT002). These tests verify
+    // the Round-3 audit M1 fix: XHT must not silently accept a manifest
+    // whose ContractVersion does not match XHT's compile-time pin.
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Render the minimal-valid JSON manifest with the given
+    /// <c>ContractVersion</c> string substituted in (the rest of the
+    /// shape is otherwise identical to <see cref="MinimalValidJson"/>).
+    /// Used to exercise the matching and mismatching cases without
+    /// duplicating the full JSON literal.
+    /// </summary>
+    private static string MinimalValidJsonWithContractVersion(string contractVersion)
+    {
+        return $$"""
+            {
+              "ContractVersion": "{{contractVersion}}",
+              "EngineVersion": "0.1.0",
+              "Target": {
+                "Name": "MiningTrainingEditor",
+                "Type": "Editor",
+                "Platform": "Win64",
+                "Configuration": "Development",
+                "Architecture": "x86_64",
+                "GCRootABI": "Span-based v1",
+                "ExceptionABI": "Tier1-Shim/Tier2-Direct",
+                "ManglingScheme": "Itanium-LengthPrefixed-v1",
+                "FipsMode": false,
+                "SimPathConservativeRootsAllowed": false,
+                "SimdLevelDefault": "SSE42",
+                "StationRole": "None"
+              },
+              "RootLocalPath": "C:/repo",
+              "ExternalDependenciesFile": null,
+              "Modules": []
+            }
+            """;
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionMatchesXhtCompileTime_Succeeds()
+    {
+        // Sanity: when the manifest carries the literal current
+        // ContractVersion the reader must accept it without throwing.
+        // Uses XhtVersion.ContractVersion to guarantee this test tracks
+        // the compile-time pin without drift.
+        string json = MinimalValidJsonWithContractVersion(XhtVersion.ContractVersion);
+        XbtManifest m = XbtManifestReader.DeserializeJsonString(json);
+        Assert.Equal(XhtVersion.ContractVersion, m.ContractVersion);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionMatchesLiteralCurrentValue_Succeeds()
+    {
+        // Explicit literal check against the Round-3 audit's documented
+        // expected value. If XhtVersion.ContractVersion changes, BOTH
+        // this constant and the version constant must change in lockstep
+        // -- the test guards that the production value does not drift
+        // silently away from the documented pin.
+        const string literalCurrent = "13.2+b04ae3cc84cdd9f3";
+        Assert.Equal(literalCurrent, XhtVersion.ContractVersion);
+        string json = MinimalValidJsonWithContractVersion(literalCurrent);
+        XbtManifest m = XbtManifestReader.DeserializeJsonString(json);
+        Assert.Equal(literalCurrent, m.ContractVersion);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionMismatch_ThrowsXHT002()
+    {
+        // Use a synthetic mismatched ContractVersion (different semantic
+        // tag AND different structure hash) to force the validator to
+        // fire. The thrown exception must:
+        //  (a) be a ManifestMalformedException,
+        //  (b) carry exit code 50 (ManifestMalformed),
+        //  (c) carry the catalog-anchored diagnostic code "XHT002"
+        //      (per /Documents/XHT.html Rev 6 Section 12.3 + Section 23.2),
+        //  (d) name BOTH the observed and the expected values in the
+        //      message so operators can decide which side to rebuild.
+        const string mismatchedVersion = "99.99+deadbeefcafebabe";
+        string json = MinimalValidJsonWithContractVersion(mismatchedVersion);
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+        Assert.Equal("XHT002", ex.DiagnosticCode);
+        Assert.Contains(mismatchedVersion, ex.Message, StringComparison.Ordinal);
+        Assert.Contains(XhtVersion.ContractVersion, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionDifferOnlyInHashSuffix_ThrowsXHT002()
+    {
+        // The structure-hash suffix is load-bearing: two manifests with
+        // the same semantic tag but different structure hashes describe
+        // different contract surfaces and the check must reject the
+        // mismatched one. Construct a string that shares the prefix
+        // ("13.2+") but rotates the hash so a partial-prefix-only check
+        // would (incorrectly) accept it.
+        const string sameTagDifferentHash = "13.2+0000000000000000";
+        // Sanity guard: we are testing against XhtVersion.ContractVersion,
+        // so the synthetic value must in fact differ from the compile-time
+        // pin to make the test meaningful.
+        Assert.NotEqual(XhtVersion.ContractVersion, sameTagDifferentHash);
+
+        string json = MinimalValidJsonWithContractVersion(sameTagDifferentHash);
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+        Assert.Equal("XHT002", ex.DiagnosticCode);
+        Assert.Contains(sameTagDifferentHash, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionMismatchByCase_ThrowsXHT002()
+    {
+        // The composite ContractVersion string contains a hex hash; the
+        // comparison MUST be ordinal (case-sensitive) because the canonical
+        // form is lower-case hex and any case-folding fallback would mask
+        // a real mismatch when XBT and XHT disagree on the hex casing
+        // convention. Upper-casing the hash must therefore fire XHT002.
+        string upperCased = XhtVersion.ContractVersion.ToUpperInvariant();
+        if (string.Equals(upperCased, XhtVersion.ContractVersion, StringComparison.Ordinal))
+        {
+            // The compile-time pin has no lowercase hex characters; the
+            // synthetic case-flipped value is identical so this test
+            // doesn't have a distinguishing input. Skip rather than
+            // produce a false positive.
+            return;
+        }
+        string json = MinimalValidJsonWithContractVersion(upperCased);
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+        Assert.Equal("XHT002", ex.DiagnosticCode);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_ContractVersionEmptyString_ThrowsXHT002()
+    {
+        // An empty ContractVersion field is structurally valid JSON but
+        // semantically a mismatch -- ValidateLimits accepts a zero-length
+        // string (no upper-bound violation) so the ContractVersion check
+        // is the layer responsible for rejecting it.
+        string json = MinimalValidJsonWithContractVersion("");
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+        Assert.Equal("XHT002", ex.DiagnosticCode);
+    }
 }

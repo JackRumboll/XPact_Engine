@@ -27,7 +27,7 @@ public enum DiagnosticSeverity
 /// <summary>
 /// One structured diagnostic record. Serialised as a single-line JSON
 /// object onto the streaming JSON channel per <c>/Documents/XHT.html</c>
-/// Rev 5 Section 1.4 + Section 12.4.
+/// Rev 6 Section 1.4 + Section 12.4.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -119,7 +119,7 @@ public sealed record DiagnosticRecord(
 
     /// <summary>
     /// Render this record in MSBuild diagnostic format per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 12.1:
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 12.1:
     /// <c>&lt;file&gt;(&lt;line&gt;,&lt;column&gt;): &lt;severity&gt; XHT&lt;NNN&gt;: &lt;message&gt;</c>.
     /// Records without a file fall back to a leading-severity form
     /// (<c>&lt;severity&gt; XHT&lt;NNN&gt;: &lt;message&gt;</c>).

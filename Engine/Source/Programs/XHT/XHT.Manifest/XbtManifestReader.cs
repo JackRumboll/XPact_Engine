@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Simgenics.XPact.XHT.Core;
 
 namespace Simgenics.XPact.XHT.Manifest;
 
@@ -13,7 +14,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 // XBT manifest input DTOs. The shape mirrors
 // /Engine/Source/Programs/XBT/XBT.Manifest/ManifestSchema.cs verbatim
 // for the fields XHT needs at parse time, per /Documents/XHT.html
-// Rev 5 Section 9.1 + Contract Section 10.2.
+// Rev 6 Section 9.1 + Contract Section 10.2.
 //
 // XHT does NOT link XBT.Manifest at runtime per XHT.html Section 2 +
 // the architectural decision in Section 25.2 item 1 (standalone-tool
@@ -208,7 +209,7 @@ public sealed record XbtModuleDep(
 /// <summary>
 /// One reflected module's manifest entry. The set of fields here is a
 /// strict subset of XBT's <c>Module</c> record -- the subset XHT actually
-/// needs at parse time per <c>/Documents/XHT.html</c> Rev 5 Section 9.1.
+/// needs at parse time per <c>/Documents/XHT.html</c> Rev 6 Section 9.1.
 /// </summary>
 /// <param name="Name">Module name (e.g. <c>XScoring</c>).</param>
 /// <param name="Tier">Tier (Engine / Studio / Project).</param>
@@ -309,7 +310,7 @@ public sealed record XbtManifest(
 
 /// <summary>
 /// Reader for the XBT manifest XHT consumes per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.1.
+/// <c>/Documents/XHT.html</c> Rev 6 Section 9.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -413,7 +414,7 @@ public static class XbtManifestReader
         // TODO Phase 1c: wire up FlatSharp greedy-materialised reader.
         // Schema-compile step lands in XHT.Manifest.csproj's FlatSharp.targets
         // mirroring /Engine/Source/Programs/XBT/XBT.Manifest/FlatSharp.targets.
-        // Phase 1b is JSON-only per /Documents/XHT.html Rev 5 Section 9.1.
+        // Phase 1b is JSON-only per /Documents/XHT.html Rev 6 Section 9.1.
         return null;
     }
 
@@ -481,7 +482,68 @@ public static class XbtManifestReader
         }
 
         ValidateLimits(manifest);
+        ValidateContractVersion(manifest);
         return manifest;
+    }
+
+    /// <summary>
+    /// Verify the manifest's <see cref="XbtManifest.ContractVersion"/>
+    /// matches XHT's compile-time
+    /// <see cref="XhtVersion.ContractVersion"/> per
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 23.2 (diagnostic
+    /// <c>XHT002</c>). Comparison is an ordinal string-equality check
+    /// over the full composite <c>&lt;tag&gt;+&lt;hash&gt;</c> form
+    /// (e.g. <c>"13.2+b04ae3cc84cdd9f3"</c>).
+    /// </summary>
+    /// <param name="manifest">The deserialised manifest. Must not be null.</param>
+    /// <exception cref="ManifestMalformedException">
+    /// Thrown with <see cref="ManifestMalformedException.DiagnosticCode"/>
+    /// = <c>"XHT002"</c> and exit code
+    /// <see cref="ExitCodes.ManifestMalformed"/> (50) when the manifest's
+    /// ContractVersion does not match XHT's. The message names both the
+    /// observed and expected values so operators can decide which side to
+    /// rebuild.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// This is the manifest-schema-mismatch detection the user explicitly
+    /// directed XHT to never silently accept (engineering-principles
+    /// directive: "do it right the first time, not the easy way"; "no
+    /// silent corruption, no flaky edge cases"). Without this check, a
+    /// manifest emitted by an XBT that was rebuilt against a newer
+    /// Contract revision (with new fields or rotated semantics) would
+    /// be silently consumed by an older XHT compiled against the prior
+    /// Contract, with the failure surfacing only later as a linker error
+    /// or a runtime corruption.
+    /// </para>
+    /// <para>
+    /// The comparison uses <see cref="StringComparison.Ordinal"/> -- the
+    /// ContractVersion string is a canonical opaque tag from XBT's
+    /// emitter and any case folding or culture-aware comparison would
+    /// be a stability bug. The full composite form is compared
+    /// (semantic-tag <c>+</c> structure-hash); a partial-tag-only
+    /// fallback would defeat the structure-hash protection that
+    /// <see cref="XhtVersion.ContractVersion"/> deliberately encodes.
+    /// </para>
+    /// </remarks>
+    private static void ValidateContractVersion(XbtManifest manifest)
+    {
+        string expected = XhtVersion.ContractVersion;
+        string actual = manifest.ContractVersion;
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT002",
+                message: string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "Manifest ContractVersion '{0}' does not match XHT's compile-time "
+                    + "ContractVersion '{1}'. This XHT build was compiled against a different "
+                    + "version of the contract surface. Rebuild XHT against the current Contract "
+                    + "(or rebuild XBT against the Contract this XHT was compiled with) so both "
+                    + "tools agree on the manifest schema.",
+                    actual,
+                    expected));
+        }
     }
 
     /// <summary>
@@ -497,7 +559,7 @@ public static class XbtManifestReader
 
     /// <summary>
     /// Find a module by name. Returns null when the module is not present.
-    /// Per <c>/Documents/XHT.html</c> Rev 5 Section 1.3, a module-not-in-
+    /// Per <c>/Documents/XHT.html</c> Rev 6 Section 1.3, a module-not-in-
     /// manifest lookup failure is the caller's signal to exit
     /// <see cref="Simgenics.XPact.XHT.Core.ExitCodes.ManifestMalformed"/>
     /// (50).

@@ -220,15 +220,40 @@ public sealed class ActionHistory
     /// <summary>
     /// True iff the action's outputs are stale. An action is outdated when:
     /// <list type="number">
-    ///   <item>Any prerequisite's content hash differs from what was recorded last; OR</item>
+    ///   <item>Any <see cref="IExternalAction.ProducedItems"/> file does not exist on disk; OR</item>
     ///   <item>The action's <see cref="ComputeActionKey"/> differs from any produced item's stored hash; OR</item>
-    ///   <item>Any <see cref="IExternalAction.ProducedItems"/> file does not exist on disk.</item>
+    ///   <item>Any raw-source prereq's recorded content hash differs from its live content hash; OR</item>
+    ///   <item>Any header recorded by <see cref="CppDependencyCache"/> for the action's source has a recorded content hash that differs from its live content hash (audit fix R3-C1).</item>
     /// </list>
     /// Returns false (= up-to-date) only when every produced item exists,
-    /// each carries the same recorded key, and the recorded key matches
-    /// the current action key.
+    /// each carries the same recorded key, every raw-source prereq's
+    /// content hash is unchanged, and every transitively-included header
+    /// recorded by the dependency cache is also unchanged.
     /// </summary>
     public bool IsActionOutdated(LinkedAction linked)
+        => IsActionOutdated(linked, cppDependencyCache: null);
+
+    /// <summary>
+    /// Audit fix R3-C1: cache-aware overload. When
+    /// <paramref name="cppDependencyCache"/> is non-null and the action
+    /// has a recorded dependency set, each recorded header's content
+    /// hash is consulted as a fourth invalidation signal. Editing a
+    /// transitively-included header that is NOT in
+    /// <see cref="IExternalAction.PrerequisiteItems"/> (because the PCH
+    /// did not include it) now correctly invalidates the cached output.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without the cache lookup, the action graph would only invalidate
+    /// when the source's own content changed or when the PCH artefact
+    /// changed -- which is the silent-staleness bug the Round-3 audit
+    /// surfaced and this overload closes. The recorded headers are
+    /// produced by <see cref="CppDependencyCache.ParseDepfile"/> from
+    /// the toolchain's <c>.d</c> / <c>.deps.json</c> emit and committed
+    /// post-success by <see cref="ParallelExecutor"/>.
+    /// </para>
+    /// </remarks>
+    public bool IsActionOutdated(LinkedAction linked, CppDependencyCache? cppDependencyCache)
     {
         ArgumentNullException.ThrowIfNull(linked);
         IExternalAction action = linked.Action;
@@ -280,6 +305,54 @@ public sealed class ActionHistory
             if (live != recordedContent)
             {
                 return true;
+            }
+        }
+
+        // 5. Audit fix R3-C1: every header recorded by the dependency
+        //    cache for the action's source must also still match its
+        //    recorded content hash. The action's source is the first
+        //    PrerequisiteItem by convention (toolchains always pass the
+        //    source first; PCH artefacts and depfile sit alongside);
+        //    we look up the recorded headers for every prereq and union
+        //    them so the check is robust to action shapes that do not
+        //    have a singleton source.
+        if (cppDependencyCache is not null)
+        {
+            foreach (FileItem prereq in action.PrerequisiteItems)
+            {
+                IReadOnlyList<FileItem>? recorded =
+                    cppDependencyCache.GetRecordedDependencies(prereq.FullPath);
+                if (recorded is null)
+                {
+                    continue;
+                }
+                foreach (FileItem header in recorded)
+                {
+                    IoHash recordedContent = GetStoredContentHash(header);
+                    if (recordedContent == IoHash.Zero)
+                    {
+                        // Header was recorded as part of the dep set but
+                        // its content hash was not committed (the record
+                        // call lost a race, or the previous build was
+                        // killed between the dep-set record and the
+                        // content-hash record). Conservatively force a
+                        // rebuild so the cache catches up; the rebuild
+                        // is one-time per such header.
+                        return true;
+                    }
+                    if (!File.Exists(header.FullPath))
+                    {
+                        // Header recorded as a transitive dep is gone --
+                        // the source's include graph has shifted and we
+                        // need to recompile to learn the new shape.
+                        return true;
+                    }
+                    IoHash live = header.ContentHash;
+                    if (live != recordedContent)
+                    {
+                        return true;
+                    }
+                }
             }
         }
 

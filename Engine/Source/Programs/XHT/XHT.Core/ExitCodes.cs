@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Per <c>/Documents/XHT.html</c> Rev 5 Section 1.3, XHT only emits a
+/// Per <c>/Documents/XHT.html</c> Rev 6 Section 1.3, XHT only emits a
 /// strict subset of the contract's table: <see cref="Success"/>,
 /// <see cref="GenericFailure"/>, <see cref="CliArgumentError"/>,
 /// <see cref="ManifestMalformed"/>, <see cref="XhtInternalFailure"/>, and
@@ -46,7 +46,7 @@ public static class ExitCodes
     /// tools per Contract Section 13.1. XHT emits this when
     /// <c>XHT.Entry</c>'s CLI parser rejects an unknown mode, an unknown
     /// flag, or a malformed flag value before <c>Main</c> has loaded the
-    /// manifest. Per <c>/Documents/XHT.html</c> Rev 5 Section 1.3.
+    /// manifest. Per <c>/Documents/XHT.html</c> Rev 6 Section 1.3.
     /// </summary>
     public const int CliArgumentError = 10;
 
@@ -56,7 +56,7 @@ public static class ExitCodes
     /// Declared here for table completeness; the Rev 3 audit (X-CR1)
     /// remapped XHT's "module not in manifest" diagnostic from 30 to 50
     /// because 30 belongs to XBT exclusively. Per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 1.3.
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 1.3.
     /// </summary>
     public const int DescriptorParseFailure = 30;
 
@@ -65,7 +65,7 @@ public static class ExitCodes
     /// violations, FlatBuffers verifier rejection, ContractVersion
     /// mismatches, both forms missing, and module-not-in-manifest lookup
     /// failure (Rev 3 X-CR1 remap from 30). Per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 1.3 + Contract Section 13.1.
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 1.3 + Contract Section 13.1.
     /// </summary>
     public const int ManifestMalformed = 50;
 
@@ -75,14 +75,14 @@ public static class ExitCodes
     /// XBT aggregates 62 into the surface exit 60
     /// (<c>XhtSubprocessFailure</c>); when XHT exits 62 standalone (CI
     /// pre-flight, IDE), the caller sees 62 directly. Per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 1.3.
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 1.3.
     /// </summary>
     public const int XhtInternalFailure = 62;
 
     /// <summary>
     /// 130 -- Cancelled by user (Ctrl-C). Matches POSIX SIGINT convention.
     /// Owned by all tools per Contract Section 13.1. Per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 1.3.
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 1.3.
     /// </summary>
     public const int Cancelled = 130;
 }

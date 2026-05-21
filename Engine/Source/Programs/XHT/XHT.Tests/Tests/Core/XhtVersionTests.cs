@@ -15,8 +15,10 @@ public class XhtVersionTests
     [Fact]
     public void ContractVersion_MatchesXhtHtmlSection0Pin()
     {
-        // Per XHT.html Section 0 + Contract Rev 13.6 header table; the
-        // structure hash b04ae3cc84cdd9f3 stays through Rev 13.6.
+        // Per XHT.html Section 0 + Contract Rev 13.7 header table; the
+        // structure hash b04ae3cc84cdd9f3 is unchanged across Rev 13.2
+        // through Rev 13.7 (the revision bumps are wording-only;
+        // Contract Surface byte stream has not rotated).
         Assert.Equal("13.2+b04ae3cc84cdd9f3", XhtVersion.ContractVersion);
     }
 

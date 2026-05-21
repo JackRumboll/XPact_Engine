@@ -19,11 +19,21 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Toolchain;
 /// envelope).
 /// </summary>
 /// <remarks>
+/// <para>
 /// Tests construct a synthetic <see cref="VCEnvironment"/> so the
 /// toolchain code path runs deterministically without depending on a
 /// real MSVC install. The flag-emission assertions inspect the
 /// generated <see cref="IExternalAction.CommandArguments"/> directly.
+/// </para>
+/// <para>
+/// This class is in the <see cref="ToolchainSelfHashCollection"/> serial
+/// collection because tests in it mutate
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash"/>'s process-wide
+/// override slot (via <c>__SetForTesting</c>). See that collection's
+/// remarks for the full rationale.
+/// </para>
 /// </remarks>
+[Collection(nameof(ToolchainSelfHashCollection))]
 public sealed class XMSVCToolChainTests : IDisposable
 {
     private readonly string _scratchDir;

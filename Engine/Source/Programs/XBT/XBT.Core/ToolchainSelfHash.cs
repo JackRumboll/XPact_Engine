@@ -1,8 +1,8 @@
 // Copyright Simgenics. All Rights Reserved.
 
 using System;
-using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 
 namespace Simgenics.XPact.XBT.Core;
@@ -26,15 +26,24 @@ namespace Simgenics.XPact.XBT.Core;
 /// even when the resulting command-line strings are byte-identical.
 /// </para>
 /// <para>
+/// <b>Audit fix R3-M2: source-of-truth is the XBT assembly file, not
+/// the host process.</b> The previous implementation read
+/// <see cref="System.Diagnostics.Process"/>'s
+/// <c>MainModule.FileName</c>, which under <c>dotnet test</c> resolves
+/// to <c>testhost.exe</c> -- a value totally unrelated to the XBT logic
+/// being tested. Tests verified relative behaviour (override rotation)
+/// but never the absolute production hash. The Round-3 fix hashes the
+/// <see cref="ToolchainSelfHash"/> assembly's own <c>Location</c>
+/// (i.e. <c>XBT.Core.dll</c> in production), which is stable under
+/// both production and the test harness. Single-file-published
+/// scenarios (where <c>Assembly.Location</c> is empty) fail loudly via
+/// a <see cref="InvalidOperationException"/> -- the previous
+/// <c>"(no-self-hash)"</c> sentinel masked a real correctness gap, so
+/// the round-3 fix prefers a clear failure over silent staleness.
+/// </para>
+/// <para>
 /// The hash is computed once on first access; subsequent reads pay
-/// only a volatile read. Best-effort: if the process's MainModule
-/// cannot be resolved (rare -- typically only in unit-test harnesses
-/// that load the assembly via reflection without spawning a process
-/// for it), the sentinel string <c>"(no-self-hash)"</c> is returned.
-/// The sentinel still participates in the cache key consistently, so
-/// two reads in the same process produce equal keys -- the value only
-/// breaks down across-process where reproducibility is governed by
-/// the binary identity anyway.
+/// only a volatile read.
 /// </para>
 /// <para>
 /// The truncation to the first 16 hex characters matches the
@@ -52,11 +61,20 @@ public static class ToolchainSelfHash
 
     /// <summary>
     /// First 16 hex characters of the BLAKE3 content hash of the
-    /// current process's main executable. Computed lazily once per
-    /// process; subsequent reads return the cached value. When the
-    /// test-only override is set (via <see cref="__SetForTesting"/>),
-    /// the override value is returned instead.
+    /// XBT assembly file on disk. Computed lazily once per process;
+    /// subsequent reads return the cached value. When the test-only
+    /// override is set (via <see cref="__SetForTesting"/>), the
+    /// override value is returned instead.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the XBT assembly's <see cref="Assembly.Location"/>
+    /// is empty (single-file-published scenarios) and no test override
+    /// is installed. The throw is intentional: a silent
+    /// <c>"(no-self-hash)"</c> sentinel would mask a real cache-key
+    /// gap. The fix for a single-file-published scenario is to embed
+    /// the hash at publish time and supply it via a release-only
+    /// override, not to swallow the missing-location case.
+    /// </exception>
     public static string XbtBinaryHash
     {
         get
@@ -85,26 +103,68 @@ public static class ToolchainSelfHash
         }
     }
 
+    /// <summary>
+    /// Compute the XBT-binary content hash. Reads the
+    /// <see cref="ToolchainSelfHash"/> assembly's <c>Location</c>
+    /// (the canonical on-disk DLL/EXE that contains XBT logic) and
+    /// hashes those bytes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The assembly choice matters: <c>ToolchainSelfHash</c> lives in
+    /// <c>XBT.Core</c>, but the meaningful hash is "the running XBT
+    /// binary's content". XBT.Core is loaded by every XBT process
+    /// (BuildMode, every other mode, the test harness) and its
+    /// <c>Location</c> is the absolute path to <c>XBT.Core.dll</c>
+    /// in every supported scenario except single-file-publish. In
+    /// the test harness <c>typeof(...).Assembly.Location</c> returns
+    /// <c>...\bin\Debug\net8.0\XBT.Core.dll</c>, which is the actual
+    /// XBT logic being tested -- exactly what we want.
+    /// </para>
+    /// </remarks>
     private static string Compute()
     {
-        try
+        Assembly assembly = typeof(ToolchainSelfHash).Assembly;
+        string location = assembly.Location;
+
+        if (string.IsNullOrEmpty(location))
         {
-            string? path = Process.GetCurrentProcess().MainModule?.FileName;
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                return "(no-self-hash)";
-            }
-            using FileStream fs = File.OpenRead(path);
+            // Single-file-publish: Assembly.Location returns empty.
+            // Fail loudly so the operator knows the cache-key surface
+            // is incomplete. A test-only override is the supported
+            // path; production should embed the hash at publish time
+            // and install it via the override.
+            throw new InvalidOperationException(
+                "ToolchainSelfHash.XbtBinaryHash cannot be computed: "
+                + $"assembly '{assembly.GetName().FullName}' has an empty Location "
+                + "(typical of single-file-published binaries). The XBT cache-key "
+                + "surface depends on this hash; configure a release-time override "
+                + "via ToolchainSelfHash.__SetForTesting before the first cache-key "
+                + "read, or build without single-file-publish.");
+        }
+
+        if (!File.Exists(location))
+        {
+            // Assembly resolved a location but the file is no longer on
+            // disk (deleted mid-run, virtualised filesystem, etc.). Same
+            // fail-loud rationale as the empty-location case.
+            throw new InvalidOperationException(
+                $"ToolchainSelfHash.XbtBinaryHash cannot be computed: "
+                + $"assembly file '{location}' does not exist on disk. "
+                + "The XBT cache-key surface depends on this hash; the missing "
+                + "binary indicates a corrupt installation.");
+        }
+
+        // Audit fix R7-C3: AV-retry-wrap the read so a sibling
+        // antivirus scan locking the just-loaded binary surfaces as
+        // retries on the standard back-off schedule rather than as a
+        // build failure on the first read.
+        return FileSystemOps.RetryOnTransientIOException(() =>
+        {
+            using FileStream fs = File.OpenRead(location);
             IoHash digest = IoHash.Compute(fs);
             return digest.ToString()[..16];
-        }
-        catch
-        {
-            // Best-effort. The reflection-only test harness path
-            // sometimes fails to expose MainModule; the sentinel keeps
-            // the cache key well-formed for downstream consumers.
-            return "(no-self-hash)";
-        }
+        });
     }
 
     /// <summary>

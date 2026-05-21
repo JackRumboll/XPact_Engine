@@ -712,6 +712,24 @@ public sealed class BuildMode : IToolMode<BuildMode>
         historyCoordinator.OpenAndUnlock(intermediateRoot, target.Configuration);
         ActionHistory history = historyCoordinator.History!;
 
+        // ---- 11.1 Open CppDependencyCache (audit fix R3-C1) -----------
+        // The dependency cache lives alongside ActionHistory.bin and
+        // shares the same lifecycle. It records the transitive-header
+        // set discovered post-compile from Clang's .d file or MSVC's
+        // /sourceDependencies JSON so the next build's IsActionOutdated
+        // correctly invalidates when a transitively-included header
+        // (not in PrerequisiteItems) is edited.
+        //
+        // The Open() call inherits the build mutex's just-released
+        // window because the load happens under no concurrency
+        // pressure (we are still inside BuildMode startup). The Save()
+        // at shutdown does the same atomic-rename dance as
+        // ActionHistory.Save and is similarly self-healing on a torn
+        // write.
+        CppDependencyCache cppDependencyCache = CppDependencyCache.Open(
+            intermediateRoot,
+            target.Configuration);
+
         // ---- 11.5 Orphan temp-file sweep (XBT.html Section 6.4) --------
         // Sweep the entire intermediate-build tree (not just this
         // target's subtree) so a sibling crashed XBT run targeting a
@@ -739,13 +757,31 @@ public sealed class BuildMode : IToolMode<BuildMode>
         }
 
         // ---- 12. Execute -----------------------------------------------
-        ExecutionReport report = ExecuteGraph(graph, history, cancellationToken);
+        ExecutionReport report = ExecuteGraph(graph, history, cppDependencyCache, cancellationToken);
 
-        // ---- 13. Save ActionHistory ------------------------------------
+        // ---- 13. Save ActionHistory + CppDependencyCache --------------
         // Audit fix R7-M5: re-acquires the build mutex briefly, saves,
         // releases. Save is best-effort -- a failure is logged but
         // never aborts the build.
         historyCoordinator.SaveAndRelease(intermediateRoot);
+
+        // CppDependencyCache.Save is also best-effort: it sits outside
+        // the mutex but the atomic-rename + fsync pattern matches
+        // ActionHistory.Save so a concurrent reader either sees the
+        // pre-Save bytes or the post-Save bytes, never a torn state.
+        try
+        {
+            cppDependencyCache.Save();
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(
+                $"CppDependencyCache.Save failed: {ex.GetType().Name}: {ex.Message}. " +
+                "The next build's transitive-header invalidation may miss headers " +
+                "discovered in this run; the cache is self-healing on the next " +
+                "successful save.",
+                new DiagnosticContext { Action = "cppdeps-save" });
+        }
 
         // ---- 14. Aggregate result --------------------------------------
         int ran = 0;
@@ -2286,9 +2322,11 @@ public sealed class BuildMode : IToolMode<BuildMode>
         {
             byte[] buffer;
             int read;
+            long fileLength;
             using (FileStream fs = new(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                int toRead = (int)Math.Min(fs.Length, MaxBytes);
+                fileLength = fs.Length;
+                int toRead = (int)Math.Min(fileLength, MaxBytes);
                 buffer = new byte[toRead];
                 read = fs.Read(buffer, 0, toRead);
             }
@@ -2308,6 +2346,33 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 {
                     return true;
                 }
+            }
+
+            // Audit fix R3-M6: the 64 KiB cap is a determinism trade-off
+            // (cheaper scan, but real-world markers always live in the
+            // first ~100 bytes next to the type declaration). The rare
+            // case of a >64 KiB license / comment header above a real
+            // marker would silently miss the marker and skip XHT,
+            // producing a runtime "missing reflection metadata" failure
+            // that is hard to diagnose.
+            //
+            // When we hit the cap AND found no marker, conservatively
+            // claim marker-positive (over-invoke XHT, which is harmless
+            // if no marker exists) AND emit an info diagnostic so an
+            // operator can investigate the file. Over-invocation costs
+            // one no-op XHT run; an undetected marker costs a runtime
+            // failure.
+            if (fileLength > MaxBytes)
+            {
+                Logger.Info(
+                    $"Reflection-marker scan: '{path}' is {fileLength} bytes; "
+                    + $"only the first {MaxBytes} bytes were scanned. No marker was found "
+                    + "in the scanned region; treating the file as marker-positive so "
+                    + "XHT is invoked on it. If this file genuinely has no markers, "
+                    + "consider trimming the leading comment / license header so the "
+                    + "scan cap is not exhausted.",
+                    new DiagnosticContext { Action = "reflection-marker-scan" });
+                return true;
             }
             return false;
         }
@@ -2593,12 +2658,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
     private static ExecutionReport ExecuteGraph(
         Simgenics.XPact.XBT.ActionGraph.ActionGraph graph,
         ActionHistory history,
+        CppDependencyCache cppDependencyCache,
         CancellationToken cancellationToken)
     {
         ParallelExecutor executor = new(
             new ParallelExecutorOptions(),
             new CopyrightAndProcessActionRunner(),
-            history);
+            history,
+            cppDependencyCache);
         return executor.Execute(graph, cancellationToken);
     }
 

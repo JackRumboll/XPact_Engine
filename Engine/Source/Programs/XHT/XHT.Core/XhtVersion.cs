@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// <summary>
 /// Static version surface for XHT. The strings here are the human-readable
 /// version banner XHT prints under <c>xht.exe version</c> per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1 (CLI surface).
+/// <c>/Documents/XHT.html</c> Rev 6 Section 1.1 (CLI surface).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,16 +23,26 @@ namespace Simgenics.XPact.XHT.Core;
 /// <b>ContractVersion pin.</b> <see cref="ContractVersion"/> is the
 /// auto-derived Contract identifier XHT reads + writes manifests
 /// against. The value <c>"13.2+b04ae3cc84cdd9f3"</c> is locked at
-/// <c>/Documents/XHT.html</c> Rev 5 Section 0 (matches Contract Rev 13.6
-/// + Addendum Revision 5; the structure hash <c>b04ae3cc84cdd9f3</c>
-/// is unchanged across Rev 13.2 / 13.3 / 13.4 / 13.5 / 13.6).
+/// <c>/Documents/XHT.html</c> Rev 6 Section 0 (matches Contract Rev 13.7
+/// + Addendum Revision 6; the structure hash <c>b04ae3cc84cdd9f3</c>
+/// is unchanged across Rev 13.2 / 13.3 / 13.4 / 13.5 / 13.6 / 13.7 --
+/// every revision since the Round-5a hash rotation has been
+/// wording-only).
+/// </para>
+/// <para>
+/// <b>Schema-mismatch detection.</b> This constant is the
+/// compile-time pin <c>XbtManifestReader.ValidateContractVersion</c>
+/// compares against when reading an XBT-emitted manifest. A
+/// disagreement fires diagnostic <c>XHT002 -- ContractVersion mismatch</c>
+/// at exit code 50 per Section 23.2; XHT must never silently consume a
+/// manifest produced against a different contract surface.
 /// </para>
 /// </remarks>
 public static class XhtVersion
 {
     /// <summary>
     /// XHT's semantic version string per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+    /// <c>/Documents/XHT.html</c> Rev 6 Section 1.1.
     /// Phase 1b: hard-coded; Phase 1c+: derived from git-tag injection
     /// via <c>Directory.Build.targets</c>.
     /// </summary>
@@ -40,8 +50,8 @@ public static class XhtVersion
 
     /// <summary>
     /// The Contract version string XHT reads + writes manifests against.
-    /// Locked at <c>/Documents/XHT.html</c> Rev 5 Section 0 and at
-    /// Contract Rev 13.6.
+    /// Locked at <c>/Documents/XHT.html</c> Rev 6 Section 0 and at
+    /// Contract Rev 13.7.
     /// </summary>
     public const string ContractVersion = "13.2+b04ae3cc84cdd9f3";
 

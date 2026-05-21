@@ -19,6 +19,17 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Toolchain;
 /// Rev 4 Section 7.4 / 4. Phase 1.3 scope: per-module PCH only;
 /// shared-PCH modes downgrade with a warning.
 /// </summary>
+/// <remarks>
+/// This class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because <c>GenerateModulePCH</c> folds
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash.XbtBinaryHash"/>
+/// into its emitted action's <c>CacheKeyComponents</c>; any
+/// determinism-style assertion is sensitive to the override slot
+/// flipping mid-test. Collection membership eliminates the race. See
+/// that collection's remarks for the full rationale.
+/// </remarks>
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class PCHGenerationTests : IDisposable
 {
     private readonly string _scratchDir;

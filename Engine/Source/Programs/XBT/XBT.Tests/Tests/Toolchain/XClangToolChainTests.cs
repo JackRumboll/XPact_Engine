@@ -18,6 +18,14 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Toolchain;
 /// and <c>/Documents/XBT.html</c> Rev 4 Section 19.1 (reproducibility
 /// envelope).
 /// </summary>
+/// <remarks>
+/// This class is in the <see cref="ToolchainSelfHashCollection"/> serial
+/// collection because tests in it mutate
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash"/>'s process-wide
+/// override slot (via <c>__SetForTesting</c>). See that collection's
+/// remarks for the full rationale.
+/// </remarks>
+[Collection(nameof(ToolchainSelfHashCollection))]
 public sealed class XClangToolChainTests : IDisposable
 {
     private readonly string _scratchDir;

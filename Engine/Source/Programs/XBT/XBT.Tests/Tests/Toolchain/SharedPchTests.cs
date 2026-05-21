@@ -22,6 +22,19 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Toolchain;
 /// participants, key the cache by participants + their PublicDefinitions,
 /// reject SimPath participation, and produce deterministic command lines.
 /// </summary>
+/// <remarks>
+/// This class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because
+/// <see cref="SameGroup_DeterministicCommandVersion"/> asserts two
+/// back-to-back <c>GenerateSharedPCH</c> calls produce the same
+/// <c>CommandVersion</c>; both calls read
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash.XbtBinaryHash"/>
+/// through the toolchain's cache-key build, so a parallel test mutating
+/// the override slot between them would race the assertion. See that
+/// collection's remarks for the full rationale.
+/// </remarks>
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class SharedPchTests : IDisposable
 {
     private readonly string _scratchDir;

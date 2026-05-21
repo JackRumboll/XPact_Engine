@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 
 /// <summary>
 /// Reader for the XHT-produced per-module <c>.gen.manifest</c> file per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.2.
+/// <c>/Documents/XHT.html</c> Rev 6 Section 9.2.
 /// </summary>
 /// <remarks>
 /// <para>

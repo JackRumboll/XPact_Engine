@@ -290,12 +290,36 @@ public sealed class FileItem
         return new IoHash(digest);
     }
 
+    /// <summary>
+    /// Populate <see cref="_length"/> and <see cref="_lastWriteTimeUtc"/>
+    /// from the file on disk; idempotent.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix R3-M3: drop the volatile-boolean fast path and always
+    /// acquire <see cref="_hashGate"/>. The previous implementation
+    /// short-circuited on a non-volatile <c>_statLoaded == true</c>
+    /// read; under the .NET CLR memory model on ARM64 a reader could
+    /// observe <c>_statLoaded = true</c> alongside a stale
+    /// <c>_length</c> / <c>_lastWriteTimeUtc</c> value because there is
+    /// no release barrier between the field stores and the flag store.
+    /// Mirrors the audit-fix-M5 treatment applied to
+    /// <see cref="ContentHash"/> in Round 1: take the lock
+    /// unconditionally so the field reads under the same monitor that
+    /// the writes published under.
+    /// </para>
+    /// <para>
+    /// The cost is one uncontended-lock acquisition per stat read; the
+    /// stat itself is dominated by the underlying <c>FileInfo</c>
+    /// syscall on first call and is a cheap field read on subsequent
+    /// calls. The lock acquisition is uncontended in steady state
+    /// because (1) each <see cref="FileItem"/> is read by the
+    /// post-action recorder typically once per build, and (2) the
+    /// per-instance lock has no cross-instance contention.
+    /// </para>
+    /// </remarks>
     private void EnsureStat()
     {
-        if (_statLoaded)
-        {
-            return;
-        }
         lock (_hashGate)
         {
             if (_statLoaded)

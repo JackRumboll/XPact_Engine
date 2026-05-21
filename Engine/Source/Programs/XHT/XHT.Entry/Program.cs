@@ -138,7 +138,14 @@ public static class Program
         }
         catch (ManifestMalformedException ex)
         {
-            Logger.Error($"error XHT050: {ex.Message}");
+            // Prefer the catalog-anchored diagnostic code carried on the
+            // exception (e.g. XHT002 for ContractVersion mismatch per
+            // /Documents/XHT.html Rev 6 Section 23.2). Fall back to the
+            // legacy "XHT050" surface for throw sites that pre-date the
+            // diagnostic-code carry-through. Both paths return exit
+            // code 50 (ManifestMalformed) per Section 1.3.
+            string code = ex.DiagnosticCode ?? "XHT050";
+            Logger.Error($"error {code}: {ex.Message}");
             return ExitCodes.ManifestMalformed;
         }
         catch (OperationCanceledException)
