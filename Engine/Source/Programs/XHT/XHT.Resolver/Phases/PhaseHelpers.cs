@@ -16,7 +16,7 @@ internal static class PhaseHelpers
 {
     /// <summary>
     /// Find a specifier (case-insensitive name match per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 7.2) on a type / function /
+    /// <c>/Documents/XHT.html</c> Rev 7 Section 7.2) on a type / function /
     /// property; returns null when the specifier is not present.
     /// </summary>
     /// <param name="specifiers">The specifier list. Must not be null.</param>

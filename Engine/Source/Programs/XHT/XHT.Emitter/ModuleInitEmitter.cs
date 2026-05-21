@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Emitter;
 
 /// <summary>
 /// Per-module <c>&lt;Module&gt;.init.gen.cpp</c> aggregator emitter per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 8.3. Forward-declares every
+/// <c>/Documents/XHT.html</c> Rev 7 Section 8.3. Forward-declares every
 /// singleton-getter the module's per-header <c>.gen.cpp</c> files emit,
 /// then registers each with the runtime in a deterministic order at DLL
 /// load.

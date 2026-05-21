@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One function parameter on an <see cref="XhtFunction"/> or
-/// <see cref="XhtDelegate"/>. Per <c>/Documents/XHT.html</c> Rev 5
+/// <see cref="XhtDelegate"/>. Per <c>/Documents/XHT.html</c> Rev 7
 /// Section 4.6 + the <c>XPARAM</c> marker (Contract Section 1.1).
 /// </summary>
 /// <remarks>

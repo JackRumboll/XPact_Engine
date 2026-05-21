@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 
 /// <summary>
 /// Tests for <see cref="CSharpMarkerWalker"/>. End-to-end Roslyn-driven
-/// walk against synthetic C# source per <c>/Documents/XHT.html</c> Rev 5
+/// walk against synthetic C# source per <c>/Documents/XHT.html</c> Rev 7
 /// Section 3.2 + Section 3.3 + Section 7.
 /// </summary>
 public class CSharpMarkerWalkerTests

@@ -46,6 +46,24 @@ namespace Simgenics.XPact.XBT.Tests;
 /// permanently null). xUnit-level isolation pays the cost only in the
 /// test harness, which is the architecturally correct trade.
 /// </para>
+/// <para>
+/// <b>Coding standard (audit fix R5-M3):</b> ANY test class that
+/// constructs <see cref="Simgenics.XPact.XBT.Toolchain.XMSVCToolChain"/>
+/// or <see cref="Simgenics.XPact.XBT.Toolchain.XClangToolChain"/>, OR
+/// calls anything that does (notably
+/// <see cref="Simgenics.XPact.XBT.Entry.BuildMode.Run"/>,
+/// <see cref="Simgenics.XPact.XBT.ProjectFiles.RiderProjectGenerator"/>,
+/// <see cref="Simgenics.XPact.XBT.ProjectFiles.ClangdCompileCommandsGenerator"/>),
+/// MUST decorate itself with
+/// <c>[Collection(nameof(ToolchainSelfHashCollection))]</c>. The
+/// invariant is enforced by
+/// <see cref="Simgenics.XPact.XBT.Tests.Tests.ToolchainSelfHashCollectionMembershipTests"/>
+/// at runtime: that test scans the assembly's test types for direct
+/// XMSVCToolChain / XClangToolChain construction and asserts every
+/// matching class carries the collection attribute. A new test that
+/// touches the toolchain without joining the collection fails the
+/// membership check before it can introduce a parallel-test flake.
+/// </para>
 /// </remarks>
 [CollectionDefinition(nameof(ToolchainSelfHashCollection), DisableParallelization = true)]
 public sealed class ToolchainSelfHashCollection

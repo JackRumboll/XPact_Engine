@@ -595,6 +595,129 @@ public sealed class ParallelExecutorTests : IDisposable
         return ("/bin/sleep", new[] { "30" });
     }
 
+    /// <summary>
+    /// Audit fix R5-C2: when an action sets bProducerWritesFinalPath=true,
+    /// the executor passes <see cref="ActionRunContext.TempOutputPaths"/>
+    /// entries equal to the action's FINAL produced-item paths (not
+    /// .tmp.&lt;pid&gt;.&lt;actionid&gt; staging paths), AND the executor
+    /// validates final-path existence without invoking the rename ceremony.
+    /// This is the contract compile / PCH / link actions rely on because
+    /// their underlying toolchains (cl.exe, clang.exe, link.exe) embed
+    /// final output paths in the command line and write the artefact
+    /// directly there.
+    /// </summary>
+    [Fact]
+    public void Execute_BProducerWritesFinalPath_SkipsTempRename()
+    {
+        FileItem aOut = MakeFileItem("a.out");
+
+        IExternalAction a = MakeFinalPathAction("A", Array.Empty<FileItem>(), new[] { aOut });
+
+        var graph = new Simgenics.XPact.XBT.ActionGraph.ActionGraph(new[] { a });
+        graph.Link();
+        graph.DetectCycles();
+        graph.Sort();
+
+        var runner = new FinalPathRecordingRunner();
+        var executor = new ParallelExecutor(new ParallelExecutorOptions { WorkerCount = 1 }, runner);
+        ExecutionReport report = executor.Execute(graph, CancellationToken.None);
+
+        Assert.True(report.AllSucceeded);
+        Assert.Equal(1, report.TotalCompleted);
+
+        // The action that opted into bProducerWritesFinalPath received
+        // TempOutputPaths entries equal to the final produced-item paths.
+        // The runner records the mapping it observed.
+        Assert.True(runner.ObservedFinalPathEqualsTempPath,
+            "When bProducerWritesFinalPath is set the executor must pass the FINAL path "
+            + "in TempOutputPaths so the runner writes directly to the final destination. "
+            + "Observed temp != final: " + runner.LastObservedMapping);
+
+        // The produced file exists at the final path (no rename happened).
+        Assert.True(File.Exists(aOut.FullPath));
+
+        // No .tmp.<pid>.<actionid> file lingers next to the final path --
+        // the executor did not create one, and the runner wrote straight
+        // to the final path.
+        string outDir = Path.GetDirectoryName(aOut.FullPath)!;
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(outDir, Path.GetFileName(aOut.FullPath) + ".tmp.*"),
+            _ => true);
+    }
+
+    /// <summary>
+    /// Audit fix R5-C2: actions that do NOT set bProducerWritesFinalPath
+    /// retain the temp-rename contract -- the executor writes to a
+    /// .tmp.&lt;pid&gt;.&lt;actionid&gt; staging path and atomically
+    /// renames on success.
+    /// </summary>
+    [Fact]
+    public void Execute_TempRenameDefault_PreservedForLegacyActions()
+    {
+        FileItem aOut = MakeFileItem("a.out");
+
+        IExternalAction a = MakeAction("A", Array.Empty<FileItem>(), new[] { aOut });
+
+        var graph = new Simgenics.XPact.XBT.ActionGraph.ActionGraph(new[] { a });
+        graph.Link();
+        graph.DetectCycles();
+        graph.Sort();
+
+        var runner = new FinalPathRecordingRunner();
+        var executor = new ParallelExecutor(new ParallelExecutorOptions { WorkerCount = 1 }, runner);
+        ExecutionReport report = executor.Execute(graph, CancellationToken.None);
+
+        Assert.True(report.AllSucceeded);
+        // For default actions the executor hands a .tmp.<pid>.<actionid>
+        // path to the runner; the post-run rename moves it to final.
+        Assert.False(runner.ObservedFinalPathEqualsTempPath,
+            "Default actions (bProducerWritesFinalPath=false) must continue to use the "
+            + "temp-rename contract. The runner should have observed a .tmp.<pid>.<actionid> "
+            + "path different from the final path. Observed mapping: " + runner.LastObservedMapping);
+        Assert.Contains(".tmp.", runner.LastObservedMapping, StringComparison.Ordinal);
+
+        // Final-path artefact exists post-rename.
+        Assert.True(File.Exists(aOut.FullPath));
+    }
+
+    /// <summary>
+    /// Audit fix R5-C2 complement: when bProducerWritesFinalPath=true
+    /// and the runner declares success but does NOT write the final
+    /// path, the executor surfaces exit code 70 with a "produced output
+    /// is missing" diagnostic. This is the failure mode that the
+    /// pre-fix executor masked (it checked nonexistent .tmp.&lt;pid&gt;
+    /// paths) and produced misleading "did not produce temp output"
+    /// errors against compile actions.
+    /// </summary>
+    [Fact]
+    public void Execute_BProducerWritesFinalPath_MissingFinalPath_Fails()
+    {
+        FileItem aOut = MakeFileItem("a.out");
+
+        IExternalAction a = MakeFinalPathAction("A", Array.Empty<FileItem>(), new[] { aOut });
+
+        var graph = new Simgenics.XPact.XBT.ActionGraph.ActionGraph(new[] { a });
+        graph.Link();
+        graph.DetectCycles();
+        graph.Sort();
+
+        // Runner declares success but writes nothing -- simulating a
+        // bug in a real compiler (or a typo in /Fo / -o) that exits 0
+        // but produces no .obj.
+        var runner = new DeclaresSuccessButWritesNothingRunner();
+        var executor = new ParallelExecutor(new ParallelExecutorOptions { WorkerCount = 1 }, runner);
+        ExecutionReport report = executor.Execute(graph, CancellationToken.None);
+
+        Assert.False(report.AllSucceeded);
+        Assert.Equal(1, report.TotalFailed);
+        Assert.Single(report.Results);
+        ActionResult result = report.Results.Values.First();
+        Assert.Equal(70, result.ExitCode);
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+        Assert.Contains("declared success but produced output", result.ErrorMessage!, StringComparison.Ordinal);
+    }
+
     // ----- Helpers -----
 
     private IExternalAction MakeAction(
@@ -628,6 +751,37 @@ public sealed class ParallelExecutorTests : IDisposable
         int n = Interlocked.Increment(ref _seq);
         string path = Path.Combine(_scratchDir, $"{label}-{n}.bin");
         return FileItem.GetItemByPath(path);
+    }
+
+    /// <summary>
+    /// Audit fix R5-C2 test helper: build an action that opts into the
+    /// producer-writes-final-path contract (compile / PCH / link parity).
+    /// </summary>
+    private IExternalAction MakeFinalPathAction(
+        string name,
+        IReadOnlyList<FileItem> prereqs,
+        IReadOnlyList<FileItem> produces)
+    {
+        List<FileItem> sortedPrereqs = new(prereqs);
+        sortedPrereqs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+        List<FileItem> sortedProduces = new(produces);
+        sortedProduces.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        return ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.CompileCppAction,
+            PrerequisiteItems = sortedPrereqs,
+            ProducedItems = sortedProduces,
+            CommandPath = $"/fake/{name}.exe",
+            CommandArguments = new[] { "-D" + name + "=1" },
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "Test",
+            StatusDescription = name,
+            bUseActionHistory = false,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+            bProducerWritesFinalPath = true,
+        });
     }
 
     /// <summary>
@@ -667,6 +821,52 @@ public sealed class ParallelExecutorTests : IDisposable
             {
                 File.WriteAllText(tempPath, "synthetic-" + produced.FullPath);
             }
+            return new ActionRunResult(true, ExitCode: 0, ErrorMessage: null);
+        }
+    }
+
+    /// <summary>
+    /// Audit fix R5-C2: test runner that asserts the TempOutputPaths
+    /// entries it received equal the FINAL produced-item paths (the
+    /// invariant the executor must preserve when
+    /// <see cref="IExternalAction.bProducerWritesFinalPath"/> = true).
+    /// Writes each produced item to its final path so the executor's
+    /// post-run existence check passes.
+    /// </summary>
+    private sealed class FinalPathRecordingRunner : IActionRunner
+    {
+        public bool ObservedFinalPathEqualsTempPath { get; private set; } = true;
+        public string LastObservedMapping { get; private set; } = string.Empty;
+
+        public ActionRunResult RunAction(ActionRunContext context)
+        {
+            foreach ((FileItem produced, string tempPath) in context.TempOutputPaths)
+            {
+                if (!string.Equals(produced.FullPath, tempPath, StringComparison.Ordinal))
+                {
+                    ObservedFinalPathEqualsTempPath = false;
+                    LastObservedMapping = $"produced={produced.FullPath} temp={tempPath}";
+                }
+                // Write to the path the executor handed us (which under
+                // bProducerWritesFinalPath equals the final path).
+                File.WriteAllText(tempPath, "final-path-payload");
+            }
+            return new ActionRunResult(true, ExitCode: 0, ErrorMessage: null);
+        }
+    }
+
+    /// <summary>
+    /// Audit fix R5-C2: test runner that declares success but writes
+    /// nothing -- simulating a compiler that exited 0 without emitting
+    /// the requested output. Used to verify the executor's
+    /// "declared success but produced output is missing" diagnostic
+    /// fires under the producer-writes-final-path contract.
+    /// </summary>
+    private sealed class DeclaresSuccessButWritesNothingRunner : IActionRunner
+    {
+        public ActionRunResult RunAction(ActionRunContext context)
+        {
+            // Intentionally do not write any produced item.
             return new ActionRunResult(true, ExitCode: 0, ErrorMessage: null);
         }
     }

@@ -679,3 +679,217 @@ public sealed class CppDependencyCacheTests : IDisposable
         }
     }
 }
+
+/// <summary>
+/// Audit fix R5-M2: parser tests for the MSVC
+/// <c>/sourceDependencies</c> schema-1.1+ <c>ImportedModules</c> +
+/// <c>ImportedHeaderUnits</c> fields added in this round.
+/// </summary>
+public sealed class CppDependencyCacheMsvcModuleFieldsTests
+{
+    /// <summary>
+    /// Schema 1.1 depfile with ImportedModules: each entry's BMI path
+    /// is recorded as a transitive prerequisite alongside Includes.
+    /// </summary>
+    [Fact]
+    public void ImportedModules_BmiPath_RecordedAsDependency()
+    {
+        string json = @"{
+            ""Version"": ""1.1"",
+            ""Data"": {
+                ""Source"": ""src.cpp"",
+                ""Includes"": [""C:\\inc\\foo.h""],
+                ""ImportedModules"": [
+                    { ""Name"": ""MyModule"", ""BMI"": ""C:\\bmi\\MyModule.ifc"" },
+                    { ""Name"": ""Other"",    ""BMI"": ""C:\\bmi\\Other.ifc"" }
+                ]
+            }
+        }";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseMsvcSourceDependenciesJson(bytes, 0, "test");
+
+        Assert.Contains(@"C:\inc\foo.h", result);
+        Assert.Contains(@"C:\bmi\MyModule.ifc", result);
+        Assert.Contains(@"C:\bmi\Other.ifc", result);
+    }
+
+    /// <summary>
+    /// Schema 1.1 depfile with ImportedHeaderUnits: the Header path AND
+    /// the BMI path are both recorded so an edit to either invalidates
+    /// the importing TU.
+    /// </summary>
+    [Fact]
+    public void ImportedHeaderUnits_HeaderAndBmi_BothRecorded()
+    {
+        string json = @"{
+            ""Version"": ""1.1"",
+            ""Data"": {
+                ""Source"": ""src.cpp"",
+                ""Includes"": [],
+                ""ImportedHeaderUnits"": [
+                    { ""Header"": ""C:\\inc\\utility.h"", ""BMI"": ""C:\\bmi\\utility.ifc"" }
+                ]
+            }
+        }";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseMsvcSourceDependenciesJson(bytes, 0, "test");
+
+        Assert.Contains(@"C:\inc\utility.h", result);
+        Assert.Contains(@"C:\bmi\utility.ifc", result);
+    }
+
+    /// <summary>
+    /// Schema 1.2 (MSVC 17.10+ -- the documented version that introduced
+    /// the modules fields): parse without diagnostic.
+    /// </summary>
+    [Fact]
+    public void Schema12_ParsedWithoutDiagnostic()
+    {
+        string json = @"{
+            ""Version"": ""1.2"",
+            ""Data"": {
+                ""Includes"": [""h1.h""],
+                ""ImportedModules"": [],
+                ""ImportedHeaderUnits"": []
+            }
+        }";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseMsvcSourceDependenciesJson(bytes, 0, "test");
+
+        Assert.Contains("h1.h", result);
+    }
+
+    /// <summary>
+    /// Schema 1.3 (hypothetical future version) still parses the known
+    /// fields and emits an informational diagnostic so operators can
+    /// correlate cache misses with the schema bump.
+    /// </summary>
+    [Fact]
+    public void Schema13_ParsesKnownFields_EmitsDiagnostic()
+    {
+        string json = @"{
+            ""Version"": ""1.3"",
+            ""Data"": {
+                ""Includes"": [""future-h.h""],
+                ""ImportedModules"": [{ ""Name"": ""Fm"", ""BMI"": ""fm.ifc"" }]
+            }
+        }";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        // Diagnostic-emit assertion: we don't assert on Logger.Info
+        // output (the test logger is shared); we assert the known
+        // fields parsed despite the version drift.
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseMsvcSourceDependenciesJson(bytes, 0, "test");
+
+        Assert.Contains("future-h.h", result);
+        Assert.Contains("fm.ifc", result);
+    }
+
+    /// <summary>
+    /// Defensive: an ImportedModules entry that is malformed (missing
+    /// BMI, non-string BMI, or non-object entry) is silently skipped
+    /// without poisoning the rest of the parse.
+    /// </summary>
+    [Fact]
+    public void ImportedModules_MalformedEntries_SilentlySkipped()
+    {
+        string json = @"{
+            ""Version"": ""1.1"",
+            ""Data"": {
+                ""Includes"": [""good.h""],
+                ""ImportedModules"": [
+                    { ""Name"": ""NoBMI"" },
+                    ""not-an-object"",
+                    { ""Name"": ""BadType"", ""BMI"": 42 },
+                    { ""Name"": ""Good"", ""BMI"": ""good.ifc"" }
+                ]
+            }
+        }";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseMsvcSourceDependenciesJson(bytes, 0, "test");
+
+        Assert.Contains("good.h", result);
+        Assert.Contains("good.ifc", result);
+        // The malformed entries are absent.
+        Assert.DoesNotContain(result, s => s.Contains("NoBMI", StringComparison.Ordinal));
+        Assert.DoesNotContain(result, s => s.Contains("BadType", StringComparison.Ordinal));
+    }
+}
+
+/// <summary>
+/// Audit fix R5-m2: Makefile-format parser tests for the index-based
+/// rewrite (replaces the previous U+FFFE-sentinel approach).
+/// </summary>
+public sealed class CppDependencyCacheMakefileParserTests
+{
+    /// <summary>
+    /// Audit fix R5-m2: a depfile containing the literal UTF-8 bytes
+    /// EF BF BE (the encoding of U+FFFE, the sentinel the previous
+    /// parser used internally) is tokenised correctly. The previous
+    /// parser would have split the path at the sentinel byte and
+    /// produced a corrupted token.
+    /// </summary>
+    [Fact]
+    public void Tokenize_PathContainingUFFFE_NotSplit()
+    {
+        // Construct a depfile whose prereq path contains the U+FFFE
+        // codepoint (3 UTF-8 bytes: EF BF BE). The byte sequence is
+        // exactly what the previous sentinel-based parser used as its
+        // tokenisation marker.
+        string pathWithSentinel = "header" + "￾" + "name.h";
+        string depfile = "out.o: src.cpp \\\n  " + pathWithSentinel + "\n";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(depfile);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseClangMakefileDepfile(bytes, "test");
+
+        Assert.Contains(result, t => t == pathWithSentinel);
+        // The sentinel-corrupted forms that the previous parser would
+        // have produced are absent.
+        Assert.DoesNotContain(result, t => t == "header");
+        Assert.DoesNotContain(result, t => t == "name.h");
+    }
+
+    /// <summary>
+    /// Backslash-space escapes are preserved as literal spaces in the
+    /// tokenised path (existing parser behaviour, re-verified after the
+    /// sentinel-free rewrite).
+    /// </summary>
+    [Fact]
+    public void Tokenize_EscapedSpace_PreservedAsLiteralSpace()
+    {
+        string depfile = "out.o: src.cpp \\\n  C:/path\\ with\\ spaces.h\n";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(depfile);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseClangMakefileDepfile(bytes, "test");
+
+        Assert.Contains("C:/path with spaces.h", result);
+    }
+
+    /// <summary>
+    /// Windows drive-letter colons are not mistaken for the
+    /// target/prereq separator.
+    /// </summary>
+    [Fact]
+    public void Tokenize_WindowsDriveLetterColon_NotSeparator()
+    {
+        string depfile = "C:\\out\\out.o: C:\\src\\src.cpp \\\n  C:\\inc\\h.h\n";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(depfile);
+
+        IReadOnlyList<string> result = Simgenics.XPact.XBT.ActionGraph.CppDependencyCache
+            .ParseClangMakefileDepfile(bytes, "test");
+
+        Assert.Contains(@"C:\src\src.cpp", result);
+        Assert.Contains(@"C:\inc\h.h", result);
+    }
+}

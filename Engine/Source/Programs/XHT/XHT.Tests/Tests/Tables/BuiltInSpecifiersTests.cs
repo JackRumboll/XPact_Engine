@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Tables;
 
 /// <summary>
 /// Tests asserting the Phase-1 locked specifier vocabulary per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 7 + Section 7.4 +
+/// <c>/Documents/XHT.html</c> Rev 7 Section 7 + Section 7.4 +
 /// <c>/Documents/XToolchainContract.html</c> Section 1.2.
 /// </summary>
 public class BuiltInSpecifiersTests
@@ -54,7 +54,7 @@ public class BuiltInSpecifiersTests
     [Fact]
     public void Class_Specifier_Section74_IntrinsicMinimalAPINoExportWithinConfig()
     {
-        // Per XHT.html Rev 5 Section 7.4, these five specifiers drive
+        // Per XHT.html Rev 7 Section 7.4, these five specifiers drive
         // emit-time class-flag branching and MUST be registered against
         // SpecifierContext.Class.
         foreach (string name in new[] { "Intrinsic", "MinimalAPI", "NoExport", "Within", "Config" })

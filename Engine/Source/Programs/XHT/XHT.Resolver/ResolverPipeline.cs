@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Resolver;
 
 /// <summary>
 /// Top-level orchestrator for the seven-active-phase resolve pipeline per
-/// <c>/Documents/XHT.html</c> Rev 6 Section 5.1 + Section 5.2.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 5.1 + Section 5.2.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -104,7 +104,7 @@ public sealed class ResolverPipeline
         // Phase order per Rev 6 (Round-2 audit C3): RecursiveStructCheck
         // is now AFTER Properties so the cycle walker can traverse the
         // resolved field-type graph (not just the Super chain). See
-        // /Documents/XHT.html Rev 6 Section 5.1 phase table for rationale.
+        // /Documents/XHT.html Rev 7 Section 5.1 phase table for rationale.
         Run(ResolvePhase.Pairings, phase, new StepResolvePairings());
         Run(ResolvePhase.InvalidCheck, phase, new StepResolveInvalidCheck());
         Run(ResolvePhase.BindSuperAndBases, phase, new StepBindSuperAndBases());

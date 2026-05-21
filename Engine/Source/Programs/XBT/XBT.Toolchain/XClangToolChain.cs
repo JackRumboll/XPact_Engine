@@ -582,6 +582,10 @@ public sealed class XClangToolChain : XToolChain
                 // atomic-rename and orphan-sweep apply); the
                 // DependencyListFile property is the cache-layer hook.
                 DependencyListFile = FileItem.GetItemByPath(depPath),
+                // Audit fix R5-C2: clang.exe writes -o <obj> and -MF <d>
+                // directly to their final paths. Opt out of the
+                // executor's temp-rename contract.
+                bProducerWritesFinalPath = true,
             }),
         };
     }
@@ -734,6 +738,18 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-x");
         args.Add("c++-header");
 
+        // === Header dependency tracking (audit fix R5-C1) ===
+        // Without -MD -MF, transitively-included headers do NOT invalidate
+        // the cached .pchi. Every consumer .o that depends on the .pchi
+        // then serves silently-stale codegen if any of those headers is
+        // edited. The -MD flag emits prerequisite tracking; -MF directs
+        // it to a sibling .d file the cache layer parses post-build.
+        string pchDepPath = pchOutputPath + ".d";
+        args.Add("-MD");
+        args.Add("-MF");
+        args.Add(pchDepPath);
+        FileItem pchDepItem = FileItem.GetItemByPath(pchDepPath);
+
         // Output then input (clang convention).
         args.Add("-o");
         args.Add(pchOutputPath);
@@ -757,11 +773,16 @@ public sealed class XClangToolChain : XToolChain
         pchCacheKey.Add($"DescriptorHash={ResolveDescriptorHash(module)}");
         pchCacheKey.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
 
+        // ProducedItems must be sorted ordinal. The .pchi path is a
+        // prefix of the .pchi.d path so .pchi comes first.
+        FileItem[] pchProduced = { pchOutputItem, pchDepItem };
+        Array.Sort(pchProduced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
         IExternalAction action = ExternalAction.Create(new ExternalAction
         {
             ActionType = XActionType.PCHGenerationAction,
             PrerequisiteItems = new[] { pchHeaderFile },
-            ProducedItems = new[] { pchOutputItem },
+            ProducedItems = pchProduced,
             CommandPath = _clangPath,
             CommandArguments = args,
             WorkingDirectory = _repoRoot,
@@ -774,6 +795,12 @@ public sealed class XClangToolChain : XToolChain
             Platform = target.Platform,
             Weight = 4.0,
             CacheKeyComponents = pchCacheKey,
+            // Audit fix R5-C1: surface the .d depfile to the cache so
+            // transitive-header edits invalidate the PCH on next build.
+            DependencyListFile = pchDepItem,
+            // Audit fix R5-C2: clang writes -o <pchi> and -MF <.d>
+            // directly to their final paths.
+            bProducerWritesFinalPath = true,
         });
 
         return new PCHBinding(
@@ -888,6 +915,22 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-x");
         args.Add("c++-header");
 
+        // === Header dependency tracking (audit fix R5-C1) ===
+        // Without -MD -MF, transitively-included headers do not
+        // invalidate the cached shared .pchi. Every participant module
+        // consumer .o serving the stale .pchi inherits the staleness.
+        //
+        // Naming: shared-PCH paths already include a 64-char group hash
+        // that approaches MAX_PATH on Windows; the depfile uses just
+        // "<groupHash>.d" so the depfile path is meaningfully shorter.
+        // The Makefile-format parser auto-detects content (no '{' prefix)
+        // so the file extension is correctness-neutral.
+        string pchDepPath = Path.Combine(sharedDir, groupHash + ".d");
+        args.Add("-MD");
+        args.Add("-MF");
+        args.Add(pchDepPath);
+        FileItem pchDepItem = FileItem.GetItemByPath(pchDepPath);
+
         // Output then input (clang convention).
         args.Add("-o");
         args.Add(pchOutputPath);
@@ -921,11 +964,16 @@ public sealed class XClangToolChain : XToolChain
         cacheKeyComponents.Add($"EnvelopeFlagsHash={ComputeEnvelopeFlagsHash(androidTriple)}");
         cacheKeyComponents.Add($"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}");
 
+        // ProducedItems must be sorted ordinal. The .pchi path is a
+        // prefix of the .pchi.d path so .pchi comes first.
+        FileItem[] sharedPchProduced = { pchOutputItem, pchDepItem };
+        Array.Sort(sharedPchProduced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
         IExternalAction action = ExternalAction.Create(new ExternalAction
         {
             ActionType = XActionType.PCHGenerationAction,
             PrerequisiteItems = new[] { headerFileItem },
-            ProducedItems = new[] { pchOutputItem },
+            ProducedItems = sharedPchProduced,
             CommandPath = _clangPath,
             CommandArguments = args,
             WorkingDirectory = _repoRoot,
@@ -938,6 +986,10 @@ public sealed class XClangToolChain : XToolChain
             Platform = target.Platform,
             Weight = 4.0,
             CacheKeyComponents = cacheKeyComponents,
+            // Audit fix R5-C1: surface depfile to cache.
+            DependencyListFile = pchDepItem,
+            // Audit fix R5-C2: producer writes final paths.
+            bProducerWritesFinalPath = true,
         });
 
         return new PCHBinding(
@@ -1050,6 +1102,9 @@ public sealed class XClangToolChain : XToolChain
             Platform = target.Platform,
             Weight = 4.0,
             CacheKeyComponents = BuildLinkCacheKeyComponents(module, target, androidTriple),
+            // Audit fix R5-C2: clang's linker driver writes -o <so>
+            // directly to the final path.
+            bProducerWritesFinalPath = true,
         });
     }
 

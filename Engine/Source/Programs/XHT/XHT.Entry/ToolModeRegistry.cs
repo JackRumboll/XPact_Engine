@@ -25,7 +25,7 @@ public static class ToolModeRegistry
     /// </summary>
     /// <returns>
     /// Read-only dictionary keyed on the case-insensitive mode name (the
-    /// kebab-case form per <c>/Documents/XHT.html</c> Rev 5 Section 1).
+    /// kebab-case form per <c>/Documents/XHT.html</c> Rev 7 Section 1).
     /// </returns>
     public static IReadOnlyDictionary<string, IToolMode> Build()
     {

@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// Abstract base record for every reflected type XHT produces:
 /// <see cref="XhtClass"/>, <see cref="XhtStruct"/>, <see cref="XhtEnum"/>,
 /// <see cref="XhtInterface"/>, <see cref="XhtDelegate"/>. Per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 4.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -48,7 +48,7 @@ public abstract record XhtTypeBase(
 {
     /// <summary>
     /// Engine-name key used by the resolver's symbol table per
-    /// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 + Section 5.3.
+    /// <c>/Documents/XHT.html</c> Rev 7 Section 3.3 + Section 5.3.
     /// </summary>
     /// <remarks>
     /// The key is the lowercased source identifier. XPact's permanent

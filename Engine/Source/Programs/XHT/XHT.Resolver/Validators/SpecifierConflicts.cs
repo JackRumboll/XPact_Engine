@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Resolver.Validators;
 
 /// <summary>
 /// Static helper detecting common specifier conflicts per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 6.2 (validator catalog) +
+/// <c>/Documents/XHT.html</c> Rev 7 Section 6.2 (validator catalog) +
 /// Section 7.4 (class-flag coherence). Mirrors UHT's
 /// <c>UhtClass.ValidateClassFlags</c> + <c>UhtProperty.Validate</c>
 /// precedent.

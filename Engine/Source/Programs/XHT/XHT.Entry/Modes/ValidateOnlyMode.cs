@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1b stub of the <c>validate-only</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -56,8 +56,14 @@ public sealed class ValidateOnlyMode : IToolMode
         XbtModule? module = XbtManifestReader.FindModule(manifest, opts.ModuleName);
         if (module is null)
         {
+            // XHT004 -- Module not in manifest per /Documents/XHT.html
+            // Rev 7 Section 23.2 (X-CR1 remap to exit 50). The
+            // catalog-anchored code carries through so the entry-point
+            // catch surfaces "error XHT004: ..." rather than the
+            // generic XHT050 shim.
             throw new ManifestMalformedException(
-                $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
+                diagnosticCode: "XHT004",
+                message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 
         Logger.Info(

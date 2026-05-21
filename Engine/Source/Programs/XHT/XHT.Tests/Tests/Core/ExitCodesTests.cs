@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 
 /// <summary>
 /// Tests asserting the exit-code constants match Contract Section 13.1
-/// + <c>/Documents/XHT.html</c> Rev 5 Section 1.3 exactly. If a future
+/// + <c>/Documents/XHT.html</c> Rev 7 Section 1.3 exactly. If a future
 /// edit changes any value here the CI/IDE-facing wire format breaks --
 /// these tests are the lock.
 /// </summary>

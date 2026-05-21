@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Tables;
 
 /// <summary>
 /// Tests for <see cref="XhtEngineClassTable"/>: exact case-sensitive
-/// lookup of engine-anchor types per <c>/Documents/XHT.html</c> Rev 5
+/// lookup of engine-anchor types per <c>/Documents/XHT.html</c> Rev 7
 /// Section 2 (Rev 2 addition mirroring UHT's UhtEngineClassTable).
 /// </summary>
 public class XhtEngineClassTableTests

@@ -8,7 +8,7 @@ using Xunit;
 namespace Simgenics.XPact.XHT.Tests.Tests.Emitter;
 
 /// <summary>
-/// Cross-tool naming contract per <c>/Documents/XHT.html</c> Rev 5
+/// Cross-tool naming contract per <c>/Documents/XHT.html</c> Rev 7
 /// Section 9 + <c>/Documents/XBT.html</c> Rev 10 Section 9.4. XBT
 /// pre-discovers XHT's output filenames before XHT runs, so the two
 /// tools' filename derivations MUST produce byte-identical results for

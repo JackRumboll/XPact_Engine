@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 
 /// <summary>
 /// Tests for <see cref="AtomicFile"/>. The atomic write contract per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 8.5 + Section 14:
+/// <c>/Documents/XHT.html</c> Rev 7 Section 8.5 + Section 14:
 /// temp-file + fsync + rename, no torn observable state, UTF-8 without
 /// BOM, AV-retry on rename.
 /// </summary>

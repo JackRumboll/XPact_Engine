@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using Simgenics.XPact.XHT.Core;
 using Simgenics.XPact.XHT.Entry;
@@ -11,23 +12,39 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="Program"/>'s mode dispatch + exit-code path per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.3.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.3.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Tests invoke <see cref="Program.Main"/> directly; the Logger's stderr
 /// override captures the diagnostic text so we can assert message
 /// content. Logger state is process-global so the collection serialises
 /// these tests against the parallel LoggerTests collection.
+/// </para>
+/// <para>
+/// Round 5 R4-CR2: the end-to-end <c>Main_</c>...<c>_EmitsXHT</c><i>NNN</i>
+/// tests near the bottom of this class exercise the entry-point catch
+/// surface that maps a <see cref="Simgenics.XPact.XHT.Manifest.ManifestMalformedException"/>
+/// to an "error XHT<i>NNN</i>: ..." stderr line. Each test asserts both
+/// the exit code AND that the catalog-anchored diagnostic code (per
+/// <c>/Documents/XHT.html</c> Section 23.2) lands on stderr.
+/// </para>
 /// </remarks>
 [Collection(nameof(ProgramTests))]
 [CollectionDefinition(nameof(ProgramTests), DisableParallelization = true)]
 public sealed class ProgramTests : IDisposable
 {
+    private readonly string _tempDir;
+
     public ProgramTests()
     {
         Logger.DisableJsonChannel();
         Logger.ResetCounters();
         Logger.__SetStderrForTesting(null);
+        _tempDir = Path.Combine(
+            Path.GetTempPath(),
+            "XHT.Tests-Program-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempDir);
     }
 
     public void Dispose()
@@ -35,6 +52,17 @@ public sealed class ProgramTests : IDisposable
         Logger.DisableJsonChannel();
         Logger.ResetCounters();
         Logger.__SetStderrForTesting(null);
+        try
+        {
+            if (Directory.Exists(_tempDir))
+            {
+                Directory.Delete(_tempDir, recursive: true);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup.
+        }
     }
 
     [Fact]
@@ -154,5 +182,247 @@ public sealed class ProgramTests : IDisposable
         });
 
         Assert.Equal(ExitCodes.ManifestMalformed, exit);
+    }
+
+    // ---------------------------------------------------------------------
+    // Round 5 R4-CR2: end-to-end tests that exercise Program.Main's catch
+    // surface for catalog-anchored manifest-malformed diagnostic codes per
+    // /Documents/XHT.html Rev 7 Section 23.2. Each test:
+    //   (a) writes a synthetic manifest condition to disk (or omits the
+    //       file entirely),
+    //   (b) invokes Program.Main with the parse-module mode,
+    //   (c) asserts exit code = 50 (ManifestMalformed), and
+    //   (d) asserts the catalog-anchored "error XHT<NNN>:" string lands
+    //       on stderr (so operators reading the build log see the
+    //       actionable code rather than the legacy XHT050 shim).
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// XHT001 -- Manifest not found. The XbtManifestReader's
+    /// File.Exists branch fires with diagnosticCode "XHT001"; the
+    /// entry-point catch surfaces "error XHT001: ...".
+    /// </summary>
+    [Fact]
+    public async Task Main_ParseModuleNonexistentManifest_EmitsXHT001OnStderr()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        string fakePath = Path.Combine(_tempDir, $"no-such-manifest-{Guid.NewGuid():N}.json");
+        Assert.False(File.Exists(fakePath), "Sanity: the synthetic manifest path must not exist.");
+
+        int exit = await Program.Main(new[]
+        {
+            "parse-module",
+            $"-Manifest={fakePath}",
+            "-Module=X",
+            $"-Out={_tempDir}",
+        });
+
+        Assert.Equal(ExitCodes.ManifestMalformed, exit);
+        string stderr = sw.ToString();
+        Assert.Contains("error XHT001:", stderr, StringComparison.Ordinal);
+        Assert.Contains(fakePath, stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// XHT002 -- ContractVersion mismatch. The reader fires when the
+    /// manifest's ContractVersion does not match XHT's compile-time pin;
+    /// the entry-point catch surfaces "error XHT002: ..." with both the
+    /// observed and expected values so operators can decide which side to
+    /// rebuild.
+    /// </summary>
+    [Fact]
+    public async Task Main_ParseModuleWithMismatchedContractVersion_EmitsXHT002OnStderr()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        const string mismatchedVersion = "99.99+deadbeefcafebabe";
+        string manifestPath = WriteManifestWithContractVersion(mismatchedVersion);
+        string outDir = Path.Combine(_tempDir, "Out");
+        Directory.CreateDirectory(outDir);
+
+        int exit = await Program.Main(new[]
+        {
+            "parse-module",
+            $"-Manifest={manifestPath}",
+            "-Module=XScoring",
+            $"-Out={outDir}",
+        });
+
+        Assert.Equal(ExitCodes.ManifestMalformed, exit);
+        string stderr = sw.ToString();
+        Assert.Contains("error XHT002:", stderr, StringComparison.Ordinal);
+        // Operator-actionable diagnostic must name BOTH versions.
+        Assert.Contains(mismatchedVersion, stderr, StringComparison.Ordinal);
+        Assert.Contains(XhtVersion.ContractVersion, stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// XHT003 -- Manifest verifier rejection (depth-limit violation in
+    /// the hardened JSON reader). Fires when the manifest JSON nests
+    /// beyond <c>XbtManifestReader.MaxJsonDepth</c> = 64.
+    /// </summary>
+    [Fact]
+    public async Task Main_ParseModuleWithExcessiveDepth_EmitsXHT003OnStderr()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        // Construct a JSON payload that exceeds MaxJsonDepth = 64. 80
+        // levels of array-nesting trips the hardened-reader pre-pass
+        // before the binder runs. The contents are otherwise irrelevant
+        // -- the validator never reaches them.
+        StringBuilder sb = new();
+        for (int i = 0; i < 80; i++) { sb.Append('['); }
+        for (int i = 0; i < 80; i++) { sb.Append(']'); }
+        string manifestPath = Path.Combine(_tempDir, "deep.json");
+        File.WriteAllText(manifestPath, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string outDir = Path.Combine(_tempDir, "Out");
+        Directory.CreateDirectory(outDir);
+
+        int exit = await Program.Main(new[]
+        {
+            "parse-module",
+            $"-Manifest={manifestPath}",
+            "-Module=X",
+            $"-Out={outDir}",
+        });
+
+        Assert.Equal(ExitCodes.ManifestMalformed, exit);
+        Assert.Contains("error XHT003:", sw.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// XHT004 -- Module not in manifest. The ParseModuleMode dispatch
+    /// throws when <c>XbtManifestReader.FindModule</c> returns null; the
+    /// entry-point catch surfaces "error XHT004: ...". Replaces the
+    /// pre-Round-5 XHT050 shim per the R4-CR1 fix.
+    /// </summary>
+    [Fact]
+    public async Task Main_ParseModuleWithMissingModule_EmitsXHT004OnStderr()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        string manifestPath = TestManifestBuilder.WriteOneModuleManifest(_tempDir, "Existing");
+        string outDir = Path.Combine(_tempDir, "Out");
+        Directory.CreateDirectory(outDir);
+
+        int exit = await Program.Main(new[]
+        {
+            "parse-module",
+            $"-Manifest={manifestPath}",
+            "-Module=NotPresent",
+            $"-Out={outDir}",
+        });
+
+        Assert.Equal(ExitCodes.ManifestMalformed, exit);
+        string stderr = sw.ToString();
+        Assert.Contains("error XHT004:", stderr, StringComparison.Ordinal);
+        Assert.Contains("NotPresent", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The R4-CR1 strict-assertion path: a ManifestMalformedException with
+    /// a null DiagnosticCode now surfaces as XHT900 (internal compiler
+    /// error) rather than the legacy XHT050 shim. The current production
+    /// code paths all carry diagnostic codes, so this defensive surface
+    /// fires only when a future throw site forgets to anchor itself. We
+    /// validate the shape by inspecting the catch-flow indirectly --
+    /// every existing test that exercises ManifestMalformedException
+    /// must continue to surface a non-XHT900 code, which the four tests
+    /// above already cover.
+    /// </summary>
+    [Fact]
+    public async Task Main_ParseModuleWithMismatchedContractVersion_DoesNotEmitXHT900Fallback()
+    {
+        // Regression guard for the R4-CR1 fix: an exception that DOES
+        // carry a DiagnosticCode must NOT trip the XHT900 ICE branch.
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        string manifestPath = WriteManifestWithContractVersion("99.99+deadbeefcafebabe");
+        string outDir = Path.Combine(_tempDir, "Out");
+        Directory.CreateDirectory(outDir);
+
+        int exit = await Program.Main(new[]
+        {
+            "parse-module",
+            $"-Manifest={manifestPath}",
+            "-Module=XScoring",
+            $"-Out={outDir}",
+        });
+
+        Assert.Equal(ExitCodes.ManifestMalformed, exit);
+        string stderr = sw.ToString();
+        // The XHT900 ICE branch is the un-anchored-throw-site defence;
+        // a properly-anchored XHT002 throw must not trip it.
+        Assert.DoesNotContain("XHT900", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("XHT050", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Helper: write a manifest with a specific <c>ContractVersion</c>
+    /// value (used by the XHT002 mismatch tests). All other fields are
+    /// the minimal-valid shape from <see cref="TestManifestBuilder"/>'s
+    /// one-module template.
+    /// </summary>
+    private string WriteManifestWithContractVersion(string contractVersion)
+    {
+        string json = $$"""
+            {
+              "ContractVersion": "{{contractVersion}}",
+              "EngineVersion": "0.1.0",
+              "Target": {
+                "Name": "MiningTrainingEditor",
+                "Type": "Editor",
+                "Platform": "Win64",
+                "Configuration": "Development",
+                "Architecture": "x86_64",
+                "GCRootABI": "Span-based v1",
+                "ExceptionABI": "Tier1-Shim/Tier2-Direct",
+                "ManglingScheme": "Itanium-LengthPrefixed-v1",
+                "FipsMode": false,
+                "SimPathConservativeRootsAllowed": false,
+                "SimdLevelDefault": "SSE42",
+                "StationRole": "None"
+              },
+              "RootLocalPath": "C:/repo",
+              "ExternalDependenciesFile": null,
+              "Modules": [
+                {
+                  "Name": "XScoring",
+                  "Tier": "Engine",
+                  "ModuleType": "Runtime",
+                  "Languages": "Both",
+                  "BaseDirectory": "Engine/Source/Runtime/XScoring",
+                  "SourceFiles": [],
+                  "PublicHeaders": [],
+                  "PrivateHeaders": [],
+                  "InternalHeaders": [],
+                  "CSharpSources": [],
+                  "IncludePaths": [],
+                  "PublicDefines": [],
+                  "ModuleDependencies": [],
+                  "GeneratedCPPFilenameBase": "XScoring",
+                  "SimPath": false,
+                  "EngineVersionCompat": "0.1.0",
+                  "SimdLevel": "Default",
+                  "PCHUsage": "Default",
+                  "ExcludeFromSharedPCH": false,
+                  "AllowHotReload": false,
+                  "IsTestModule": false,
+                  "DeprecationMessage": null,
+                  "MinimumToolchainVersion": null
+                }
+              ]
+            }
+            """;
+
+        string path = Path.Combine(_tempDir, "Manifest.json");
+        File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        return path;
     }
 }

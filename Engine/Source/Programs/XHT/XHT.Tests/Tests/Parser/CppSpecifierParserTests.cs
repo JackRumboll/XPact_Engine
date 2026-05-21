@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 /// <summary>
 /// Tests for <see cref="CppSpecifierParser"/>. Specifier grammar
 /// recognition + context validation per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 7.2.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 7.2.
 /// </summary>
 public class CppSpecifierParserTests
 {

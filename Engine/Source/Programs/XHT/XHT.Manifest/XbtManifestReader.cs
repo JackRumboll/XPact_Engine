@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 // XBT manifest input DTOs. The shape mirrors
 // /Engine/Source/Programs/XBT/XBT.Manifest/ManifestSchema.cs verbatim
 // for the fields XHT needs at parse time, per /Documents/XHT.html
-// Rev 6 Section 9.1 + Contract Section 10.2.
+// Rev 7 Section 9.1 + Contract Section 10.2.
 //
 // XHT does NOT link XBT.Manifest at runtime per XHT.html Section 2 +
 // the architectural decision in Section 25.2 item 1 (standalone-tool
@@ -209,7 +209,7 @@ public sealed record XbtModuleDep(
 /// <summary>
 /// One reflected module's manifest entry. The set of fields here is a
 /// strict subset of XBT's <c>Module</c> record -- the subset XHT actually
-/// needs at parse time per <c>/Documents/XHT.html</c> Rev 6 Section 9.1.
+/// needs at parse time per <c>/Documents/XHT.html</c> Rev 7 Section 9.1.
 /// </summary>
 /// <param name="Name">Module name (e.g. <c>XScoring</c>).</param>
 /// <param name="Tier">Tier (Engine / Studio / Project).</param>
@@ -310,7 +310,7 @@ public sealed record XbtManifest(
 
 /// <summary>
 /// Reader for the XBT manifest XHT consumes per
-/// <c>/Documents/XHT.html</c> Rev 6 Section 9.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 9.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -376,15 +376,24 @@ public static class XbtManifestReader
 
         if (!File.Exists(manifestJsonPath))
         {
+            // XHT001 -- Manifest missing per /Documents/XHT.html Rev 7
+            // Section 23.2. The catalog-anchored code lets the entry-point
+            // catch surface "error XHT001: ..." instead of the generic
+            // XHT050 shim so operators can distinguish missing-file from
+            // other manifest failures without parsing the message string.
             throw new ManifestMalformedException(
-                $"XBT manifest not found: {manifestJsonPath}");
+                diagnosticCode: "XHT001",
+                message: $"XBT manifest not found: {manifestJsonPath}");
         }
 
         FileInfo fi = new(manifestJsonPath);
         if (fi.Length > MaxManifestBytes)
         {
+            // XHT003 -- Verifier limit violation (manifest payload too
+            // large) per Section 23.2.
             throw new ManifestMalformedException(
-                $"XBT manifest exceeds {MaxManifestBytes} bytes (got {fi.Length}): {manifestJsonPath}");
+                diagnosticCode: "XHT003",
+                message: $"XBT manifest exceeds {MaxManifestBytes} bytes (got {fi.Length}): {manifestJsonPath}");
         }
 
         byte[] bytes;
@@ -394,8 +403,13 @@ public static class XbtManifestReader
         }
         catch (IOException ex)
         {
+            // I/O during read is classified as a verifier-rejection
+            // (XHT003); the manifest file exists but is unreadable, so
+            // the verifier cannot validate it.
             throw new ManifestMalformedException(
-                $"Failed to read XBT manifest at {manifestJsonPath}: {ex.Message}", ex);
+                diagnosticCode: "XHT003",
+                message: $"Failed to read XBT manifest at {manifestJsonPath}: {ex.Message}",
+                inner: ex);
         }
 
         return DeserializeJsonBytes(bytes);
@@ -414,7 +428,7 @@ public static class XbtManifestReader
         // TODO Phase 1c: wire up FlatSharp greedy-materialised reader.
         // Schema-compile step lands in XHT.Manifest.csproj's FlatSharp.targets
         // mirroring /Engine/Source/Programs/XBT/XBT.Manifest/FlatSharp.targets.
-        // Phase 1b is JSON-only per /Documents/XHT.html Rev 6 Section 9.1.
+        // Phase 1b is JSON-only per /Documents/XHT.html Rev 7 Section 9.1.
         return null;
     }
 
@@ -429,13 +443,18 @@ public static class XbtManifestReader
     {
         if (json.Length == 0)
         {
-            throw new ManifestMalformedException("XBT manifest payload is empty.");
+            // XHT003 -- Manifest verifier rejection (empty payload is a
+            // verifier-limit floor violation).
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT003",
+                message: "XBT manifest payload is empty.");
         }
 
         if (json.Length > MaxManifestBytes)
         {
             throw new ManifestMalformedException(
-                $"XBT manifest payload exceeds {MaxManifestBytes} bytes ({json.Length}).");
+                diagnosticCode: "XHT003",
+                message: $"XBT manifest payload exceeds {MaxManifestBytes} bytes ({json.Length}).");
         }
 
         // Strip the UTF-8 BOM if a hand-edited manifest carries one.
@@ -461,8 +480,13 @@ public static class XbtManifestReader
         }
         catch (JsonException ex)
         {
+            // XHT003 -- Manifest verifier rejection. The hardened reader
+            // catches depth / trailing-comma / comment violations here
+            // before the binder runs.
             throw new ManifestMalformedException(
-                $"XBT manifest JSON failed hardened-reader validation: {ex.Message}", ex);
+                diagnosticCode: "XHT003",
+                message: $"XBT manifest JSON failed hardened-reader validation: {ex.Message}",
+                inner: ex);
         }
 
         XbtManifest? manifest;
@@ -472,17 +496,37 @@ public static class XbtManifestReader
         }
         catch (JsonException ex)
         {
+            // XHT003 -- Manifest verifier rejection at binder stage. A
+            // bad-shape payload, an unknown enum member, or a type
+            // mismatch lands here.
             throw new ManifestMalformedException(
-                $"XBT manifest JSON failed to deserialize: {ex.Message}", ex);
+                diagnosticCode: "XHT003",
+                message: $"XBT manifest JSON failed to deserialize: {ex.Message}",
+                inner: ex);
         }
 
         if (manifest is null)
         {
-            throw new ManifestMalformedException("XBT manifest JSON deserialized to null.");
+            // XHT003 -- Manifest verifier rejection. A literal `null` JSON
+            // payload deserializes to a null manifest reference; treat as
+            // a verifier-limit violation rather than a silent accept.
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT003",
+                message: "XBT manifest JSON deserialized to null.");
         }
 
-        ValidateLimits(manifest);
+        // Round 5 R4-MA2: ValidateContractVersion MUST run BEFORE
+        // ValidateLimits. If a manifest carries both a CV mismatch AND a
+        // limits violation (oversize string field, too-deep array, etc.),
+        // the operator's actionable fix is "rebuild against the matching
+        // Contract" -- the limits violation is a downstream consequence
+        // of the schema drift, not a user-fixable problem on its own.
+        // Swapping the order surfaces XHT002 (the catalog-anchored
+        // diagnostic with both observed + expected version strings)
+        // instead of an XHT003 limit message that the operator cannot
+        // act on without first knowing the schemas disagree.
         ValidateContractVersion(manifest);
+        ValidateLimits(manifest);
         return manifest;
     }
 
@@ -490,7 +534,7 @@ public static class XbtManifestReader
     /// Verify the manifest's <see cref="XbtManifest.ContractVersion"/>
     /// matches XHT's compile-time
     /// <see cref="XhtVersion.ContractVersion"/> per
-    /// <c>/Documents/XHT.html</c> Rev 6 Section 23.2 (diagnostic
+    /// <c>/Documents/XHT.html</c> Rev 7 Section 23.2 (diagnostic
     /// <c>XHT002</c>). Comparison is an ordinal string-equality check
     /// over the full composite <c>&lt;tag&gt;+&lt;hash&gt;</c> form
     /// (e.g. <c>"13.2+b04ae3cc84cdd9f3"</c>).
@@ -524,6 +568,17 @@ public static class XbtManifestReader
     /// (semantic-tag <c>+</c> structure-hash); a partial-tag-only
     /// fallback would defeat the structure-hash protection that
     /// <see cref="XhtVersion.ContractVersion"/> deliberately encodes.
+    /// </para>
+    /// <para>
+    /// <b>Ordering invariant (Round 5 R4-MA2).</b> This check MUST run
+    /// before <see cref="ValidateLimits"/>. A manifest that both mismatches
+    /// the contract version AND violates a limit (oversize string field,
+    /// over-long array, etc.) is fundamentally a schema-drift case: the
+    /// limits violation is a downstream consequence the operator cannot
+    /// fix without first knowing the schemas disagree. Surfacing XHT002
+    /// first gives the operator the actionable diagnostic; the limits
+    /// check runs only against payloads that have at least passed the
+    /// schema-version gate.
     /// </para>
     /// </remarks>
     private static void ValidateContractVersion(XbtManifest manifest)
@@ -559,7 +614,7 @@ public static class XbtManifestReader
 
     /// <summary>
     /// Find a module by name. Returns null when the module is not present.
-    /// Per <c>/Documents/XHT.html</c> Rev 6 Section 1.3, a module-not-in-
+    /// Per <c>/Documents/XHT.html</c> Rev 7 Section 1.3, a module-not-in-
     /// manifest lookup failure is the caller's signal to exit
     /// <see cref="Simgenics.XPact.XHT.Core.ExitCodes.ManifestMalformed"/>
     /// (50).
@@ -591,7 +646,8 @@ public static class XbtManifestReader
         if (m.Target is null)
         {
             throw new ManifestMalformedException(
-                $"{nameof(m.Target)} is null (required).");
+                diagnosticCode: "XHT003",
+                message: $"{nameof(m.Target)} is null (required).");
         }
         CheckString(m.Target.Name, $"{nameof(m.Target)}.{nameof(m.Target.Name)}");
         CheckString(m.Target.Architecture, $"{nameof(m.Target)}.{nameof(m.Target.Architecture)}");
@@ -602,12 +658,14 @@ public static class XbtManifestReader
         if (m.Modules is null)
         {
             throw new ManifestMalformedException(
-                $"{nameof(m.Modules)} is null (required).");
+                diagnosticCode: "XHT003",
+                message: $"{nameof(m.Modules)} is null (required).");
         }
         if (m.Modules.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                $"Manifest.Modules array exceeds {MaxArrayLength} entries ({m.Modules.Count}).");
+                diagnosticCode: "XHT003",
+                message: $"Manifest.Modules array exceeds {MaxArrayLength} entries ({m.Modules.Count}).");
         }
 
         foreach (XbtModule mod in m.Modules)
@@ -644,12 +702,15 @@ public static class XbtManifestReader
     {
         if (value is null)
         {
-            throw new ManifestMalformedException($"{context} is null (required).");
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT003",
+                message: $"{context} is null (required).");
         }
         if (value.Length > MaxStringField)
         {
             throw new ManifestMalformedException(
-                $"{context} exceeds {MaxStringField} chars ({value.Length}).");
+                diagnosticCode: "XHT003",
+                message: $"{context} exceeds {MaxStringField} chars ({value.Length}).");
         }
     }
 
@@ -662,7 +723,8 @@ public static class XbtManifestReader
         if (value.Length > MaxStringField)
         {
             throw new ManifestMalformedException(
-                $"{context} exceeds {MaxStringField} chars ({value.Length}).");
+                diagnosticCode: "XHT003",
+                message: $"{context} exceeds {MaxStringField} chars ({value.Length}).");
         }
     }
 
@@ -670,12 +732,15 @@ public static class XbtManifestReader
     {
         if (list is null)
         {
-            throw new ManifestMalformedException($"{context} is null (required).");
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT003",
+                message: $"{context} is null (required).");
         }
         if (list.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
+                diagnosticCode: "XHT003",
+                message: $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
         }
         foreach (string s in list)
         {
@@ -687,12 +752,15 @@ public static class XbtManifestReader
     {
         if (list is null)
         {
-            throw new ManifestMalformedException($"{context} is null (required).");
+            throw new ManifestMalformedException(
+                diagnosticCode: "XHT003",
+                message: $"{context} is null (required).");
         }
         if (list.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
+                diagnosticCode: "XHT003",
+                message: $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
         }
     }
 }

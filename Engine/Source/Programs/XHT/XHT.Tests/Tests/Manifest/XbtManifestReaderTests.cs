@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Manifest;
 
 /// <summary>
 /// Tests for <see cref="XbtManifestReader"/>. The reader consumes XBT's
-/// <c>Manifest.json</c> per <c>/Documents/XHT.html</c> Rev 5
+/// <c>Manifest.json</c> per <c>/Documents/XHT.html</c> Rev 7
 /// Section 9.1 + Contract Section 10.2.
 /// </summary>
 public class XbtManifestReaderTests : IDisposable
@@ -288,7 +288,7 @@ public class XbtManifestReaderTests : IDisposable
     }
 
     // ---------------------------------------------------------------------
-    // ContractVersion-mismatch detection per /Documents/XHT.html Rev 6
+    // ContractVersion-mismatch detection per /Documents/XHT.html Rev 7
     // Section 23.2 + Section 12.3 (diagnostic XHT002). These tests verify
     // the Round-3 audit M1 fix: XHT must not silently accept a manifest
     // whose ContractVersion does not match XHT's compile-time pin.
@@ -364,7 +364,7 @@ public class XbtManifestReaderTests : IDisposable
         //  (a) be a ManifestMalformedException,
         //  (b) carry exit code 50 (ManifestMalformed),
         //  (c) carry the catalog-anchored diagnostic code "XHT002"
-        //      (per /Documents/XHT.html Rev 6 Section 12.3 + Section 23.2),
+        //      (per /Documents/XHT.html Rev 7 Section 12.3 + Section 23.2),
         //  (d) name BOTH the observed and the expected values in the
         //      message so operators can decide which side to rebuild.
         const string mismatchedVersion = "99.99+deadbeefcafebabe";
@@ -436,5 +436,183 @@ public class XbtManifestReaderTests : IDisposable
             () => XbtManifestReader.DeserializeJsonString(json));
         Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
         Assert.Equal("XHT002", ex.DiagnosticCode);
+    }
+
+    // ---------------------------------------------------------------------
+    // Round 5 R4-MA2: validation ordering. A manifest that BOTH mismatches
+    // the contract version AND violates a limit (oversize string field,
+    // too-long array, etc.) must surface XHT002 (the actionable mismatch
+    // diagnostic) rather than XHT003 (the downstream limit violation).
+    // The limit violation is a symptom of the schema drift; once the
+    // operator rebuilds with the matching Contract, the limits check has
+    // to pass naturally.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void DeserializeJsonString_BothMismatchAndOversizeStringField_SurfacesXHT002First()
+    {
+        // Build a manifest with (a) a mismatched ContractVersion AND (b)
+        // a per-module Name string that exceeds MaxStringField. Without
+        // the R4-MA2 ordering fix, the limit-check fired first and the
+        // operator got an XHT003 "Module[X].Name exceeds 16384 chars"
+        // diagnostic they cannot act on without first knowing the
+        // schemas disagree.
+        const string mismatchedVersion = "99.99+deadbeefcafebabe";
+        string oversizedName = new('X', XbtManifestReader.MaxStringField + 1);
+
+        string json = $$"""
+            {
+              "ContractVersion": "{{mismatchedVersion}}",
+              "EngineVersion": "0.1.0",
+              "Target": {
+                "Name": "MiningTrainingEditor",
+                "Type": "Editor",
+                "Platform": "Win64",
+                "Configuration": "Development",
+                "Architecture": "x86_64",
+                "GCRootABI": "Span-based v1",
+                "ExceptionABI": "Tier1-Shim/Tier2-Direct",
+                "ManglingScheme": "Itanium-LengthPrefixed-v1",
+                "FipsMode": false,
+                "SimPathConservativeRootsAllowed": false,
+                "SimdLevelDefault": "SSE42",
+                "StationRole": "None"
+              },
+              "RootLocalPath": "C:/repo",
+              "ExternalDependenciesFile": null,
+              "Modules": [
+                {
+                  "Name": "{{oversizedName}}",
+                  "Tier": "Engine",
+                  "ModuleType": "Runtime",
+                  "Languages": "Both",
+                  "BaseDirectory": "Engine/Source/Runtime/X",
+                  "SourceFiles": [],
+                  "PublicHeaders": [],
+                  "PrivateHeaders": [],
+                  "InternalHeaders": [],
+                  "CSharpSources": [],
+                  "IncludePaths": [],
+                  "PublicDefines": [],
+                  "ModuleDependencies": [],
+                  "GeneratedCPPFilenameBase": "X",
+                  "SimPath": false,
+                  "EngineVersionCompat": "0.1.0",
+                  "SimdLevel": "Default",
+                  "PCHUsage": "Default",
+                  "ExcludeFromSharedPCH": false,
+                  "AllowHotReload": false,
+                  "IsTestModule": false,
+                  "DeprecationMessage": null,
+                  "MinimumToolchainVersion": null
+                }
+              ]
+            }
+            """;
+
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        // The actionable mismatch diagnostic surfaces; the limit
+        // violation never gets a chance to fire.
+        Assert.Equal("XHT002", ex.DiagnosticCode);
+        Assert.Contains(mismatchedVersion, ex.Message, StringComparison.Ordinal);
+    }
+
+    // ---------------------------------------------------------------------
+    // Round 5 R4-CR1: every throw site in XbtManifestReader now anchors a
+    // diagnostic code. These tests verify the catalog assignments per
+    // /Documents/XHT.html Rev 7 Section 23.2 (XHT001 manifest missing,
+    // XHT003 verifier-limit rejection).
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Read_ManifestNotFound_CarriesXHT001DiagnosticCode()
+    {
+        string missing = Path.Combine(_tempDir, "definitely-not-here.json");
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.Read(missing));
+        Assert.Equal("XHT001", ex.DiagnosticCode);
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_EmptyPayload_CarriesXHT003DiagnosticCode()
+    {
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(""));
+        Assert.Equal("XHT003", ex.DiagnosticCode);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_TooDeep_CarriesXHT003DiagnosticCode()
+    {
+        StringBuilder sb = new();
+        for (int i = 0; i < 80; i++) { sb.Append('['); }
+        for (int i = 0; i < 80; i++) { sb.Append(']'); }
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(sb.ToString()));
+        Assert.Equal("XHT003", ex.DiagnosticCode);
+    }
+
+    [Fact]
+    public void DeserializeJsonString_OversizeStringField_CarriesXHT003DiagnosticCode()
+    {
+        // Module name exceeds MaxStringField but ContractVersion matches.
+        // Per R4-MA2 ordering, the limit check runs because the CV check
+        // passes -- so this verifies the XHT003 anchor lands on the
+        // limits-rejection branch.
+        string oversize = new('X', XbtManifestReader.MaxStringField + 1);
+        string json = $$"""
+            {
+              "ContractVersion": "{{XhtVersion.ContractVersion}}",
+              "EngineVersion": "0.1.0",
+              "Target": {
+                "Name": "MiningTrainingEditor",
+                "Type": "Editor",
+                "Platform": "Win64",
+                "Configuration": "Development",
+                "Architecture": "x86_64",
+                "GCRootABI": "Span-based v1",
+                "ExceptionABI": "Tier1-Shim/Tier2-Direct",
+                "ManglingScheme": "Itanium-LengthPrefixed-v1",
+                "FipsMode": false,
+                "SimPathConservativeRootsAllowed": false,
+                "SimdLevelDefault": "SSE42",
+                "StationRole": "None"
+              },
+              "RootLocalPath": "C:/repo",
+              "ExternalDependenciesFile": null,
+              "Modules": [
+                {
+                  "Name": "{{oversize}}",
+                  "Tier": "Engine",
+                  "ModuleType": "Runtime",
+                  "Languages": "Both",
+                  "BaseDirectory": "Engine/Source/Runtime/X",
+                  "SourceFiles": [],
+                  "PublicHeaders": [],
+                  "PrivateHeaders": [],
+                  "InternalHeaders": [],
+                  "CSharpSources": [],
+                  "IncludePaths": [],
+                  "PublicDefines": [],
+                  "ModuleDependencies": [],
+                  "GeneratedCPPFilenameBase": "X",
+                  "SimPath": false,
+                  "EngineVersionCompat": "0.1.0",
+                  "SimdLevel": "Default",
+                  "PCHUsage": "Default",
+                  "ExcludeFromSharedPCH": false,
+                  "AllowHotReload": false,
+                  "IsTestModule": false,
+                  "DeprecationMessage": null,
+                  "MinimumToolchainVersion": null
+                }
+              ]
+            }
+            """;
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => XbtManifestReader.DeserializeJsonString(json));
+        Assert.Equal("XHT003", ex.DiagnosticCode);
     }
 }

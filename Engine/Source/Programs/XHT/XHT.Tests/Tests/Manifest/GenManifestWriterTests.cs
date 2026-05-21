@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Manifest;
 /// <summary>
 /// Tests for <see cref="GenManifestWriter"/>. The writer produces the
 /// XHT-side per-module text manifest per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.2 + Section 14
+/// <c>/Documents/XHT.html</c> Rev 7 Section 9.2 + Section 14
 /// (byte-identical determinism).
 /// </summary>
 public class GenManifestWriterTests : IDisposable
@@ -135,7 +135,12 @@ public class GenManifestWriterTests : IDisposable
             new GenManifestEntry("path,with,comma.h", "0123456789abcdef"));
         ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
             () => GenManifestWriter.Render(BuildManifest(inputs: inputs)));
-        Assert.Contains("XHT005", ex.Message);
+        // Round 5 R4-CR1: the diagnostic code is carried on the
+        // exception's DiagnosticCode property (catalog-anchored at
+        // /Documents/XHT.html Rev 7 Section 23.2). Earlier the code was
+        // prepended to the message string as "XHT005: ..."; the
+        // structured property is now the source of truth.
+        Assert.Equal("XHT005", ex.DiagnosticCode);
         Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
     }
 

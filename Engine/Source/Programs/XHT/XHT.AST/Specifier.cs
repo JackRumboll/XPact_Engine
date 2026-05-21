@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One parsed specifier with its (possibly empty) value list per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 7.2.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 7.2.
 /// </summary>
 /// <remarks>
 /// <para>

@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
 
 /// <summary>
 /// Tests for <see cref="HelpMode"/>. Per <c>/Documents/XHT.html</c>
-/// Rev 5 Section 1.1.
+/// Rev 7 Section 1.1.
 /// </summary>
 [Collection(nameof(HelpModeTests))]
 [CollectionDefinition(nameof(HelpModeTests), DisableParallelization = true)]

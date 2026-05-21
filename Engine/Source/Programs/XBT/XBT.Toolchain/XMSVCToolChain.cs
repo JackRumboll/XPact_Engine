@@ -320,6 +320,12 @@ public sealed class XMSVCToolChain : XToolChain
                 // so the post-compile parse can discover the transitive
                 // header set.
                 DependencyListFile = depJsonItem,
+                // Audit fix R5-C2: cl.exe writes /Fo<obj> and the .deps.json
+                // directly to their final paths; opt out of the executor's
+                // temp-file-then-rename contract so the post-run check
+                // validates final-path existence rather than nonexistent
+                // .tmp paths.
+                bProducerWritesFinalPath = true,
             }),
         };
     }
@@ -490,6 +496,21 @@ public sealed class XMSVCToolChain : XToolChain
         args.Add(pchHeaderName);
         args.Add($"/Fo{pchObjPath}");
 
+        // === Header dependency tracking (audit fix R5-C1) ===
+        // The PCH wrapper transitively includes everything the PCH header
+        // pulls in. Without /sourceDependencies, an edit to any of those
+        // headers does NOT invalidate the PCH (only the wrapper.cpp +
+        // pchHeaderFile are in PrerequisiteItems), and every consumer
+        // .obj that depends on the cached .pch then serves silently-stale
+        // codegen. /sourceDependencies emits the full transitive set
+        // post-compile; CppDependencyCache parses it and records each
+        // header so the next build's IsActionOutdated re-invalidates
+        // the PCH on any transitive-header edit.
+        string pchDepJsonPath = Path.Combine(outputDir, pchOutputName + ".deps.json");
+        args.Add($"/sourceDependencies");
+        args.Add(pchDepJsonPath);
+        FileItem pchDepJsonItem = FileItem.GetItemByPath(pchDepJsonPath);
+
         // Include paths (mirror what a regular compile sees so the PCH
         // header resolves the same way). The composite system paths from
         // VCEnvironment.IncludePaths bring in the MSVC headers + the
@@ -525,7 +546,7 @@ public sealed class XMSVCToolChain : XToolChain
 
         // Sort produced items by FullPath ordinal for the
         // ExternalAction sort invariant.
-        FileItem[] produced = new[] { pchOutputItem, pchObjItem };
+        FileItem[] produced = new[] { pchOutputItem, pchObjItem, pchDepJsonItem };
         Array.Sort(produced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
 
         FileItem[] prereqs = new[] { wrapperItem, pchHeaderFile };
@@ -563,6 +584,15 @@ public sealed class XMSVCToolChain : XToolChain
                 $"DescriptorHash={ResolveDescriptorHash(module)}",
                 $"XbtBinaryHash={ToolchainSelfHash.XbtBinaryHash}",
             },
+            // Audit fix R5-C1: surface the .deps.json to the cache layer
+            // so the post-PCH-build parse records the transitive header
+            // set keyed off the wrapper.cpp source path. Editing any
+            // header included by the PCH then correctly invalidates the
+            // PCH on the next build.
+            DependencyListFile = pchDepJsonItem,
+            // Audit fix R5-C2: cl.exe writes /Fp<pch>, /Fo<obj>, and the
+            // .deps.json directly to their final paths.
+            bProducerWritesFinalPath = true,
         });
 
         return new PCHBinding(
@@ -648,6 +678,29 @@ public sealed class XMSVCToolChain : XToolChain
         args.Add(headerLeafName);
         args.Add($"/Fo{pchObjPath}");
 
+        // === Header dependency tracking (audit fix R5-C1) ===
+        // Same rationale as the per-module GeneratePCH: without
+        // /sourceDependencies, transitively-included headers do not
+        // invalidate the shared PCH, and every participant module's
+        // .obj that consumes the shared .pch then serves stale
+        // codegen. The /sourceDependencies JSON is keyed off the
+        // wrapper source path in CppDependencyCache.
+        //
+        // Naming: shared-PCH artefact names already include a 64-char
+        // group hash that pushes the on-disk path close to MAX_PATH on
+        // Windows. The depfile uses just "<groupHash>.deps.json" (drops
+        // the "SharedPCH." prefix and ".pch" interior segment) so the
+        // depfile path is meaningfully shorter than the artefact path
+        // alongside it; the action's PathLengths validator still gates
+        // the .pch itself, and the depfile parser identifies format by
+        // content prefix (the leading '{') rather than by file
+        // extension so a non-".pch.deps.json" suffix is correctness-
+        // neutral.
+        string pchDepJsonPath = Path.Combine(sharedDir, groupHash + ".deps.json");
+        args.Add($"/sourceDependencies");
+        args.Add(pchDepJsonPath);
+        FileItem pchDepJsonItem = FileItem.GetItemByPath(pchDepJsonPath);
+
         // Aggregate the participants' include paths so the header
         // resolves regardless of which participant's tree it physically
         // lives in. Sorted ordinal + deduped for determinism.
@@ -699,7 +752,7 @@ public sealed class XMSVCToolChain : XToolChain
 
         // Sort produced items by FullPath ordinal for the
         // ExternalAction sort invariant.
-        FileItem[] produced = new[] { pchOutputItem, pchObjItem };
+        FileItem[] produced = new[] { pchOutputItem, pchObjItem, pchDepJsonItem };
         Array.Sort(produced, static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
 
         FileItem[] prereqs = new[] { wrapperItem, headerFileItem };
@@ -748,6 +801,10 @@ public sealed class XMSVCToolChain : XToolChain
             Platform = target.Platform,
             Weight = 4.0,
             CacheKeyComponents = cacheKeyComponents,
+            // Audit fix R5-C1: depfile parse covers transitive headers.
+            DependencyListFile = pchDepJsonItem,
+            // Audit fix R5-C2: producer writes final paths.
+            bProducerWritesFinalPath = true,
         });
 
         return new PCHBinding(
@@ -858,6 +915,10 @@ public sealed class XMSVCToolChain : XToolChain
             Platform = target.Platform,
             Weight = 4.0,           // links are heavier than compiles
             CacheKeyComponents = BuildLinkCacheKeyComponents(module, target),
+            // Audit fix R5-C2: link.exe writes /OUT:<dll> directly to
+            // the final path. Opt out of the executor's temp-rename
+            // contract per the unified compile/PCH/link architecture.
+            bProducerWritesFinalPath = true,
         });
     }
 

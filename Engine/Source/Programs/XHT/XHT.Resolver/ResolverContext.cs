@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Resolver;
 
 /// <summary>
 /// State carried across the seven-active-phase resolve pipeline per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 5. Stores resolver-discovered
+/// <c>/Documents/XHT.html</c> Rev 7 Section 5. Stores resolver-discovered
 /// type pointers in <see cref="System.Collections.Generic.Dictionary{TKey, TValue}"/>
 /// maps rather than mutating the immutable AST records.
 /// </summary>

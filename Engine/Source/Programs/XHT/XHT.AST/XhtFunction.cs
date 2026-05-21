@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One reflected function (<c>XFUNCTION</c> / <c>[XFunction]</c>) on a
-/// class or interface. Per <c>/Documents/XHT.html</c> Rev 5 Section 4.6.
+/// class or interface. Per <c>/Documents/XHT.html</c> Rev 7 Section 4.6.
 /// </summary>
 /// <remarks>
 /// <para>

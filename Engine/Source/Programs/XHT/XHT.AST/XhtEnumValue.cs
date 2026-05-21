@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// <summary>
 /// One reflected enum value with its <c>XMETA</c> specifiers. Per the
 /// <c>XMETA</c> marker entry in Contract Section 1.1 +
-/// <c>/Documents/XHT.html</c> Rev 5 Section 4.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1.
 /// </summary>
 /// <param name="Name">Enum value identifier.</param>
 /// <param name="Value">Numeric value (resolved from explicit assignment or auto-numbering).</param>

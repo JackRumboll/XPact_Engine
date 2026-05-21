@@ -19,7 +19,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1e implementation of the <c>emit-module</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1 + Section 8.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1 + Section 8.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -54,11 +54,23 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 /// <para>
 /// <b>Strict vs lenient mode.</b> The <c>-Strict=true|false</c> CLI flag
 /// controls behaviour when a referenced source file is missing on disk.
-/// Strict (the production default): exit 50 with <c>XHT050</c>. Lenient
-/// (test default): emit an <c>XHT070</c> warning per missing source and
-/// continue with an empty AST for that file. Lenient mode is the path
-/// the Phase 1e test suite uses against synthetic manifests where the
-/// referenced sources don't physically exist.
+/// Strict (the production default): exit 50 with diagnostic <c>XHT072</c>
+/// (Required source file missing in strict mode) per /Documents/XHT.html
+/// Rev 7 Section 12.3 emit-band catalog. Lenient (test default): emit an
+/// <c>XHT070</c> warning per missing source and continue with an empty
+/// AST for that file. Lenient mode is the path the Phase 1e test suite
+/// uses against synthetic manifests where the referenced sources don't
+/// physically exist.
+/// </para>
+/// <para>
+/// <b>Round 5 R4-MA4.</b> The strict-mode-missing-source code was previously
+/// emitted as <c>XHT050</c> on the <see cref="DiagnosticRecord"/> -- but
+/// <c>XHT050</c> is an exit-code-shaped shim (see <see cref="ExitCodes"/>),
+/// not a diagnostic-catalog entry. The dedicated emit-band diagnostic
+/// <c>XHT072</c> distinguishes the missing-source-in-strict-mode case
+/// from generic manifest-malformed exits and lets diagnostic-aggregating
+/// CI tooling key on the source-side error rather than the operational
+/// exit code.
 /// </para>
 /// </remarks>
 [XhtMode("emit-module")]
@@ -97,8 +109,14 @@ public sealed class EmitModuleMode : IToolMode
         XbtModule? module = XbtManifestReader.FindModule(manifest, opts.ModuleName);
         if (module is null)
         {
+            // XHT004 -- Module not in manifest per /Documents/XHT.html
+            // Rev 7 Section 23.2. The X-CR1 remap (Rev 3) routed this to
+            // exit 50 (manifest-coherence concern); the catalog-anchored
+            // code carries through so the entry-point catch surfaces
+            // "error XHT004: ..." instead of the generic XHT050 shim.
             throw new ManifestMalformedException(
-                $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
+                diagnosticCode: "XHT004",
+                message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 
         ct.ThrowIfCancellationRequested();
@@ -134,7 +152,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT050",
+                        Code: "XHT072",
                         Message: $"Source header '{headerRel}' not found at '{absPath}'.",
                         File: headerRel,
                         Module: module.Name));
@@ -161,7 +179,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT050",
+                        Code: "XHT072",
                         Message: $"Failed to read header '{headerRel}': {ex.Message}",
                         File: headerRel,
                         Module: module.Name));
@@ -196,7 +214,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT050",
+                        Code: "XHT072",
                         Message: $"Source file '{csRel}' not found at '{absPath}'.",
                         File: csRel,
                         Module: module.Name));
@@ -222,7 +240,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT050",
+                        Code: "XHT072",
                         Message: $"Failed to read C# source '{csRel}': {ex.Message}",
                         File: csRel,
                         Module: module.Name));

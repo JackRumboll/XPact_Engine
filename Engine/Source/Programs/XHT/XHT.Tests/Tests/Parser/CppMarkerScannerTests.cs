@@ -13,7 +13,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Parser;
 /// <summary>
 /// Tests for <see cref="CppMarkerScanner"/>. Walks the marker-driven
 /// dispatch path end-to-end against synthetic source snippets per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.4 + Section 7.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 3.4 + Section 7.
 /// </summary>
 public class CppMarkerScannerTests
 {

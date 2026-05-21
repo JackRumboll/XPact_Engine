@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 /// Thrown when a manifest payload (XBT input or XHT-produced
 /// <c>.gen.manifest</c>) fails validation. XHT.Entry maps this to exit
 /// code <see cref="ExitCodes.ManifestMalformed"/> (50) per
-/// <c>/Documents/XHT.html</c> Rev 6 Section 1.3.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.3.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,7 +22,7 @@ namespace Simgenics.XPact.XHT.Manifest;
 /// </para>
 /// <para>
 /// <see cref="DiagnosticCode"/> carries the specific XHT&lt;NNN&gt;
-/// diagnostic code from <c>/Documents/XHT.html</c> Rev 6 Section 12.3
+/// diagnostic code from <c>/Documents/XHT.html</c> Rev 7 Section 12.3
 /// when the throw site is anchored to a catalog entry (e.g.
 /// <c>"XHT002"</c> for <c>ContractVersion</c> mismatch per Section 23.2).
 /// Throw sites that are not catalog-anchored may pass <c>null</c>; the
@@ -41,7 +41,7 @@ public sealed class ManifestMalformedException : Exception
 
     /// <summary>
     /// The catalog-anchored XHT diagnostic code per
-    /// <c>/Documents/XHT.html</c> Rev 6 Section 12.3, or <c>null</c> when
+    /// <c>/Documents/XHT.html</c> Rev 7 Section 12.3, or <c>null</c> when
     /// the throw site is not anchored to a single catalog entry. Examples:
     /// <c>"XHT001"</c> (manifest not found), <c>"XHT002"</c>
     /// (ContractVersion mismatch), <c>"XHT003"</c> (verifier limits),
@@ -76,7 +76,7 @@ public sealed class ManifestMalformedException : Exception
     /// Construct with a catalog-anchored diagnostic code and a message.
     /// </summary>
     /// <param name="diagnosticCode">
-    /// The XHT&lt;NNN&gt; code from <c>/Documents/XHT.html</c> Rev 6
+    /// The XHT&lt;NNN&gt; code from <c>/Documents/XHT.html</c> Rev 7
     /// Section 12.3 (e.g. <c>"XHT002"</c> for ContractVersion mismatch).
     /// Must not be null / empty / whitespace.
     /// </param>
@@ -96,7 +96,7 @@ public sealed class ManifestMalformedException : Exception
     /// inner exception.
     /// </summary>
     /// <param name="diagnosticCode">
-    /// The XHT&lt;NNN&gt; code from <c>/Documents/XHT.html</c> Rev 6
+    /// The XHT&lt;NNN&gt; code from <c>/Documents/XHT.html</c> Rev 7
     /// Section 12.3. Must not be null / empty / whitespace.
     /// </param>
     /// <param name="message">Diagnostic message describing the malformation.</param>

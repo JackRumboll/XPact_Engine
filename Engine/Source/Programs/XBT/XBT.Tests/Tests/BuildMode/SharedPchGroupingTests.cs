@@ -30,8 +30,21 @@ namespace Simgenics.XPact.XBT.Tests.Tests.BuildMode;
 /// <see cref="IsToolchainAvailable"/> and emit a clear "skipped" warning
 /// when the host lacks the toolchain.
 /// </para>
+/// <para>
+/// Audit fix R5-M3: this class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because
+/// <see cref="Simgenics.XPact.XBT.Entry.BuildMode.Run"/> transitively
+/// instantiates toolchains and reads
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash.XbtBinaryHash"/>
+/// through every emitted compile / PCH / link action's cache-key
+/// components. A parallel override-mutating test would otherwise race
+/// any determinism-style assertion in this suite. See the collection's
+/// remarks for the full rationale.
+/// </para>
 /// </remarks>
 [Trait("Category", "SmokeBuild")]
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class SharedPchGroupingTests : IDisposable
 {
     private readonly string _scratchEngine;

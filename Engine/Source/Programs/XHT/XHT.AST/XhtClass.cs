@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One reflected class (<c>XCLASS</c> / <c>[XClass]</c>). Per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 4.1 + Section 7.4.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1 + Section 7.4.
 /// </summary>
 /// <remarks>
 /// <para>

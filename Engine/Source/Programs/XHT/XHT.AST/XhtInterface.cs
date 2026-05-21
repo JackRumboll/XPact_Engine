@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One reflected interface (<c>XINTERFACE</c> / <c>[XInterface]</c>). Per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 4.5.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 4.5.
 /// </summary>
 /// <remarks>
 /// <para>

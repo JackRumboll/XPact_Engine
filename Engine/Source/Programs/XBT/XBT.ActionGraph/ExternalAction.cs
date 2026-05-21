@@ -109,6 +109,21 @@ public sealed record ExternalAction : IExternalAction
     /// </remarks>
     public FileItem? DependencyListFile { get; init; }
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// Default false (the executor's temp-file-then-rename contract is
+    /// the safer default for XBT-emitted artefacts). Compile, PCH-gen,
+    /// and link actions emitted by <c>XMSVCToolChain</c> /
+    /// <c>XClangToolChain</c> set this to true because their command
+    /// lines embed final output paths and the toolchain's own
+    /// atomic-write discipline materialises the artefact directly --
+    /// see <see cref="IExternalAction.bProducerWritesFinalPath"/> for
+    /// the full architectural rationale (audit fix R5-C2).
+    /// </para>
+    /// </remarks>
+    public bool bProducerWritesFinalPath { get; init; }
+
     /// <summary>
     /// Single-cell reference holding the lazily-computed
     /// <see cref="CommandVersion"/>. Read with <c>Volatile.Read</c>; the

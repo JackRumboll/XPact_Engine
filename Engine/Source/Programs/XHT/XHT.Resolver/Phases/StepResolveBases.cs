@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// <summary>
 /// Phase 5 (<see cref="ResolvePhase.ResolveBases"/>): resolve interface
 /// base lists for classes; resolve <c>Within=</c> outer-class pointers
-/// per <c>/Documents/XHT.html</c> Rev 5 Section 5.1 + Section 7.4.
+/// per <c>/Documents/XHT.html</c> Rev 7 Section 5.1 + Section 7.4.
 /// Validates <c>Within</c> compatibility against super's <c>Within</c>
 /// per UHT's <c>SetAndValidateWithinClass</c> precedent (XHT119).
 /// </summary>

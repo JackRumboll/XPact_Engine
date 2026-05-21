@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1b stub of the <c>parse-module</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -70,11 +70,15 @@ public sealed class ParseModuleMode : IToolMode
         XbtModule? module = XbtManifestReader.FindModule(manifest, opts.ModuleName);
         if (module is null)
         {
-            // Per XHT.html Rev 5 Section 1.3 X-CR1 remap: module-not-in-
-            // manifest is a manifest-coherence concern and exits 50, not
-            // XBT's RulesCompileFailed code 30.
+            // XHT004 -- Module not in manifest per /Documents/XHT.html
+            // Rev 7 Section 23.2. The X-CR1 remap (Rev 3) routed this to
+            // exit 50 (manifest-coherence concern, not XBT's
+            // RulesCompileFailed code 30); the catalog-anchored code
+            // carries through so the entry-point catch surfaces
+            // "error XHT004: ..." instead of the generic XHT050 shim.
             throw new ManifestMalformedException(
-                $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
+                diagnosticCode: "XHT004",
+                message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 
         ct.ThrowIfCancellationRequested();

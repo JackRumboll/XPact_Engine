@@ -39,8 +39,18 @@ namespace Simgenics.XPact.XBT.Tests.Tests.BuildMode;
 /// toolchain will still emit the manifest, even though the subsequent
 /// compile/link actions fail or short-circuit.
 /// </para>
+/// <para>
+/// Audit fix R5-M3: this class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because <c>BuildMode.Run</c> transitively
+/// instantiates a toolchain (which reads
+/// <c>ToolchainSelfHash.XbtBinaryHash</c>). Even on hosts where the
+/// compile / link path short-circuits, the toolchain construction +
+/// emit-phase still flows through the override-sensitive code.
+/// </para>
 /// </remarks>
 [Trait("Category", "SmokeBuild")]
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class ManifestEmissionTests : IDisposable
 {
     private readonly string _scratchEngine;

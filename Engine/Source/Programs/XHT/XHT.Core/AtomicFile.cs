@@ -16,7 +16,7 @@ namespace Simgenics.XPact.XHT.Core;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Per <c>/Documents/XHT.html</c> Rev 6 Section 8.5 + Section 14.2: every
+/// Per <c>/Documents/XHT.html</c> Rev 7 Section 8.5 + Section 14.2: every
 /// XHT output -- per-header <c>.gen.h</c>, per-header <c>.gen.cpp</c>,
 /// per-module <c>.init.gen.cpp</c>, per-module <c>.gen.manifest</c> --
 /// MUST be written through an atomic-rename pattern so partial writes

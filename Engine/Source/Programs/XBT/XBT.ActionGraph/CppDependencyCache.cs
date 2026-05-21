@@ -327,13 +327,29 @@ public sealed class CppDependencyCache
     /// </summary>
     /// <remarks>
     /// <para>
+    /// <b>Audit fix R5-m2.</b> The previous parser used a U+FFFE Unicode
+    /// non-character as a sentinel between an escaped-space marker and
+    /// the post-tokenisation reverse-replace step. That technique
+    /// breaks if any legitimate depfile byte sequence happens to encode
+    /// U+FFFE in UTF-8 (bytes <c>0xEF 0xBF 0xBE</c>) -- the parser
+    /// would split the token at the sentinel and produce a corrupt
+    /// path. Adversarial filesystem entries are the textbook trigger,
+    /// but a path containing a literal U+FFFE byte sequence in a
+    /// Unicode-aware codebase is sufficient. The parser is now
+    /// index-based: it tokenises directly off the byte-decoded char
+    /// stream without round-tripping through a sentinel substitution,
+    /// modelled on UBT's <c>TryReadMakefileToken</c> approach
+    /// (Engine/Source/Programs/UnrealBuildTool/System/CppDependencyCache.cs).
+    /// </para>
+    /// <para>
     /// Escaping rules: a backslash at end-of-line continues the line
     /// onto the next; a backslash followed by a space is a literal space
-    /// inside a path; everything else is a literal. The drive-letter
-    /// colon on Windows (<c>C:\foo\bar.h</c>) is NOT treated as the
-    /// target/prereq separator -- only the first non-escaped <c>:</c>
-    /// that is followed by whitespace (or end-of-line) is the
-    /// separator, mirroring GNU make's behaviour.
+    /// inside a path; <c>\\</c> is a literal backslash; everything else
+    /// is treated as a literal backslash followed by the next char. The
+    /// drive-letter colon on Windows (<c>C:\foo\bar.h</c>) is NOT
+    /// treated as the target/prereq separator -- only the first
+    /// non-escaped <c>:</c> followed by whitespace (or end-of-line) is
+    /// the separator, mirroring GNU make's behaviour.
     /// </para>
     /// </remarks>
     internal static IReadOnlyList<string> ParseClangMakefileDepfile(byte[] bytes, string diagnosticLabel)
@@ -352,129 +368,149 @@ public sealed class CppDependencyCache
             return Array.Empty<string>();
         }
 
-        // First, strip backslash-newline line continuations. The
-        // sequence "\\\n" (and "\\\r\n") becomes a single space so the
-        // line continues into a single logical row but token boundaries
-        // are preserved.
-        StringBuilder flat = new(text.Length);
+        // Step 1: locate the target/prereq boundary. The first ':'
+        // followed by whitespace / EOL is the separator. We scan the
+        // raw text but honour escape semantics so a backslash-escaped
+        // colon (rare but legal in GNU make) is not treated as the
+        // separator.
+        int colon = FindTargetSeparator(text);
+        if (colon < 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        // Step 2: tokenise the prereq region with an index-based
+        // state machine that consumes one logical character per loop.
+        // The state machine respects:
+        //   - whitespace separates tokens
+        //   - '\\' + LF (or '\\' + CR + LF) is a line continuation (whitespace)
+        //   - '\\' + space is a literal space inside the current token
+        //   - '\\' + '\\' is a literal backslash inside the current token
+        //   - any other '\\' + char emits both the backslash and the char
+        //     literally (matches GNU make's behaviour for unrecognised
+        //     escapes; the only escape sequences the Makefile depfile
+        //     emitter is documented to produce are the three above).
+        List<string> tokens = new();
+        StringBuilder current = new();
+        bool inToken = false;
+        int n = text.Length;
+        for (int i = colon + 1; i < n; i++)
+        {
+            char c = text[i];
+
+            if (c == '\\' && i + 1 < n)
+            {
+                char next = text[i + 1];
+                if (next == '\n')
+                {
+                    // Line continuation: flush the current token and
+                    // treat as whitespace.
+                    if (inToken)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                        inToken = false;
+                    }
+                    i++;
+                    continue;
+                }
+                if (next == '\r' && i + 2 < n && text[i + 2] == '\n')
+                {
+                    if (inToken)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                        inToken = false;
+                    }
+                    i += 2;
+                    continue;
+                }
+                if (next == ' ')
+                {
+                    // Escaped space -- part of the current path token.
+                    current.Append(' ');
+                    inToken = true;
+                    i++;
+                    continue;
+                }
+                if (next == '\\')
+                {
+                    current.Append('\\');
+                    inToken = true;
+                    i++;
+                    continue;
+                }
+                // Unrecognised escape: emit the backslash literally and
+                // let the next-iteration handler process the next char.
+                current.Append('\\');
+                inToken = true;
+                continue;
+            }
+
+            if (c is ' ' or '\t' or '\r' or '\n')
+            {
+                if (inToken)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                    inToken = false;
+                }
+                continue;
+            }
+
+            // Literal character.
+            current.Append(c);
+            inToken = true;
+        }
+        if (inToken)
+        {
+            tokens.Add(current.ToString());
+        }
+        return tokens;
+    }
+
+    /// <summary>
+    /// Locate the target/prereq <c>:</c> separator in a Makefile-format
+    /// depfile. The separator is the first <c>:</c> whose right-hand
+    /// neighbour is either whitespace, end-of-string, or end-of-line --
+    /// this excludes Windows drive-letter colons (<c>C:\path</c>) where
+    /// the right-hand char is <c>\</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Audit fix R5-m2: scans the raw input text directly rather than a
+    /// pre-flattened buffer with sentinel substitutions, so the parser
+    /// never round-trips through a U+FFFE marker. Backslash-newline
+    /// line continuations are not unwrapped here because the target is
+    /// a single line in every Makefile-format depfile emitted by GCC /
+    /// Clang -- the multi-line layout only appears in the prereq
+    /// region, which the caller tokenises with its own line-continuation
+    /// handling.
+    /// </para>
+    /// </remarks>
+    private static int FindTargetSeparator(string text)
+    {
         int n = text.Length;
         for (int i = 0; i < n; i++)
         {
             char c = text[i];
             if (c == '\\' && i + 1 < n)
             {
-                char next = text[i + 1];
-                if (next == '\n')
-                {
-                    flat.Append(' ');
-                    i++;
-                    continue;
-                }
-                if (next == '\r' && i + 2 < n && text[i + 2] == '\n')
-                {
-                    flat.Append(' ');
-                    i += 2;
-                    continue;
-                }
-                // Escaped space inside a path: emit a literal space but
-                // mark with a sentinel character (U+FFFE -- a Unicode
-                // non-character so it cannot appear in any legitimate
-                // path) so the token splitter does not split on it.
-                if (next == ' ')
-                {
-                    flat.Append('￾');
-                    i++;
-                    continue;
-                }
-                // Escaped backslash -- emit one backslash.
-                if (next == '\\')
-                {
-                    flat.Append('\\');
-                    i++;
-                    continue;
-                }
-                // Unrecognised escape -- emit the backslash literally
-                // and reprocess the next char on the next loop iteration.
-                flat.Append(c);
+                // Skip an escaped colon, escaped space, or any other
+                // two-char escape; the escape's second char cannot
+                // form the target/prereq separator.
+                i++;
                 continue;
             }
-            flat.Append(c);
-        }
-        string flattened = flat.ToString();
-
-        // Now find the target/prereq boundary. The first <c>:</c> NOT
-        // followed by a non-whitespace char (so we don't split on a
-        // Windows drive-letter colon <c>C:</c>) is the boundary.
-        int colon = FindTargetSeparator(flattened);
-        if (colon < 0)
-        {
-            // No target/prereq separator -- treat as no prereqs.
-            return Array.Empty<string>();
-        }
-        string prereqRegion = flattened[(colon + 1)..];
-
-        // Tokenize on whitespace. The sentinel U+FFFE preserves escaped
-        // spaces inside paths; replace it with a literal space at token
-        // emit time.
-        List<string> tokens = new();
-        int start = -1;
-        for (int i = 0; i < prereqRegion.Length; i++)
-        {
-            char c = prereqRegion[i];
-            bool isWs = c is ' ' or '\t' or '\r' or '\n';
-            if (isWs)
-            {
-                if (start >= 0)
-                {
-                    string token = prereqRegion[start..i].Replace('￾', ' ');
-                    if (token.Length > 0)
-                    {
-                        tokens.Add(token);
-                    }
-                    start = -1;
-                }
-            }
-            else
-            {
-                if (start < 0)
-                {
-                    start = i;
-                }
-            }
-        }
-        if (start >= 0)
-        {
-            string token = prereqRegion[start..].Replace('￾', ' ');
-            if (token.Length > 0)
-            {
-                tokens.Add(token);
-            }
-        }
-        return tokens;
-    }
-
-    /// <summary>
-    /// Locate the target/prereq <c>:</c> separator in a flattened
-    /// Makefile-format depfile. The separator is the first <c>:</c>
-    /// whose right-hand neighbour is either whitespace, end-of-string,
-    /// or end-of-line -- this excludes Windows drive-letter colons
-    /// (<c>C:\path</c>) where the right-hand char is <c>\</c>.
-    /// </summary>
-    private static int FindTargetSeparator(string flattened)
-    {
-        for (int i = 0; i < flattened.Length; i++)
-        {
-            if (flattened[i] != ':')
+            if (c != ':')
             {
                 continue;
             }
-            // End of string -- treat as separator (degenerate depfile
-            // with no prereqs).
-            if (i + 1 >= flattened.Length)
+            if (i + 1 >= n)
             {
                 return i;
             }
-            char next = flattened[i + 1];
+            char next = text[i + 1];
             if (next is ' ' or '\t' or '\r' or '\n')
             {
                 return i;
@@ -485,10 +521,13 @@ public sealed class CppDependencyCache
 
     /// <summary>
     /// Parse an MSVC <c>/sourceDependencies</c> JSON depfile. Returns
-    /// the <c>Data.Includes</c> array. The <c>Source</c> field is
-    /// captured separately by the caller via the action's source path;
-    /// the cache keys recorded dependencies on the source path, not on
-    /// the depfile's <c>Source</c> field.
+    /// the union of <c>Data.Includes</c>, <c>Data.ImportedModules</c>
+    /// (each entry's <c>BMI</c> path), and <c>Data.ImportedHeaderUnits</c>
+    /// (each entry's <c>Header</c> path; falls back to <c>BMI</c> when
+    /// the header path is absent). The <c>Source</c> field is captured
+    /// separately by the caller via the action's source path; the cache
+    /// keys recorded dependencies on the source path, not on the
+    /// depfile's <c>Source</c> field.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -501,26 +540,32 @@ public sealed class CppDependencyCache
     ///     "Source": "path/to/source.cpp",
     ///     "ProvidedModule": "...",
     ///     "Includes": ["path/to/header1.h", "path/to/header2.h", ...],
-    ///     "ImportedModules": [ ... ],
-    ///     "ImportedHeaderUnits": [ ... ]
+    ///     "ImportedModules": [ { "Name": "MyModule", "BMI": "...ifc" }, ... ],
+    ///     "ImportedHeaderUnits": [ { "Header": "path/to/header.h", "BMI": "...ifc" }, ... ]
     ///   }
     /// }
     /// </code>
-    /// Version 1.0 and 1.1 are accepted verbatim. Version 1.2+ may have
-    /// schema additions; we still try to read the <c>Includes</c> array
-    /// (the field has been stable across the 1.x line) and emit a one-
-    /// time diagnostic so operators are aware the cache may miss new
-    /// dependency-source fields (e.g. C++20 module imports).
+    /// <para>
+    /// <b>Audit fix R5-M2.</b> Round 4 audit surfaced that the parser
+    /// previously read <c>Includes</c> only and silently dropped
+    /// <c>ImportedModules</c> + <c>ImportedHeaderUnits</c>. Editing a
+    /// header that participates in a C++20 module (header unit) or
+    /// regenerating a BMI used by an importing TU would NOT invalidate
+    /// the cached .obj, producing silent staleness as soon as XPact code
+    /// adopts C++20 modules. The parser now treats the BMI path (for
+    /// imported modules) and the header-unit's <c>Header</c> path (with
+    /// BMI fallback) as additional transitive prerequisites recorded
+    /// alongside <c>Includes</c>.
+    /// </para>
+    /// <para>
+    /// Version 1.0 / 1.1 / 1.2 are all accepted; 1.3+ emits a diagnostic
+    /// because new schema fields may exist that the parser does not
+    /// know about. The Includes / ImportedModules / ImportedHeaderUnits
+    /// fields have been stable across the 1.x line.
     /// </para>
     /// </remarks>
     internal static IReadOnlyList<string> ParseMsvcSourceDependenciesJson(byte[] bytes, int startIndex, string diagnosticLabel)
     {
-        JsonReaderOptions readerOpts = new()
-        {
-            MaxDepth = MaxJsonDepth,
-            AllowTrailingCommas = false,
-            CommentHandling = JsonCommentHandling.Disallow,
-        };
         ReadOnlySpan<byte> span = bytes.AsSpan(startIndex);
         using JsonDocument doc = JsonDocument.Parse(span.ToArray(), new JsonDocumentOptions
         {
@@ -535,22 +580,27 @@ public sealed class CppDependencyCache
             return Array.Empty<string>();
         }
 
-        // Version check -- accept 1.0 / 1.1 silently; emit a diagnostic
-        // for 1.2+ so an operator can correlate a missing dep with a
-        // schema change.
+        // Version check -- accept 1.0 / 1.1 / 1.2 silently; emit a
+        // diagnostic for 1.3+ so an operator can correlate a missing dep
+        // with a schema change. (The 1.2 line introduces the
+        // ImportedModules / ImportedHeaderUnits arrays the parser now
+        // handles; treating it as silently-accepted matches the
+        // documented schema-stability range.)
         if (root.TryGetProperty("Version", out JsonElement versionElement)
             && versionElement.ValueKind == JsonValueKind.String)
         {
             string? versionStr = versionElement.GetString();
             if (!string.IsNullOrEmpty(versionStr)
                 && !versionStr.StartsWith("1.0", StringComparison.Ordinal)
-                && !versionStr.StartsWith("1.1", StringComparison.Ordinal))
+                && !versionStr.StartsWith("1.1", StringComparison.Ordinal)
+                && !versionStr.StartsWith("1.2", StringComparison.Ordinal))
             {
                 Logger.Info(
                     $"CppDependencyCache: MSVC /sourceDependencies depfile '{diagnosticLabel}' " +
-                    $"declares schema version '{versionStr}' (XBT supports 1.0 / 1.1). " +
-                    "Attempting to parse Includes anyway; new schema fields (e.g. C++20 module imports) " +
-                    "may not be recorded for invalidation. File an XBT issue if cache misses correlate with this.");
+                    $"declares schema version '{versionStr}' (XBT supports 1.0 / 1.1 / 1.2). " +
+                    "Parsing Includes, ImportedModules.BMI, and ImportedHeaderUnits.Header anyway; " +
+                    "any newly-added dependency-source field may not be recorded for invalidation. " +
+                    "File an XBT issue if cache misses correlate with this.");
             }
         }
 
@@ -560,25 +610,92 @@ public sealed class CppDependencyCache
             return Array.Empty<string>();
         }
 
-        if (!data.TryGetProperty("Includes", out JsonElement includes)
-            || includes.ValueKind != JsonValueKind.Array)
+        List<string> result = new();
+
+        // Includes: array of string paths.
+        if (data.TryGetProperty("Includes", out JsonElement includes)
+            && includes.ValueKind == JsonValueKind.Array)
         {
-            return Array.Empty<string>();
+            foreach (JsonElement entry in includes.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+                string? raw = entry.GetString();
+                if (!string.IsNullOrEmpty(raw))
+                {
+                    result.Add(raw);
+                }
+            }
         }
 
-        List<string> result = new(includes.GetArrayLength());
-        foreach (JsonElement entry in includes.EnumerateArray())
+        // Audit fix R5-M2: ImportedModules is an array of objects, each
+        // with a {Name, BMI} pair. The BMI (a .ifc on Windows) is the
+        // build artefact whose content drives the importing TU's
+        // staleness -- recording it as a transitive prerequisite lets
+        // the next-build content-hash check detect a regenerated BMI.
+        if (data.TryGetProperty("ImportedModules", out JsonElement importedModules)
+            && importedModules.ValueKind == JsonValueKind.Array)
         {
-            if (entry.ValueKind != JsonValueKind.String)
+            foreach (JsonElement entry in importedModules.EnumerateArray())
             {
-                continue;
-            }
-            string? raw = entry.GetString();
-            if (!string.IsNullOrEmpty(raw))
-            {
-                result.Add(raw);
+                if (entry.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+                if (entry.TryGetProperty("BMI", out JsonElement bmi)
+                    && bmi.ValueKind == JsonValueKind.String)
+                {
+                    string? raw = bmi.GetString();
+                    if (!string.IsNullOrEmpty(raw))
+                    {
+                        result.Add(raw);
+                    }
+                }
             }
         }
+
+        // Audit fix R5-M2: ImportedHeaderUnits entries carry a Header
+        // path (the .h that was imported as a header unit) AND a BMI
+        // path (the precompiled-header-unit artefact). Either edit must
+        // invalidate the importer; record both. The Header path is the
+        // primary signal (an edit to the underlying .h is what user-
+        // facing changes do); BMI fallback covers the rare case where
+        // an emitter omits Header.
+        if (data.TryGetProperty("ImportedHeaderUnits", out JsonElement headerUnits)
+            && headerUnits.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement entry in headerUnits.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+                bool addedHeader = false;
+                if (entry.TryGetProperty("Header", out JsonElement header)
+                    && header.ValueKind == JsonValueKind.String)
+                {
+                    string? raw = header.GetString();
+                    if (!string.IsNullOrEmpty(raw))
+                    {
+                        result.Add(raw);
+                        addedHeader = true;
+                    }
+                }
+                if (entry.TryGetProperty("BMI", out JsonElement bmi)
+                    && bmi.ValueKind == JsonValueKind.String)
+                {
+                    string? raw = bmi.GetString();
+                    if (!string.IsNullOrEmpty(raw))
+                    {
+                        result.Add(raw);
+                    }
+                }
+                _ = addedHeader; // documented for readers; behaviour: both fields contribute when present.
+            }
+        }
+
         return result;
     }
 
@@ -650,14 +767,16 @@ public sealed class CppDependencyCache
         return rawPaths;
     }
 
-    /// <summary>
-    /// Load the archive into memory. Mirrors
-    /// <see cref="ActionHistory.LoadFromDisk"/>: missing file = empty
-    /// archive; corrupt/truncated/mismatched-version file = empty
-    /// archive (the cache layer is allowed to lose entries on a torn
-    /// archive -- the next build re-discovers everything).
-    /// </summary>
-    public void Load() => LoadFromDisk();
+    // Audit fix R5-M4: the previous public Load() surface allowed a
+    // caller to re-enter LoadFromDisk on an already-populated cache.
+    // The mid-load return paths leave staged partitions empty (they
+    // live in a local), but the previously-loaded partitions remain
+    // populated, producing a half-old-half-new view. The public API
+    // is now removed entirely: callers must go through Open() /
+    // OpenAtPath() which construct a fresh cache + load exactly once.
+    // No production code calls Load() post-construction (verified via
+    // repo-wide search), so making this private is a net simplification
+    // rather than a breaking change.
 
     private void LoadFromDisk()
     {

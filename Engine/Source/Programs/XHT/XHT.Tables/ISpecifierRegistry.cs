@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Read / write surface of the specifier registry per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 7 + Section 18.1. The default
+/// <c>/Documents/XHT.html</c> Rev 7 Section 7 + Section 18.1. The default
 /// implementation is <see cref="SpecifierRegistry"/>; the interface exists so
 /// the parser (Phase 1c.2) and the resolver / validator passes (Phase 1d)
 /// can take a dependency on the registry abstraction rather than the

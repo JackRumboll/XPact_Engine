@@ -339,15 +339,39 @@ public sealed class ParallelExecutor
         // Compose the temp-file plan: every ProducedItem is written to
         // <output>.tmp.<pid>.<actionid> in the output's own directory;
         // on success the runner renames each into place.
+        //
+        // Audit fix R5-C2: actions that set bProducerWritesFinalPath
+        // (compile / PCH / link) opt out of the temp-rename discipline
+        // because their underlying toolchains (cl.exe, clang.exe,
+        // link.exe) embed final output paths in the command line and
+        // atomically materialise the artefact themselves. For those
+        // actions we still populate TempOutputPaths with the FINAL
+        // paths (so ActionRunContext consumers iterating produced items
+        // have a stable map) and we ensure the parent directories
+        // exist, but the post-run "did the temp land?" check
+        // skips the rename and validates final-path existence directly.
         int pid = Environment.ProcessId;
         Dictionary<FileItem, string> tempPaths = new(action.ProducedItems.Count);
+        bool producerWritesFinalPath = action.bProducerWritesFinalPath;
         foreach (FileItem produced in action.ProducedItems)
         {
             string dir = Path.GetDirectoryName(produced.FullPath)!;
             Directory.CreateDirectory(dir);
-            string baseName = Path.GetFileName(produced.FullPath);
-            string tempName = $"{baseName}.tmp.{pid}.{actionId}";
-            tempPaths[produced] = Path.Combine(dir, tempName);
+            if (producerWritesFinalPath)
+            {
+                // The toolchain writes directly to the final path; no
+                // temp-rename step. The map entry still uses the final
+                // path so the runner's iteration semantics are
+                // unchanged for the (rare) action-runner that walks
+                // TempOutputPaths.
+                tempPaths[produced] = produced.FullPath;
+            }
+            else
+            {
+                string baseName = Path.GetFileName(produced.FullPath);
+                string tempName = $"{baseName}.tmp.{pid}.{actionId}";
+                tempPaths[produced] = Path.Combine(dir, tempName);
+            }
         }
 
         ActionRunContext context = new(
@@ -368,20 +392,62 @@ public sealed class ParallelExecutor
             ActionRunResult runResult = _runner.RunAction(context);
             if (cancellationToken.IsCancellationRequested)
             {
-                DeleteTempFiles(tempPaths.Values);
+                // Audit fix R5-C2: only the executor's own .tmp.<pid>.<actionid>
+                // temps are safe to mass-delete on cancellation. For
+                // producer-writes-final-path actions, tempPaths.Values
+                // contains final paths; deleting them would nuke a partial
+                // .obj that the cache-hash check would already invalidate
+                // on the next run anyway. Partial .obj cleanup is left to
+                // the orphan-sweep / next-build re-emit (re-emit overwrites
+                // any partial).
+                if (!producerWritesFinalPath)
+                {
+                    DeleteTempFiles(tempPaths.Values);
+                }
                 return new ActionResult(linked, Success: false, Skipped: false, ExitCode: 130, ErrorMessage: "cancelled mid-run");
             }
 
             if (!runResult.Success)
             {
-                DeleteTempFiles(tempPaths.Values);
+                if (!producerWritesFinalPath)
+                {
+                    DeleteTempFiles(tempPaths.Values);
+                }
                 return new ActionResult(linked, Success: false, Skipped: false, ExitCode: runResult.ExitCode, ErrorMessage: runResult.ErrorMessage);
             }
 
             // Atomic rename + update ActionHistory.
-            foreach ((FileItem produced, string tempPath) in tempPaths)
+            //
+            // Audit fix R5-C2: actions whose runner writes directly to
+            // the final path (compile / PCH / link) skip the rename
+            // entirely. We still validate every ProducedItem materialised
+            // at its final path so a runner that silently declared
+            // success without producing the artefact is caught.
+            foreach ((FileItem produced, string tempOrFinalPath) in tempPaths)
             {
-                if (!File.Exists(tempPath))
+                if (producerWritesFinalPath)
+                {
+                    // tempOrFinalPath == produced.FullPath by construction
+                    // when this branch is taken. Check final-path
+                    // existence; an action that declared success but
+                    // produced no file is still a failure.
+                    if (!File.Exists(produced.FullPath))
+                    {
+                        return new ActionResult(
+                            linked,
+                            Success: false,
+                            Skipped: false,
+                            ExitCode: 70,
+                            ErrorMessage: $"action {linked.Description} declared success but produced output {produced.FullPath} is missing");
+                    }
+                    // Invalidate the FileItem cache so the post-run
+                    // content-hash + depfile-parse reads see the
+                    // freshly-written bytes rather than a stale snapshot.
+                    produced.Invalidate();
+                    continue;
+                }
+
+                if (!File.Exists(tempOrFinalPath))
                 {
                     // The runner declared success but did not write
                     // the temp. Treat as failure.
@@ -391,12 +457,12 @@ public sealed class ParallelExecutor
                         Success: false,
                         Skipped: false,
                         ExitCode: 70,
-                        ErrorMessage: $"action {linked.Description} did not produce temp output {tempPath}");
+                        ErrorMessage: $"action {linked.Description} did not produce temp output {tempOrFinalPath}");
                 }
                 // Audit fix R6-C5: wrap the rename in the AV-retry helper.
                 // Compiler output is the textbook AV-scan target on Win64;
                 // a transient lock here is the most common failure mode.
-                string capturedTemp = tempPath;
+                string capturedTemp = tempOrFinalPath;
                 string capturedDest = produced.FullPath;
                 FileSystemOps.RetryOnTransientIOException(
                     () => File.Move(capturedTemp, capturedDest, overwrite: true));
@@ -528,12 +594,19 @@ public sealed class ParallelExecutor
         }
         catch (OperationCanceledException)
         {
-            DeleteTempFiles(tempPaths.Values);
+            // Audit fix R5-C2: see the !runResult.Success branch above.
+            if (!producerWritesFinalPath)
+            {
+                DeleteTempFiles(tempPaths.Values);
+            }
             return new ActionResult(linked, Success: false, Skipped: false, ExitCode: 130, ErrorMessage: "cancelled");
         }
         catch (Exception ex)
         {
-            DeleteTempFiles(tempPaths.Values);
+            if (!producerWritesFinalPath)
+            {
+                DeleteTempFiles(tempPaths.Values);
+            }
             Logger.Error(
                 $"Action {linked.Description} threw {ex.GetType().Name}: {ex.Message}",
                 exitCode: 70,
@@ -968,14 +1041,33 @@ public interface IActionRunner
 /// </summary>
 /// <remarks>
 /// <para>
-/// This runner does <strong>not</strong> implement temp-file redirection
-/// for compile actions -- the toolchain abstraction is responsible for
-/// constructing command lines that write to the temp paths the executor
-/// hands it via <see cref="ActionRunContext.TempOutputPaths"/>. The
-/// toolchain consumes the temp names and embeds them as
-/// <c>/Fo&lt;temp&gt;</c> (MSVC) or <c>-o &lt;temp&gt;</c> (Clang) at
-/// command construction time.
+/// <b>Output materialisation contract (audit fix R5-C2).</b> This runner
+/// passes <see cref="IExternalAction.CommandArguments"/> verbatim to
+/// <see cref="Process"/>; it does NOT rewrite output-path arguments. Two
+/// kinds of actions can be dispatched through it:
 /// </para>
+/// <list type="bullet">
+/// <item>
+/// <b>Producer-writes-final-path actions</b>
+/// (<see cref="IExternalAction.bProducerWritesFinalPath"/> = true,
+/// e.g. compile / PCH-gen / link). The toolchain's command line embeds
+/// the final output path (<c>/Fo&lt;obj&gt;</c>, <c>/Fp&lt;pch&gt;</c>,
+/// <c>-o &lt;obj&gt;</c>, <c>/OUT:&lt;dll&gt;</c>); the compiler /
+/// linker writes the artefact directly to that path. The executor
+/// validates final-path existence post-run and skips its
+/// temp-file-then-rename ceremony for these actions.
+/// </item>
+/// <item>
+/// <b>Temp-file actions</b> (the default,
+/// <see cref="IExternalAction.bProducerWritesFinalPath"/> = false). The
+/// action's CommandArguments embed the
+/// <see cref="ActionRunContext.TempOutputPaths"/> entries directly --
+/// the toolchain is responsible for reading the context and composing
+/// the command line. The executor then atomically renames each temp to
+/// its final path on success. XBT-internal actions (gen.cpp emit,
+/// manifest writes, copyright-validation diagnostics) use this path.
+/// </item>
+/// </list>
 /// </remarks>
 public sealed class ProcessActionRunner : IActionRunner
 {

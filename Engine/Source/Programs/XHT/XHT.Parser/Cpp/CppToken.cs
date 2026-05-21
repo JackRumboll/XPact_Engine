@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
 /// One token produced by <see cref="CppTokenizer"/> per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.1. Carries a column-precise
+/// <c>/Documents/XHT.html</c> Rev 7 Section 3.1. Carries a column-precise
 /// <see cref="SourceSpan"/> (XHT's deliberate divergence from UHT footgun
 /// #1: UHT carries only the start line; XHT carries
 /// <c>(line, column, length)</c>).

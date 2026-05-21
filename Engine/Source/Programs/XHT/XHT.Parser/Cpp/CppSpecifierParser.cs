@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
 /// Parser for the parenthesised specifier list following an XHT marker
-/// per <c>/Documents/XHT.html</c> Rev 5 Section 7.2. Consumes
+/// per <c>/Documents/XHT.html</c> Rev 7 Section 7.2. Consumes
 /// <c>(Foo, Bar=Baz, meta=(K="V"))</c> token sequences and emits a list
 /// of <see cref="Specifier"/> records the resolver / validator pass
 /// inspects in Phase 1d.

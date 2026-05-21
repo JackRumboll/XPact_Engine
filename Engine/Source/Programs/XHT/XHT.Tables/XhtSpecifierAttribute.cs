@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// Plugin-side declaration of an XHT specifier per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 18 (plugin model). Authors of
+/// <c>/Documents/XHT.html</c> Rev 7 Section 18 (plugin model). Authors of
 /// Phase-2 plugins decorate a marker handler class with this attribute, and
 /// the plugin loader (Section 18.2) scans the assembly via reflection and
 /// registers the specifier into a <see cref="SpecifierRegistry"/> at plugin-

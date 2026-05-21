@@ -234,4 +234,52 @@ public interface IExternalAction
     /// </para>
     /// </remarks>
     FileItem? DependencyListFile { get; }
+
+    /// <summary>
+    /// Audit fix R5-C2: opt-in flag declaring "this action's runner is
+    /// responsible for atomically materialising every
+    /// <see cref="ProducedItems"/> entry directly at its final path; the
+    /// executor's temp-rename contract does NOT apply." Compile / PCH /
+    /// link actions set this to true because their toolchains (cl.exe,
+    /// clang.exe, link.exe, lld.exe) embed final output paths
+    /// (<c>/Fo</c>, <c>/Fp</c>, <c>-o</c>, <c>/OUT:</c>) directly in the
+    /// command-line and write the produced binaries with the same
+    /// open-then-rename atomic-write discipline the executor would
+    /// otherwise impose externally.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this exists.</b> The Round-4 audit (finding R5-C2) surfaced
+    /// that the executor's universal temp-file-then-rename contract is
+    /// architecturally incompatible with how every production C++
+    /// toolchain writes object files: cl.exe / clang.exe / link.exe all
+    /// accept a single output-path argument and atomically materialise
+    /// the artefact there. The executor cannot externally rewrite those
+    /// path arguments without parsing toolchain-specific syntax (a
+    /// fragile coupling that would have to track every flag every
+    /// upstream version introduces). UBT solves this by NOT imposing
+    /// the temp-rename contract on compiles -- it trusts the compiler's
+    /// own atomic-write discipline. XBT follows the same architectural
+    /// choice, but with an explicit per-action opt-in so the rest of the
+    /// action graph (text emission, manifest writes, reflection
+    /// generation) keeps the safer temp-rename discipline.
+    /// </para>
+    /// <para>
+    /// <b>Failure-mode safety.</b> A toolchain crash mid-write leaves a
+    /// partial .obj / .pch on disk. The cache layer (see
+    /// <see cref="ActionHistory.IsActionOutdated"/>) hashes every
+    /// produced item's content; a partial-write artefact has a hash that
+    /// will never match a recorded output hash, so the next build re-runs
+    /// the action. There is therefore no correctness gap from skipping
+    /// the temp-rename for compile actions.
+    /// </para>
+    /// <para>
+    /// <b>Default.</b> False. Actions that do not opt in continue to use
+    /// the temp-file-then-rename contract -- the safer default for
+    /// XBT-emitted artefacts (gen.cpp emit, manifest writes, etc.) where
+    /// the executor has full control over the byte stream and rename is
+    /// cheap.
+    /// </para>
+    /// </remarks>
+    bool bProducerWritesFinalPath { get; }
 }

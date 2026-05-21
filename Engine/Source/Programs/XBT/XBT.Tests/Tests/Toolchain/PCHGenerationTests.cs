@@ -247,6 +247,71 @@ public sealed class PCHGenerationTests : IDisposable
         Assert.False(second);
     }
 
+    /// <summary>
+    /// Audit fix R5-C1: every per-module MSVC PCH action surfaces its
+    /// /sourceDependencies depfile via
+    /// <see cref="IExternalAction.DependencyListFile"/> AND lists the
+    /// depfile in <see cref="IExternalAction.ProducedItems"/>. Without
+    /// either signal, the cache layer cannot wire up the transitive-
+    /// header invalidation pipeline introduced in R3-C1, and an edit to
+    /// a PCH-only header silently serves stale .pch + downstream .obj.
+    /// </summary>
+    [Fact]
+    public void Msvc_PerModulePCH_EmitsDepfileAndDeclaresIt()
+    {
+        ModuleRules module = NewModule(
+            pchUsage: PCHUsageMode.NoSharedPCHs,
+            privatePchHeader: "DepPCH.h");
+        TargetRules target = NewTarget();
+        FileItem header = MakeFile("DepPCH.h", "// Copyright Simgenics. All Rights Reserved.\n");
+
+        PCHBinding binding = _msvc.GeneratePCH(module, target, "DepPCH.h", header, _scratchDir);
+
+        // The /sourceDependencies flag must appear in the args.
+        Assert.Contains("/sourceDependencies", binding.Action.CommandArguments);
+
+        // DependencyListFile must be non-null and point to a .deps.json
+        // path the cache layer can consume post-build.
+        Assert.NotNull(binding.Action.DependencyListFile);
+        Assert.EndsWith(".deps.json", binding.Action.DependencyListFile!.FullPath, StringComparison.Ordinal);
+
+        // The depfile must be a ProducedItem so the executor's content-
+        // hash + orphan-sweep accounting covers it.
+        string depPath = binding.Action.DependencyListFile.FullPath;
+        Assert.Contains(binding.Action.ProducedItems, p => p.FullPath == depPath);
+
+        // The action declares producer-writes-final-path so the
+        // executor's temp-rename contract correctly skips for PCH-gen.
+        Assert.True(binding.Action.bProducerWritesFinalPath);
+    }
+
+    /// <summary>
+    /// Audit fix R5-C1: per-module Clang PCH actions emit -MD -MF and
+    /// surface the .d depfile via DependencyListFile + ProducedItems.
+    /// </summary>
+    [Fact]
+    public void Clang_PerModulePCH_EmitsDepfileAndDeclaresIt()
+    {
+        ModuleRules module = NewModule(
+            pchUsage: PCHUsageMode.NoSharedPCHs,
+            privatePchHeader: "DepPCH.h");
+        TargetRules target = NewTarget(Platform.Linux);
+        FileItem header = MakeFile("DepPCH.h", "// Copyright Simgenics. All Rights Reserved.\n");
+
+        PCHBinding binding = _clang.GeneratePCH(module, target, "DepPCH.h", header, _scratchDir);
+
+        Assert.Contains("-MD", binding.Action.CommandArguments);
+        Assert.Contains("-MF", binding.Action.CommandArguments);
+
+        Assert.NotNull(binding.Action.DependencyListFile);
+        Assert.EndsWith(".d", binding.Action.DependencyListFile!.FullPath, StringComparison.Ordinal);
+
+        string depPath = binding.Action.DependencyListFile.FullPath;
+        Assert.Contains(binding.Action.ProducedItems, p => p.FullPath == depPath);
+
+        Assert.True(binding.Action.bProducerWritesFinalPath);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

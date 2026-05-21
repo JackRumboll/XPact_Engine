@@ -118,6 +118,18 @@ public abstract class ActionBase : IExternalAction
     /// </remarks>
     public virtual FileItem? DependencyListFile => null;
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// Audit fix R5-C2: XBT-internal action subclasses default to the
+    /// temp-rename contract (the safer choice for in-process / text-
+    /// emission actions where the executor has full control over the
+    /// byte stream). Subclasses whose runner writes directly to the
+    /// final path (rare for XBT-internal actions) override to true.
+    /// </para>
+    /// </remarks>
+    public virtual bool bProducerWritesFinalPath => false;
+
     /// <summary>
     /// Single-cell reference holding the lazily-computed
     /// <see cref="CommandVersion"/>. Read with <c>Volatile.Read</c>; the

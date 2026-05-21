@@ -24,6 +24,23 @@ namespace Simgenics.XPact.XBT.Tests.Tests.ProjectFiles;
 /// flag translation and deterministic output. Per
 /// <c>/Documents/XBT.html</c> Rev 4 Section 14.3.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Audit fix R5-M3: this class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because it constructs <see cref="XMSVCToolChain"/>
+/// and exercises code paths that read
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash.XbtBinaryHash"/>
+/// (folded into every toolchain emit site's cache-key components).
+/// xUnit's default per-class parallelism would otherwise let a parallel
+/// override-mutating test (e.g. <c>XMSVCToolChainTests</c>'
+/// determinism assertions) flip the process-wide override between two
+/// reads in this class and cause an intermittent failure on any
+/// assertion that compares cache-key-derived values. See the collection's
+/// remarks for the architectural rationale.
+/// </para>
+/// </remarks>
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class ClangdCompileCommandsGeneratorTests : IDisposable
 {
     private readonly string _engineRoot;

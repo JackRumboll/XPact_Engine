@@ -4,7 +4,7 @@ namespace Simgenics.XPact.XHT.Resolver;
 
 /// <summary>
 /// XHT diagnostic codes the resolver emits per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 6.2 (validator catalog) +
+/// <c>/Documents/XHT.html</c> Rev 7 Section 6.2 (validator catalog) +
 /// Section 12.3 (band allocations). All codes are decimal in the form
 /// <c>XHT&lt;NNN&gt;</c>; bands are 20-slot ranges per Section 12.3
 /// (Rev 4 X-Round2-M2 decimal-only convention).

@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.Tables;
 
 /// <summary>
 /// The Phase-1 locked specifier vocabulary per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 7 + Section 7.4 +
+/// <c>/Documents/XHT.html</c> Rev 7 Section 7 + Section 7.4 +
 /// <c>/Documents/XToolchainContract.html</c> Section 1.2. This list is the
 /// source of truth that <see cref="SpecifierRegistry"/> bulk-registers at
 /// construction.
@@ -65,7 +65,7 @@ public static class BuiltInSpecifiers
         List<SpecifierDefinition> list = new(capacity: 96);
 
         // -----------------------------------------------------------------
-        // Class specifiers (XCLASS(...)) per XHT.html Rev 5 Section 7.4 +
+        // Class specifiers (XCLASS(...)) per XHT.html Rev 7 Section 7.4 +
         // Contract Section 1.2. Section 7.4 surfaces Intrinsic / MinimalAPI /
         // NoExport / Within / Config as the emit-driving class-flag set.
         // -----------------------------------------------------------------

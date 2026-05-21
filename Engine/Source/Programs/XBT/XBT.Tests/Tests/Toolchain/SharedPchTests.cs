@@ -426,6 +426,79 @@ public sealed class SharedPchTests : IDisposable
     }
 
     // ---------------------------------------------------------------------
+    // 9. Audit fix R5-C1: shared-PCH actions emit /sourceDependencies (MSVC)
+    //    or -MD -MF (Clang) AND surface the depfile via DependencyListFile +
+    //    ProducedItems so CppDependencyCache wires up transitive-header
+    //    invalidation for the shared PCH.
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Audit fix R5-C1: MSVC shared-PCH action surfaces its
+    /// /sourceDependencies depfile through DependencyListFile + lists
+    /// the depfile in ProducedItems. Without this, editing a header
+    /// transitively included by the shared PCH does not invalidate the
+    /// cached .pch and every participant module's .obj serves stale
+    /// codegen.
+    /// </summary>
+    [Fact]
+    public void Msvc_SharedPCH_EmitsDepfileAndDeclaresIt()
+    {
+        FileItem header = MakeFile(
+            "DepShared.h",
+            "// Copyright Simgenics. All Rights Reserved.\n");
+        ModuleRules a = NewModule(name: "M1", sharedPchHeader: "DepShared.h");
+        ModuleRules b = NewModule(name: "M2", sharedPchHeader: "DepShared.h");
+
+        PCHBinding binding = _msvc.GenerateSharedPCH(
+            headerFile: "DepShared.h",
+            participants: new[] { a, b },
+            headerFileItem: header,
+            target: NewTarget(),
+            outputDir: _scratchDir);
+
+        Assert.Contains("/sourceDependencies", binding.Action.CommandArguments);
+
+        Assert.NotNull(binding.Action.DependencyListFile);
+        string depPath = binding.Action.DependencyListFile!.FullPath;
+        Assert.EndsWith(".deps.json", depPath, StringComparison.Ordinal);
+        Assert.Contains(binding.Action.ProducedItems, p => p.FullPath == depPath);
+
+        // Producer writes final path -- consistent across compile / PCH / link.
+        Assert.True(binding.Action.bProducerWritesFinalPath);
+    }
+
+    /// <summary>
+    /// Audit fix R5-C1: Clang shared-PCH action emits -MD -MF and
+    /// surfaces the .d depfile via DependencyListFile + ProducedItems.
+    /// </summary>
+    [Fact]
+    public void Clang_SharedPCH_EmitsDepfileAndDeclaresIt()
+    {
+        FileItem header = MakeFile(
+            "DepShared.h",
+            "// Copyright Simgenics. All Rights Reserved.\n");
+        ModuleRules a = NewModule(name: "M1", sharedPchHeader: "DepShared.h");
+        ModuleRules b = NewModule(name: "M2", sharedPchHeader: "DepShared.h");
+
+        PCHBinding binding = _clang.GenerateSharedPCH(
+            headerFile: "DepShared.h",
+            participants: new[] { a, b },
+            headerFileItem: header,
+            target: NewTarget(Platform.Linux),
+            outputDir: _scratchDir);
+
+        Assert.Contains("-MD", binding.Action.CommandArguments);
+        Assert.Contains("-MF", binding.Action.CommandArguments);
+
+        Assert.NotNull(binding.Action.DependencyListFile);
+        string depPath = binding.Action.DependencyListFile!.FullPath;
+        Assert.EndsWith(".d", depPath, StringComparison.Ordinal);
+        Assert.Contains(binding.Action.ProducedItems, p => p.FullPath == depPath);
+
+        Assert.True(binding.Action.bProducerWritesFinalPath);
+    }
+
+    // ---------------------------------------------------------------------
     // Helpers.
     // ---------------------------------------------------------------------
 

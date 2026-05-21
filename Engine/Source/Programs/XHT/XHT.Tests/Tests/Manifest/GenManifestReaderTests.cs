@@ -339,4 +339,111 @@ public class GenManifestReaderTests : IDisposable
         });
         Assert.Throws<ManifestMalformedException>(() => GenManifestReader.Parse(text));
     }
+
+    // ---------------------------------------------------------------------
+    // Round 5 R4-MA5: GenManifestReader.Parse now validates ContractVersion
+    // against XhtVersion.ContractVersion (the symmetric counterpart of the
+    // XbtManifestReader R3 fix). A stale cached .gen.manifest written by
+    // an older XHT cannot be silently accepted after a Contract bump.
+    // Diagnostic XHT006 per /Documents/XHT.html Rev 7 Section 23.2.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Parse_ContractVersionMatchesXhtCompileTime_Succeeds()
+    {
+        // Sanity: a manifest with the literal current ContractVersion
+        // parses cleanly. Uses XhtVersion.ContractVersion to guarantee
+        // this test tracks the compile-time pin without drift.
+        string text = MinimalValidWithContractVersion(XhtVersion.ContractVersion);
+        GenManifest m = GenManifestReader.Parse(text);
+        Assert.Equal(XhtVersion.ContractVersion, m.ContractVersion);
+    }
+
+    [Fact]
+    public void Parse_ContractVersionMismatch_ThrowsXHT006()
+    {
+        const string mismatchedVersion = "99.99+deadbeefcafebabe";
+        string text = MinimalValidWithContractVersion(mismatchedVersion);
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => GenManifestReader.Parse(text));
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+        Assert.Equal("XHT006", ex.DiagnosticCode);
+        // Operator-actionable diagnostic must name BOTH versions so they
+        // know which side (the stale cached manifest or the current XHT
+        // build) to rebuild.
+        Assert.Contains(mismatchedVersion, ex.Message, StringComparison.Ordinal);
+        Assert.Contains(XhtVersion.ContractVersion, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_ContractVersionDifferOnlyInHashSuffix_ThrowsXHT006()
+    {
+        // The structure-hash suffix is load-bearing: two manifests with
+        // the same semantic tag but different structure hashes describe
+        // different contract surfaces. The check must reject the
+        // mismatched one even when the prefix matches.
+        const string sameTagDifferentHash = "13.2+0000000000000000";
+        Assert.NotEqual(XhtVersion.ContractVersion, sameTagDifferentHash);
+        string text = MinimalValidWithContractVersion(sameTagDifferentHash);
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => GenManifestReader.Parse(text));
+        Assert.Equal("XHT006", ex.DiagnosticCode);
+    }
+
+    [Fact]
+    public void Read_GenManifestNotFound_CarriesXHT001DiagnosticCode()
+    {
+        // R4-CR1 anchor verification: the missing-file branch now carries
+        // a catalog-anchored DiagnosticCode (XHT001 per Section 23.2)
+        // instead of relying on the legacy XHT050 entry-point shim.
+        string missing = Path.Combine(_tempDir, "absent.gen.manifest");
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => GenManifestReader.Read(missing));
+        Assert.Equal("XHT001", ex.DiagnosticCode);
+        Assert.Equal(ExitCodes.ManifestMalformed, ex.ExitCode);
+    }
+
+    [Fact]
+    public void Parse_MissingEndMarker_CarriesXHT007DiagnosticCode()
+    {
+        // R4-CR1 anchor verification for the structural-rejection
+        // branches: every malformed-shape throw site in
+        // GenManifestReader.Parse now anchors XHT007.
+        string text = string.Join("\n", new[]
+        {
+            "[Metadata]",
+            "XhtSchemaVersion = 1",
+            $"ContractVersion = {XhtVersion.ContractVersion}",
+            "ModuleName = X",
+            "ProducedAtUtcDeterministic = 0",
+            "GeneratedAtUtc = 2026-05-20T12:34:56Z",
+            "[Inputs]",
+            "[Generated]",
+            "[Diagnostics]",
+            // [End] omitted
+        });
+        ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(
+            () => GenManifestReader.Parse(text));
+        Assert.Equal("XHT007", ex.DiagnosticCode);
+    }
+
+    private static string MinimalValidWithContractVersion(string contractVersion) =>
+        string.Join("\n", new[]
+        {
+            "[Metadata]",
+            "XhtSchemaVersion = 1",
+            $"ContractVersion = {contractVersion}",
+            "ModuleName = XScoring",
+            "ProducedAtUtcDeterministic = 0",
+            "GeneratedAtUtc = 2026-05-20T12:34:56Z",
+            "",
+            "[Inputs]",
+            "",
+            "[Generated]",
+            "",
+            "[Diagnostics]",
+            "",
+            "[End]",
+            "",
+        });
 }

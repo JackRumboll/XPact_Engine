@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 /// <summary>
 /// Extracts <see cref="Specifier"/> records from a Roslyn
 /// <see cref="AttributeSyntax"/>'s argument list per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.2 (Roslyn-based C# parser)
+/// <c>/Documents/XHT.html</c> Rev 7 Section 3.2 (Roslyn-based C# parser)
 /// + Section 7.2 (specifier parsing). The C# side mirrors the C++ side
 /// (<c>CppSpecifierParser</c>) in role and diagnostic vocabulary:
 /// </summary>

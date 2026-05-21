@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 1b stub of the <c>dump-ast</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
 /// </summary>
 /// <remarks>
 /// <para>

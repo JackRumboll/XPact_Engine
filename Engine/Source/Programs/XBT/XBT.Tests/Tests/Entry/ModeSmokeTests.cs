@@ -30,7 +30,16 @@ namespace Simgenics.XPact.XBT.Tests.Tests.Entry;
 /// observable side effects each. The full integration coverage lives in
 /// the per-subsystem test files.
 /// </para>
+/// <para>
+/// Audit fix R5-M3: in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because some scenarios call
+/// <c>BuildMode.Run</c>, which transitively reads
+/// <c>ToolchainSelfHash.XbtBinaryHash</c> through the toolchain emit
+/// path's cache-key composition.
+/// </para>
 /// </remarks>
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class ModeSmokeTests : IDisposable
 {
     private readonly string _scratchRoot;

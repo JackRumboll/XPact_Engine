@@ -4,7 +4,7 @@
   <PropertyGroup>
     <RootNamespace>Simgenics.XPact.XHT.Tables</RootNamespace>
     <AssemblyName>XHT.Tables</AssemblyName>
-    <Description>Attribute-driven extensibility tables: XhtSpecifierTable, XhtKeywordTable, XhtPropertyTypeTable, XhtExporterTable, XhtSpecifierValidatorTable, XhtEngineClassTable. Loaded at static-init from XHT's own assembly and any plugin assemblies discovered via filesystem scan. Per /Documents/XHT.html Rev 5 Section 18.</Description>
+    <Description>Attribute-driven extensibility tables: XhtSpecifierTable, XhtKeywordTable, XhtPropertyTypeTable, XhtExporterTable, XhtSpecifierValidatorTable, XhtEngineClassTable. Loaded at static-init from XHT's own assembly and any plugin assemblies discovered via filesystem scan. Per /Documents/XHT.html Rev 7 Section 18.</Description>
   </PropertyGroup>
 
   <ItemGroup>

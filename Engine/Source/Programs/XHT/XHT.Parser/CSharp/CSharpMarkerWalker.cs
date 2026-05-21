@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 
 /// <summary>
 /// Roslyn-based reflection-marker walker for one C# source file per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.2 (Roslyn-based C# parser)
+/// <c>/Documents/XHT.html</c> Rev 7 Section 3.2 (Roslyn-based C# parser)
 /// + Section 3.3 (cross-language considerations) + Section 7 (markers).
 /// The C# peer of <c>Cpp.CppMarkerScanner</c>: walks the syntax tree,
 /// recognises the X-attribute family (<c>[XClass]</c>, <c>[XStruct]</c>,
@@ -384,7 +384,7 @@ public sealed class CSharpMarkerWalker
                 }
             }
 
-            // Per /Documents/XHT.html Rev 5 Section 7.5: C# attribute
+            // Per /Documents/XHT.html Rev 7 Section 7.5: C# attribute
             // anchored types always have generated body in XPact's model
             // (no XGENERATED_BODY equivalent is needed because Roslyn
             // gives the walker the target directly). Set
@@ -612,7 +612,7 @@ public sealed class CSharpMarkerWalker
             // delegate-declaration time (Action / Func vs custom delegate
             // type); a future [XMulticastDelegate] attribute (parallel
             // to the C++ DECLARE_DYNAMIC_MULTICAST_DELEGATE_* macros)
-            // would flip this. See XHT.html Rev 5 Section 7 marker table.
+            // would flip this. See XHT.html Rev 7 Section 7 marker table.
             XhtDelegate del = new(
                 Name: name,
                 FullyQualifiedName: fqn,

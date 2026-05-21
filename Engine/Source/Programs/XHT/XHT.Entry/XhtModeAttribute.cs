@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XHT.Entry;
 /// XHT scans for this attribute in every loaded assembly at startup
 /// (<see cref="ToolModeRegistry"/>). Duplicate names emit a warning and
 /// the first-registered class wins (mirrors XBT.Entry's discipline).
-/// Per <c>/Documents/XHT.html</c> Rev 5 Section 1 + Section 2.
+/// Per <c>/Documents/XHT.html</c> Rev 7 Section 1 + Section 2.
 /// </para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]

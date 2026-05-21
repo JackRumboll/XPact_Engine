@@ -143,28 +143,57 @@ public static class ToolchainSelfHash
                 + "read, or build without single-file-publish.");
         }
 
-        if (!File.Exists(location))
-        {
-            // Assembly resolved a location but the file is no longer on
-            // disk (deleted mid-run, virtualised filesystem, etc.). Same
-            // fail-loud rationale as the empty-location case.
-            throw new InvalidOperationException(
-                $"ToolchainSelfHash.XbtBinaryHash cannot be computed: "
-                + $"assembly file '{location}' does not exist on disk. "
-                + "The XBT cache-key surface depends on this hash; the missing "
-                + "binary indicates a corrupt installation.");
-        }
-
+        // Audit fix R5-m1: previously a stand-alone File.Exists check
+        // sat OUTSIDE the AV-retry wrapper. File.Exists returns false
+        // both when the file is genuinely missing AND when the file
+        // exists but momentary access is denied (the classic
+        // antivirus-deny-read race on a just-loaded DLL). Outside the
+        // retry wrapper this produced an InvalidOperationException
+        // ("missing binary") that the operator would correctly diagnose
+        // as a corrupt install -- masking a transient AV race that
+        // would have succeeded on retry. The check is now inside the
+        // retry closure: File.OpenRead throws FileNotFoundException
+        // (genuinely missing -> fail loud) and UnauthorizedAccessException
+        // / IOException (transient AV-scan lock -> retry) which the
+        // retry layer handles per its existing classification.
+        //
         // Audit fix R7-C3: AV-retry-wrap the read so a sibling
         // antivirus scan locking the just-loaded binary surfaces as
         // retries on the standard back-off schedule rather than as a
         // build failure on the first read.
-        return FileSystemOps.RetryOnTransientIOException(() =>
+        try
         {
-            using FileStream fs = File.OpenRead(location);
-            IoHash digest = IoHash.Compute(fs);
-            return digest.ToString()[..16];
-        });
+            return FileSystemOps.RetryOnTransientIOException(() =>
+            {
+                using FileStream fs = File.OpenRead(location);
+                IoHash digest = IoHash.Compute(fs);
+                return digest.ToString()[..16];
+            });
+        }
+        catch (FileNotFoundException ex)
+        {
+            // Genuine missing file (vs. a transient deny-read). Same
+            // fail-loud rationale as the empty-location case: a missing
+            // XBT.Core.dll means a corrupt installation that needs
+            // operator attention.
+            throw new InvalidOperationException(
+                $"ToolchainSelfHash.XbtBinaryHash cannot be computed: "
+                + $"assembly file '{location}' does not exist on disk. "
+                + "The XBT cache-key surface depends on this hash; the missing "
+                + "binary indicates a corrupt installation.",
+                ex);
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            // The assembly directory was removed mid-process. Same
+            // fail-loud as the missing-file case.
+            throw new InvalidOperationException(
+                $"ToolchainSelfHash.XbtBinaryHash cannot be computed: "
+                + $"assembly directory for '{location}' does not exist on disk. "
+                + "The XBT cache-key surface depends on this hash; the missing "
+                + "directory indicates a corrupt installation.",
+                ex);
+        }
     }
 
     /// <summary>

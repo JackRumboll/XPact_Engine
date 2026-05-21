@@ -6,7 +6,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// One reflected enum (<c>XENUM</c> / <c>[XEnum]</c>). Per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 4.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 4.1.
 /// </summary>
 /// <remarks>
 /// <para>

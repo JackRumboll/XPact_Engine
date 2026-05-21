@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XHT.Entry.Modes;
 
 /// <summary>
 /// Phase 2 stub of the <c>query-symbols</c> mode per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1.1.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1.1.
 /// </summary>
 /// <remarks>
 /// <para>

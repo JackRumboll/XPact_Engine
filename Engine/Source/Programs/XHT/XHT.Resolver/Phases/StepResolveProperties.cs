@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// Phase 6 (<see cref="ResolvePhase.Properties"/>): resolve property
 /// types via the symbol table; resolve <c>ReplicatedUsing</c> callback
 /// method references and validate their signatures per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 5.1 + Section 6.2 XHT113.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 5.1 + Section 6.2 XHT113.
 /// </summary>
 /// <remarks>
 /// <para>

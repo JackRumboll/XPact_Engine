@@ -44,8 +44,16 @@ namespace Simgenics.XPact.XBT.Tests.Tests.BuildMode;
 /// <see cref="TraitAttribute"/> <c>Category="SmokeBuild"</c> so CI can
 /// gate it independently.
 /// </para>
+/// <para>
+/// Audit fix R5-M3: in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because every <c>BuildMode.Run</c> invocation
+/// instantiates an XMSVCToolChain / XClangToolChain whose emit paths
+/// read <c>ToolchainSelfHash.XbtBinaryHash</c>.
+/// </para>
 /// </remarks>
 [Trait("Category", "SmokeBuild")]
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class HelloWorldSmokeTest : IDisposable
 {
     private readonly string _scratchEngine;

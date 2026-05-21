@@ -12,7 +12,7 @@ public class ScaffoldTests
     /// <summary>
     /// Trivial passing assertion confirming xUnit + Microsoft.NET.Test.Sdk
     /// are wired up correctly. Phase 1b replaces this with the real unit
-    /// suite per /Documents/XHT.html Rev 5 Section 21.
+    /// suite per /Documents/XHT.html Rev 7 Section 21.
     /// </summary>
     [Fact]
     public void Scaffold_Buildable_TestHarnessRuns()

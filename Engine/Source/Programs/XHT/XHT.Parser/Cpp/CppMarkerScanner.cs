@@ -10,7 +10,7 @@ using Simgenics.XPact.XHT.Tables;
 namespace Simgenics.XPact.XHT.Parser.Cpp;
 
 /// <summary>
-/// Marker-driven AST builder per <c>/Documents/XHT.html</c> Rev 5
+/// Marker-driven AST builder per <c>/Documents/XHT.html</c> Rev 7
 /// Section 3.4 + Section 7. Walks a <see cref="CppTokenizer"/> token
 /// stream, tracks namespace + outer-class scope, recognises the 10 XHT
 /// reflection markers (<c>XCLASS</c>, <c>XSTRUCT</c>, <c>XENUM</c>,

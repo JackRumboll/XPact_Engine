@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XHT.AST;
 
 /// <summary>
 /// Caseless lookup of reflected types by engine-name per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 + Section 5.4.
+/// <c>/Documents/XHT.html</c> Rev 7 Section 3.3 + Section 5.4.
 /// </summary>
 /// <remarks>
 /// <para>

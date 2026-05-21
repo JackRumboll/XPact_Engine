@@ -9,7 +9,7 @@ namespace Simgenics.XPact.XHT.Tests.Tests.AST;
 
 /// <summary>
 /// Tests for <see cref="XhtClass"/>. The record models a reflected class
-/// (<c>XCLASS</c> / <c>[XClass]</c>) per <c>/Documents/XHT.html</c> Rev 5
+/// (<c>XCLASS</c> / <c>[XClass]</c>) per <c>/Documents/XHT.html</c> Rev 7
 /// Section 4.1 + Section 7.4.
 /// </summary>
 public class XhtClassTests

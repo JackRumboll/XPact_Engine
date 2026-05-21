@@ -11,7 +11,7 @@ namespace Simgenics.XPact.XHT.Entry;
 /// based <c>Name</c> / <c>Description</c> surface so
 /// <see cref="ToolModeRegistry"/> can list modes without resolving the
 /// static-abstract members on each implementation type. Per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 1 + Section 2 (module layout).
+/// <c>/Documents/XHT.html</c> Rev 7 Section 1 + Section 2 (module layout).
 /// </summary>
 /// <remarks>
 /// <para>

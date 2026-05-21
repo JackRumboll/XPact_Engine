@@ -28,6 +28,22 @@ namespace Simgenics.XPact.XBT.Tests.Tests.ProjectFiles;
 ///   <item>Re-running produces byte-identical output (determinism).</item>
 /// </list>
 /// </summary>
+/// <remarks>
+/// <para>
+/// Audit fix R5-M3: this class is in the
+/// <see cref="Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection"/>
+/// serial collection because it constructs <see cref="XClangToolChain"/>;
+/// toolchain construction does not itself read
+/// <see cref="Simgenics.XPact.XBT.Core.ToolchainSelfHash.XbtBinaryHash"/>,
+/// but every transitive call into a compile / PCH / link emitter does,
+/// and the static-analysis convention check
+/// (<c>ToolchainSelfHashCollectionMembershipTests</c>) enforces that
+/// every class with <c>new XMSVCToolChain</c> / <c>new XClangToolChain</c>
+/// joins this collection so a future test method that does call into
+/// emit paths cannot accidentally introduce a flake.
+/// </para>
+/// </remarks>
+[Collection(nameof(Simgenics.XPact.XBT.Tests.ToolchainSelfHashCollection))]
 public sealed class RiderProjectGeneratorTests : IDisposable
 {
     private readonly string _engineRoot;
