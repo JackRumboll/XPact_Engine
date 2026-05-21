@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XBT.Tests.Tests.ActionGraph.Actions;
 
 /// <summary>
 /// Coverage for <see cref="EmitReflectionAction"/> per XBT.html Rev 10
-/// Section 9.4 + XHT.html Rev 5 Section 9.3.1 (pre-discovery rule).
+/// Section 9.4 + XHT.html Rev 8 Section 9.3.1 (pre-discovery rule).
 /// </summary>
 public sealed class EmitReflectionActionTests : IDisposable
 {

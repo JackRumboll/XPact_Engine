@@ -15,7 +15,7 @@ namespace Simgenics.XPact.XBT.ActionGraph.Actions;
 /// module into a per-module token-AST cache. Maps to
 /// <see cref="XActionType.ParseHeadersAction"/> per
 /// <c>/Documents/XBT.html</c> Rev 10 Section 9.4 +
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.
+/// <c>/Documents/XHT.html</c> Rev 8 Section 9.
 /// </summary>
 /// <remarks>
 /// <para>

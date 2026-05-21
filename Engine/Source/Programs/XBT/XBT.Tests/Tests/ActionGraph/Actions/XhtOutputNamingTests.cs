@@ -8,7 +8,7 @@ namespace Simgenics.XPact.XBT.Tests.Tests.ActionGraph.Actions;
 
 /// <summary>
 /// Verifies the XBT-side mirror of XHT.Emitter's filename-derivation
-/// helpers per <c>/Documents/XHT.html</c> Rev 5 Section 9.3.1 +
+/// helpers per <c>/Documents/XHT.html</c> Rev 8 Section 9.3.1 +
 /// <c>/Documents/XBT.html</c> Rev 10 Section 9.4. The cross-tool
 /// byte-identical contract is verified separately in XHT.Tests's
 /// <c>CrossToolNamingContractTests</c>; these tests cover the XBT-side

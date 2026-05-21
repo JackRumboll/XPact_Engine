@@ -6,23 +6,39 @@ using System.IO;
 using System.Text.RegularExpressions;
 using Xunit;
 
-namespace Simgenics.XPact.XHT.Tests.Tests;
+namespace Simgenics.XPact.XBT.Tests.Tests;
 
 /// <summary>
-/// Lock-in test for the repo-wide convention that CURRENT-cite references
-/// to <c>/Documents/XHT.html</c> point at the latest revision. Round 5
-/// R4-MA3 introduced this regression guard after a Round-4 audit found
-/// 70+ stale "Rev 5" cites across the XHT codebase.
+/// XBT-side mirror of <c>XHT.Tests.RevisionCiteTests</c>. Lock-in test for
+/// the repo-wide convention that CURRENT-cite references to
+/// <c>/Documents/XHT.html</c> in XBT-side source files point at the latest
+/// revision. Round 11 R10-1 introduced this guard after a Round-10
+/// convergence audit found 6 stale "Rev 5" cites in XBT-side files that
+/// XHT.Tests's XHT-only scope bypassed.
 /// </summary>
 /// <remarks>
 /// <para>
+/// <b>Why mirror (not extend XHT.Tests).</b> Each test assembly owns its
+/// own source-tree scan and scopes it to its own tier; XBT-test asserts
+/// XBT-source cite discipline, XHT-test asserts XHT-source cite
+/// discipline. No cross-assembly dependency and no XHT.Tests reaching
+/// into XBT source. The cost is a one-line constant
+/// <see cref="CurrentXhtRevision"/> duplicated across both files; the
+/// test failures (when one is bumped without the other) make the
+/// requirement self-documenting.
+/// </para>
+/// <para>
+/// <b>KEEP IN SYNC WITH</b>
+/// <c>Engine/Source/Programs/XHT/XHT.Tests/Tests/RevisionCiteTests.cs</c>
+/// <c>CurrentXhtRevision</c>. Both constants must be hand-bumped in
+/// lockstep with the XHT.html revision header.
+/// </para>
+/// <para>
 /// <b>Scope.</b> The scan walks every <c>.cs</c> / <c>.csproj</c> /
 /// <c>.props</c> / <c>.targets</c> file under
-/// <c>Engine/Source/Programs/XHT/</c> (excluding <c>obj/</c> / <c>bin/</c>)
+/// <c>Engine/Source/Programs/XBT/</c> (excluding <c>obj/</c> / <c>bin/</c>)
 /// and asserts that no file contains a <em>current-cite</em>
-/// reference to an older revision of XHT.html. The current revision is
-/// recorded at <see cref="CurrentXhtRevision"/> and must be hand-bumped
-/// in lockstep with the XHT.html revision header.
+/// reference to an older revision of XHT.html.
 /// </para>
 /// <para>
 /// <b>What counts as a current-cite.</b> A reference of the form
@@ -33,34 +49,33 @@ namespace Simgenics.XPact.XHT.Tests.Tests;
 /// </para>
 /// <para>
 /// <b>How to bump.</b> When XHT.html bumps to a new revision, update
-/// <see cref="CurrentXhtRevision"/> below. The test will then fail for
-/// every file that still cites the prior revision; the failure list IS
-/// the sweep checklist for the round.
+/// <see cref="CurrentXhtRevision"/> below AND the matching constant in
+/// <c>XHT.Tests/Tests/RevisionCiteTests.cs</c>. Either test will then
+/// fail for every file in its tier that still cites the prior revision;
+/// the combined failure list IS the cross-tier sweep checklist for the
+/// round.
 /// </para>
 /// </remarks>
-public class RevisionCiteTests
+public class XhtRevisionCiteTests
 {
     /// <summary>
     /// The currently-published XHT.html revision. Hand-bump in lockstep
     /// with the XHT.html doc header on every revision.
     /// <para>
     /// <b>KEEP IN SYNC WITH</b>
-    /// <c>XBT.Tests/Tests/XhtRevisionCiteTests.cs CurrentXhtRevision</c>.
-    /// The XBT-side mirror scans XBT source for stale XHT-cites with the
-    /// same regex pair; both constants must be bumped together when
-    /// XHT.html revs.
+    /// <c>XHT.Tests/Tests/RevisionCiteTests.cs CurrentXhtRevision</c>.
     /// </para>
     /// </summary>
     private const int CurrentXhtRevision = 8;
 
     [Fact]
-    public void XHT_Source_Tree_Contains_No_StaleXHTHtml_CurrentCites()
+    public void XBT_Source_Tree_Contains_No_StaleXHTHtml_CurrentCites()
     {
-        string xhtRoot = FindXhtSourceRoot();
+        string xbtRoot = FindXbtSourceRoot();
         Assert.True(
-            Directory.Exists(xhtRoot),
-            $"Could not locate the XHT source tree root (tried walking up from {AppContext.BaseDirectory}). "
-            + "RevisionCiteTests must run from a build output beneath the repo root.");
+            Directory.Exists(xbtRoot),
+            $"Could not locate the XBT source tree root (tried walking up from {AppContext.BaseDirectory}). "
+            + "XhtRevisionCiteTests must run from a build output beneath the repo root.");
 
         // Match the inline form "XHT.html ... Rev N" where the prose
         // between XHT.html and the Rev token is short and does NOT
@@ -69,6 +84,8 @@ public class RevisionCiteTests
         // means the "Rev N" refers to that other doc, not XHT.html.
         // Also match the line-wrapped form: "XHT.html\n/// Rev N" with
         // possibly trailing "</c>" before the newline.
+        // Identical regexes to XHT.Tests/RevisionCiteTests.cs so the
+        // two scans use the exact same cite-detection rules.
         Regex inlineCite = new(
             @"XHT\.html(?:[^\n.](?!Contract|Addendum|XBT\.html|Rev 13)){0,40}?Rev\s+(\d+)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -77,12 +94,13 @@ public class RevisionCiteTests
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         List<string> violations = new();
-        foreach (string path in EnumerateSourceFiles(xhtRoot))
+        foreach (string path in EnumerateSourceFiles(xbtRoot))
         {
             // Skip this test file itself; it documents the convention by
-            // defining CurrentXhtRevision = 8 and would otherwise self-match.
+            // defining CurrentXhtRevision and would otherwise self-match
+            // on the comment text above.
             string relName = Path.GetFileName(path);
-            if (relName.Equals("RevisionCiteTests.cs", StringComparison.Ordinal))
+            if (relName.Equals("XhtRevisionCiteTests.cs", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -104,7 +122,7 @@ public class RevisionCiteTests
         Assert.True(
             violations.Count == 0,
             $"Found {violations.Count} stale XHT.html current-cite reference(s) "
-            + $"that should be at Rev {CurrentXhtRevision}:\n"
+            + $"in XBT source that should be at Rev {CurrentXhtRevision}:\n"
             + string.Join("\n", violations));
     }
 
@@ -161,16 +179,16 @@ public class RevisionCiteTests
     }
 
     /// <summary>
-    /// Walk up from the test binary directory to find the XHT source
-    /// root at <c>Engine/Source/Programs/XHT/</c>. Mirrors the discipline
-    /// in <c>GeneratedCodeCompilesTests.FindXCoreIncludeRoot</c>.
+    /// Walk up from the test binary directory to find the XBT source
+    /// root at <c>Engine/Source/Programs/XBT/</c>. Mirrors the discipline
+    /// in <c>XHT.Tests.RevisionCiteTests.FindXhtSourceRoot</c>.
     /// </summary>
-    private static string FindXhtSourceRoot()
+    private static string FindXbtSourceRoot()
     {
         string? dir = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && dir is not null; i++)
         {
-            string candidate = Path.Combine(dir, "Engine", "Source", "Programs", "XHT");
+            string candidate = Path.Combine(dir, "Engine", "Source", "Programs", "XBT");
             if (Directory.Exists(candidate))
             {
                 return candidate;

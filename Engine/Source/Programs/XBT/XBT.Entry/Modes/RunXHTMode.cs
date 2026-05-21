@@ -14,7 +14,7 @@ namespace Simgenics.XPact.XBT.Entry;
 /// <summary>
 /// CLI wrapper mode for invoking the XHT (XPact Header Tool) subprocess
 /// directly through XBT's discipline. Per <c>/Documents/XBT.html</c>
-/// Rev 10 Section 1.1 + Section 9.1 + <c>/Documents/XHT.html</c> Rev 5
+/// Rev 10 Section 1.1 + Section 9.1 + <c>/Documents/XHT.html</c> Rev 8
 /// Section 9 + <c>/Documents/XToolchainContract.html</c> Rev 13.6
 /// Section 10.1 step 3.
 /// </summary>

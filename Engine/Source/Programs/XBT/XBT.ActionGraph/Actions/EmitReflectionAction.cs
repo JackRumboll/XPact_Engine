@@ -16,7 +16,7 @@ namespace Simgenics.XPact.XBT.ActionGraph.Actions;
 /// <c>.gen.manifest</c> text manifest XBT consumes. Maps to
 /// <see cref="XActionType.EmitReflectionAction"/> per
 /// <c>/Documents/XBT.html</c> Rev 10 Section 9.4 +
-/// <c>/Documents/XHT.html</c> Rev 5 Sections 8 + 9 +
+/// <c>/Documents/XHT.html</c> Rev 8 Sections 8 + 9 +
 /// <c>/Documents/XToolchainContract.html</c> Rev 13.6 Section 10.3.
 /// </summary>
 /// <remarks>

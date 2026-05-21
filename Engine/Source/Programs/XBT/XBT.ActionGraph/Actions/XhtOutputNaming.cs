@@ -7,7 +7,7 @@ namespace Simgenics.XPact.XBT.ActionGraph.Actions;
 
 /// <summary>
 /// XBT-side mirror of XHT.Emitter's filename derivation helpers per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 9.3.1 +
+/// <c>/Documents/XHT.html</c> Rev 8 Section 9.3.1 +
 /// <c>/Documents/XToolchainContract.html</c> Rev 13.6 Section 10.3.
 /// XBT pre-discovers XHT's output filenames so the action graph can be
 /// wired up before XHT runs; XHT subsequently emits exactly those names
