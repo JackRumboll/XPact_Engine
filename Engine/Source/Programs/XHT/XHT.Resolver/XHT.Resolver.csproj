@@ -11,6 +11,7 @@
     <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
     <ProjectReference Include="..\XHT.AST\XHT.AST.csproj" />
     <ProjectReference Include="..\XHT.Tables\XHT.Tables.csproj" />
+    <ProjectReference Include="..\XHT.Manifest\XHT.Manifest.csproj" />
   </ItemGroup>
 
 </Project>
