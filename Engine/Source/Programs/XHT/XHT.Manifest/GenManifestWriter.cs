@@ -149,7 +149,7 @@ public static class GenManifestWriter
         if (m.XhtSchemaVersion != CurrentSchemaVersion)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest.XhtSchemaVersion must be {CurrentSchemaVersion} (got {m.XhtSchemaVersion}).");
         }
         ValidateString(m.ContractVersion, nameof(m.ContractVersion));
@@ -264,7 +264,7 @@ public static class GenManifestWriter
         if (string.IsNullOrEmpty(entry.RelativePath))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] entry has empty RelativePath.");
         }
         // Per XHT.html Section 9.2 Mi4 / XHT005 rule: commas in paths
@@ -272,21 +272,21 @@ public static class GenManifestWriter
         if (entry.RelativePath.Contains(','))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT005",
+                diagnosticCode: DiagnosticCodes.GenManifestCommaInPath,
                 message: $"Source path '{entry.RelativePath}' contains comma; the .gen.manifest [{sectionLabel}] section format reserves commas as separators.");
         }
         // Newlines would break the line-oriented format.
         if (entry.RelativePath.Contains('\n') || entry.RelativePath.Contains('\r'))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] entry RelativePath '{entry.RelativePath}' contains newline.");
         }
 
         if (!IsValidHash16(entry.ContentHash16))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] entry for '{entry.RelativePath}' has invalid ContentHash16 '{entry.ContentHash16}' (must be 16 lowercase hex chars).");
         }
     }
@@ -297,37 +297,37 @@ public static class GenManifestWriter
         if (string.IsNullOrEmpty(d.Severity))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Diagnostics] entry has empty Severity.");
         }
         if (d.Severity != "error" && d.Severity != "warning" && d.Severity != "info")
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry has invalid Severity '{d.Severity}' (must be error/warning/info).");
         }
         if (string.IsNullOrEmpty(d.Code))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Diagnostics] entry has empty Code.");
         }
         if (d.Code.Contains(','))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry has Code '{d.Code}' containing comma.");
         }
         if (d.File is not null && d.File.Contains(','))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry File '{d.File}' contains comma.");
         }
         if (d.Message is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Diagnostics] entry Message is null.");
         }
     }
@@ -356,13 +356,13 @@ public static class GenManifestWriter
         if (value is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest.{context} is null (required).");
         }
         if (value.Contains('\n') || value.Contains('\r'))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest.{context} contains a newline character; metadata values must be single-line.");
         }
     }

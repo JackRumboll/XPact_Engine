@@ -3,9 +3,11 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Simgenics.XPact.XHT.Core;
 using Simgenics.XPact.XHT.Entry;
+using Simgenics.XPact.XHT.Manifest;
 using Xunit;
 
 namespace Simgenics.XPact.XHT.Tests.Tests.Entry;
@@ -361,6 +363,98 @@ public sealed class ProgramTests : IDisposable
         // a properly-anchored XHT002 throw must not trip it.
         Assert.DoesNotContain("XHT900", stderr, StringComparison.Ordinal);
         Assert.DoesNotContain("XHT050", stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Round 7 R6-XH1 positive coverage for the XHT900 ICE branch in
+    /// <see cref="Program.Main"/>. Production throw sites all carry a
+    /// catalog-anchored DiagnosticCode (R5-XHT-CR2 fix) and
+    /// <see cref="ManifestMalformedException"/>'s no-code constructors
+    /// are <c>internal</c> (R6-XH1 fix). We inject a test-only mode via
+    /// <see cref="ToolModeRegistry.__RegisterForTesting"/> that throws
+    /// the un-anchored exception and assert the catch site:
+    /// <list type="bullet">
+    /// <item><description>exits with <see cref="ExitCodes.ManifestMalformed"/> (50)</description></item>
+    /// <item><description>emits an "error XHT900: ..." stderr line</description></item>
+    /// <item><description>names the un-anchored throw as a code-side bug</description></item>
+    /// <item><description>surfaces the inner exception's <c>ToString()</c> output for the stack trace</description></item>
+    /// </list>
+    /// Without this test the XHT900 branch had only the negative-guard
+    /// above; a future regression that broke the XHT900 emit (a null-ref
+    /// on <c>ex.Message</c>, a wording change that lost "code-side bug",
+    /// etc.) would not be caught.
+    /// </summary>
+    [Fact]
+    public async Task Main_UnanchoredManifestMalformedException_EmitsXHT900OnStderr()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+
+        const string injectedMessage = "synthetic un-anchored manifest error (R6-XH1 positive coverage)";
+        ToolModeRegistry.__RegisterForTesting(
+            "test-xht900-ice-injector",
+            new TestUnanchoredManifestThrowMode(injectedMessage));
+
+        try
+        {
+            int exit = await Program.Main(new[] { "test-xht900-ice-injector" });
+
+            Assert.Equal(ExitCodes.ManifestMalformed, exit);
+            string stderr = sw.ToString();
+            // The catalog-anchored XHT900 line MUST land on stderr.
+            Assert.Contains("error XHT900:", stderr, StringComparison.Ordinal);
+            // The branch must call out the un-anchored throw as a
+            // code-side bug so the developer who introduced it fixes it.
+            Assert.Contains("ManifestMalformedException", stderr, StringComparison.Ordinal);
+            Assert.Contains("DiagnosticCode anchor", stderr, StringComparison.Ordinal);
+            // The branch must surface the inner message so the operator
+            // has a starting point for triage.
+            Assert.Contains(injectedMessage, stderr, StringComparison.Ordinal);
+            // The branch must emit ex.ToString() so the stack trace is
+            // captured for issue-tracker triage; the class's fully-
+            // qualified name is the canary that ToString() ran.
+            Assert.Contains(
+                "Simgenics.XPact.XHT.Manifest.ManifestMalformedException",
+                stderr,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            // Restore the registry so the injected mode does not leak
+            // to other tests in this collection.
+            ToolModeRegistry.__ResetForTesting();
+        }
+    }
+
+    /// <summary>
+    /// Test-only mode that throws the (internal, R6-XH1 lockdown)
+    /// un-anchored <see cref="ManifestMalformedException"/> so the
+    /// XHT900 ICE branch in <see cref="Program.Main"/> can be exercised
+    /// end-to-end. Registered via
+    /// <see cref="ToolModeRegistry.__RegisterForTesting"/> for the
+    /// duration of the test, then dropped on teardown.
+    /// </summary>
+    private sealed class TestUnanchoredManifestThrowMode : IToolMode
+    {
+        private readonly string _message;
+
+        public TestUnanchoredManifestThrowMode(string message)
+        {
+            _message = message;
+        }
+
+        public string Name => "test-xht900-ice-injector";
+
+        public string Description => "Test-only XHT900 ICE-branch injector (Round 7 R6-XH1).";
+
+        public Task<int> ExecuteAsync(string[] args, CancellationToken ct)
+        {
+            // Hits the (now internal) un-anchored constructor. The
+            // resulting exception has DiagnosticCode = null, which is
+            // exactly the condition Program.Main's XHT900 branch
+            // defends against.
+            throw new ManifestMalformedException(_message);
+        }
     }
 
     /// <summary>

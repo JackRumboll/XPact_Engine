@@ -56,7 +56,7 @@ public static class GenManifestReader
             // entry's "manifest not found" wording covers both the XBT-
             // input and the .gen.manifest forms.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT001",
+                diagnosticCode: DiagnosticCodes.ManifestNotFound,
                 message: $"GenManifest not found: {srcPath}");
         }
 
@@ -70,7 +70,7 @@ public static class GenManifestReader
             // XHT007 -- Per-module .gen.manifest verifier rejection. The
             // file exists but is unreadable; verification cannot complete.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"Failed to read GenManifest at {srcPath}: {ex.Message}",
                 inner: ex);
         }
@@ -156,7 +156,7 @@ public static class GenManifestReader
                             if (!int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out schemaVersion))
                             {
                                 throw new ManifestMalformedException(
-                                    diagnosticCode: "XHT007",
+                                    diagnosticCode: DiagnosticCodes.GenManifestStructural,
                                     message: $"GenManifest [Metadata] XhtSchemaVersion not an integer: '{v}'.");
                             }
                             break;
@@ -201,11 +201,11 @@ public static class GenManifestReader
                 }
                 case ParseState.Start:
                     throw new ManifestMalformedException(
-                        diagnosticCode: "XHT007",
+                        diagnosticCode: DiagnosticCodes.GenManifestStructural,
                         message: $"GenManifest: content before [Metadata] section: '{line}'");
                 case ParseState.Done:
                     throw new ManifestMalformedException(
-                        diagnosticCode: "XHT007",
+                        diagnosticCode: DiagnosticCodes.GenManifestStructural,
                         message: $"GenManifest: content after [End] section: '{line}'");
             }
         }
@@ -213,31 +213,31 @@ public static class GenManifestReader
         if (!sawEnd)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest: missing [End] section marker.");
         }
         if (schemaVersion < 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Metadata] is missing required key 'XhtSchemaVersion'.");
         }
         if (contractVersion is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Metadata] is missing required key 'ContractVersion'.");
         }
         if (moduleName is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Metadata] is missing required key 'ModuleName'.");
         }
         if (generatedAtUtcIso is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: "GenManifest [Metadata] is missing required key 'GeneratedAtUtc'.");
         }
         // ProducedAtUtcDeterministic is required per the writer schema;
@@ -245,7 +245,7 @@ public static class GenManifestReader
         if (producedAtUtc != "0")
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Metadata] ProducedAtUtcDeterministic must be '0' (got '{producedAtUtc ?? "<missing>"}').");
         }
 
@@ -257,6 +257,38 @@ public static class GenManifestReader
         // incremental rebuild after a Contract revision would re-read
         // stale cached .gen.manifest content and silently accept it
         // despite the schema drift.
+        //
+        // ---------------------------------------------------------------
+        // Round 7 R6-XH3: ordering asymmetry vs. XbtManifestReader.
+        //
+        // XbtManifestReader.DeserializeJsonBytes runs the ContractVersion
+        // check FIRST (per R5-XHT-MA2 discipline) because the XBT
+        // manifest is a typed JSON record where every other field's
+        // schema is gated on the CV being compatible: parsing the typed
+        // record before CV-pinning could surface field-shape errors
+        // that hide a CV mismatch underneath.
+        //
+        // GenManifestReader.Parse, in contrast, runs the XHT007
+        // structural-metadata-key checks BEFORE this XHT006 CV check.
+        // The asymmetry is architecturally necessary, not a discipline
+        // gap: the .gen.manifest is a line-oriented format whose
+        // ContractVersion is a free-form value-field inside the
+        // [Metadata] section. It has to be parsed (i.e. the [Metadata]
+        // section has to be successfully read) before it can be
+        // compared. The XHT007 errors that fire BEFORE this point are
+        // "missing required key" / "metadata not parseable" failures
+        // -- i.e. cases where the CV could not be known anyway.
+        //
+        // The practical operator surface is therefore unchanged: an
+        // operator looking at "missing key ContractVersion" (XHT007)
+        // and "ContractVersion mismatch" (XHT006) both see catalog-
+        // anchored diagnostics that point at the same .gen.manifest,
+        // so the triage flow is identical regardless of which order
+        // they fire in. Documenting the asymmetry here so future
+        // readers don't try to "fix" it by reordering the checks
+        // (which would mean parsing the CV field before the section
+        // shape is known -- a regression).
+        // ---------------------------------------------------------------
         ValidateContractVersion(contractVersion);
 
         return new GenManifest(
@@ -309,7 +341,7 @@ public static class GenManifestReader
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT006",
+                diagnosticCode: DiagnosticCodes.GenManifestContractVersionMismatch,
                 message: string.Format(
                     CultureInfo.InvariantCulture,
                     "GenManifest ContractVersion '{0}' does not match XHT's compile-time "
@@ -328,7 +360,7 @@ public static class GenManifestReader
         if (current != expected)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest section order violated: saw '{sectionLine}' in state {current} (expected previous state {expected}).");
         }
     }
@@ -340,7 +372,7 @@ public static class GenManifestReader
         if (eq < 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] line not in 'Key = Value' form: '{line}'");
         }
         string key = line.AsSpan(0, eq).Trim().ToString();
@@ -348,7 +380,7 @@ public static class GenManifestReader
         if (key.Length == 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] line has empty key: '{line}'");
         }
         return (key, value);
@@ -361,7 +393,7 @@ public static class GenManifestReader
         if (comma < 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] line missing comma separator: '{line}'");
         }
         string path = line.AsSpan(0, comma).ToString();
@@ -370,7 +402,7 @@ public static class GenManifestReader
         if (path.Length == 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] entry has empty Path: '{line}'");
         }
 
@@ -380,13 +412,13 @@ public static class GenManifestReader
         if (path.Contains(','))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT005",
+                diagnosticCode: DiagnosticCodes.GenManifestCommaInPath,
                 message: $"Source path '{path}' contains comma in [{sectionLabel}] section.");
         }
         if (hash.Length != 16)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [{sectionLabel}] entry for '{path}' has hash '{hash}' (must be 16 chars).");
         }
         for (int i = 0; i < 16; i++)
@@ -397,7 +429,7 @@ public static class GenManifestReader
             if (!isDigit && !isLowerHex)
             {
                 throw new ManifestMalformedException(
-                    diagnosticCode: "XHT007",
+                    diagnosticCode: DiagnosticCodes.GenManifestStructural,
                     message: $"GenManifest [{sectionLabel}] entry for '{path}' has invalid hex char '{c}' in hash '{hash}'.");
             }
         }
@@ -416,7 +448,7 @@ public static class GenManifestReader
         if (parts.Length < 6)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] line has fewer than 6 comma-separated fields: '{line}'");
         }
         string severity = parts[0];
@@ -429,13 +461,13 @@ public static class GenManifestReader
         if (severity != "error" && severity != "warning" && severity != "info")
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry has invalid Severity '{severity}'.");
         }
         if (code.Length == 0)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry has empty Code: '{line}'");
         }
 
@@ -461,7 +493,7 @@ public static class GenManifestReader
         if (!int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT007",
+                diagnosticCode: DiagnosticCodes.GenManifestStructural,
                 message: $"GenManifest [Diagnostics] entry has non-integer {fieldName} '{s}'.");
         }
         return v;

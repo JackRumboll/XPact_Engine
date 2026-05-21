@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using Simgenics.XPact.XHT.AST;
+using Simgenics.XPact.XHT.Core;
 using Simgenics.XPact.XHT.Tables;
 
 namespace Simgenics.XPact.XHT.Resolver.Phases;

@@ -2,6 +2,7 @@
 
 using System.Linq;
 using Simgenics.XPact.XHT.AST;
+using Simgenics.XPact.XHT.Core;
 using Simgenics.XPact.XHT.Manifest;
 using Simgenics.XPact.XHT.Resolver;
 using Simgenics.XPact.XHT.Resolver.Phases;

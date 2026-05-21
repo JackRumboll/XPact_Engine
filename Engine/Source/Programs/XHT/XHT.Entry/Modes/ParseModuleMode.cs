@@ -77,7 +77,7 @@ public sealed class ParseModuleMode : IToolMode
             // carries through so the entry-point catch surfaces
             // "error XHT004: ..." instead of the generic XHT050 shim.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT004",
+                diagnosticCode: DiagnosticCodes.ModuleNotInManifest,
                 message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 

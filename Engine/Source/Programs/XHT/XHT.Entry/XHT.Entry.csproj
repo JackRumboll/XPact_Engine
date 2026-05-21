@@ -35,4 +35,14 @@
     <ProjectReference Include="..\XHT.Emitter\XHT.Emitter.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Round 7 R6-XH1: ToolModeRegistry.__RegisterForTesting is internal
+      so production callers don't see it; XHT.Tests needs access for
+      the XHT900 ICE-branch positive coverage that injects a mode
+      throwing the (now-internal) un-anchored ManifestMalformedException.
+    -->
+    <InternalsVisibleTo Include="XHT.Tests" />
+  </ItemGroup>
+
 </Project>

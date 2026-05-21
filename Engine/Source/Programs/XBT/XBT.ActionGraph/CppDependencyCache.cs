@@ -672,7 +672,12 @@ public sealed class CppDependencyCache
                 {
                     continue;
                 }
-                bool addedHeader = false;
+                // Both Header and BMI contribute when present; either path
+                // independently records the dependency so an edit to the
+                // underlying .h or to the precompiled BMI artefact
+                // invalidates the importer. The two branches are
+                // independent on purpose: a 1.1 emitter that omits one
+                // field still produces a usable dependency set.
                 if (entry.TryGetProperty("Header", out JsonElement header)
                     && header.ValueKind == JsonValueKind.String)
                 {
@@ -680,7 +685,6 @@ public sealed class CppDependencyCache
                     if (!string.IsNullOrEmpty(raw))
                     {
                         result.Add(raw);
-                        addedHeader = true;
                     }
                 }
                 if (entry.TryGetProperty("BMI", out JsonElement bmi)
@@ -692,7 +696,6 @@ public sealed class CppDependencyCache
                         result.Add(raw);
                     }
                 }
-                _ = addedHeader; // documented for readers; behaviour: both fields contribute when present.
             }
         }
 

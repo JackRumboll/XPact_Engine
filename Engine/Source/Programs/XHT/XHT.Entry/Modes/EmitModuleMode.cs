@@ -115,7 +115,7 @@ public sealed class EmitModuleMode : IToolMode
             // code carries through so the entry-point catch surfaces
             // "error XHT004: ..." instead of the generic XHT050 shim.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT004",
+                diagnosticCode: DiagnosticCodes.ModuleNotInManifest,
                 message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 
@@ -152,7 +152,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT072",
+                        Code: DiagnosticCodes.EmitSourceMissing,
                         Message: $"Source header '{headerRel}' not found at '{absPath}'.",
                         File: headerRel,
                         Module: module.Name));
@@ -161,7 +161,7 @@ public sealed class EmitModuleMode : IToolMode
                 // Lenient: warn + continue with empty content.
                 diagnostics.Add(new DiagnosticRecord(
                     DiagnosticSeverity.Warning,
-                    Code: "XHT070",
+                    Code: DiagnosticCodes.EmitSourceWarning,
                     Message: $"Source header '{headerRel}' not found on disk; emitting sentinel only.",
                     File: headerRel,
                     Module: module.Name));
@@ -179,7 +179,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT072",
+                        Code: DiagnosticCodes.EmitSourceMissing,
                         Message: $"Failed to read header '{headerRel}': {ex.Message}",
                         File: headerRel,
                         Module: module.Name));
@@ -187,7 +187,7 @@ public sealed class EmitModuleMode : IToolMode
                 }
                 diagnostics.Add(new DiagnosticRecord(
                     DiagnosticSeverity.Warning,
-                    Code: "XHT070",
+                    Code: DiagnosticCodes.EmitSourceWarning,
                     Message: $"Header '{headerRel}' read failed in lenient mode; skipping: {ex.Message}",
                     File: headerRel,
                     Module: module.Name));
@@ -214,7 +214,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT072",
+                        Code: DiagnosticCodes.EmitSourceMissing,
                         Message: $"Source file '{csRel}' not found at '{absPath}'.",
                         File: csRel,
                         Module: module.Name));
@@ -222,7 +222,7 @@ public sealed class EmitModuleMode : IToolMode
                 }
                 diagnostics.Add(new DiagnosticRecord(
                     DiagnosticSeverity.Warning,
-                    Code: "XHT070",
+                    Code: DiagnosticCodes.EmitSourceWarning,
                     Message: $"C# source '{csRel}' not found on disk; skipping.",
                     File: csRel,
                     Module: module.Name));
@@ -240,7 +240,7 @@ public sealed class EmitModuleMode : IToolMode
                 {
                     Logger.EmitDiagnostic(new DiagnosticRecord(
                         DiagnosticSeverity.Error,
-                        Code: "XHT072",
+                        Code: DiagnosticCodes.EmitSourceMissing,
                         Message: $"Failed to read C# source '{csRel}': {ex.Message}",
                         File: csRel,
                         Module: module.Name));
@@ -248,7 +248,7 @@ public sealed class EmitModuleMode : IToolMode
                 }
                 diagnostics.Add(new DiagnosticRecord(
                     DiagnosticSeverity.Warning,
-                    Code: "XHT070",
+                    Code: DiagnosticCodes.EmitSourceWarning,
                     Message: $"C# source '{csRel}' read failed in lenient mode; skipping: {ex.Message}",
                     File: csRel,
                     Module: module.Name));

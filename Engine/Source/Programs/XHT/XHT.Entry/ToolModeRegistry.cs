@@ -72,6 +72,39 @@ public static class ToolModeRegistry
         }
     }
 
+    /// <summary>
+    /// Inject a synthetic mode into the registry for the duration of a
+    /// test. Round 7 R6-XH1 added this so the XHT900 ICE-branch
+    /// positive test can register a mode that throws the (internal)
+    /// un-anchored <c>ManifestMalformedException</c>, run
+    /// <c>Program.Main</c>, and assert the XHT900 stderr surface. Pair
+    /// with <see cref="__ResetForTesting"/> in the test's teardown so
+    /// the injection does not leak to other tests.
+    /// </summary>
+    /// <param name="name">Kebab-case mode name to register under.</param>
+    /// <param name="mode">The mode instance.</param>
+    internal static void __RegisterForTesting(string name, IToolMode mode)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new System.ArgumentException("Mode name cannot be empty.", nameof(name));
+        }
+        ArgumentNullException.ThrowIfNull(mode);
+
+        lock (s_gate)
+        {
+            // Build with the existing reflection-discovered set, then
+            // overlay the injected mode. The injected entry wins on a
+            // name collision so tests can override built-in modes when
+            // exercising the entry-point catch surface.
+            Dictionary<string, IToolMode> map = new(
+                s_modes ?? Discover(),
+                StringComparer.OrdinalIgnoreCase);
+            map[name] = mode;
+            s_modes = map;
+        }
+    }
+
     private static IReadOnlyDictionary<string, IToolMode> Discover()
     {
         Dictionary<string, IToolMode> map = new(StringComparer.OrdinalIgnoreCase);

@@ -106,7 +106,7 @@ public static class Logger
     {
         EmitDiagnostic(new DiagnosticRecord(
             DiagnosticSeverity.Info,
-            "XHT000",
+            DiagnosticCodes.LoggerSentinel,
             Compose(message, args)));
     }
 
@@ -120,7 +120,7 @@ public static class Logger
     {
         EmitDiagnostic(new DiagnosticRecord(
             DiagnosticSeverity.Warning,
-            "XHT000",
+            DiagnosticCodes.LoggerSentinel,
             Compose(message, args)));
     }
 
@@ -134,7 +134,7 @@ public static class Logger
     {
         EmitDiagnostic(new DiagnosticRecord(
             DiagnosticSeverity.Error,
-            "XHT000",
+            DiagnosticCodes.LoggerSentinel,
             Compose(message, args)));
     }
 

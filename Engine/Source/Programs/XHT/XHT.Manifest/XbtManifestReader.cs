@@ -382,7 +382,7 @@ public static class XbtManifestReader
             // XHT050 shim so operators can distinguish missing-file from
             // other manifest failures without parsing the message string.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT001",
+                diagnosticCode: DiagnosticCodes.ManifestNotFound,
                 message: $"XBT manifest not found: {manifestJsonPath}");
         }
 
@@ -392,7 +392,7 @@ public static class XbtManifestReader
             // XHT003 -- Verifier limit violation (manifest payload too
             // large) per Section 23.2.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"XBT manifest exceeds {MaxManifestBytes} bytes (got {fi.Length}): {manifestJsonPath}");
         }
 
@@ -407,7 +407,7 @@ public static class XbtManifestReader
             // (XHT003); the manifest file exists but is unreadable, so
             // the verifier cannot validate it.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"Failed to read XBT manifest at {manifestJsonPath}: {ex.Message}",
                 inner: ex);
         }
@@ -446,14 +446,14 @@ public static class XbtManifestReader
             // XHT003 -- Manifest verifier rejection (empty payload is a
             // verifier-limit floor violation).
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: "XBT manifest payload is empty.");
         }
 
         if (json.Length > MaxManifestBytes)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"XBT manifest payload exceeds {MaxManifestBytes} bytes ({json.Length}).");
         }
 
@@ -484,7 +484,7 @@ public static class XbtManifestReader
             // catches depth / trailing-comma / comment violations here
             // before the binder runs.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"XBT manifest JSON failed hardened-reader validation: {ex.Message}",
                 inner: ex);
         }
@@ -500,7 +500,7 @@ public static class XbtManifestReader
             // bad-shape payload, an unknown enum member, or a type
             // mismatch lands here.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"XBT manifest JSON failed to deserialize: {ex.Message}",
                 inner: ex);
         }
@@ -511,7 +511,7 @@ public static class XbtManifestReader
             // payload deserializes to a null manifest reference; treat as
             // a verifier-limit violation rather than a silent accept.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: "XBT manifest JSON deserialized to null.");
         }
 
@@ -588,7 +588,7 @@ public static class XbtManifestReader
         if (!string.Equals(actual, expected, StringComparison.Ordinal))
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT002",
+                diagnosticCode: DiagnosticCodes.ContractVersionMismatch,
                 message: string.Format(
                     System.Globalization.CultureInfo.InvariantCulture,
                     "Manifest ContractVersion '{0}' does not match XHT's compile-time "
@@ -646,7 +646,7 @@ public static class XbtManifestReader
         if (m.Target is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{nameof(m.Target)} is null (required).");
         }
         CheckString(m.Target.Name, $"{nameof(m.Target)}.{nameof(m.Target.Name)}");
@@ -658,13 +658,13 @@ public static class XbtManifestReader
         if (m.Modules is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{nameof(m.Modules)} is null (required).");
         }
         if (m.Modules.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"Manifest.Modules array exceeds {MaxArrayLength} entries ({m.Modules.Count}).");
         }
 
@@ -703,13 +703,13 @@ public static class XbtManifestReader
         if (value is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} is null (required).");
         }
         if (value.Length > MaxStringField)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} exceeds {MaxStringField} chars ({value.Length}).");
         }
     }
@@ -723,7 +723,7 @@ public static class XbtManifestReader
         if (value.Length > MaxStringField)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} exceeds {MaxStringField} chars ({value.Length}).");
         }
     }
@@ -733,13 +733,13 @@ public static class XbtManifestReader
         if (list is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} is null (required).");
         }
         if (list.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
         }
         foreach (string s in list)
@@ -753,13 +753,13 @@ public static class XbtManifestReader
         if (list is null)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} is null (required).");
         }
         if (list.Count > MaxArrayLength)
         {
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT003",
+                diagnosticCode: DiagnosticCodes.ManifestVerifierRejection,
                 message: $"{context} exceeds {MaxArrayLength} entries ({list.Count}).");
         }
     }

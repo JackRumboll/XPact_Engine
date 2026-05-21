@@ -62,7 +62,7 @@ public sealed class ValidateOnlyMode : IToolMode
             // catch surfaces "error XHT004: ..." rather than the
             // generic XHT050 shim.
             throw new ManifestMalformedException(
-                diagnosticCode: "XHT004",
+                diagnosticCode: DiagnosticCodes.ModuleNotInManifest,
                 message: $"Module '{opts.ModuleName}' not present in manifest '{opts.ManifestPath}'.");
         }
 

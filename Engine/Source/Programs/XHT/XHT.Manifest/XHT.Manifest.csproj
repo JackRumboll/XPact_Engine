@@ -11,4 +11,15 @@
     <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Round 7 R6-XH1: ManifestMalformedException's no-code constructors
+      are internal so production callers cannot construct an un-anchored
+      exception (which would surface as XHT900 ICE per
+      XHT.Entry.Program). The test assembly needs access to validate the
+      XHT900 ICE branch in Program.Main still fires the expected stderr.
+    -->
+    <InternalsVisibleTo Include="XHT.Tests" />
+  </ItemGroup>
+
 </Project>

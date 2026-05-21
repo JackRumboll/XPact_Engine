@@ -160,7 +160,7 @@ public static class Program
             if (ex.DiagnosticCode is null)
             {
                 Logger.Error(
-                    "error XHT900: internal compiler error -- "
+                    $"error {DiagnosticCodes.InternalCompilerError}: internal compiler error -- "
                     + "ManifestMalformedException thrown without a "
                     + "DiagnosticCode anchor. This is a code-side bug; "
                     + "report at https://github.com/Simgenics/XPact-Engine/issues "

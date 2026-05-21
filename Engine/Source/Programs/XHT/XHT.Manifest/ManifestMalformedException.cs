@@ -25,10 +25,16 @@ namespace Simgenics.XPact.XHT.Manifest;
 /// diagnostic code from <c>/Documents/XHT.html</c> Rev 7 Section 12.3
 /// when the throw site is anchored to a catalog entry (e.g.
 /// <c>"XHT002"</c> for <c>ContractVersion</c> mismatch per Section 23.2).
-/// Throw sites that are not catalog-anchored may pass <c>null</c>; the
-/// catch site in <c>XHT.Entry.Program</c> uses the carried code when
-/// present and falls back to its generic manifest-malformed
-/// diagnostic surface otherwise.
+/// Round 7 R6-XH1 locked down: every production throw site MUST anchor
+/// to a catalog code via the 2- or 3-argument (diagnosticCode, message
+/// [, inner]) constructor. The legacy single-message and
+/// message+inner constructors are <c>internal</c> so only the test
+/// assembly (via <see cref="System.Runtime.CompilerServices.InternalsVisibleToAttribute"/>
+/// on <c>XHT.Manifest.csproj</c>) can construct an un-anchored
+/// exception. That keeps the XHT900 ICE branch in
+/// <c>XHT.Entry.Program</c> reachable for regression-test coverage
+/// without exposing the un-anchored form to production callers or
+/// future plugin assemblies.
 /// </para>
 /// </remarks>
 public sealed class ManifestMalformedException : Exception
@@ -51,10 +57,16 @@ public sealed class ManifestMalformedException : Exception
 
     /// <summary>
     /// Construct with a diagnostic message and no catalog-anchored
-    /// diagnostic code.
+    /// diagnostic code. <b>Round 7 R6-XH1 lockdown:</b> this constructor
+    /// is <c>internal</c> so production code cannot construct an
+    /// un-anchored exception. The XHT900 ICE branch in
+    /// <c>XHT.Entry.Program</c> exists as a defence against a future
+    /// code-side bug; the test assembly uses this constructor (via
+    /// <c>InternalsVisibleTo</c>) to validate that the branch still
+    /// emits the expected stderr text.
     /// </summary>
     /// <param name="message">Diagnostic message describing the malformation.</param>
-    public ManifestMalformedException(string message)
+    internal ManifestMalformedException(string message)
         : base(message)
     {
         DiagnosticCode = null;
@@ -63,10 +75,14 @@ public sealed class ManifestMalformedException : Exception
     /// <summary>
     /// Construct with a diagnostic message and an inner exception
     /// (typically the JSON parser's <c>JsonException</c>).
+    /// <b>Round 7 R6-XH1 lockdown:</b> this constructor is
+    /// <c>internal</c> so production code cannot construct an
+    /// un-anchored exception. See the no-inner overload for the lockdown
+    /// rationale.
     /// </summary>
     /// <param name="message">Diagnostic message describing the malformation.</param>
     /// <param name="inner">The underlying exception that triggered this one.</param>
-    public ManifestMalformedException(string message, Exception inner)
+    internal ManifestMalformedException(string message, Exception inner)
         : base(message, inner)
     {
         DiagnosticCode = null;

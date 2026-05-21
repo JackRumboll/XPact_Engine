@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Simgenics.XPact.XHT.AST;
+using Simgenics.XPact.XHT.Core;
 
 namespace Simgenics.XPact.XHT.Resolver.Phases;
 
