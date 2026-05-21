@@ -47,7 +47,7 @@ public class CppKeywordTableTests
     [Fact]
     public void Lookup_UnknownIdentifier_ReturnsNull()
     {
-        Assert.Null(CppKeywordTable.Lookup("AXValve"));
+        Assert.Null(CppKeywordTable.Lookup("XValve"));
         Assert.Null(CppKeywordTable.Lookup("not_a_keyword"));
         Assert.Null(CppKeywordTable.Lookup(""));
     }
@@ -84,7 +84,7 @@ public class CppKeywordTableTests
     [InlineData("class")]    // regular C++ keyword
     [InlineData("const")]    // regular C++ keyword
     [InlineData("virtual")]  // regular C++ keyword
-    [InlineData("AXValve")]  // arbitrary identifier
+    [InlineData("XValve")]  // arbitrary identifier
     [InlineData("xclass")]   // lowercase form (case-sensitive)
     [InlineData("XCLAS")]    // typo
     [InlineData("")]         // empty string
@@ -103,7 +103,7 @@ public class CppKeywordTableTests
     [InlineData("XCLASS", true)]
     [InlineData("XGENERATED_BODY", true)]
     [InlineData("class", false)]
-    [InlineData("AXValve", false)]
+    [InlineData("XValve", false)]
     [InlineData("xclass", false)]
     public void IsXhtMarkerSpan_BehavesAsStringOverload(string spelling, bool expected)
     {

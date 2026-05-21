@@ -22,7 +22,7 @@ public class DiagnosticRecordTests
         DiagnosticRecord r = new(
             Severity: DiagnosticSeverity.Error,
             Code: "XHT070",
-            Message: "Reflected type AXValve missing XGENERATED_BODY().",
+            Message: "Reflected type XValve missing XGENERATED_BODY().",
             File: "Engine/Source/Runtime/XScoring/Public/XValve.h",
             Line: 14,
             Column: 1,
@@ -37,7 +37,7 @@ public class DiagnosticRecordTests
         Assert.Contains("\"file\":\"Engine/Source/Runtime/XScoring/Public/XValve.h\"", json);
         Assert.Contains("\"line\":14", json);
         Assert.Contains("\"column\":1", json);
-        Assert.Contains("\"message\":\"Reflected type AXValve missing XGENERATED_BODY().\"", json);
+        Assert.Contains("\"message\":\"Reflected type XValve missing XGENERATED_BODY().\"", json);
         Assert.Contains("\"module\":\"XScoring\"", json);
     }
 
@@ -135,14 +135,14 @@ public class DiagnosticRecordTests
         DiagnosticRecord r = new(
             Severity: DiagnosticSeverity.Error,
             Code: "XHT040",
-            Message: "Missing XGENERATED_BODY() in reflected class <AXValve>.",
+            Message: "Missing XGENERATED_BODY() in reflected class <XValve>.",
             File: "Engine/Source/Runtime/XGameFramework/Public/XValve.h",
             Line: 14,
             Column: 1);
 
         string line = r.FormatMsBuild();
         Assert.Equal(
-            "Engine/Source/Runtime/XGameFramework/Public/XValve.h(14,1): error XHT040: Missing XGENERATED_BODY() in reflected class <AXValve>.",
+            "Engine/Source/Runtime/XGameFramework/Public/XValve.h(14,1): error XHT040: Missing XGENERATED_BODY() in reflected class <XValve>.",
             line);
     }
 

@@ -150,7 +150,8 @@ public class CppSpecifierParserTests
     public void MalformedGrammar_RecoversAndContinues()
     {
         // First token is a literal -- not a specifier name. Parser logs
-        // XHT114, recovers to next ',' or ')'.
+        // XHT065 (renumbered from XHT114 per C7 audit), recovers to
+        // next ',' or ')'.
         (IReadOnlyList<Specifier> specs, List<DiagnosticRecord> diags) = ParseSpecifiers(
             "\"oops\", EditAnywhere)",
             SpecifierContext.PropertyMember);

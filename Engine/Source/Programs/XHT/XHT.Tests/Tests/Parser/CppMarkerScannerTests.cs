@@ -37,7 +37,7 @@ public class CppMarkerScannerTests
     {
         const string src = @"
 XCLASS()
-class AXValve : public AXActor
+class XValve : public XActor
 {
     XGENERATED_BODY()
 };
@@ -45,12 +45,12 @@ class AXValve : public AXActor
         (IReadOnlyList<XhtTypeBase> roots, SymbolTable table, IReadOnlyList<DiagnosticRecord> diags) = Scan(src);
         Assert.Single(roots);
         XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
-        Assert.Equal("AXValve", cls.Name);
-        Assert.Equal("AXActor", cls.SuperIdentifier);
+        Assert.Equal("XValve", cls.Name);
+        Assert.Equal("XActor", cls.SuperIdentifier);
         Assert.Equal(Module, cls.ModuleName);
         Assert.Equal(Language.Cpp, cls.Language);
         Assert.True(cls.HasGeneratedBody);
-        Assert.NotNull(table.Lookup("AXValve"));
+        Assert.NotNull(table.Lookup("XValve"));
         Assert.Empty(diags.Where(d => d.Severity == DiagnosticSeverity.Error));
     }
 
@@ -59,7 +59,7 @@ class AXValve : public AXActor
     {
         const string src = @"
 XCLASS()
-class XSCORING_API AXValve : public AXActor
+class XSCORING_API XValve : public XActor
 {
 };
 ";
@@ -73,13 +73,13 @@ class XSCORING_API AXValve : public AXActor
     {
         const string src = @"
 XCLASS()
-class AXValve : public AXActor, public IPickable, public IInteractable
+class XValve : public XActor, public IPickable, public IInteractable
 {
 };
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
         XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
-        Assert.Equal("AXActor", cls.SuperIdentifier);
+        Assert.Equal("XActor", cls.SuperIdentifier);
         Assert.Equal(2, cls.InterfaceIdentifiers.Count);
         Assert.Contains("IPickable", cls.InterfaceIdentifiers);
         Assert.Contains("IInteractable", cls.InterfaceIdentifiers);
@@ -90,7 +90,7 @@ class AXValve : public AXActor, public IPickable, public IInteractable
     {
         const string src = @"
 XCLASS(Blueprintable, Abstract)
-class AXBase
+class XBase
 {
 };
 ";
@@ -108,7 +108,7 @@ class AXBase
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XGENERATED_BODY()
     XPROPERTY(EditAnywhere, BlueprintReadWrite, Category=""Setup"")
@@ -130,7 +130,7 @@ class AXValve
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XGENERATED_BODY()
     XFUNCTION(BlueprintCallable)
@@ -152,7 +152,7 @@ class AXValve
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XGENERATED_BODY()
     XFUNCTION()
@@ -172,7 +172,7 @@ class AXValve
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XFUNCTION()
     static int32 ComputeSize();
@@ -195,7 +195,7 @@ class AXValve
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XFUNCTION()
     void Compute(XPARAM(Out) int32& Result, int32 Input);
@@ -330,6 +330,24 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnValveOpened);
         Assert.True(del.IsMulticast);
     }
 
+    [Fact]
+    public void XDelegate_FalsePositive_MulticastSubstringInUnrelatedMacro_NotMisidentified()
+    {
+        // Per M7 audit: identifiers containing 'MULTICAST' that AREN'T
+        // DECLARE_DYNAMIC_MULTICAST_DELEGATE_* must not be flagged as
+        // multicast delegates. The legacy substring-match logic
+        // false-positived MY_OWN_MULTICAST_HELPER and similar.
+        const string src = @"
+XDELEGATE()
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnSimpleSingleCast, int32, Value);
+";
+        (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
+        Assert.Single(roots);
+        XhtDelegate del = Assert.IsType<XhtDelegate>(roots[0]);
+        Assert.Equal("FOnSimpleSingleCast", del.Name);
+        Assert.False(del.IsMulticast);
+    }
+
     // ===== Namespaces ===========================================
 
     [Fact]
@@ -338,14 +356,14 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnValveOpened);
         const string src = @"
 namespace Industrial {
     XCLASS()
-    class AXValve
+    class XValve
     {
     };
 }
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
         XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
-        Assert.Equal("Industrial::AXValve", cls.FullyQualifiedName);
+        Assert.Equal("Industrial::XValve", cls.FullyQualifiedName);
     }
 
     [Fact]
@@ -355,7 +373,7 @@ namespace Industrial {
 namespace Outer {
 namespace Inner {
     XCLASS()
-    class AXValve
+    class XValve
     {
     };
 }
@@ -363,7 +381,7 @@ namespace Inner {
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
         XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
-        Assert.Equal("Outer::Inner::AXValve", cls.FullyQualifiedName);
+        Assert.Equal("Outer::Inner::XValve", cls.FullyQualifiedName);
     }
 
     // ===== XGENERATED_BODY without parens =======================
@@ -373,7 +391,7 @@ namespace Inner {
     {
         const string src = @"
 XCLASS()
-class AXValve
+class XValve
 {
     XGENERATED_BODY
 };
@@ -390,10 +408,10 @@ class AXValve
     {
         const string src = @"
 XCLASS(NotARealSpecifier)
-class AXFirst { };
+class XFirst { };
 
 XCLASS()
-class AXSecond { };
+class XSecond { };
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, IReadOnlyList<DiagnosticRecord> diags) = Scan(src);
         Assert.Equal(2, roots.Count);
@@ -418,10 +436,10 @@ void OrphanFunction();
     {
         const string src = @"
 XCLASS()
-class AXValve { };
+class XValve { };
 
 XCLASS()
-class AXTank { };
+class XTank { };
 
 XSTRUCT()
 struct FConfig { };
@@ -431,8 +449,8 @@ enum class EKind : uint8 { A, B };
 ";
         (IReadOnlyList<XhtTypeBase> roots, SymbolTable table, _) = Scan(src);
         Assert.Equal(4, roots.Count);
-        Assert.Equal("AXValve", roots[0].Name);
-        Assert.Equal("AXTank", roots[1].Name);
+        Assert.Equal("XValve", roots[0].Name);
+        Assert.Equal("XTank", roots[1].Name);
         Assert.Equal("FConfig", roots[2].Name);
         Assert.Equal("EKind", roots[3].Name);
         Assert.Equal(4, table.Count);
@@ -445,10 +463,10 @@ enum class EKind : uint8 { A, B };
     {
         const string src = @"
 XCLASS()
-class AXValve { };
+class XValve { };
 
 XCLASS()
-class XValve { };  // strips no UE prefix; AXValve strips A -> xvalve. Both fold to xvalve.
+class XVALVE { };  // same engine-name 'xvalve' after lowercasing; collides.
 ";
         (IReadOnlyList<XhtTypeBase> _, _, IReadOnlyList<DiagnosticRecord> diags) = Scan(src);
         Assert.Contains(diags, d => d.Code == CppMarkerScanner.DiagDuplicateType);
@@ -463,11 +481,11 @@ class XValve { };  // strips no UE prefix; AXValve strips A -> xvalve. Both fold
 class NotReflected { int x; };
 
 XCLASS()
-class AXValve { };
+class XValve { };
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
         Assert.Single(roots);
-        Assert.Equal("AXValve", roots[0].Name);
+        Assert.Equal("XValve", roots[0].Name);
     }
 
     [Fact]
@@ -478,7 +496,7 @@ class AXValve { };
 #pragma once
 
 XCLASS()
-class AXValve { };
+class XValve { };
 ";
         (IReadOnlyList<XhtTypeBase> roots, _, _) = Scan(src);
         Assert.Single(roots);
@@ -493,7 +511,7 @@ class AXValve { };
 // Copyright Simgenics. All Rights Reserved.
 #pragma once
 #include ""XCoreXObject.h""
-#include ""AXValve.gen.h""
+#include ""XValve.gen.h""
 
 XENUM(Bitmask)
 enum class EValveFlags : uint32
@@ -513,7 +531,7 @@ struct FValveCalibration
 };
 
 XCLASS(Blueprintable)
-class XSCORING_API AXValve : public AXActor, public IPickable
+class XSCORING_API XValve : public XActor, public IPickable
 {
     XGENERATED_BODY()
 
@@ -531,7 +549,7 @@ class XSCORING_API AXValve : public AXActor, public IPickable
 };
 
 XCLASS()
-class AXTank : public AXActor
+class XTank : public XActor
 {
     XGENERATED_BODY()
     XPROPERTY()
@@ -553,8 +571,8 @@ class AXTank : public AXActor
         Assert.Equal(2, s.Properties.Count);
 
         XhtClass cls = Assert.IsType<XhtClass>(roots[2]);
-        Assert.Equal("AXValve", cls.Name);
-        Assert.Equal("AXActor", cls.SuperIdentifier);
+        Assert.Equal("XValve", cls.Name);
+        Assert.Equal("XActor", cls.SuperIdentifier);
         Assert.Contains("IPickable", cls.InterfaceIdentifiers);
         Assert.Equal("XSCORING_API", cls.RequiredAPIMacroName);
         Assert.True(cls.HasGeneratedBody);
@@ -562,7 +580,7 @@ class AXTank : public AXActor
         Assert.Equal(2, cls.Functions.Count);
 
         XhtClass tank = Assert.IsType<XhtClass>(roots[3]);
-        Assert.Equal("AXTank", tank.Name);
+        Assert.Equal("XTank", tank.Name);
         Assert.Single(tank.Properties);
 
         // All four registered.

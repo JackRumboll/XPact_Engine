@@ -912,6 +912,38 @@ public sealed class ProcessActionRunner : IActionRunner
         ArgumentNullException.ThrowIfNull(context);
         IExternalAction action = context.Action;
 
+        // Audit fix R7-C1: materialize the response file BEFORE spawning
+        // the subprocess. ResponseFileContents is in the action's
+        // CommandVersion + ActionHistory key (per
+        // ExternalAction.ComputeCommandVersion item 4 +
+        // ActionHistory.ComputeActionKey item 4), so an action with a
+        // non-null body MUST surface that body to the subprocess --
+        // otherwise the cache key embeds a payload the toolchain never
+        // sees, and a change to the body would invalidate the cache but
+        // produce identical compiler input.
+        //
+        // Naming convention matches the orphan-temp-file sweep's
+        // expectations (".tmp.<pid>.<actionid>" suffix; actionId is hex
+        // here so SweepOrphanedTempFiles's hex-suffix gate passes). Lives
+        // in the first ProducedItem's directory when one exists; falls
+        // back to WorkingDirectory otherwise (rare; in-process actions
+        // with empty produced sets don't carry response files).
+        string? responseFilePath = null;
+        if (!string.IsNullOrEmpty(action.ResponseFileContents))
+        {
+            string rspDir = ChooseResponseFileDirectory(action);
+            string rspBase = ChooseResponseFileBaseName(action);
+            // actionId is decoded as hex for the orphan-sweep gate; pid
+            // segment stays decimal (Environment.ProcessId is a 32-bit
+            // integer the OS reports in decimal).
+            string rspName = $"{rspBase}.rsp.tmp.{context.ProcessId}.{context.ActionId:x}";
+            responseFilePath = Path.Combine(rspDir, rspName);
+            // AtomicWriteAllText handles fsync + AV-retry on rename;
+            // the response file is on disk and durable before the
+            // subprocess launches.
+            FileSystemOps.AtomicWriteAllText(responseFilePath, action.ResponseFileContents!);
+        }
+
         ProcessStartInfo psi = new()
         {
             FileName = action.CommandPath,
@@ -925,6 +957,16 @@ public sealed class ProcessActionRunner : IActionRunner
         foreach (string arg in action.CommandArguments)
         {
             psi.ArgumentList.Add(arg);
+        }
+
+        // Audit fix R7-C1: append the @<rsp-path> indirection AFTER the
+        // toolchain's own arguments so toolchain options that come last
+        // (overrides, output paths) still win. Both cl.exe and clang.exe
+        // treat the trailing @file as an inclusion at that point in the
+        // command stream.
+        if (responseFilePath is not null)
+        {
+            psi.ArgumentList.Add("@" + responseFilePath);
         }
 
         using Process process = new() { StartInfo = psi };
@@ -942,6 +984,13 @@ public sealed class ProcessActionRunner : IActionRunner
             {
                 return new ActionRunResult(false, 1, "Process.Start returned false");
             }
+            // Audit fix R7-C1: the response file is now durable on disk
+            // and the subprocess has the @<path> indirection. The file
+            // is deleted in the finally block below regardless of how
+            // we exit. (Note: the toolchain reads the response file
+            // synchronously at startup; deleting it after process exit
+            // is always safe -- the read window closed at the moment
+            // process.Start returned.)
             // Audit fix R6-C4: assign the freshly-started subprocess to
             // the executor's job object before BeginOutputReadLine so
             // the kill-on-job-close guarantee applies as early as
@@ -1009,6 +1058,88 @@ public sealed class ProcessActionRunner : IActionRunner
         {
             return new ActionRunResult(false, 1, $"{ex.GetType().Name}: {ex.Message}");
         }
+        finally
+        {
+            // Audit fix R7-C1: clean up the response file regardless of
+            // success / failure / cancellation. The orphan-temp-file
+            // sweep would also reap this on next startup (the
+            // ".tmp.<pid>.<hex>" naming is recognised), but cleaning up
+            // eagerly keeps the intermediate tree tidy.
+            if (responseFilePath is not null)
+            {
+                try
+                {
+                    File.Delete(responseFilePath);
+                }
+                catch (IOException)
+                {
+                    // Best-effort -- the orphan sweep picks up stragglers.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Best-effort.
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Audit fix R7-C1: choose the directory the response file lives in.
+    /// Prefers the first produced item's directory (the natural sibling
+    /// location for an action's artefacts); falls back to the action's
+    /// working directory when the action emits nothing on disk (rare;
+    /// in-process write-manifest etc.).
+    /// </summary>
+    private static string ChooseResponseFileDirectory(IExternalAction action)
+    {
+        foreach (FileItem produced in action.ProducedItems)
+        {
+            string dir = Path.GetDirectoryName(produced.FullPath) ?? string.Empty;
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+                return dir;
+            }
+        }
+        if (!string.IsNullOrEmpty(action.WorkingDirectory))
+        {
+            Directory.CreateDirectory(action.WorkingDirectory);
+            return action.WorkingDirectory;
+        }
+        // Final fallback: process temp. Unusual; an action with no
+        // produced items and no working directory is a programming bug,
+        // but we don't want the response-file write to surface that as
+        // the user-visible failure.
+        return Path.GetTempPath();
+    }
+
+    /// <summary>
+    /// Audit fix R7-C1: choose the base filename for the response file.
+    /// Uses the first produced item's stem when one exists so a "Foo.obj"
+    /// action gets a "Foo.obj.rsp.tmp.&lt;pid&gt;.&lt;hex&gt;" sibling;
+    /// falls back to the action description otherwise.
+    /// </summary>
+    private static string ChooseResponseFileBaseName(IExternalAction action)
+    {
+        foreach (FileItem produced in action.ProducedItems)
+        {
+            string name = Path.GetFileName(produced.FullPath);
+            if (!string.IsNullOrEmpty(name))
+            {
+                return name;
+            }
+        }
+        // Descriptions are human-prose so they may contain whitespace
+        // or punctuation; collapse anything non-identifier to '_' so
+        // the resulting filename is portable.
+        string desc = action.CommandDescription ?? "action";
+        Span<char> buf = stackalloc char[desc.Length];
+        for (int i = 0; i < desc.Length; i++)
+        {
+            char c = desc[i];
+            buf[i] = char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_';
+        }
+        return new string(buf);
     }
 }
 

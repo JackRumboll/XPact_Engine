@@ -76,6 +76,8 @@ public sealed class ResolverContext
         MergedPartials = new Dictionary<XhtClass, XhtClass>();
         PropertyContainers = new Dictionary<XhtProperty, XhtTypeBase>();
         ResolvedPropertyTypes = new Dictionary<XhtProperty, XhtTypeBase>();
+        ExtraPartials = new List<XhtClass>();
+        MergedSymbolView = new Dictionary<XhtTypeBase, XhtTypeBase>();
         CurrentPhase = ResolvePhase.None;
     }
 
@@ -160,4 +162,43 @@ public sealed class ResolverContext
     /// types resolve to a null entry (not present in the map).
     /// </summary>
     public Dictionary<XhtProperty, XhtTypeBase> ResolvedPropertyTypes { get; }
+
+    /// <summary>
+    /// Extra C# partial-class declarations the parser walker(s) saw but
+    /// could not register because the canonical (first-registered)
+    /// declaration already occupied the caseless engine-name key. The
+    /// resolver's <c>StepResolvePairings</c> phase reads this list to
+    /// drive the partial merge per C3 audit (XHT.html Section 3.3).
+    /// The <c>EmitModuleMode</c> populates this list from each
+    /// walker's <c>ExtraPartials</c> surface after the parser pass.
+    /// </summary>
+    public List<XhtClass> ExtraPartials { get; }
+
+    /// <summary>
+    /// Merged-shape lookup for types that were folded across multiple
+    /// declarations (currently: C# partial-class merges). Key: the
+    /// canonical (first-registered) AST node as held in
+    /// <see cref="Symbols"/>; Value: the merged shape (union of
+    /// Functions / Properties / Specifiers / Interfaces across every
+    /// partial). The emitter consults this map and uses the merged
+    /// value when emitting per-type blocks per C3 audit. Empty until
+    /// the Pairings phase populates it.
+    /// </summary>
+    public Dictionary<XhtTypeBase, XhtTypeBase> MergedSymbolView { get; }
+
+    /// <summary>
+    /// Return the effective (post-merge) shape for a type. When the
+    /// type is the canonical entry of a merged partial-class group,
+    /// returns the merged XhtClass; otherwise returns
+    /// <paramref name="raw"/> unchanged. Callers should use this
+    /// accessor whenever they read a type's Functions / Properties /
+    /// Specifiers in contexts where the merged view is the intent.
+    /// </summary>
+    /// <param name="raw">The type as returned from <see cref="Symbols"/>. Must not be null.</param>
+    /// <returns>The merged shape, or <paramref name="raw"/> if no merge applies.</returns>
+    public XhtTypeBase GetEffectiveShape(XhtTypeBase raw)
+    {
+        System.ArgumentNullException.ThrowIfNull(raw);
+        return MergedSymbolView.TryGetValue(raw, out XhtTypeBase? merged) ? merged : raw;
+    }
 }

@@ -84,6 +84,7 @@ public sealed class FileItem
     /// canonical identity used by XBT.ActionGraph's invalidation rules.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Audit fix M5: the read path used to short-circuit on a volatile
     /// <c>_hashComputed</c> boolean and then return <c>_contentHash</c>
     /// without locking. <see cref="IoHash"/> is 32 bytes; under the .NET
@@ -93,6 +94,16 @@ public sealed class FileItem
     /// the boolean flag. We now always take the per-instance lock; the
     /// performance cost is one uncontended-lock acquisition per read
     /// (hash is computed once, so subsequent reads are fast-path).
+    /// </para>
+    /// <para>
+    /// Audit fix R7-C3: the file read is wrapped in
+    /// <see cref="FileSystemOps.RetryOnTransientIOException{T}(Func{T})"/>
+    /// so an AV-induced sharing violation on a just-written file is
+    /// retried on the standard back-off schedule rather than surfacing
+    /// as a build failure. The retry catches <see cref="IOException"/>
+    /// and <see cref="UnauthorizedAccessException"/> only; real I/O
+    /// errors still propagate on the final attempt.
+    /// </para>
     /// </remarks>
     public IoHash ContentHash
     {
@@ -104,12 +115,25 @@ public sealed class FileItem
                 {
                     return _contentHash;
                 }
-                using FileStream stream = File.OpenRead(FullPath);
-                _contentHash = IoHash.Compute(stream);
+                _contentHash = ComputeContentHashWithRetry(FullPath);
                 _hashComputed = true;
                 return _contentHash;
             }
         }
+    }
+
+    /// <summary>
+    /// Audit fix R7-C3: AV-retry-wrapped sync read path. Hoisted out of
+    /// the property body so the retry-helper closure captures only the
+    /// path argument, not the <see cref="FileItem"/> instance.
+    /// </summary>
+    private static IoHash ComputeContentHashWithRetry(string fullPath)
+    {
+        return FileSystemOps.RetryOnTransientIOException(() =>
+        {
+            using FileStream stream = File.OpenRead(fullPath);
+            return IoHash.Compute(stream);
+        });
     }
 
     private FileItem(string fullPath)
@@ -182,9 +206,20 @@ public sealed class FileItem
     /// <see cref="FileStream"/> async APIs.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Audit fix M5: always guard <c>_contentHash</c> reads under the
     /// per-instance lock; no volatile-flag short-circuit. See
     /// <see cref="ContentHash"/>'s remarks for the ARM64 rationale.
+    /// </para>
+    /// <para>
+    /// Audit fix R7-C3: the read is wrapped in
+    /// <see cref="FileSystemOps.RetryOnTransientIOExceptionAsync{T}(Func{Task{T}}, CancellationToken)"/>
+    /// so an AV-induced sharing violation is retried on the standard
+    /// back-off schedule rather than surfacing as an action failure.
+    /// The retry uses <see cref="Task.Delay(int, CancellationToken)"/>
+    /// so a blocked retry does not pin a thread-pool worker (unlike
+    /// the sync <see cref="Thread.Sleep(int)"/> path).
+    /// </para>
     /// </remarks>
     public async Task<IoHash> ComputeContentHashAsync(CancellationToken cancellationToken)
     {
@@ -201,20 +236,26 @@ public sealed class FileItem
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        await using FileStream stream = new(
-            FullPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 64 * 1024,
-            useAsync: true);
-
-        // We do the actual hashing synchronously inside a non-async local
-        // helper because Blake3.Hasher uses Span<byte> (a ref struct) for
-        // its digest output and ref structs cannot cross await boundaries
-        // in C# 12. Reads dominate cost on cold-cache files; the hash
-        // itself is fast.
-        IoHash hash = await ReadAndHashAsync(stream, cancellationToken).ConfigureAwait(false);
+        string fullPath = FullPath;
+        IoHash hash = await FileSystemOps.RetryOnTransientIOExceptionAsync(
+            async () =>
+            {
+                await using FileStream stream = new(
+                    fullPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 64 * 1024,
+                    useAsync: true);
+                // We do the actual hashing synchronously inside a
+                // non-async local helper because Blake3.Hasher uses
+                // Span<byte> (a ref struct) for its digest output and
+                // ref structs cannot cross await boundaries in C# 12.
+                // Reads dominate cost on cold-cache files; the hash
+                // itself is fast.
+                return await ReadAndHashAsync(stream, cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
 
         lock (_hashGate)
         {

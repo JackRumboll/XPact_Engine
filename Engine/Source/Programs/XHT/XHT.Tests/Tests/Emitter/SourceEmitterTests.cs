@@ -36,12 +36,12 @@ public sealed class SourceEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         SourceEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string content = emitter.Render("Public/XValve.h", new[] { valve });
 
-        Assert.Contains("XCONSTINIT static const XClassDescriptor Z_ConstInit_XClass_XGameFramework_AXValve", content);
-        Assert.Contains("Z_Construct_XClass_XGameFramework_AXValve", content);
+        Assert.Contains("XCONSTINIT static const XClassDescriptor Z_ConstInit_XClass_XGameFramework_XValve", content);
+        Assert.Contains("Z_Construct_XClass_XGameFramework_XValve", content);
         Assert.Contains("static_assert(XPACT_WITH_CONSTINIT_XOBJECT", content);
         Assert.Contains("// Copyright Simgenics. All Rights Reserved.", content);
     }
@@ -79,32 +79,41 @@ public sealed class SourceEmitterTests : IDisposable
     }
 
     [Fact]
-    public void ClassWithProperties_EmitsCommentLinePerProperty()
+    public void ClassWithProperties_EmitsRealDescriptorRecord()
     {
+        // Per C5 audit: the descriptor table emits real XPropertyDescriptor
+        // records (Name + TypeName strings) -- not stub comment lines.
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         SourceEmitter emitter = new(ctx);
 
         XhtProperty p1 = EmitterTestHarness.MakeProperty("OpenFraction", "float");
         XhtProperty p2 = EmitterTestHarness.MakeProperty("Inlet", "XActor*");
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", properties: new[] { p1, p2 });
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", properties: new[] { p1, p2 });
 
         string content = emitter.Render("Public/XValve.h", new[] { valve });
-        Assert.Contains("STAGE-B: OpenFraction: float ->", content);
-        Assert.Contains("STAGE-B: Inlet: XActor* ->", content);
+        // Real C identifier names + C-string literals in the descriptor.
+        Assert.Contains("static const XPropertyDescriptor s_props_XValve[]", content);
+        Assert.Contains("\"OpenFraction\"", content);
+        Assert.Contains("\"float\"", content);
+        Assert.Contains("\"Inlet\"", content);
+        Assert.Contains("\"XActor*\"", content);
     }
 
     [Fact]
-    public void ClassWithFunctions_EmitsCommentLinePerFunction()
+    public void ClassWithFunctions_EmitsRealFunctionDescriptors()
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         SourceEmitter emitter = new(ctx);
         XhtFunction f1 = EmitterTestHarness.MakeFunction("Open", "void");
         XhtFunction f2 = EmitterTestHarness.MakeFunction("Close", "bool");
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", functions: new[] { f1, f2 });
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", functions: new[] { f1, f2 });
 
         string content = emitter.Render("Public/XValve.h", new[] { valve });
-        Assert.Contains("Open() -> void", content);
-        Assert.Contains("Close() -> bool", content);
+        Assert.Contains("static const XFunctionDescriptor s_funcs_XValve[]", content);
+        Assert.Contains("\"Open\"", content);
+        Assert.Contains("\"Close\"", content);
+        Assert.Contains("\"void\"", content);
+        Assert.Contains("\"bool\"", content);
     }
 
     [Fact]
@@ -112,7 +121,7 @@ public sealed class SourceEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         SourceEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string a = emitter.Render("Public/XValve.h", new[] { valve });
         string b = emitter.Render("Public/XValve.h", new[] { valve });
@@ -124,7 +133,7 @@ public sealed class SourceEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         SourceEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string path = emitter.EmitForHeader("Public/XValve.h", new[] { valve });
         Assert.True(File.Exists(path));
@@ -168,8 +177,11 @@ public sealed class SourceEmitterTests : IDisposable
 
         string content = emitter.Render("Public/EColor.h", new XhtTypeBase[] { e });
         Assert.Contains("s_values_EColor[]", content);
-        Assert.Contains("/* STAGE-B: Red */", content);
-        Assert.Contains("/* STAGE-B: Green */", content);
+        // Real XEnumValueDescriptor initializers per C5 audit.
+        Assert.Contains("\"Red\"", content);
+        Assert.Contains("\"Green\"", content);
+        Assert.Contains("static_cast<int64_t>(0LL)", content);
+        Assert.Contains("static_cast<int64_t>(1LL)", content);
     }
 
     [Fact]

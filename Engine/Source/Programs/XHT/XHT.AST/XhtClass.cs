@@ -37,7 +37,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// the identifier strings.
 /// </para>
 /// </remarks>
-/// <param name="Name">Class identifier as authored (e.g. <c>"AXValve"</c>, <c>"Valve"</c>).</param>
+/// <param name="Name">Class identifier as authored (e.g. <c>"XValve"</c>, <c>"Valve"</c>).</param>
 /// <param name="FullyQualifiedName">Identifier prefixed with the namespace path.</param>
 /// <param name="OuterName">Containing type name, or null for top-level classes.</param>
 /// <param name="ModuleName">Manifest module this class belongs to.</param>
@@ -54,6 +54,8 @@ namespace Simgenics.XPact.XHT.AST;
 /// <param name="WithinClass">Resolved outer-type pointer for <c>Within=</c>; null until <c>StepResolveBases</c> populates it.</param>
 /// <param name="RequiredAPIMacroName">Optional <c>&lt;MODULE&gt;_API</c> export macro name; derived per Section 7.4 Round-2 fix.</param>
 /// <param name="HasGeneratedBody">True when <c>XGENERATED_BODY()</c> was found in the class body (C++ only; C# always emits the body inline).</param>
+/// <param name="IsPartial">True when the C# <c>partial</c> modifier appears on this declaration. C++ classes are always false. The resolver merges partials with the same FullyQualifiedName per Section 3.3.</param>
+/// <param name="PartialSourcePaths">Set of source paths that contributed to a merged partial class. Singleton list <c>[Span.SourceFilePath]</c> on a freshly-parsed declaration; populated to the union by <c>StepResolvePairings</c> when partials are merged.</param>
 public sealed record XhtClass(
     string Name,
     string FullyQualifiedName,
@@ -71,5 +73,7 @@ public sealed record XhtClass(
     string? WithinIdentifier,
     XhtClass? WithinClass,
     string? RequiredAPIMacroName,
-    bool HasGeneratedBody)
+    bool HasGeneratedBody,
+    bool IsPartial = false,
+    IReadOnlyList<string>? PartialSourcePaths = null)
     : XhtTypeBase(Name, FullyQualifiedName, OuterName, ModuleName, Language, Span, Specifiers);

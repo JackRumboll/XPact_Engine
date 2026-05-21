@@ -50,8 +50,8 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_TwoClasses_TwoHeaders_ProducesExpectedFileSet()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h", line: 14);
-        XhtClass actor = EmitterTestHarness.MakeClass("AXActor", sourcePath: "Public/XActor.h", line: 8);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h", line: 14);
+        XhtClass actor = EmitterTestHarness.MakeClass("XActor", sourcePath: "Public/XActor.h", line: 8);
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve, actor });
@@ -71,8 +71,8 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_GenManifest_HasInputsAndGeneratedSectionsPopulated()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
-        XhtClass actor = EmitterTestHarness.MakeClass("AXActor", sourcePath: "Public/XActor.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
+        XhtClass actor = EmitterTestHarness.MakeClass("XActor", sourcePath: "Public/XActor.h");
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve, actor });
@@ -90,7 +90,7 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_DiagnosticsFromResolver_FlowIntoGenManifest()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve });
 
@@ -132,7 +132,7 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_Determinism_TwoRunsProduceByteIdenticalOutputs()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
 
         EmitterContext ctxA = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve });
@@ -147,7 +147,7 @@ public sealed class ModuleEmitterTests : IDisposable
         Directory.Delete(_tempDir, recursive: true);
         Directory.CreateDirectory(_tempDir);
 
-        XhtClass valveB = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
+        XhtClass valveB = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
         EmitterContext ctxB = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valveB });
         ModuleEmitter emitterB = new(ctxB);
@@ -169,7 +169,7 @@ public sealed class ModuleEmitterTests : IDisposable
         // Module declares two headers; only one has a reflected type.
         // The other gets a sentinel.
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve });
@@ -220,8 +220,8 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_InitGenCpp_ForwardDeclaresAllSingletonGetters()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
-        XhtClass actor = EmitterTestHarness.MakeClass("AXActor", sourcePath: "Public/XActor.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
+        XhtClass actor = EmitterTestHarness.MakeClass("XActor", sourcePath: "Public/XActor.h");
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve, actor });
@@ -229,18 +229,18 @@ public sealed class ModuleEmitterTests : IDisposable
         EmitResult result = emitter.EmitModule();
 
         string initContent = File.ReadAllText(result.ModuleInitCppFile);
-        Assert.Contains("Z_Construct_XClass_XGameFramework_AXValve();", initContent);
-        Assert.Contains("Z_Construct_XClass_XGameFramework_AXActor();", initContent);
+        Assert.Contains("Z_Construct_XClass_XGameFramework_XValve();", initContent);
+        Assert.Contains("Z_Construct_XClass_XGameFramework_XActor();", initContent);
         // RegisterType calls.
-        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_AXValve());", initContent);
-        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_AXActor());", initContent);
+        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_XValve());", initContent);
+        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_XActor());", initContent);
     }
 
     [Fact]
     public void EmitModule_HashInGenManifestIsHex16()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve });
@@ -263,7 +263,7 @@ public sealed class ModuleEmitterTests : IDisposable
     public void EmitModule_FilesWrittenAtomically_PersistAcrossRead()
     {
         XbtModule mod = TwoHeaderModule();
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", sourcePath: "Public/XValve.h");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", sourcePath: "Public/XValve.h");
 
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir, module: mod,
             typesToRegister: new[] { valve });

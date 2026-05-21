@@ -1228,13 +1228,33 @@ public sealed class CppMarkerScanner
         if (macroTok.Kind == CppTokenKind.Identifier)
         {
             allTokens.Append(macroTok.Text);
-            if (macroTok.Text.Contains("MULTICAST", StringComparison.OrdinalIgnoreCase))
+            // Per M7 audit (XHT.html Section 7.4): use strict prefix
+            // checks instead of substring contains so identifiers like
+            // MY_OWN_MULTICAST_HELPER don't false-positive into the
+            // delegate vocabulary. Accept the standard UE families:
+            //   DECLARE_DYNAMIC_DELEGATE             (zero-arg single-cast)
+            //   DECLARE_DYNAMIC_DELEGATE_<N>...      (with parameter pack)
+            //   DECLARE_DYNAMIC_MULTICAST_DELEGATE   (zero-arg multicast)
+            //   DECLARE_DYNAMIC_MULTICAST_DELEGATE_<N>...  (with params)
+            //   ...with optional _RetVal_ infix in any of the above.
+            string macroName = macroTok.Text;
+            const string SingleCastBase = "DECLARE_DYNAMIC_DELEGATE";
+            const string MulticastBase = "DECLARE_DYNAMIC_MULTICAST_DELEGATE";
+            bool isSingleCastFamily = macroName.Equals(SingleCastBase, StringComparison.Ordinal)
+                || macroName.StartsWith(SingleCastBase + "_", StringComparison.Ordinal);
+            bool isMulticastFamily = macroName.Equals(MulticastBase, StringComparison.Ordinal)
+                || macroName.StartsWith(MulticastBase + "_", StringComparison.Ordinal);
+            if (isMulticastFamily)
             {
                 isMulticast = true;
             }
-            if (macroTok.Text.Contains("RetVal", StringComparison.OrdinalIgnoreCase))
+            else if (!isSingleCastFamily)
             {
-                // Return-value-carrying delegate.
+                // Not a recognized delegate-declaration macro; the
+                // scanner still proceeds (the user may have written a
+                // custom expansion), but we do not infer multicast
+                // from a substring match.
+                isMulticast = false;
             }
             tok.Next();
         }
@@ -1274,9 +1294,12 @@ public sealed class CppMarkerScanner
             }
             // The first arg of DECLARE_DYNAMIC_DELEGATE is the delegate
             // name (no return type). DECLARE_*_RetVal_* puts the return
-            // type first, then the name. We use the macro name to choose.
+            // type first, then the name. We use the macro name to
+            // choose. Per M7 audit: match _RetVal_ as a token between
+            // underscores (not arbitrary substring).
             int nameIndex = 0;
-            if (macroTok.Text.Contains("RetVal", StringComparison.OrdinalIgnoreCase) && args.Count >= 2)
+            bool isRetVal = macroTok.Text.Contains("_RetVal_", StringComparison.Ordinal);
+            if (isRetVal && args.Count >= 2)
             {
                 returnType = args[0];
                 nameIndex = 1;

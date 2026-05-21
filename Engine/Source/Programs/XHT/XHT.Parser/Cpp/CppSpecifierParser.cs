@@ -61,11 +61,21 @@ public sealed class CppSpecifierParser
     /// <summary>Diagnostic code: specifier registered but not legal in this context.</summary>
     public const string DiagSpecifierIllegalInContext = "XHT111";
 
-    /// <summary>Diagnostic code: pipe-syntax alternative list (deprecated form).</summary>
-    public const string DiagDeprecatedPipeSyntax = "XHT113";
+    /// <summary>
+    /// Diagnostic code: pipe-syntax alternative list (deprecated form).
+    /// Per C7 audit (XHT.html Section 12.3): renumbered from XHT113 to
+    /// XHT064 to avoid collision with the validator-band
+    /// <c>DiagnosticCodes.RepNotifyInvalidSignature</c>.
+    /// </summary>
+    public const string DiagDeprecatedPipeSyntax = "XHT064";
 
-    /// <summary>Diagnostic code: grammar error inside specifier list; consumed to next ',' or ')'.</summary>
-    public const string DiagSpecifierSyntaxError = "XHT114";
+    /// <summary>
+    /// Diagnostic code: grammar error inside specifier list; consumed
+    /// to next ',' or ')'. Per C7 audit: renumbered from XHT114 to
+    /// XHT065 to avoid collision with the validator-band
+    /// <c>DiagnosticCodes.ConfigConflictsWithNoExport</c>.
+    /// </summary>
+    public const string DiagSpecifierSyntaxError = "XHT065";
 
     /// <summary>
     /// Construct a parser bound to a specifier registry. The registry is

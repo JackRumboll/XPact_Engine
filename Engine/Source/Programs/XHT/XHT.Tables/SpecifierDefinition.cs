@@ -52,9 +52,19 @@ namespace Simgenics.XPact.XHT.Tables;
 /// Optional one-line description used by <c>dump-ast</c> / IDE help. Null
 /// when the specifier is self-describing (most flag specifiers).
 /// </param>
+/// <param name="AllowOverride">
+/// Plugin-extensibility flag per M5 audit + Section 18.1. When TRUE on
+/// BOTH the existing and incoming definitions, the incoming
+/// registration wins (the second registration takes the slot). When
+/// FALSE on either side, a registration conflict throws
+/// <c>XHT140</c>. Built-in specifiers all set this <c>false</c>;
+/// plugin specifiers may set it <c>true</c> to take precedence over a
+/// previously-loaded plugin's definition.
+/// </param>
 public sealed record SpecifierDefinition(
     string Name,
     SpecifierContext ApplicableTo,
     SpecifierValueKind ValueKind,
     bool AllowMultiple,
-    string? Documentation);
+    string? Documentation,
+    bool AllowOverride = false);

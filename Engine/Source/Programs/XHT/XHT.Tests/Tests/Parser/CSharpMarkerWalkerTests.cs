@@ -545,10 +545,12 @@ namespace XPact
     // ===== Partial classes ======================================
 
     [Fact]
-    public void PartialClasses_TwoPartials_EachEmittedSeparately()
+    public void PartialClasses_TwoPartials_EmittedSeparately_NoXHT040()
     {
-        // Per Phase 1c.2b: each partial emits one XhtClass; merging is
-        // Phase 1d resolver work.
+        // C3 audit (XHT.html Section 3.3): partial classes share an
+        // engine-name. The walker registers the first partial canonically
+        // and stashes the second in ExtraPartials. NO XHT040 is emitted;
+        // the resolver's pairings phase merges them.
         const string src = @"
 [XClass]
 public partial class Foo
@@ -564,16 +566,42 @@ public partial class Foo
     public int B { get; set; }
 }
 ";
-        (IReadOnlyList<XhtTypeBase> roots, SymbolTable table, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        SymbolTable table = new();
+        SpecifierRegistry registry = new(registerBuiltIns: true);
+        CSharpMarkerWalker walker = new(Path, src, Module, registry, table);
+        IReadOnlyList<XhtTypeBase> roots = walker.Walk();
 
-        // Both walker outputs appear in 'roots' (the per-walker output);
-        // SymbolTable.Register collides on the second one and emits
-        // XHT040. The collision is expected -- Phase 1d resolver folds
-        // partials by detecting same FQN + same Language.
         Assert.Equal(2, roots.Count);
         Assert.Equal("Foo", roots[0].Name);
         Assert.Equal("Foo", roots[1].Name);
-        Assert.Contains(diags, d => d.Code == CSharpMarkerWalker.DiagDuplicateType);
+
+        // Round-2 / C3 audit: the second partial lands in ExtraPartials,
+        // NOT in the XHT040 diagnostics list. The resolver's Pairings
+        // phase will merge it.
+        Assert.DoesNotContain(walker.Diagnostics, d => d.Code == CSharpMarkerWalker.DiagDuplicateType);
+        Assert.Single(walker.ExtraPartials);
+        Assert.True(walker.ExtraPartials[0].IsPartial);
+    }
+
+    [Fact]
+    public void NonPartialDuplicate_StillEmitsXHT040()
+    {
+        // Two non-partial classes with the same engine-name is a real
+        // collision; the C3 audit suppression only applies when BOTH
+        // sides carry the 'partial' modifier.
+        const string src = @"
+[XClass]
+public class Foo { }
+
+[XClass]
+public class Foo { }
+";
+        SymbolTable table = new();
+        SpecifierRegistry registry = new(registerBuiltIns: true);
+        CSharpMarkerWalker walker = new(Path, src, Module, registry, table);
+        walker.Walk();
+        Assert.Contains(walker.Diagnostics, d => d.Code == CSharpMarkerWalker.DiagDuplicateType);
+        Assert.Empty(walker.ExtraPartials);
     }
 
     // ===== Generic classes ======================================
@@ -609,7 +637,7 @@ public class Foo { }
     }
 
     [Fact]
-    public void MalformedAttributeArgument_EmitsXHT114_ClassStillEmitted()
+    public void MalformedAttributeArgument_EmitsSyntaxError_ClassStillEmitted()
     {
         const string src = @"
 [XClass(ClassGroup = ""x"" + 1)]
@@ -785,5 +813,88 @@ public class Tank : Actor
 
         Assert.Equal(4, table.Count);
         Assert.Empty(diags.Where(d => d.Severity == DiagnosticSeverity.Error));
+    }
+
+    // ===== C2 audit: attribute name matching gaps ================
+
+    [Fact]
+    public void XClass_GloballyQualifiedAttribute_Recognised()
+    {
+        // global::Simgenics.XPact.Reflection.XClass is the deeply-qualified
+        // form; the walker must reduce it to the simple-name "XClass".
+        // Per C2 audit (XHT.html Section 3.2).
+        const string src = @"
+namespace XPact.Scoring;
+
+[global::Simgenics.XPact.Reflection.XClass]
+public class Valve { }
+";
+        (IReadOnlyList<XhtTypeBase> roots, SymbolTable table, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        Assert.Single(roots);
+        XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
+        Assert.Equal("Valve", cls.Name);
+        Assert.NotNull(table.Lookup("Valve"));
+        Assert.Empty(diags.Where(d => d.Severity == DiagnosticSeverity.Error));
+    }
+
+    [Fact]
+    public void XClass_DeeplyNestedQualifiedAttribute_Recognised()
+    {
+        // A.B.C.D.XClass -- nested QualifiedNameSyntax. The walker must
+        // recurse through the Right links to reach the leaf identifier.
+        const string src = @"
+[A.B.C.D.XClass]
+public class Foo { }
+";
+        (IReadOnlyList<XhtTypeBase> roots, _, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        Assert.Single(roots);
+        XhtClass cls = Assert.IsType<XhtClass>(roots[0]);
+        Assert.Equal("Foo", cls.Name);
+        Assert.Empty(diags.Where(d => d.Severity == DiagnosticSeverity.Error));
+    }
+
+    [Fact]
+    public void XClass_GenericAttributeForm_EmitsXHT044_AndIsNotAccepted()
+    {
+        // [XClass<T>] is a C# 11+ generic-attribute form. XHT Phase 1
+        // does not interpret the type-argument list; rather than
+        // silently drop it, the walker emits XHT044 and refuses to
+        // accept the marker.
+        const string src = @"
+[XClass<int>]
+public class Foo { }
+";
+        (IReadOnlyList<XhtTypeBase> roots, _, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        Assert.Empty(roots);
+        Assert.Contains(diags, d => d.Code == CSharpMarkerWalker.DiagGenericAttributeUnsupported);
+    }
+
+    [Fact]
+    public void XClass_DuplicateMarkerOnSameTarget_EmitsXHT045Warning_AndUsesFirst()
+    {
+        // [XClass, XClass] (or two separate [XClass] lists) is invalid
+        // intent. The walker keeps the first occurrence and warns.
+        const string src = @"
+[XClass]
+[XClass]
+public class Foo { }
+";
+        (IReadOnlyList<XhtTypeBase> roots, _, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        Assert.Single(roots);
+        Assert.Contains(diags, d => d.Code == CSharpMarkerWalker.DiagDuplicateMarkerAttribute
+            && d.Severity == DiagnosticSeverity.Warning);
+    }
+
+    [Fact]
+    public void XClass_DuplicateMarkerInSameAttributeList_EmitsXHT045Warning()
+    {
+        // Same attribute repeated within a single [a, b, c] list.
+        const string src = @"
+[XClass, XClass]
+public class Foo { }
+";
+        (IReadOnlyList<XhtTypeBase> roots, _, IReadOnlyList<DiagnosticRecord> diags) = Walk(src);
+        Assert.Single(roots);
+        Assert.Contains(diags, d => d.Code == CSharpMarkerWalker.DiagDuplicateMarkerAttribute);
     }
 }

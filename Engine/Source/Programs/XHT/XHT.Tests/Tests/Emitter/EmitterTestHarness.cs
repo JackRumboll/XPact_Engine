@@ -119,7 +119,8 @@ internal static class EmitterTestHarness
         int line = 14,
         IReadOnlyList<XhtProperty>? properties = null,
         IReadOnlyList<XhtFunction>? functions = null,
-        string? superIdentifier = null)
+        string? superIdentifier = null,
+        string? super = null)
     {
         return new XhtClass(
             Name: name,
@@ -129,7 +130,7 @@ internal static class EmitterTestHarness
             Language: lang,
             Span: new SourceSpan(sourcePath, line, 1, name.Length),
             Specifiers: Array.Empty<Specifier>(),
-            SuperIdentifier: superIdentifier,
+            SuperIdentifier: superIdentifier ?? super,
             Super: null,
             Functions: functions ?? Array.Empty<XhtFunction>(),
             Properties: properties ?? Array.Empty<XhtProperty>(),
@@ -139,6 +140,38 @@ internal static class EmitterTestHarness
             WithinClass: null,
             RequiredAPIMacroName: null,
             HasGeneratedBody: true);
+    }
+
+    public static XhtInterface MakeInterface(
+        string name,
+        string moduleName = DefaultModule,
+        Language lang = Language.Cpp,
+        string sourcePath = "Public/XValve.h",
+        int line = 14,
+        IReadOnlyList<XhtFunction>? functions = null)
+    {
+        return new XhtInterface(
+            Name: name,
+            FullyQualifiedName: name,
+            OuterName: null,
+            ModuleName: moduleName,
+            Language: lang,
+            Span: new SourceSpan(sourcePath, line, 1, name.Length),
+            Specifiers: Array.Empty<Specifier>(),
+            SuperIdentifier: null,
+            Super: null,
+            Functions: functions ?? Array.Empty<XhtFunction>());
+    }
+
+    public static XhtParam MakeParam(string name, string typeIdentifier)
+    {
+        return new XhtParam(
+            Name: name,
+            TypeIdentifier: typeIdentifier,
+            Specifiers: Array.Empty<Specifier>(),
+            IsOut: false,
+            IsRef: false,
+            Span: new SourceSpan("Public/XValve.h", 14, 1, name.Length));
     }
 
     public static XhtStruct MakeStruct(
@@ -204,12 +237,13 @@ internal static class EmitterTestHarness
         string name,
         string returnType = "void",
         string sourcePath = "Public/XValve.h",
-        int line = 14)
+        int line = 14,
+        IReadOnlyList<XhtParam>? parameters = null)
     {
         return new XhtFunction(
             Name: name,
             ReturnType: returnType,
-            Parameters: Array.Empty<XhtParam>(),
+            Parameters: parameters ?? Array.Empty<XhtParam>(),
             Specifiers: Array.Empty<Specifier>(),
             IsStatic: false,
             IsVirtual: false,

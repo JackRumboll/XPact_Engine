@@ -14,4 +14,11 @@
     <ProjectReference Include="..\XHT.Manifest\XHT.Manifest.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Internal helpers (e.g. container-type extraction in
+         StepResolveProperties) are exposed to the XHT.Tests project so
+         the C4-audit tests can exercise them directly. -->
+    <InternalsVisibleTo Include="XHT.Tests" />
+  </ItemGroup>
+
 </Project>

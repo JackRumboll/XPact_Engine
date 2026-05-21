@@ -301,4 +301,30 @@ public class GenManifestWriterTests : IDisposable
             Assert.Equal(sortedInputs[i].ContentHash16, parsed.Inputs[i].ContentHash16);
         }
     }
+
+    [Fact]
+    public void DiagnosticMessage_WithCommas_RoundTripsLosslessly()
+    {
+        // Per M15 audit: messages containing commas must round-trip
+        // losslessly through the .gen.manifest format. Previously the
+        // emitter destructively replaced ',' with ';'.
+        const string originalMessage = "Conflict between 'EditAnywhere', 'Transient', and 'NoExport': pick one.";
+
+        GenManifestDiagnostic d = new(
+            Severity: "error",
+            Code: "XHT112",
+            File: "Public/XValve.h",
+            Line: 14,
+            Column: 5,
+            Message: originalMessage);
+
+        GenManifest m = BuildManifest(
+            diagnostics: ImmutableArray.Create(d));
+        string path = Path.Combine(_tempDir, "comma-test.gen.manifest");
+        GenManifestWriter.Write(m, path);
+
+        GenManifest parsed = GenManifestReader.Read(path);
+        Assert.Single(parsed.Diagnostics);
+        Assert.Equal(originalMessage, parsed.Diagnostics[0].Message);
+    }
 }

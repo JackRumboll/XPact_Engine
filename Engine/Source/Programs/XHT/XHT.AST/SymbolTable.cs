@@ -14,33 +14,22 @@ namespace Simgenics.XPact.XHT.AST;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Caseless engine-name model.</b> Identifiers are normalised through
-/// two passes before they key the table:
+/// <b>Caseless engine-name model (Round-2).</b> The engine-name is the
+/// lowercase-invariant form of the source identifier. XPact's permanent
+/// <c>X</c> prefix is preserved -- no UE-convention single-letter strip
+/// is applied. (The legacy A / U / I / F prefix-strip rule was removed
+/// per the 2026-05-21 user directive: XPact engine source uses only the
+/// permanent <c>X</c> prefix, not the UE-convention single-letter
+/// adornments.)
 /// </para>
-/// <list type="number">
-///   <item><description>
-///     <see cref="StringUtils.StripCppPrefix(string)"/> removes a single
-///     leading UE-convention letter (<c>A</c> / <c>U</c> / <c>I</c> /
-///     <c>F</c>) when followed by another uppercase letter. The XPact
-///     <c>X</c> prefix is preserved (it is the permanent project prefix,
-///     not a UE convention prefix per Section 3.3).
-///   </description></item>
-///   <item><description>
-///     <see cref="StringUtils.ToCaselessKey(string)"/> lowercases the
-///     result via <c>ToLowerInvariant</c>.
-///   </description></item>
-/// </list>
 /// <para>
 /// <b>Worked example.</b> A C++ class declared as
-/// <c>class AXValve : public AXActor</c> registers under the key
-/// <c>"xvalve"</c> (strip leading <c>A</c>, lowercase). A matching C#
-/// class declared as <c>[XClass] public partial class Valve : Actor</c>
-/// registers under <c>"valve"</c> (no UE prefix to strip, lowercase) --
-/// note these are <em>different</em> keys; cross-language pairing per
-/// Section 3.3 requires the engine names to match exactly. The
-/// recommended C++ form (<c>class XValve : public XActor</c>) and the
-/// C# form (<c>partial class Valve</c>) both fold to <c>"valve"</c> and
-/// therefore pair through this table.
+/// <c>class XValve : public XActor</c> and a C# class declared as
+/// <c>[XClass] public partial class XValve : XActor</c> both register
+/// under the engine name <c>"xvalve"</c>; cross-language pairing
+/// requires the engine names to match exactly. A C# class declared as
+/// <c>public partial class Valve</c> registers under <c>"valve"</c>
+/// (different engine name; no implicit pairing).
 /// </para>
 /// <para>
 /// <b>Thread safety.</b> The backing store is a
@@ -89,13 +78,14 @@ public sealed class SymbolTable
 
     /// <summary>
     /// Look up a reflected type by source identifier. The identifier is
-    /// stripped of its UE-convention prefix and lowercased before the
-    /// dictionary read.
+    /// lowercased before the dictionary read; the permanent
+    /// <c>X</c> prefix and any other characters are preserved (no
+    /// UE-convention prefix-strip).
     /// </summary>
     /// <param name="identifier">
-    /// Source identifier as authored. Both C++ forms (<c>"AXValve"</c>)
-    /// and C# forms (<c>"Valve"</c>) work because the caseless-key
-    /// normalisation applies to both.
+    /// Source identifier as authored. Lookup is case-insensitive
+    /// (<c>"XValve"</c>, <c>"xvalve"</c>, and <c>"XVALVE"</c> all hit
+    /// the same entry).
     /// </param>
     /// <returns>The registered type, or null when no match is found.</returns>
     /// <exception cref="ArgumentNullException">If <paramref name="identifier"/> is null.</exception>
@@ -103,7 +93,7 @@ public sealed class SymbolTable
     {
         ArgumentNullException.ThrowIfNull(identifier);
 
-        string key = StringUtils.ToCaselessKey(StringUtils.StripCppPrefix(identifier));
+        string key = StringUtils.ToCaselessKey(identifier);
         return _byCaselessKey.TryGetValue(key, out XhtTypeBase? value) ? value : null;
     }
 
@@ -119,7 +109,7 @@ public sealed class SymbolTable
     {
         ArgumentNullException.ThrowIfNull(identifier);
 
-        string key = StringUtils.ToCaselessKey(StringUtils.StripCppPrefix(identifier));
+        string key = StringUtils.ToCaselessKey(identifier);
         return _byCaselessKey.TryGetValue(key, out type);
     }
 
@@ -134,6 +124,38 @@ public sealed class SymbolTable
     /// requiring determinism must sort the result themselves.
     /// </remarks>
     public IEnumerable<XhtTypeBase> AllTypes => _byCaselessKey.Values;
+
+    /// <summary>
+    /// Replace an existing entry with a different
+    /// <see cref="XhtTypeBase"/> sharing the same
+    /// <see cref="XhtTypeBase.CaselessKey"/>. Used by the resolver's
+    /// partial-class merge phase (C3 audit) to install the merged
+    /// shape in place of the first-registered canonical. Throws if no
+    /// existing entry is found OR if the replacement's caseless key
+    /// differs from the original.
+    /// </summary>
+    /// <param name="original">The currently-registered entry. Must not be null.</param>
+    /// <param name="replacement">The replacement. Must not be null; CaselessKey must match.</param>
+    /// <exception cref="ArgumentNullException">If any argument is null.</exception>
+    /// <exception cref="InvalidOperationException">If <paramref name="original"/> is not registered or <paramref name="replacement"/>'s caseless key differs.</exception>
+    public void Replace(XhtTypeBase original, XhtTypeBase replacement)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        string key = original.CaselessKey;
+        if (!string.Equals(key, replacement.CaselessKey, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Replace requires matching caseless keys: original='{key}', replacement='{replacement.CaselessKey}'.");
+        }
+
+        if (!_byCaselessKey.TryUpdate(key, replacement, original))
+        {
+            throw new InvalidOperationException(
+                $"Replace target '{original.Name}' (key '{key}') is not the currently-registered entry.");
+        }
+    }
 
     /// <summary>The number of registered types.</summary>
     public int Count => _byCaselessKey.Count;

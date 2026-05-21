@@ -104,18 +104,25 @@ public sealed class ModuleEmitter
 
         // Filter to types declared in this module (the symbol table may
         // contain cross-module types if the caller seeded it that way;
-        // we only emit per-source for the module-under-emit).
+        // we only emit per-source for the module-under-emit). Replace
+        // any partial-merged canonical with its merged shape per C3
+        // audit (XHT.html Section 3.3) so emit walks see the union.
         List<XhtTypeBase> moduleTypes = new();
         foreach (XhtTypeBase t in orderedTypes)
         {
             if (string.Equals(t.ModuleName, _context.Module.Name, StringComparison.Ordinal))
             {
-                moduleTypes.Add(t);
+                moduleTypes.Add(_context.ResolverContext.GetEffectiveShape(t));
             }
         }
 
         // Group module types by SourceFilePath; preserve ordinal order
-        // of (path, FQN) so the emit walk is deterministic.
+        // of (path, FQN) so the emit walk is deterministic. For a
+        // merged partial-class, the canonical (first-registered)
+        // Span.SourceFilePath wins -- one .gen.h per canonical declaration.
+        // The merged type's PartialSourcePaths is still emitted into
+        // the .gen.manifest [Inputs] section so XBT can invalidate the
+        // emit when ANY partial's source changes.
         Dictionary<string, List<XhtTypeBase>> typesByHeader = new(StringComparer.Ordinal);
         foreach (XhtTypeBase t in moduleTypes)
         {
@@ -124,8 +131,7 @@ public sealed class ModuleEmitter
             {
                 // Synthetic types (SourceSpan.Synthetic) don't anchor to
                 // a header; skip the per-header emit and let them flow
-                // through the module aggregator only. Phase 1e: no
-                // synthetic types in the wild.
+                // through the module aggregator only.
                 continue;
             }
             if (!typesByHeader.TryGetValue(headerPath, out List<XhtTypeBase>? list))
@@ -181,8 +187,11 @@ public sealed class ModuleEmitter
             generatedHeaderFiles.Add(genHeaderPath);
             generatedCppFiles.Add(genCppPath);
 
-            string genHeaderHash = IoHash.FromString(File.ReadAllText(genHeaderPath)).Hex16();
-            string genCppHash = IoHash.FromString(File.ReadAllText(genCppPath)).Hex16();
+            // Per C6 audit: hash the raw bytes on disk (not the decoded
+            // text) so the hash is symmetric with HashInputFile and
+            // unaffected by BOM / line-ending normalisation.
+            string genHeaderHash = HashOutputFile(genHeaderPath);
+            string genCppHash = HashOutputFile(genCppPath);
 
             string genHeaderName = Path.GetFileName(genHeaderPath);
             string genCppName = Path.GetFileName(genCppPath);
@@ -196,7 +205,7 @@ public sealed class ModuleEmitter
         // Per-module aggregator emit.
         ModuleInitEmitter initEmitter = new(_context);
         string initCppPath = initEmitter.EmitForModule(_context.Module.Name, moduleTypes);
-        string initCppHash = IoHash.FromString(File.ReadAllText(initCppPath)).Hex16();
+        string initCppHash = HashOutputFile(initCppPath);
         string initCppName = Path.GetFileName(initCppPath);
         generatedEntries.Add(new GenManifestEntry(initCppName, initCppHash));
 
@@ -217,6 +226,23 @@ public sealed class ModuleEmitter
         foreach (string cs in _context.Module.CSharpSources)
         {
             inputPaths.Add(cs.Replace('\\', '/'));
+        }
+        // Per C3 audit: include every partial-class contributing source
+        // in the Inputs section so XBT's cache invalidates when ANY
+        // partial changes (not just the canonical's source).
+        foreach (XhtTypeBase t in moduleTypes)
+        {
+            if (t is XhtClass mergedCls && mergedCls.PartialSourcePaths is { Count: > 0 } paths)
+            {
+                foreach (string p in paths)
+                {
+                    string normalised = NormaliseToModuleRelative(p);
+                    if (!string.IsNullOrEmpty(normalised))
+                    {
+                        inputPaths.Add(normalised);
+                    }
+                }
+            }
         }
 
         List<GenManifestEntry> inputEntries = new(inputPaths.Count);
@@ -297,6 +323,19 @@ public sealed class ModuleEmitter
         return normalized;
     }
 
+    /// <summary>
+    /// Hash a file XHT emitted by reading its raw bytes off disk. Per
+    /// C6 audit (XHT.html Section 16): byte-symmetric with
+    /// <see cref="HashInputFile"/> so BOM / line-ending normalisation
+    /// cannot cause the two sides to disagree for byte-identical
+    /// content.
+    /// </summary>
+    private static string HashOutputFile(string absPath)
+    {
+        byte[] bytes = File.ReadAllBytes(absPath);
+        return IoHash.FromUtf8(bytes).Hex16();
+    }
+
     private string HashInputFile(string relativePath)
     {
         // Phase 1e: per-input hash is the BLAKE3 of the byte content
@@ -307,6 +346,10 @@ public sealed class ModuleEmitter
         string absPath = ResolveAbsoluteInputPath(relativePath);
         if (File.Exists(absPath))
         {
+            // Per C6 audit: use ReadAllBytes (matches HashOutputFile)
+            // so output-vs-input hash symmetry holds for byte-identical
+            // content. FromUtf8 just hashes the bytes -- the name is
+            // misleading; it does NOT decode UTF-8.
             byte[] bytes = File.ReadAllBytes(absPath);
             return IoHash.FromUtf8(bytes).Hex16();
         }
@@ -363,13 +406,28 @@ public sealed class ModuleEmitter
                 _ => "info",
             };
             // Normalise the File path to forward slashes for manifest
-            // determinism; commas in paths are rejected by the writer.
+            // determinism. Per M15 audit: messages are reversibly
+            // escaped by the writer (GenManifestWriter.EscapeMessage
+            // handles backslash, newline, and comma); the previous
+            // destructive ',' -> ';' replacement has been removed.
+            // File paths with embedded commas are unusual but legal --
+            // if one shows up we forward-slash normalize and let the
+            // writer's ValidateString surface the genuine "comma in
+            // file path" error rather than silently mutating the data.
             string? file = r.File;
             if (file is not null)
             {
-                file = file.Replace('\\', '/').Replace(",", "_");
+                file = file.Replace('\\', '/');
+                // Defensive: replace commas with their URL-encoded form
+                // %2C so the writer's no-comma rule still holds. This
+                // is reversible (consumers can decode %2C), unlike the
+                // previous destructive '_' substitution.
+                if (file.Contains(','))
+                {
+                    file = file.Replace(",", "%2C");
+                }
             }
-            string message = r.Message?.Replace(',', ';') ?? string.Empty;
+            string message = r.Message ?? string.Empty;
             builder.Add(new GenManifestDiagnostic(
                 Severity: severity,
                 Code: r.Code,

@@ -121,9 +121,9 @@ public class SymbolNamingTests
     [Fact]
     public void SingletonGetter_LockedExample_MatchesContractRev102()
     {
-        // From XHT.html Section 10.4: "Z_Construct_XClass_XGameFramework_AXValve".
-        string g = SymbolNaming.SingletonGetter("XGameFramework", "AXValve", EngineRole.Class);
-        Assert.Equal("Z_Construct_XClass_XGameFramework_AXValve", g);
+        // From XHT.html Section 10.4: "Z_Construct_XClass_XGameFramework_XValve".
+        string g = SymbolNaming.SingletonGetter("XGameFramework", "XValve", EngineRole.Class);
+        Assert.Equal("Z_Construct_XClass_XGameFramework_XValve", g);
     }
 
     [Fact]
@@ -141,9 +141,9 @@ public class SymbolNamingTests
     [Fact]
     public void ConstInitSymbol_LockedExample_MatchesContractRev71()
     {
-        // From XHT.html Section 10.4: "Z_ConstInit_XClass_XGameFramework_AXValve".
-        string c = SymbolNaming.ConstInitSymbol("XGameFramework", "AXValve", EngineRole.Class);
-        Assert.Equal("Z_ConstInit_XClass_XGameFramework_AXValve", c);
+        // From XHT.html Section 10.4: "Z_ConstInit_XClass_XGameFramework_XValve".
+        string c = SymbolNaming.ConstInitSymbol("XGameFramework", "XValve", EngineRole.Class);
+        Assert.Equal("Z_ConstInit_XClass_XGameFramework_XValve", c);
     }
 
     [Fact]

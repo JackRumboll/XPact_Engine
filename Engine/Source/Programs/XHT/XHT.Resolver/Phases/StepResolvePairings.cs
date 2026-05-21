@@ -29,16 +29,19 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// (XHT100) is emitted.
 /// </para>
 /// <para>
-/// <b>Partial-class merge.</b> C# allows the same type to be split
-/// across multiple <c>partial class</c> declarations. The parser
+/// <b>Partial-class merge (C3 audit).</b> C# allows the same type to be
+/// split across multiple <c>partial class</c> declarations. The parser
 /// registers the first declaration to land into the symbol table; any
-/// duplicate would normally throw a collision. The Pairings phase
-/// merges duplicates by populating
-/// <see cref="ResolverContext.MergedPartials"/>; downstream phases
-/// consult the map when they need the merged shape. This is a Phase
-/// 1d "best-effort" merge: since AST records are immutable, we record
-/// the pair and emit <see cref="DiagnosticCodes.PartialClassMerged"/>
-/// (XHT143) informationally.
+/// duplicate partials land in
+/// <see cref="ResolverContext.ExtraPartials"/>. This phase walks
+/// <c>ExtraPartials</c>, groups them by canonical entry (the
+/// first-registered XhtClass), and synthesizes a merged XhtClass via
+/// record <c>with</c> -- union of Functions, Properties, Specifiers,
+/// and InterfaceIdentifiers across every partial. The merged shape is
+/// stored in <see cref="ResolverContext.MergedSymbolView"/> keyed by
+/// the canonical entry; the original
+/// <see cref="ResolverContext.MergedPartials"/> map carries the
+/// duplicate-to-canonical pointer for back-reference.
 /// </para>
 /// </remarks>
 internal sealed class StepResolvePairings : IResolverStep
@@ -59,16 +62,9 @@ internal sealed class StepResolvePairings : IResolverStep
             }
         }
 
-        // Pass 2: detect partial-class duplicates (C#-only).
-        // The symbol table only carries one entry per caseless key; the
-        // duplicate sat in the originating walker's locally-rooted
-        // type list (the C# walker emits XHT040 today for the second
-        // entry). Phase 1d covers the in-table case where a caseless
-        // key is shared between a fresh class and the same module's
-        // partial class declared at a different file. For now, we walk
-        // every XhtClass with Language.CSharp and look for siblings
-        // sharing the FullyQualifiedName ordinal-equal.
-        DetectPartials(ctx, ordered);
+        // Pass 2: detect + merge C# partial-class duplicates from the
+        // parser's ExtraPartials stash (set per C3 audit).
+        MergePartials(ctx);
     }
 
     private static void TryPairInterface(ResolverContext ctx, XhtInterface iface)
@@ -130,33 +126,150 @@ internal sealed class StepResolvePairings : IResolverStep
         }
     }
 
-    private static void DetectPartials(ResolverContext ctx, IReadOnlyList<XhtTypeBase> ordered)
+    /// <summary>
+    /// Merge every duplicate C# partial-class declaration in
+    /// <see cref="ResolverContext.ExtraPartials"/> with its canonical
+    /// (first-registered) entry in the symbol table. The merged
+    /// XhtClass replaces the canonical via
+    /// <see cref="ResolverContext.MergedSymbolView"/>; emitters and
+    /// downstream phases consult <see cref="ResolverContext.GetEffectiveShape"/>
+    /// (helper extension) to read the merged view in place of the raw
+    /// table entry.
+    /// </summary>
+    private static void MergePartials(ResolverContext ctx)
     {
-        // Group C# classes by FullyQualifiedName (ordinal-equal).
-        // Within each group, the symbol-table-registered entry is the
-        // canonical form; any others are partial duplicates.
-        Dictionary<string, XhtClass> seen = new(StringComparer.Ordinal);
-        for (int i = 0; i < ordered.Count; i++)
+        if (ctx.ExtraPartials.Count == 0)
         {
-            if (ordered[i] is not XhtClass cls)
+            return;
+        }
+
+        // Group duplicate partials by (FullyQualifiedName) so we can
+        // perform a single union per canonical entry.
+        Dictionary<string, List<XhtClass>> byFqn = new(StringComparer.Ordinal);
+        foreach (XhtClass dup in ctx.ExtraPartials)
+        {
+            if (!byFqn.TryGetValue(dup.FullyQualifiedName, out List<XhtClass>? list))
             {
-                continue;
+                list = new List<XhtClass>();
+                byFqn[dup.FullyQualifiedName] = list;
             }
-            if (cls.Language != Language.CSharp)
+            list.Add(dup);
+        }
+
+        foreach (KeyValuePair<string, List<XhtClass>> kv in byFqn)
+        {
+            string fqn = kv.Key;
+            List<XhtClass> dups = kv.Value;
+            if (dups.Count == 0)
             {
                 continue;
             }
 
-            if (!seen.TryAdd(cls.FullyQualifiedName, cls))
+            // Find the canonical entry in the symbol table by FQN +
+            // language. The first partial registered for this FQN is
+            // the canonical entry (it occupied the caseless slot).
+            XhtClass? canonical = FindCanonical(ctx, fqn);
+            if (canonical is null)
             {
-                XhtClass canonical = seen[cls.FullyQualifiedName];
-                ctx.MergedPartials[cls] = canonical;
+                // No canonical found (shouldn't happen if the parser
+                // pushed the first partial to the table). Defensive:
+                // skip the merge for this FQN.
+                continue;
+            }
+
+            // Union members from canonical + every duplicate.
+            List<XhtFunction> functions = new(canonical.Functions);
+            List<XhtProperty> properties = new(canonical.Properties);
+            List<Specifier> specifiers = new(canonical.Specifiers);
+            List<string> interfaces = new(canonical.InterfaceIdentifiers);
+            HashSet<string> sourcePaths = new(canonical.PartialSourcePaths ?? new[] { canonical.Span.SourceFilePath }, StringComparer.Ordinal);
+
+            string? superId = canonical.SuperIdentifier;
+            string? withinId = canonical.WithinIdentifier;
+
+            foreach (XhtClass dup in dups)
+            {
+                functions.AddRange(dup.Functions);
+                properties.AddRange(dup.Properties);
+                specifiers.AddRange(dup.Specifiers);
+                interfaces.AddRange(dup.InterfaceIdentifiers);
+                foreach (string s in dup.PartialSourcePaths ?? new[] { dup.Span.SourceFilePath })
+                {
+                    sourcePaths.Add(s);
+                }
+                // Super / Within: if the canonical didn't have one but
+                // a duplicate does, adopt the duplicate's value. If
+                // both have one and they differ, log a diagnostic and
+                // keep the canonical (deterministic).
+                if (superId is null && dup.SuperIdentifier is not null)
+                {
+                    superId = dup.SuperIdentifier;
+                }
+                else if (superId is not null && dup.SuperIdentifier is not null
+                    && !string.Equals(superId, dup.SuperIdentifier, StringComparison.Ordinal))
+                {
+                    PhaseHelpers.Error(
+                        ctx,
+                        DiagnosticCodes.SuperWrongKind,
+                        $"Partial-class '{fqn}' declares conflicting bases ('{superId}' vs '{dup.SuperIdentifier}'); canonical wins.",
+                        dup.Span);
+                }
+                if (withinId is null && dup.WithinIdentifier is not null)
+                {
+                    withinId = dup.WithinIdentifier;
+                }
+
+                // Record the duplicate -> canonical pointer.
+                ctx.MergedPartials[dup] = canonical;
+            }
+
+            // Synthesize the merged XhtClass via the record `with`
+            // pattern. The merged value is stored in MergedSymbolView
+            // keyed by the canonical entry AND installed into the
+            // symbol table in place of the canonical so downstream
+            // resolver phases (BindSuperAndBases, ResolveBases,
+            // Properties, Final) see the merged shape when they walk
+            // ctx.Symbols.AllTypes. The replacement preserves the
+            // caseless key (the canonical's name doesn't change) so
+            // existing super / interface lookups still hit.
+            List<string> sortedSourcePaths = new(sourcePaths);
+            sortedSourcePaths.Sort(StringComparer.Ordinal);
+            XhtClass merged = canonical with
+            {
+                Functions = functions,
+                Properties = properties,
+                Specifiers = specifiers,
+                InterfaceIdentifiers = interfaces,
+                SuperIdentifier = superId,
+                WithinIdentifier = withinId,
+                PartialSourcePaths = sortedSourcePaths,
+            };
+            ctx.MergedSymbolView[canonical] = merged;
+            ctx.Symbols.Replace(canonical, merged);
+
+            // Emit one informational diagnostic per merged duplicate.
+            foreach (XhtClass dup in dups)
+            {
                 PhaseHelpers.Info(
                     ctx,
                     DiagnosticCodes.PartialClassMerged,
-                    $"C# partial-class duplicate '{cls.FullyQualifiedName}' merged into canonical declaration.",
-                    cls.Span);
+                    $"C# partial-class duplicate '{dup.FullyQualifiedName}' merged into canonical declaration at '{canonical.Span.SourceFilePath}({canonical.Span.Line})'.",
+                    dup.Span);
             }
         }
+    }
+
+    private static XhtClass? FindCanonical(ResolverContext ctx, string fqn)
+    {
+        foreach (XhtTypeBase t in ctx.Symbols.AllTypes)
+        {
+            if (t is XhtClass cls
+                && cls.Language == Language.CSharp
+                && string.Equals(cls.FullyQualifiedName, fqn, StringComparison.Ordinal))
+            {
+                return cls;
+            }
+        }
+        return null;
     }
 }

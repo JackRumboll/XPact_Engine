@@ -37,12 +37,12 @@ public sealed class ModuleInitEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         ModuleInitEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string content = emitter.Render("XGameFramework", new[] { valve });
 
-        Assert.Contains("extern \"C\" const struct XClass* Z_Construct_XClass_XGameFramework_AXValve();", content);
-        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_AXValve());", content);
+        Assert.Contains("extern \"C\" const struct XClass* Z_Construct_XClass_XGameFramework_XValve();", content);
+        Assert.Contains("XReflectionRuntime::RegisterType(Z_Construct_XClass_XGameFramework_XValve());", content);
         Assert.Contains("XGameFramework_AutoRegister", content);
     }
 
@@ -82,7 +82,7 @@ public sealed class ModuleInitEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         ModuleInitEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string a = emitter.Render("XGameFramework", new[] { valve });
         string b = emitter.Render("XGameFramework", new[] { valve });
@@ -94,7 +94,7 @@ public sealed class ModuleInitEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         ModuleInitEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string path = emitter.EmitForModule("XGameFramework", new[] { valve });
         Assert.True(File.Exists(path));

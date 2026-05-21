@@ -119,4 +119,18 @@ public class LogicalPathSplitterTests
     {
         Assert.Throws<ArgumentNullException>(() => LogicalPathSplitter.Split("X.h", null!));
     }
+
+    [Fact]
+    public void Split_RejectsGenH_InputAsXhtOutput()
+    {
+        // Per M10 audit: .gen.h / .gen.cpp / .gen.hpp / .gen.inl are
+        // XHT OUTPUTS; they must never appear as XHT INPUTS. Reject
+        // them with a clear diagnostic at the LogicalPathSplitter
+        // level so the caller surfaces a cycle.
+        XbtModule m = EmitterTestHarness.MakeModule();
+        Assert.Throws<ArgumentException>(() => LogicalPathSplitter.Split("Foo.gen.h", m));
+        Assert.Throws<ArgumentException>(() => LogicalPathSplitter.Split("Foo.gen.cpp", m));
+        Assert.Throws<ArgumentException>(() => LogicalPathSplitter.Split("Foo.GEN.H", m));
+        Assert.Throws<ArgumentException>(() => LogicalPathSplitter.Split("Public/Foo.gen.h", m));
+    }
 }

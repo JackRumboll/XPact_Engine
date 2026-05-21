@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Simgenics.XPact.XBT.Manifest;
 
 namespace Simgenics.XPact.XBT.Configuration;
@@ -167,5 +168,101 @@ public static class TierValidator
                     Kind: kind));
             }
         }
+    }
+
+    /// <summary>
+    /// Audit fix R7-M8: validate that a module's declared
+    /// <see cref="ModuleRules.Tier"/> matches the on-disk tier
+    /// inferred from its descriptor path. A module declaring
+    /// <c>Tier = Engine</c> must live under
+    /// <c>&lt;EngineRoot&gt;/Engine/Source/...</c> or
+    /// <c>&lt;EngineRoot&gt;/Engine/Plugins/...</c>; a Studio module
+    /// must live under <c>/Studio/</c>; a Project module must live
+    /// under <c>/Projects/&lt;P&gt;/...</c>. Mismatches indicate a
+    /// configuration defect (e.g. an Engine module accidentally
+    /// declared as a Studio module, which would have wider link
+    /// access than it should) and surface here so they're caught
+    /// before the action graph is built rather than at link time
+    /// with a cryptic error.
+    /// </summary>
+    /// <param name="moduleName">The module's <see cref="ModuleRules.Name"/>.</param>
+    /// <param name="declaredTier">The module's declared <see cref="ModuleRules.Tier"/>.</param>
+    /// <param name="descriptorPath">
+    /// Absolute path to the module's descriptor file (e.g.
+    /// <c>&lt;EngineRoot&gt;/Engine/Source/XCore/XCore.Build.toml</c>).
+    /// </param>
+    /// <returns>
+    /// Null on success. A human-readable diagnostic string on
+    /// mismatch; the caller wraps it in an <c>XBTException</c> with
+    /// exit code 21 (<see cref="ExitCodes.TierViolation"/>).
+    /// </returns>
+    public static string? ValidateDeclaredTierAgainstPath(
+        string moduleName,
+        ModuleTier declaredTier,
+        string descriptorPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(moduleName);
+        ArgumentException.ThrowIfNullOrEmpty(descriptorPath);
+
+        // Normalize separators so the substring checks below work on
+        // Windows + POSIX paths uniformly. We canonicalize to forward
+        // slashes for the segment matching but keep the original
+        // (host-form) path for diagnostic messages.
+        string canonical = descriptorPath.Replace('\\', '/');
+
+        // Infer the tier from the path. The path-segment markers are:
+        //   /Engine/   -> Engine tier
+        //   /Studio/   -> Studio tier
+        //   /Projects/ -> Project tier
+        // We use the "/Engine/", "/Studio/", "/Projects/" segments
+        // exactly (with surrounding slashes) so a directory named
+        // "MyEngine" doesn't accidentally match the Engine pattern.
+        ModuleTier? inferred = null;
+        if (canonical.Contains("/Engine/", StringComparison.Ordinal))
+        {
+            inferred = ModuleTier.Engine;
+        }
+        // A Studio descriptor must NOT have /Engine/ ahead of /Studio/
+        // -- the inverse case is OK (an Engine module path may also
+        // contain /Studio/ if the project layout intentionally
+        // overlaps, but our convention rules that out anyway).
+        if (canonical.Contains("/Studio/", StringComparison.Ordinal)
+            && !canonical.Contains("/Engine/", StringComparison.Ordinal))
+        {
+            inferred = ModuleTier.Studio;
+        }
+        if (canonical.Contains("/Projects/", StringComparison.Ordinal)
+            && !canonical.Contains("/Engine/", StringComparison.Ordinal)
+            && !canonical.Contains("/Studio/", StringComparison.Ordinal))
+        {
+            inferred = ModuleTier.Project;
+        }
+
+        if (inferred is null)
+        {
+            // Path doesn't include any tier marker -- we can't infer.
+            // This is a configuration defect on its own, but it's not
+            // a tier-mismatch error per se. We DO surface it as a
+            // diagnostic because shipping a module without a tier
+            // marker means a future refactor that adds tier-specific
+            // policy can't reason about the module's intended tier.
+            return $"Module '{moduleName}' is declared with Tier = {declaredTier} but its " +
+                $"descriptor path '{descriptorPath}' does not contain a recognised " +
+                "tier-segment marker (/Engine/, /Studio/, /Projects/). Place the module " +
+                "under one of these segment trees to make its tier inferable from disk " +
+                "and avoid a future refactor surprise.";
+        }
+
+        if (inferred.Value != declaredTier)
+        {
+            return $"Module '{moduleName}' declares Tier = {declaredTier} but its descriptor " +
+                $"path '{descriptorPath}' is under '/{inferred.Value}/' (inferred " +
+                $"tier = {inferred.Value}). Update either the declared Tier in the " +
+                ".Build.toml or move the descriptor to the matching tier directory. " +
+                "Mismatches widen the module's link-graph reach beyond its declared " +
+                "tier, which is a security and stability gap.";
+        }
+
+        return null;
     }
 }

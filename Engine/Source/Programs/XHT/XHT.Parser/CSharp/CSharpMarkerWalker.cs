@@ -47,8 +47,10 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 /// types into the <em>same</em> <see cref="SymbolTable"/> the C++ side
 /// (<c>Cpp.CppMarkerScanner</c>) populates. The table's caseless-key
 /// normalisation (<see cref="XhtTypeBase.CaselessKey"/>) lets a C++
-/// <c>AXValve</c> and a C# <c>Valve</c> collide on the engine name
-/// <c>"valve"</c>; the resolver disambiguates by language tag in Phase 1d.
+/// <c>XValve</c> and a C# <c>XValve</c> collide on the engine name
+/// <c>"xvalve"</c>; the resolver disambiguates by language tag in
+/// Phase 1d. (Per Round-2: XPact engine source uses only the permanent
+/// <c>X</c> prefix; legacy A / U / I / F prefix-stripping is gone.)
 /// </para>
 /// <para>
 /// <b>Partial-class handling.</b> A C# <c>partial class Foo</c> can
@@ -76,12 +78,29 @@ public sealed class CSharpMarkerWalker
     /// <summary>Diagnostic code: marker followed by declaration we don't recognise.</summary>
     public const string DiagMalformedMarkerDeclaration = "XHT115";
 
+    /// <summary>
+    /// Diagnostic code: a generic-attribute form is not supported by
+    /// Phase 1 XHT (e.g. <c>[XClass&lt;T&gt;]</c>). Emitted at attribute-
+    /// match time so the type-argument silent-drop is no longer
+    /// invisible. Per C2 audit.
+    /// </summary>
+    public const string DiagGenericAttributeUnsupported = "XHT044";
+
+    /// <summary>
+    /// Diagnostic code: the same X-attribute appears multiple times on
+    /// the same target (e.g. <c>[XClass, XClass]</c>). The first
+    /// instance is used; subsequent instances are ignored with this
+    /// warning. Per C2 audit.
+    /// </summary>
+    public const string DiagDuplicateMarkerAttribute = "XHT045";
+
     private readonly string _sourcePath;
     private readonly string _sourceText;
     private readonly string _moduleName;
     private readonly ISpecifierRegistry _registry;
     private readonly SymbolTable _symbolTable;
     private readonly List<DiagnosticRecord> _diagnostics = new();
+    private readonly List<XhtClass> _extraPartials = new();
 
     /// <summary>
     /// Construct a walker over one C# source file. Construction does not
@@ -120,6 +139,16 @@ public sealed class CSharpMarkerWalker
     /// list is appended in walk order.
     /// </summary>
     public IReadOnlyList<DiagnosticRecord> Diagnostics => _diagnostics;
+
+    /// <summary>
+    /// Extra partial-class declarations the walker collected but could
+    /// not register in the <see cref="SymbolTable"/> because the
+    /// canonical (first-registered) entry already occupied the
+    /// caseless engine-name key. The resolver's
+    /// <c>StepResolvePairings</c> phase consults this list to drive
+    /// the partial-class merge per C3 audit (XHT.html Section 3.3).
+    /// </summary>
+    public IReadOnlyList<XhtClass> ExtraPartials => _extraPartials;
 
     /// <summary>
     /// Walk the source and emit AST nodes into the
@@ -342,6 +371,19 @@ public sealed class CSharpMarkerWalker
             string fqn = ComposeFqn(name);
             string? outerName = _typeStack.Count > 0 ? _typeStack[^1] : null;
 
+            // Detect the C# 'partial' modifier. The resolver merges
+            // partials with the same FullyQualifiedName + Language per
+            // C3 audit (XHT.html Section 3.3).
+            bool isPartial = false;
+            foreach (SyntaxToken m in node.Modifiers)
+            {
+                if (m.IsKind(SyntaxKind.PartialKeyword))
+                {
+                    isPartial = true;
+                    break;
+                }
+            }
+
             // Per /Documents/XHT.html Rev 5 Section 7.5: C# attribute
             // anchored types always have generated body in XPact's model
             // (no XGENERATED_BODY equivalent is needed because Roslyn
@@ -367,7 +409,9 @@ public sealed class CSharpMarkerWalker
                 WithinIdentifier: withinId,
                 WithinClass: null,
                 RequiredAPIMacroName: null,
-                HasGeneratedBody: true);
+                HasGeneratedBody: true,
+                IsPartial: isPartial,
+                PartialSourcePaths: new[] { span.SourceFilePath });
 
             // Push a TypeBuilder so XFunction / XProperty visits inside
             // the class attach to this entry. We finalise on pop.
@@ -753,8 +797,9 @@ public sealed class CSharpMarkerWalker
             return null;
         }
 
-        private static AttributeSyntax? FindXAttribute(SyntaxList<AttributeListSyntax> lists, string targetName)
+        private AttributeSyntax? FindXAttribute(SyntaxList<AttributeListSyntax> lists, string targetName)
         {
+            AttributeSyntax? firstMatch = null;
             foreach (AttributeListSyntax list in lists)
             {
                 foreach (AttributeSyntax attr in list.Attributes)
@@ -766,22 +811,61 @@ public sealed class CSharpMarkerWalker
                     // [XClass] in C#).
                     if (name == targetName || name == targetName + "Attribute")
                     {
-                        return attr;
+                        // C2 audit: emit XHT044 for generic-attribute
+                        // forms (e.g. [XClass<T>]) because Phase 1 XHT
+                        // does not interpret the type-argument list;
+                        // silently dropping it would be a correctness
+                        // gap. The first non-generic occurrence is
+                        // preferred when both forms appear.
+                        if (attr.Name is GenericNameSyntax)
+                        {
+                            FileLinePositionSpan pos = attr.GetLocation().GetLineSpan();
+                            _outer._diagnostics.Add(new DiagnosticRecord(
+                                XhtDiagnosticSeverity.Error,
+                                DiagGenericAttributeUnsupported,
+                                $"Generic attribute form '[{targetName}<...>]' is not supported in Phase 1 XHT; remove the type argument or open a Phase 2 feature request.",
+                                File: _outer._sourcePath,
+                                Line: pos.StartLinePosition.Line + 1,
+                                Column: pos.StartLinePosition.Character + 1));
+                            // Skip: never accept a generic form -- we
+                            // would silently lose the type argument.
+                            continue;
+                        }
+                        if (firstMatch is null)
+                        {
+                            firstMatch = attr;
+                        }
+                        else
+                        {
+                            // C2 audit: duplicate [XClass]/[XClass]
+                            // pattern. Warn and keep the first.
+                            FileLinePositionSpan pos = attr.GetLocation().GetLineSpan();
+                            _outer._diagnostics.Add(new DiagnosticRecord(
+                                XhtDiagnosticSeverity.Warning,
+                                DiagDuplicateMarkerAttribute,
+                                $"Duplicate '[{targetName}]' marker on the same target; first occurrence wins, this instance is ignored.",
+                                File: _outer._sourcePath,
+                                Line: pos.StartLinePosition.Line + 1,
+                                Column: pos.StartLinePosition.Character + 1));
+                        }
                     }
                 }
             }
-            return null;
+            return firstMatch;
         }
 
         private static bool HasFlagsAttribute(SyntaxList<AttributeListSyntax> lists)
         {
+            // The 'System.' / 'global::System.' qualified forms reduce
+            // via AttributeSimpleName to the simple "Flags" /
+            // "FlagsAttribute" leaf names, so a bare equality check on
+            // the leaf is sufficient.
             foreach (AttributeListSyntax list in lists)
             {
                 foreach (AttributeSyntax attr in list.Attributes)
                 {
                     string name = AttributeSimpleName(attr.Name);
-                    if (name == "Flags" || name == "FlagsAttribute"
-                        || name == "System.Flags" || name == "System.FlagsAttribute")
+                    if (name == "Flags" || name == "FlagsAttribute")
                     {
                         return true;
                     }
@@ -792,14 +876,23 @@ public sealed class CSharpMarkerWalker
 
         private static string AttributeSimpleName(NameSyntax name)
         {
-            // For 'Namespace.X' qualified-name attributes, return the
-            // rightmost simple name. For generic 'X<T>' the right side
-            // is GenericName; we still extract the bare identifier.
+            // Walk to the rightmost simple-name identifier per C2 audit
+            // (XHT.html Section 3.2). Handles:
+            //   - 'XClass'                       -> "XClass"
+            //   - 'Reflection.XClass'            -> "XClass"
+            //   - 'Sg.Reflection.XClass'         -> "XClass" (nested qualified)
+            //   - 'global::Sg.Reflection.XClass' -> "XClass" (alias-qualified at the head)
+            //   - 'XClass<T>'                    -> "XClass" (generic form; the
+            //         caller emits a diagnostic when it sees a
+            //         GenericNameSyntax because the type arg is silently
+            //         dropped otherwise).
+            // The recursion through QualifiedNameSyntax.Right handles
+            // arbitrary nesting depth.
             return name switch
             {
                 IdentifierNameSyntax id => id.Identifier.Text,
-                QualifiedNameSyntax qn => qn.Right.Identifier.Text,
-                AliasQualifiedNameSyntax aq => aq.Name.Identifier.Text,
+                QualifiedNameSyntax qn => AttributeSimpleName(qn.Right),
+                AliasQualifiedNameSyntax aq => AttributeSimpleName(aq.Name),
                 GenericNameSyntax gn => gn.Identifier.Text,
                 _ => name.ToString(),
             };
@@ -908,13 +1001,34 @@ public sealed class CSharpMarkerWalker
         }
         catch (InvalidOperationException ex)
         {
-            // Caseless-key collision. Two distinct (FullyQualifiedName,
-            // Language) entries cannot share a CaselessKey. Partial-class
-            // merging happens in Phase 1d (the resolver detects same FQN
-            // + same Language and folds them), so the first partial wins
-            // registration and subsequent partials would collide here;
-            // we still record them with XHT040 so the resolver knows
-            // they exist.
+            // Caseless-key collision. Distinguish three cases:
+            //   1. Both sides are partial-class C# declarations of the
+            //      same FullyQualifiedName -> legitimate C# partial-
+            //      class spread. Stash in ExtraPartials so the
+            //      resolver's pairings phase can merge them. Do NOT
+            //      emit XHT040; the merge is correctness-preserving.
+            //   2. Both sides share the caseless key but differ in
+            //      FullyQualifiedName / Language / kind -> a real
+            //      collision; emit XHT040.
+            //   3. One side is partial, the other isn't -> the
+            //      author meant for both to merge but forgot the
+            //      modifier. Emit XHT040 with a clarifying message.
+            XhtTypeBase? existing = _symbolTable.Lookup(t.Name);
+            if (t is XhtClass incoming
+                && existing is XhtClass canonical
+                && incoming.Language == Language.CSharp
+                && canonical.Language == Language.CSharp
+                && incoming.IsPartial
+                && canonical.IsPartial
+                && string.Equals(incoming.FullyQualifiedName, canonical.FullyQualifiedName, System.StringComparison.Ordinal))
+            {
+                // Partial-class merge candidate. Stash the duplicate;
+                // resolver does the union.
+                _extraPartials.Add(incoming);
+                if (isRoot) { roots.Add(incoming); }
+                return;
+            }
+
             _diagnostics.Add(new DiagnosticRecord(
                 XhtDiagnosticSeverity.Error,
                 DiagDuplicateType,

@@ -4,6 +4,7 @@ using System.Linq;
 using Simgenics.XPact.XHT.AST;
 using Simgenics.XPact.XHT.Manifest;
 using Simgenics.XPact.XHT.Resolver;
+using Simgenics.XPact.XHT.Resolver.Phases;
 using Simgenics.XPact.XHT.Tables;
 using Xunit;
 
@@ -110,6 +111,86 @@ public class StepResolvePropertiesTests
         // Value side (Item) is the one resolved per the Phase 1d
         // container heuristic.
         Assert.Same(referent, pipeline.Context.ResolvedPropertyTypes[p]);
+    }
+
+    [Fact]
+    public void TMap_WithComplexKey_StillResolvesValueSide()
+    {
+        // TMap<TPair<int,int>, V>: the inner commas at depth > 0 must
+        // not be treated as the top-level K-V separator. The depth-
+        // counter walker handles this correctly per C4 audit.
+        XhtClass referent = ResolverTestHarness.MakeClass("Item");
+        XhtProperty p = ResolverTestHarness.MakeProperty(
+            "Items", "TMap<TPair<int, int>, Item>", isContainer: true);
+        XhtClass owner = ResolverTestHarness.MakeClass("Valve", properties: new[] { p });
+
+        SymbolTable t = new();
+        t.Register(referent);
+        t.Register(owner);
+
+        ResolverPipeline pipeline = Pipeline(t);
+        pipeline.ResolveUpTo(ResolvePhase.Properties);
+
+        Assert.Same(referent, pipeline.Context.ResolvedPropertyTypes[p]);
+    }
+
+    [Fact]
+    public void TArray_OfTArray_ExtractsOuterInner()
+    {
+        // TArray<TArray<Foo>>: the inner type is "TArray<Foo>". The
+        // resolver tries to look up "TArray<Foo>" -- which is a primitive
+        // (not in Symbols), so no entry is created. This is acceptable
+        // for Phase 1; the depth-counter walker MUST handle the nesting
+        // without crashing or extracting the wrong inner type.
+        XhtClass referent = ResolverTestHarness.MakeClass("Foo");
+        XhtProperty p = ResolverTestHarness.MakeProperty(
+            "Items", "TArray<TArray<Foo>>", isContainer: true);
+        XhtClass owner = ResolverTestHarness.MakeClass("Valve", properties: new[] { p });
+
+        SymbolTable t = new();
+        t.Register(referent);
+        t.Register(owner);
+
+        ResolverPipeline pipeline = Pipeline(t);
+        // Should not throw.
+        pipeline.ResolveUpTo(ResolvePhase.Properties);
+
+        // The outer container's inner (TArray<Foo>) is not a registered
+        // type, so no entry is added. The inner-of-inner Foo is NOT
+        // recursively extracted in Phase 1.
+        Assert.False(pipeline.Context.ResolvedPropertyTypes.ContainsKey(p));
+    }
+
+    [Theory]
+    [InlineData("TArray<Foo>", "Foo")]
+    [InlineData("TArray<Foo*>", "Foo")]
+    [InlineData("TSet<Foo>", "Foo")]
+    [InlineData("TMap<int, Foo>", "Foo")]
+    [InlineData("TMap<int, Foo*>", "Foo")]
+    [InlineData("TMap<int, Foo&>", "Foo")]
+    [InlineData("TArray<TArray<Foo>>", "TArray<Foo>")]
+    [InlineData("TMap<TPair<int, int>, Foo>", "Foo")]
+    [InlineData("TArray<Foo<T>>", "Foo<T>")]
+    public void ExtractInnerTypeIdentifier_HandlesShapesCorrectly(string container, string expected)
+    {
+        string? actual = StepResolveProperties.ExtractInnerTypeIdentifier(container);
+        Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void ExtractMapKeyAndValue_ReturnsBothSides()
+    {
+        (string Key, string Value)? r = StepResolveProperties.ExtractMapKeyAndValue("TMap<TKey, TValue>");
+        Assert.NotNull(r);
+        Assert.Equal("TKey", r!.Value.Key);
+        Assert.Equal("TValue", r.Value.Value);
+    }
+
+    [Fact]
+    public void ExtractMapKeyAndValue_ReturnsNullForSingleArg()
+    {
+        (string Key, string Value)? r = StepResolveProperties.ExtractMapKeyAndValue("TArray<Foo>");
+        Assert.Null(r);
     }
 
     [Fact]

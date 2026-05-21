@@ -40,7 +40,11 @@ internal sealed class StepResolveFinal : IResolverStep
 
         IReadOnlyList<XhtTypeBase> ordered = ResolverPipeline.OrderedTypesSnapshot(ctx.Symbols);
 
-        // 1. Specifier-conflict validators.
+        // 1. Specifier-conflict validators. Per M11 audit: attribute
+        // each diagnostic to the TYPE's home module (ordered[i].ModuleName),
+        // not the consumer's current module. The home module is what
+        // the user must fix; the consumer-module attribution misled
+        // diagnostics for cross-module types.
         for (int i = 0; i < ordered.Count; i++)
         {
             IReadOnlyList<DiagnosticRecord> conflicts =
@@ -48,7 +52,7 @@ internal sealed class StepResolveFinal : IResolverStep
             for (int j = 0; j < conflicts.Count; j++)
             {
                 DiagnosticRecord d = conflicts[j];
-                ctx.Diagnostics.Add(d with { Module = ctx.ModuleName });
+                ctx.Diagnostics.Add(d with { Module = ordered[i].ModuleName });
             }
         }
 
@@ -58,57 +62,171 @@ internal sealed class StepResolveFinal : IResolverStep
         // is therefore that two registrations attempting the same key
         // would have already failed at the parser-side (XHT040). What
         // the Final phase verifies is that any DIFFERENT-key but same-
-        // engine-name pairing (e.g., AXValve in C++ and Valve in C# --
-        // different keys, but both name the same engine type at the
-        // emit boundary) is structurally compatible.
+        // engine-name pairing (e.g., XValve in C++ and XValve in C# --
+        // same engine name across both sides; the resolver folds them
+        // and the emit boundary references the merged shape) is
+        // structurally compatible.
         CheckCrossLanguagePairings(ctx, ordered);
 
         // 3. Cross-tier dep validation (XHT121).
         CheckCrossTierReferences(ctx, ordered);
     }
 
+    /// <summary>
+    /// Implement the XHT.html §5.7 cross-language consistency check per
+    /// C8 audit. For each reflected type's super and properties, walk
+    /// the type references and emit:
+    ///   - <see cref="DiagnosticCodes.SuperWrongKind"/> (XHT104) when a
+    ///     C++ class's super resolves to a C# struct (or any other
+    ///     kind mismatch). Already covered by BindSuperAndBases.
+    ///   - <see cref="DiagnosticCodes.CrossLanguagePairingMismatch"/>
+    ///     (XHT120) when a property's type identifier names a type
+    ///     that appears to be a non-reflected sibling in the engine
+    ///     source (i.e., the identifier looks like a reflectable type
+    ///     but is missing the <c>XCLASS</c> / <c>[XClass]</c> marker).
+    /// </summary>
     private static void CheckCrossLanguagePairings(ResolverContext ctx, IReadOnlyList<XhtTypeBase> ordered)
     {
-        // Group by the engine-key suffix (the substring after any
-        // stripped UE-prefix; effectively the CaselessKey itself). Two
-        // types sharing the same CaselessKey would have collided in
-        // the symbol table (the parser emits XHT040 for that case);
-        // what the Final check covers is the case where the parser
-        // saw both but only registered one and we recorded the
-        // duplicate elsewhere -- per Phase 1d that means
-        // MergedPartials does NOT apply (those are same-language
-        // partials), but cross-language collisions could survive in
-        // the form of two types with related-but-not-equal caseless
-        // keys.
-
-        // Build a quick lookup: caseless-key -> registered type.
-        Dictionary<string, XhtTypeBase> byKey = new(StringComparer.Ordinal);
+        // Build the set of all known engine-name caseless keys for fast
+        // membership checks. Plus a per-language set so we can detect
+        // "C++ side has it, C# side doesn't" patterns.
+        HashSet<string> allEngineKeys = new(StringComparer.Ordinal);
+        Dictionary<string, Language> registeredLanguage = new(StringComparer.Ordinal);
         foreach (XhtTypeBase t in ordered)
         {
-            byKey[t.CaselessKey] = t;
+            allEngineKeys.Add(t.CaselessKey);
+            registeredLanguage[t.CaselessKey] = t.Language;
         }
 
-        for (int i = 0; i < ordered.Count; i++)
+        // Walk every property; if its type identifier looks like a
+        // reflectable user type (starts with 'X' or a UE-prefix letter
+        // and an uppercase letter, OR has the form X<Name>) but does
+        // not resolve in the symbol table, emit XHT120.
+        foreach (XhtTypeBase t in ordered)
         {
-            XhtTypeBase t = ordered[i];
-
-            // Check whether a super resolved to a wrong-language /
-            // wrong-kind hit. (XHT104 already fires for that during
-            // BindSuperAndBases; this check is the per-property
-            // companion: a C# property typed against a C++ type that
-            // turned out to be a different kind at resolution time.)
-            if (t is XhtClass cls)
+            IReadOnlyList<XhtProperty>? props = t switch
             {
-                if (ctx.ResolvedSupers.TryGetValue(cls, out XhtTypeBase? superResolved)
-                    && superResolved is XhtClass superCls
-                    && superCls.Language != cls.Language)
+                XhtClass c => c.Properties,
+                XhtStruct s => s.Properties,
+                _ => null,
+            };
+            if (props is null) { continue; }
+
+            foreach (XhtProperty p in props)
+            {
+                // If the resolver already classified this property type
+                // as resolved, no XHT120: the symbol table found it.
+                if (ctx.ResolvedPropertyTypes.ContainsKey(p))
                 {
-                    // Different languages -- check the same engine name
-                    // is the recommended pairing form. We don't error
-                    // here; this is the supported cross-language inheritance.
+                    continue;
                 }
+
+                string typeText = p.TypeIdentifier ?? string.Empty;
+                if (string.IsNullOrEmpty(typeText))
+                {
+                    continue;
+                }
+
+                // Extract the base identifier (strip pointers / refs /
+                // template arguments). Container properties handled
+                // separately via the inner-type extraction.
+                string lookup;
+                if (p.IsContainer)
+                {
+                    lookup = StepResolveProperties.ExtractInnerTypeIdentifier(typeText)
+                        ?? typeText;
+                }
+                else
+                {
+                    lookup = typeText.Trim().TrimEnd('*', '&').Trim();
+                }
+                if (string.IsNullOrEmpty(lookup))
+                {
+                    continue;
+                }
+
+                if (!LooksLikeReflectableTypeName(lookup))
+                {
+                    // Primitive ("int32" / "float" / "string") or a
+                    // non-XPact-convention identifier -- not our place
+                    // to assume the user means a reflected reference.
+                    continue;
+                }
+
+                if (allEngineKeys.Contains(Core.StringUtils.ToCaselessKey(lookup)))
+                {
+                    // Looks reflectable AND is registered; the
+                    // ResolvedPropertyTypes hit covers this in normal
+                    // operation. If we got here without a hit despite a
+                    // matching engine-key, there's a downstream
+                    // lookup gap -- still no XHT120, but worth a
+                    // future trace.
+                    continue;
+                }
+
+                // Looks reflectable, but the symbol table has no entry.
+                // This is the XHT120 condition: the type identifier
+                // references a sibling type that is NOT reflected (or
+                // missing the marker entirely). Attribute the error to
+                // the property's HOME module (the consumer), but name
+                // the missing identifier explicitly so the user knows
+                // what to mark.
+                PhaseHelpers.Error(
+                    ctx,
+                    DiagnosticCodes.CrossLanguagePairingMismatch,
+                    $"Property '{t.FullyQualifiedName}.{p.Name}' references type '{lookup}' which is not reflected (missing XCLASS / XSTRUCT / [XClass] / [XStruct] marker?).",
+                    p.Span);
             }
         }
+    }
+
+    /// <summary>
+    /// Heuristic: does <paramref name="name"/> look like a name that
+    /// SHOULD be reflected if it exists in source? Per C8 audit, we
+    /// only flag names that follow XPact convention (start with 'X'
+    /// followed by an uppercase letter) or the legacy UE convention
+    /// (A/U/I/F + uppercase). Primitive types like <c>int32</c>,
+    /// <c>float</c>, <c>string</c> are skipped.
+    /// </summary>
+    private static bool LooksLikeReflectableTypeName(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length < 2)
+        {
+            return false;
+        }
+        char first = name[0];
+        char second = name[1];
+        if ((first == 'X' || first == 'A' || first == 'U' || first == 'I' || first == 'F')
+            && second >= 'A' && second <= 'Z')
+        {
+            return true;
+        }
+        // Built-in primitive set (case-sensitive).
+        switch (name)
+        {
+            case "void":
+            case "bool":
+            case "char":
+            case "short":
+            case "int":
+            case "long":
+            case "float":
+            case "double":
+            case "int8":
+            case "int16":
+            case "int32":
+            case "int64":
+            case "uint8":
+            case "uint16":
+            case "uint32":
+            case "uint64":
+            case "string":
+            case "FString":
+            case "FName":
+            case "FText":
+                return false;
+        }
+        return false;
     }
 
     private static void CheckCrossTierReferences(ResolverContext ctx, IReadOnlyList<XhtTypeBase> ordered)

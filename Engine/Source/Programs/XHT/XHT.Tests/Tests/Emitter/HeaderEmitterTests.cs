@@ -36,7 +36,7 @@ public sealed class HeaderEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         HeaderEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", line: 14);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", line: 14);
 
         string content = emitter.Render("Public/XValve.h", new[] { valve });
 
@@ -46,7 +46,7 @@ public sealed class HeaderEmitterTests : IDisposable
         Assert.Contains("// Source: Public/XValve.h", content);
 
         // Forward-declaration of the singleton-getter is present.
-        Assert.Contains("Z_Construct_XClass_XGameFramework_AXValve", content);
+        Assert.Contains("Z_Construct_XClass_XGameFramework_XValve", content);
 
         // Every body-macro suffix produces a #define line.
         foreach (string suffix in HeaderEmitter.BodySuffixes)
@@ -96,7 +96,7 @@ public sealed class HeaderEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         HeaderEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve", line: 14);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve", line: 14);
 
         string a = emitter.Render("Public/XValve.h", new[] { valve });
         string b = emitter.Render("Public/XValve.h", new[] { valve });
@@ -108,7 +108,7 @@ public sealed class HeaderEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         HeaderEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string path = emitter.EmitForHeader("Public/XValve.h", new[] { valve });
         Assert.True(File.Exists(path));
@@ -121,7 +121,7 @@ public sealed class HeaderEmitterTests : IDisposable
     {
         EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
         HeaderEmitter emitter = new(ctx);
-        XhtClass valve = EmitterTestHarness.MakeClass("AXValve");
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
 
         string path = emitter.EmitForHeader("Public/XValve.h", new[] { valve });
         byte[] bytes = File.ReadAllBytes(path);
@@ -149,7 +149,7 @@ public sealed class HeaderEmitterTests : IDisposable
                 baseDir: "Engine/Source/Runtime"));
         HeaderEmitter emitter = new(ctx);
         XhtClass valve = EmitterTestHarness.MakeClass(
-            name: "AXValve",
+            name: "XValve",
             sourcePath: "Engine/Source/Runtime/XGameFramework/Public/Valves/XValve.h",
             line: 14);
 

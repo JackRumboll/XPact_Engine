@@ -12,7 +12,10 @@ namespace Simgenics.XPact.XHT.Tests.Tests.Resolver;
 
 /// <summary>
 /// Tests for <see cref="ResolvePhase.Pairings"/> via
-/// <c>StepResolvePairings</c>.
+/// <c>StepResolvePairings</c>. The partial-class merge tests cover the
+/// C3 audit fix (XHT.html Section 3.3): duplicates collected in
+/// <see cref="ResolverContext.ExtraPartials"/> are unioned into the
+/// canonical entry.
 /// </summary>
 public class StepResolvePairingsTests
 {
@@ -113,76 +116,95 @@ public class StepResolvePairingsTests
     }
 
     [Fact]
-    public void PartialClasses_SameFqn_MergeIntoCanonical()
+    public void Partials_FromExtraPartials_MergedIntoCanonical_Properly()
     {
-        // Two C# classes with identical FullyQualifiedName but different
-        // caseless keys (via different source names) populate the
-        // symbol table independently. The Pairings phase records the
-        // second as a partial-class duplicate.
-        XhtClass canonical = new(
-            Name: "InventoryA",
-            FullyQualifiedName: "Sim.Inventory",
-            OuterName: null,
-            ModuleName: ResolverTestHarness.TestModule,
-            Language: Language.CSharp,
-            Span: ResolverTestHarness.Span(),
+        // The walker registered partial A canonically and stashed B
+        // in ExtraPartials. The pairings phase unions B's members
+        // into the canonical and emits XHT143.
+        XhtProperty pA = new(
+            Name: "ValueA",
+            TypeIdentifier: "int",
             Specifiers: System.Array.Empty<Specifier>(),
-            SuperIdentifier: null,
-            Super: null,
-            Functions: System.Array.Empty<XhtFunction>(),
-            Properties: System.Array.Empty<XhtProperty>(),
-            InterfaceIdentifiers: System.Array.Empty<string>(),
-            Interfaces: System.Array.Empty<XhtInterface>(),
-            WithinIdentifier: null,
-            WithinClass: null,
-            RequiredAPIMacroName: null,
-            HasGeneratedBody: false);
+            IsContainer: false,
+            RepNotifyFunctionName: null,
+            Category: null,
+            Span: ResolverTestHarness.Span());
 
-        XhtClass duplicate = new(
-            Name: "InventoryB",
+        XhtProperty pB = new(
+            Name: "ValueB",
+            TypeIdentifier: "float",
+            Specifiers: System.Array.Empty<Specifier>(),
+            IsContainer: false,
+            RepNotifyFunctionName: null,
+            Category: null,
+            Span: ResolverTestHarness.Span());
+
+        XhtClass canonical = new(
+            Name: "Inventory",
             FullyQualifiedName: "Sim.Inventory",
             OuterName: null,
             ModuleName: ResolverTestHarness.TestModule,
             Language: Language.CSharp,
-            Span: ResolverTestHarness.Span(),
+            Span: new SourceSpan("Inventory.A.cs", 1, 1, 9),
             Specifiers: System.Array.Empty<Specifier>(),
             SuperIdentifier: null,
             Super: null,
             Functions: System.Array.Empty<XhtFunction>(),
-            Properties: System.Array.Empty<XhtProperty>(),
+            Properties: new[] { pA },
             InterfaceIdentifiers: System.Array.Empty<string>(),
             Interfaces: System.Array.Empty<XhtInterface>(),
             WithinIdentifier: null,
             WithinClass: null,
             RequiredAPIMacroName: null,
-            HasGeneratedBody: false);
+            HasGeneratedBody: true,
+            IsPartial: true,
+            PartialSourcePaths: new[] { "Inventory.A.cs" });
+
+        XhtClass duplicate = canonical with
+        {
+            Span = new SourceSpan("Inventory.B.cs", 1, 1, 9),
+            Properties = new[] { pB },
+            PartialSourcePaths = new[] { "Inventory.B.cs" },
+        };
 
         SymbolTable t = new();
         t.Register(canonical);
-        t.Register(duplicate);
 
         ResolverPipeline pipeline = Pipeline(t);
+        pipeline.Context.ExtraPartials.Add(duplicate);
         pipeline.ResolveUpTo(ResolvePhase.Pairings);
 
-        Assert.Single(pipeline.Context.MergedPartials);
-        // The first-encountered (in deterministic walk order) is the
-        // canonical; the second is the duplicate.
-        var entry = pipeline.Context.MergedPartials.Single();
-        Assert.NotSame(entry.Key, entry.Value);
-        Assert.Equal("Sim.Inventory", entry.Key.FullyQualifiedName);
-        Assert.Equal("Sim.Inventory", entry.Value.FullyQualifiedName);
+        // The merged-symbol view holds the union, keyed by canonical.
+        XhtTypeBase mergedRaw = pipeline.Context.GetEffectiveShape(t.Lookup("Inventory")!);
+        XhtClass merged = Assert.IsType<XhtClass>(mergedRaw);
+
+        // Properties from both partials are unioned.
+        Assert.Equal(2, merged.Properties.Count);
+        Assert.Contains(merged.Properties, p => p.Name == "ValueA");
+        Assert.Contains(merged.Properties, p => p.Name == "ValueB");
+
+        // PartialSourcePaths records both contributing files.
+        Assert.NotNull(merged.PartialSourcePaths);
+        Assert.Contains("Inventory.A.cs", merged.PartialSourcePaths!);
+        Assert.Contains("Inventory.B.cs", merged.PartialSourcePaths!);
+
+        // MergedPartials maps the duplicate back to the canonical.
+        Assert.Same(canonical, pipeline.Context.MergedPartials[duplicate]);
+
+        // Symbol table now holds the merged shape (not the canonical).
+        Assert.Same(merged, t.Lookup("Inventory"));
     }
 
     [Fact]
-    public void PartialClasses_EmitXht143InfoDiagnostic()
+    public void Partials_FromExtraPartials_EmitXht143InfoDiagnostic()
     {
         XhtClass canonical = new(
-            Name: "PartialA",
-            FullyQualifiedName: "Sim.Partial",
+            Name: "Inventory",
+            FullyQualifiedName: "Sim.Inventory",
             OuterName: null,
             ModuleName: ResolverTestHarness.TestModule,
             Language: Language.CSharp,
-            Span: ResolverTestHarness.Span(),
+            Span: new SourceSpan("Inventory.A.cs", 1, 1, 9),
             Specifiers: System.Array.Empty<Specifier>(),
             SuperIdentifier: null,
             Super: null,
@@ -193,15 +215,21 @@ public class StepResolvePairingsTests
             WithinIdentifier: null,
             WithinClass: null,
             RequiredAPIMacroName: null,
-            HasGeneratedBody: false);
+            HasGeneratedBody: true,
+            IsPartial: true,
+            PartialSourcePaths: new[] { "Inventory.A.cs" });
 
-        XhtClass duplicate = canonical with { Name = "PartialB" };
+        XhtClass duplicate = canonical with
+        {
+            Span = new SourceSpan("Inventory.B.cs", 1, 1, 9),
+            PartialSourcePaths = new[] { "Inventory.B.cs" },
+        };
 
         SymbolTable t = new();
         t.Register(canonical);
-        t.Register(duplicate);
 
         ResolverPipeline pipeline = Pipeline(t);
+        pipeline.Context.ExtraPartials.Add(duplicate);
         pipeline.ResolveUpTo(ResolvePhase.Pairings);
 
         DiagnosticRecord d = Assert.Single(
@@ -211,39 +239,18 @@ public class StepResolvePairingsTests
     }
 
     [Fact]
-    public void CppPartialClasses_DoNotMerge()
+    public void NoExtraPartials_NoMerge_NoDiagnostic()
     {
-        // Partial-class merge is a C#-only behaviour. C++ does not
-        // have partial classes; two C++ classes with the same FQN
-        // would be a parser-side collision and should not be merged
-        // here even if they sneak through.
-        XhtClass canonical = ResolverTestHarness.MakeClass("FooA", lang: Language.Cpp);
-        XhtClass other = new(
-            Name: "FooB",
-            FullyQualifiedName: canonical.FullyQualifiedName,
-            OuterName: null,
-            ModuleName: ResolverTestHarness.TestModule,
-            Language: Language.Cpp,
-            Span: ResolverTestHarness.Span(),
-            Specifiers: System.Array.Empty<Specifier>(),
-            SuperIdentifier: null,
-            Super: null,
-            Functions: System.Array.Empty<XhtFunction>(),
-            Properties: System.Array.Empty<XhtProperty>(),
-            InterfaceIdentifiers: System.Array.Empty<string>(),
-            Interfaces: System.Array.Empty<XhtInterface>(),
-            WithinIdentifier: null,
-            WithinClass: null,
-            RequiredAPIMacroName: null,
-            HasGeneratedBody: false);
+        XhtClass canonical = ResolverTestHarness.MakeClass("StandaloneClass", lang: Language.CSharp);
 
         SymbolTable t = new();
         t.Register(canonical);
-        t.Register(other);
 
         ResolverPipeline pipeline = Pipeline(t);
         pipeline.ResolveUpTo(ResolvePhase.Pairings);
 
         Assert.Empty(pipeline.Context.MergedPartials);
+        Assert.Empty(pipeline.Context.MergedSymbolView);
+        Assert.DoesNotContain(pipeline.Context.Diagnostics, d => d.Code == DiagnosticCodes.PartialClassMerged);
     }
 }

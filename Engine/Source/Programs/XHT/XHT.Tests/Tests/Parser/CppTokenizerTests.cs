@@ -350,6 +350,84 @@ public class CppTokenizerTests
         Assert.Equal(CppTokenKind.Identifier, ts[2].Kind);
     }
 
+    [Fact]
+    public void PreprocessorDirective_HashWithSpace_StillRecognised()
+    {
+        // "# define" with whitespace between # and the directive name
+        // is a valid (if unusual) C preprocessor form. Treat as a
+        // directive token spanning the line.
+        List<CppToken> ts = ReadAll("# define FOO 1\nbar");
+        Assert.Equal(CppTokenKind.PreprocessorDirective, ts[0].Kind);
+        Assert.Contains("define", ts[0].Text);
+        Assert.Equal(CppTokenKind.Identifier, ts[1].Kind);
+        Assert.Equal("bar", ts[1].Text);
+    }
+
+    [Fact]
+    public void HashAfterLineContinuation_NotMisclassifiedAsDirective()
+    {
+        // Per C1 audit (XHT.html Section 3.1): after a '\\<LF>'
+        // continuation, the wrap resets column to 1 but the next '#'
+        // is logically mid-statement -- it must NOT be treated as a
+        // preprocessor directive. Example: a macro body where the next
+        // physical line begins with the # stringify operator.
+        string src = "obj.method() \\\n# 5;";
+        List<CppToken> ts = ReadAll(src);
+
+        // Expected: identifier 'obj', '.', identifier 'method', '(',
+        // ')', '#', integer-literal '5', ';', EOF. NO directive token.
+        foreach (CppToken t in ts)
+        {
+            Assert.NotEqual(CppTokenKind.PreprocessorDirective, t.Kind);
+        }
+        // Verify the '#' is present as a Hash punctuator.
+        bool sawHashPunct = false;
+        foreach (CppToken t in ts)
+        {
+            if (t.Kind == CppTokenKind.Hash) { sawHashPunct = true; break; }
+        }
+        Assert.True(sawHashPunct, "Expected '#' to be tokenised as a Hash punctuator, not a directive.");
+    }
+
+    [Fact]
+    public void PreprocessorDirective_DefineWithContinuedBody_RecognisedAsDirective()
+    {
+        // Sanity-check the inverse of the C1 fix: a real directive that
+        // spans multiple lines via '\\<LF>' continuations is still
+        // recognised as a single directive token. The continuations
+        // fold within the directive body.
+        string src = "#define FOO BAR \\\nBAZ\nrest";
+        List<CppToken> ts = ReadAll(src);
+        Assert.Equal(CppTokenKind.PreprocessorDirective, ts[0].Kind);
+        Assert.Contains("BAZ", ts[0].Text);
+        // After the directive's trailing newline, normal tokens resume.
+        Assert.Equal(CppTokenKind.Identifier, ts[1].Kind);
+        Assert.Equal("rest", ts[1].Text);
+    }
+
+    [Fact]
+    public void HashAtLineStart_AfterContinuedPreviousLine_IsDirective()
+    {
+        // A continued line that REALLY ENDS at a fresh newline, followed
+        // by a new logical line beginning with '#', IS a directive.
+        // Continuation is "\\\n"; the directive that follows after the
+        // *unescaped* "\n" is on its own logical line.
+        string src = "int x = 1 \\\n+ 2;\n#include \"y.h\"\n";
+        List<CppToken> ts = ReadAll(src);
+        // Expect a directive somewhere in the stream.
+        bool sawDirective = false;
+        foreach (CppToken t in ts)
+        {
+            if (t.Kind == CppTokenKind.PreprocessorDirective)
+            {
+                sawDirective = true;
+                Assert.Contains("include", t.Text);
+                break;
+            }
+        }
+        Assert.True(sawDirective, "Expected '#include' on a fresh logical line to be a directive.");
+    }
+
     // ===== Position tracking ====================================
 
     [Fact]
@@ -433,7 +511,7 @@ public class CppTokenizerTests
     [Fact]
     public void Determinism_TwoRunsOverSameInput_ProduceIdenticalTokenStream()
     {
-        string src = "class XCORE_API AXValve : public AXActor { XPROPERTY() int32 Health; };";
+        string src = "class XCORE_API XValve : public XActor { XPROPERTY() int32 Health; };";
         List<CppToken> first = ReadAll(src);
         List<CppToken> second = ReadAll(src);
         Assert.Equal(first.Count, second.Count);

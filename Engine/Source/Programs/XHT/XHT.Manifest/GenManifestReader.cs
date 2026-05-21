@@ -382,6 +382,10 @@ public static class GenManifestReader
                     case 'n': sb.Append('\n'); i++; continue;
                     case 'r': sb.Append('\r'); i++; continue;
                     case '\\': sb.Append('\\'); i++; continue;
+                    // M15 audit: '\,' reverses the writer's
+                    // EscapeMessage handling of literal commas in
+                    // diagnostic messages.
+                    case ',': sb.Append(','); i++; continue;
                     default: sb.Append(c); continue;
                 }
             }

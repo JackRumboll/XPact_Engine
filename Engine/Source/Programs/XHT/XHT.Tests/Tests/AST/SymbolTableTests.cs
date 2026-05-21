@@ -12,7 +12,9 @@ namespace Simgenics.XPact.XHT.Tests.Tests.AST;
 /// <summary>
 /// Tests for <see cref="SymbolTable"/>. The caseless lookup model is
 /// the core of cross-language reflection pairing per
-/// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 + Section 5.4.
+/// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 + Section 5.4. Round-2
+/// directive removed the A / U / I / F prefix-strip; the engine-name is
+/// the source identifier lowercased verbatim.
 /// </summary>
 public class SymbolTableTests
 {
@@ -44,40 +46,30 @@ public class SymbolTableTests
     public void Register_Then_Lookup_HitsCaselessKey()
     {
         SymbolTable t = new();
-        XhtClass c = MakeClass("AXValve");
+        XhtClass c = MakeClass("XValve");
 
         t.Register(c);
 
-        Assert.Same(c, t.Lookup("AXValve"));
+        Assert.Same(c, t.Lookup("XValve"));
     }
 
     [Fact]
-    public void Lookup_CaseInsensitiveMatch_RequiresUePrefixForm()
+    public void Lookup_CaseInsensitive()
     {
-        // Per Section 3.3, the prefix-strip rule requires both the
-        // first character to be in the UE-convention set
-        // {A, U, I, F} (uppercase) AND the second character to be
-        // uppercase. The lookup applies the same rule to its input,
-        // so a fully-lowercased "axvalve" lookup does NOT strip its
-        // leading 'a' (it isn't uppercase 'A', so it isn't a UE
-        // prefix). This is by design -- IDE-side identifier capture
-        // preserves casing, so the lookup keys match the source form.
-        // The "case-insensitive" part of the model applies to the
-        // post-strip suffix, not to the prefix-detection itself.
+        // Round-2: the engine-name is the lowercased source identifier
+        // verbatim. The lookup is case-insensitive. The X prefix is
+        // preserved (it is XPact's permanent prefix, not a UE-convention
+        // adornment).
         SymbolTable t = new();
-        t.Register(MakeClass("AXValve"));
+        t.Register(MakeClass("XValve"));
 
-        // Source-cased lookup hits (canonical author form).
-        Assert.NotNull(t.Lookup("AXValve"));
-        // Fully uppercased lookup hits (A and X both uppercase -> strip).
-        Assert.NotNull(t.Lookup("AXVALVE"));
-        // Engine-name-only form hits (no prefix to strip in this string).
         Assert.NotNull(t.Lookup("XValve"));
+        Assert.NotNull(t.Lookup("XVALVE"));
         Assert.NotNull(t.Lookup("xvalve"));
-        // Fully-lowercased form with leading 'a' does NOT hit because
-        // 'a' is not in the UE strip set; the test asserts the model's
-        // documented limitation.
-        Assert.Null(t.Lookup("axvalve"));
+        Assert.NotNull(t.Lookup("xValve"));
+        // "Valve" (no X) is a DIFFERENT engine name -- no implicit
+        // pairing because the legacy prefix-strip is gone.
+        Assert.Null(t.Lookup("Valve"));
     }
 
     [Fact]
@@ -100,53 +92,41 @@ public class SymbolTableTests
     public void TryLookup_Hit_ReturnsTrueAndPopulatedOut()
     {
         SymbolTable t = new();
-        XhtClass c = MakeClass("AXValve");
+        XhtClass c = MakeClass("XValve");
         t.Register(c);
 
-        bool ok = t.TryLookup("AXValve", out XhtTypeBase? value);
+        bool ok = t.TryLookup("XValve", out XhtTypeBase? value);
         Assert.True(ok);
         Assert.Same(c, value);
     }
 
     [Fact]
-    public void Register_CrossLanguagePairing_AXValveAndXValveCollideCaselessly()
+    public void Register_CrossLanguagePairing_XPrefixForms_CollideCaselessly()
     {
-        // Per Section 3.3: the C++ AXValve (strip A -> xvalve) and the
-        // C++ XValve (no strip, retains permanent X prefix -> xvalve)
-        // are caseless collisions because both fold to "xvalve". The
-        // table currently throws on collision; in Phase 1c the resolver
-        // catches this and pairs them per Section 5.3.
+        // Round-2 cross-language pairing: both C++ and C# side spell the
+        // type as XValve; they collide on the engine name "xvalve".
+        // Phase 1d's resolver folds them into one logical entry; the
+        // first-registered side wins the slot.
         SymbolTable t = new();
-        t.Register(MakeClass("AXValve", Language.Cpp));
+        t.Register(MakeClass("XValve", Language.Cpp));
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
-            () => t.Register(MakeClass("XValve", Language.Cpp)));
+            () => t.Register(MakeClass("XValve", Language.CSharp)));
 
         Assert.Contains("xvalve", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Register_ValveAndAXValve_AlsoCollide()
+    public void Register_DifferentEngineNames_BothRegister()
     {
-        // The Section 3.3 worked example: C++ AXValve and C# Valve share
-        // the engine name. Phase 1b's table treats this as a collision;
-        // Phase 1c's resolver disambiguates by language tag.
-        // Wait -- AXValve -> xvalve, Valve -> valve; these are NOT the
-        // same key. We need to test the case where the names DO collide.
-        // The canonical paired form is C++ XValve (key xvalve) vs C#
-        // Valve (key valve) which are DIFFERENT. The recommended pairing
-        // form is BOTH sides emit "valve" -- C++ uses no prefix or both
-        // sides use a prefixed form. So actually they fold to different
-        // keys.
+        // XValve and Valve are DIFFERENT engine names under Round-2 (no
+        // prefix-strip). Both register successfully.
         SymbolTable t = new();
-        t.Register(MakeClass("AXValve", Language.Cpp));
-        // Valve does NOT collide with AXValve because they fold to
-        // different keys (xvalve vs valve). The Section 3.3 note
-        // explicitly says "this is a different engine name".
+        t.Register(MakeClass("XValve", Language.Cpp));
         t.Register(MakeClass("Valve", Language.CSharp));
 
         Assert.Equal(2, t.Count);
-        Assert.NotNull(t.Lookup("AXValve"));
+        Assert.NotNull(t.Lookup("XValve"));
         Assert.NotNull(t.Lookup("Valve"));
     }
 
@@ -177,7 +157,7 @@ public class SymbolTableTests
     public void AllTypes_EnumeratesRegisteredSet()
     {
         SymbolTable t = new();
-        t.Register(MakeClass("AXValve"));
+        t.Register(MakeClass("XValve"));
         t.Register(MakeClass("Pump"));
         t.Register(MakeClass("Tank"));
 
@@ -185,7 +165,7 @@ public class SymbolTableTests
             .Select(x => x.Name)
             .ToHashSet(StringComparer.Ordinal);
         Assert.Equal(3, t.Count);
-        Assert.Contains("AXValve", names);
+        Assert.Contains("XValve", names);
         Assert.Contains("Pump", names);
         Assert.Contains("Tank", names);
     }

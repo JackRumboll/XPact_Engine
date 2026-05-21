@@ -7,55 +7,39 @@ using Xunit;
 namespace Simgenics.XPact.XHT.Tests.Tests.Core;
 
 /// <summary>
-/// Tests for <see cref="StringUtils.StripCppPrefix"/> + <see cref="StringUtils.ToCaselessKey"/>
-/// per <c>/Documents/XHT.html</c> Rev 5 Section 3.3 (prefix-stripping
-/// convention) + Section 5.4 (caseless symbol-table population).
+/// Tests for <see cref="StringUtils.StripCppPrefix"/> +
+/// <see cref="StringUtils.ToCaselessKey"/> per
+/// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 (engine-name convention)
+/// + Section 5.4 (caseless symbol-table population).
 /// </summary>
+/// <remarks>
+/// Round-2 (2026-05-21) removed the legacy A / U / I / F prefix-strip
+/// rule. <see cref="StringUtils.StripCppPrefix"/> is now a no-op
+/// pass-through. The engine-name is the lowercase-invariant form of the
+/// source identifier; XPact's permanent <c>X</c> prefix is preserved.
+/// </remarks>
 public class StringUtilsTests
 {
     [Theory]
-    [InlineData("AXValve", "XValve")]    // strip A; X is XPact's permanent prefix and remains
-    [InlineData("UObject", "Object")]    // strip U; legacy UE name
-    [InlineData("FVector", "Vector")]    // strip F; legacy UE struct
-    [InlineData("IInterface", "Interface")] // strip I; legacy UE interface
-    public void StripCppPrefix_StripsKnownPrefixes(string input, string expected)
-    {
-        Assert.Equal(expected, StringUtils.StripCppPrefix(input));
-    }
-
-    [Theory]
-    [InlineData("XValve")]   // X is NOT strippable; XPact's permanent prefix
+    [InlineData("XValve")]      // X is XPact's permanent prefix, preserved
     [InlineData("XObject")]
     [InlineData("XActor")]
-    public void StripCppPrefix_DoesNotStripX(string input)
+    [InlineData("AXValve")]     // legacy A is NOT stripped under Round-2
+    [InlineData("UObject")]     // legacy U is NOT stripped
+    [InlineData("FVector")]     // legacy F is NOT stripped
+    [InlineData("IInterface")]  // legacy I is NOT stripped
+    public void StripCppPrefix_IsNoOp(string input)
     {
+        // Round-2: the strip is removed. The function returns its input
+        // unchanged for any non-null string.
         Assert.Equal(input, StringUtils.StripCppPrefix(input));
     }
 
     [Theory]
-    [InlineData("Apple")]    // A is strippable, but 'p' is lowercase so not UE-prefix form
-    [InlineData("Underline")] // U is strippable but 'n' is lowercase
-    [InlineData("Float")]    // F is strippable but 'l' is lowercase
-    [InlineData("Item")]     // I is strippable but 't' is lowercase
-    public void StripCppPrefix_RequiresUppercaseSecondChar(string input)
-    {
-        Assert.Equal(input, StringUtils.StripCppPrefix(input));
-    }
-
-    [Theory]
-    [InlineData("BBoxedClass")]   // B is not in the strippable set
-    [InlineData("CContainer")]    // C is not in the strippable set
-    [InlineData("MMacro")]        // M is not in the strippable set
-    public void StripCppPrefix_DoesNotStripNonUeConventionLetters(string input)
-    {
-        Assert.Equal(input, StringUtils.StripCppPrefix(input));
-    }
-
-    [Theory]
-    [InlineData("")]        // empty
-    [InlineData("A")]       // single char, no second to test uppercase
+    [InlineData("")]
+    [InlineData("A")]
     [InlineData("F")]
-    public void StripCppPrefix_TooShortToStrip(string input)
+    public void StripCppPrefix_HandlesShortStrings(string input)
     {
         Assert.Equal(input, StringUtils.StripCppPrefix(input));
     }
@@ -66,21 +50,9 @@ public class StringUtilsTests
         Assert.Throws<ArgumentNullException>(() => StringUtils.StripCppPrefix(null!));
     }
 
-    [Fact]
-    public void StripCppPrefix_AXValveIsSinglePass()
-    {
-        // Per XHT.html Section 3.3: stripping is single-pass, not
-        // iterative. "AXValve" -> "XValve" (NOT "Valve"); the X is kept
-        // because it's XPact's permanent prefix, not a UE convention.
-        string stripped = StringUtils.StripCppPrefix("AXValve");
-        Assert.Equal("XValve", stripped);
-        // Calling strip again shouldn't strip further (X is not in the set).
-        Assert.Equal("XValve", StringUtils.StripCppPrefix(stripped));
-    }
-
     [Theory]
-    [InlineData("AXValve", "axvalve")]
     [InlineData("XValve",  "xvalve")]
+    [InlineData("AXValve", "axvalve")]  // legacy form lowercases verbatim
     [InlineData("Valve",   "valve")]
     [InlineData("VALVE",   "valve")]
     public void ToCaselessKey_LowercaseInvariant(string input, string expected)
@@ -101,16 +73,22 @@ public class StringUtilsTests
     }
 
     /// <summary>
-    /// Cross-language partial-pairing example from XHT.html Section 3.3:
-    /// C++ <c>AXValve</c> (with the optional A prefix dropped) and C#
-    /// <c>XValve</c> must produce the same caseless key.
+    /// Cross-language pairing example for Round-2: both the C++ side and
+    /// the C# side use the canonical <c>XValve</c> name; they fold to
+    /// the same engine name <c>"xvalve"</c>. A bare <c>Valve</c> folds
+    /// to <c>"valve"</c> -- a different engine name, no implicit pairing.
     /// </summary>
     [Fact]
-    public void StripPlusCaseless_CrossLanguagePairing()
+    public void StripPlusCaseless_CrossLanguagePairing_XPrefixRound2()
     {
-        string cppKey = StringUtils.ToCaselessKey(StringUtils.StripCppPrefix("AXValve"));
-        string csKey  = StringUtils.ToCaselessKey("XValve");
+        string cppKey = StringUtils.ToCaselessKey(StringUtils.StripCppPrefix("XValve"));
+        string csKey  = StringUtils.ToCaselessKey(StringUtils.StripCppPrefix("XValve"));
         Assert.Equal(cppKey, csKey);
         Assert.Equal("xvalve", cppKey);
+
+        // The bare-name forms differ from the X-prefixed forms.
+        Assert.NotEqual(
+            StringUtils.ToCaselessKey(StringUtils.StripCppPrefix("XValve")),
+            StringUtils.ToCaselessKey(StringUtils.StripCppPrefix("Valve")));
     }
 }

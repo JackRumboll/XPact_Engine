@@ -22,12 +22,12 @@ namespace Simgenics.XPact.XHT.AST;
 /// <para>
 /// <b>Caseless symbol key.</b> <see cref="CaselessKey"/> is the engine-
 /// name key the resolver's symbol table looks types up by per
-/// Section 3.3 + Section 5.3. It applies the single-letter UE-prefix
-/// strip (<see cref="StringUtils.StripCppPrefix"/>) and the
-/// lowercase-invariant fold (<see cref="StringUtils.ToCaselessKey"/>) so
-/// the C++ <c>AXValve</c> and the C# <c>Valve</c> hash to the same entry
-/// (<c>valve</c>). C# identifiers carry no UE prefix; the strip is a
-/// no-op on them.
+/// Section 3.3 + Section 5.3. It is the lowercase-invariant form of
+/// the source identifier (<see cref="StringUtils.ToCaselessKey"/>) --
+/// XPact's permanent <c>X</c> prefix is preserved in the engine name
+/// (per the master plan naming row), and no UE-convention single-letter
+/// strip is applied (Round-2 user directive: A / U / I / F prefix
+/// stripping is removed).
 /// </para>
 /// </remarks>
 /// <param name="Name">The identifier as authored in source (case preserved).</param>
@@ -51,11 +51,10 @@ public abstract record XhtTypeBase(
     /// <c>/Documents/XHT.html</c> Rev 5 Section 3.3 + Section 5.3.
     /// </summary>
     /// <remarks>
-    /// The key is computed by stripping a single leading UE-convention
-    /// prefix letter (<c>A</c> / <c>U</c> / <c>I</c> / <c>F</c>) when the
-    /// second character is also uppercase, then lowercasing. The XPact
-    /// <c>X</c> prefix is not strippable -- it is the permanent project-
-    /// wide prefix per the master plan's naming row.
+    /// The key is the lowercased source identifier. XPact's permanent
+    /// <c>X</c> prefix is preserved; no UE-convention prefix-strip is
+    /// applied (Round-2 user directive removes the A / U / I / F strip
+    /// rule).
     /// </remarks>
-    public string CaselessKey => StringUtils.ToCaselessKey(StringUtils.StripCppPrefix(Name));
+    public string CaselessKey => StringUtils.ToCaselessKey(Name);
 }

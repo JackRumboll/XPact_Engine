@@ -21,7 +21,9 @@ namespace Simgenics.XPact.XHT.Resolver.Phases;
 /// <see cref="SymbolTable.Lookup(string)"/>. For
 /// <c>TMap&lt;K,V&gt;</c> the value type (V) is the resolved one --
 /// the key resolution is left as a Phase 2 extension when the parser
-/// surfaces container metadata more richly.
+/// surfaces container metadata more richly. The extraction walker uses
+/// a depth-counter to handle nested containers and complex keys (e.g.
+/// <c>TMap&lt;TPair&lt;int,int&gt;, V&gt;</c>) correctly per C4 audit.
 /// </para>
 /// <para>
 /// <b>Primitive types.</b> Primitive types (<c>int32</c>,
@@ -108,7 +110,7 @@ internal sealed class StepResolveProperties : IResolverStep
         else
         {
             // For pointer / reference types strip the trailing * / & so
-            // a "AXValve*" property looks up "AXValve".
+            // a "XValve*" property looks up "XValve".
             lookup = StripPointerOrReference(lookup);
         }
 
@@ -223,33 +225,158 @@ internal sealed class StepResolveProperties : IResolverStep
         return s;
     }
 
-    private static string? ExtractInnerTypeIdentifier(string container)
+    /// <summary>
+    /// Extract the inner element-type identifier from a container-type
+    /// declaration string. Walks the <c>&lt;&gt;</c> depth explicitly
+    /// so nested containers (<c>TArray&lt;TArray&lt;Foo&gt;&gt;</c>),
+    /// multi-arg containers (<c>TMap&lt;K, V&gt;</c>), and inner
+    /// commas inside type-arguments (<c>TMap&lt;TPair&lt;int,int&gt;, V&gt;</c>)
+    /// are handled correctly. Per C4 audit (XHT.html Section 5.1).
+    /// </summary>
+    /// <param name="container">The full type identifier as authored.</param>
+    /// <returns>
+    /// The inner element-type identifier (the value type for
+    /// <c>TMap</c>; the single argument otherwise) with pointer /
+    /// reference markers stripped. Returns null when the input has no
+    /// type-argument list.
+    /// </returns>
+    internal static string? ExtractInnerTypeIdentifier(string container)
     {
-        // Cheap parser: find the first '<' and matching '>' and return
-        // the contents. For TMap<K,V> return V (the value side).
+        if (string.IsNullOrEmpty(container))
+        {
+            return null;
+        }
+
+        // Find the outermost '<'.
         int lt = container.IndexOf('<');
-        int gt = container.LastIndexOf('>');
-        if (lt < 0 || gt < 0 || gt < lt)
+        if (lt < 0)
         {
             return null;
         }
 
-        string inner = container.Substring(lt + 1, gt - lt - 1).Trim();
-        if (string.IsNullOrEmpty(inner))
+        // Find the matching '>' for the outermost '<' by depth counting.
+        int depth = 0;
+        int matchingGt = -1;
+        for (int i = lt; i < container.Length; i++)
+        {
+            char c = container[i];
+            if (c == '<') { depth++; }
+            else if (c == '>')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    matchingGt = i;
+                    break;
+                }
+            }
+        }
+        if (matchingGt < 0)
+        {
+            // Unterminated angle bracket; bail.
+            return null;
+        }
+
+        string argList = container.Substring(lt + 1, matchingGt - lt - 1).Trim();
+        if (string.IsNullOrEmpty(argList))
         {
             return null;
         }
 
-        // For TMap<K, V> the value type lives after the last top-level
-        // comma. (Depth-counter is overkill for Phase 1d -- containers
-        // of containers are rare.)
-        int lastComma = inner.LastIndexOf(',');
-        if (lastComma >= 0 && lastComma + 1 < inner.Length)
+        // Find the last top-level ',' inside the arg list (depth==0).
+        // For TMap<K, V> -> after last ',' is V. For nested forms like
+        // TMap<TPair<int,int>, V> the inner commas are at depth > 0
+        // and ignored.
+        int lastTopComma = -1;
+        depth = 0;
+        for (int i = 0; i < argList.Length; i++)
         {
-            inner = inner.Substring(lastComma + 1).Trim();
+            char c = argList[i];
+            if (c == '<') { depth++; }
+            else if (c == '>') { depth--; }
+            else if (c == ',' && depth == 0)
+            {
+                lastTopComma = i;
+            }
+        }
+
+        string inner;
+        if (lastTopComma >= 0 && lastTopComma + 1 < argList.Length)
+        {
+            inner = argList.Substring(lastTopComma + 1).Trim();
+        }
+        else
+        {
+            inner = argList;
         }
 
         return StripPointerOrReference(inner);
+    }
+
+    /// <summary>
+    /// Extract both type arguments from a <c>TMap&lt;K, V&gt;</c> shape
+    /// using the same depth-counting walker. Returns null when the
+    /// shape isn't a comma-separated two-arg form. Per C4 audit.
+    /// </summary>
+    internal static (string Key, string Value)? ExtractMapKeyAndValue(string container)
+    {
+        if (string.IsNullOrEmpty(container))
+        {
+            return null;
+        }
+
+        int lt = container.IndexOf('<');
+        if (lt < 0)
+        {
+            return null;
+        }
+
+        int depth = 0;
+        int matchingGt = -1;
+        for (int i = lt; i < container.Length; i++)
+        {
+            char c = container[i];
+            if (c == '<') { depth++; }
+            else if (c == '>')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    matchingGt = i;
+                    break;
+                }
+            }
+        }
+        if (matchingGt < 0)
+        {
+            return null;
+        }
+
+        string argList = container.Substring(lt + 1, matchingGt - lt - 1).Trim();
+
+        // First top-level comma splits K from V.
+        depth = 0;
+        int firstTopComma = -1;
+        for (int i = 0; i < argList.Length; i++)
+        {
+            char c = argList[i];
+            if (c == '<') { depth++; }
+            else if (c == '>') { depth--; }
+            else if (c == ',' && depth == 0)
+            {
+                firstTopComma = i;
+                break;
+            }
+        }
+
+        if (firstTopComma < 0)
+        {
+            return null;
+        }
+
+        string k = argList.Substring(0, firstTopComma).Trim();
+        string v = argList.Substring(firstTopComma + 1).Trim();
+        return (StripPointerOrReference(k), StripPointerOrReference(v));
     }
 
     private static string StripPointerOrReference(string s)

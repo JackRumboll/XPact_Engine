@@ -36,17 +36,28 @@ public class XhtStructTests
     }
 
     [Fact]
-    public void CaselessKey_FPrefixedCppName_StripsF()
+    public void CaselessKey_LegacyFPrefix_IsNotStripped_LowercasedVerbatim()
     {
+        // Round-2 (2026-05-21): UE-convention F prefix is no longer
+        // stripped. FVector lowercases to "fvector".
         XhtStruct s = MakeMinimal("FVector");
+        Assert.Equal("fvector", s.CaselessKey);
+    }
+
+    [Fact]
+    public void CaselessKey_CSharpName_LowercasesVerbatim()
+    {
+        XhtStruct s = MakeMinimal("Vector");
         Assert.Equal("vector", s.CaselessKey);
     }
 
     [Fact]
-    public void CaselessKey_CSharpName_LowercasesWithoutStrip()
+    public void CaselessKey_XStruct_PreservesX_LowercasesVerbatim()
     {
-        XhtStruct s = MakeMinimal("Vector");
-        Assert.Equal("vector", s.CaselessKey);
+        // Canonical XPact struct naming: XVector. The X prefix is the
+        // permanent project prefix and is retained.
+        XhtStruct s = MakeMinimal("XVector");
+        Assert.Equal("xvector", s.CaselessKey);
     }
 
     [Fact]

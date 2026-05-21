@@ -77,11 +77,16 @@ public sealed class EmitReflectionAction : ActionBase
     private readonly string _manifestJsonPath;
     private readonly string _outputDirectory;
     private readonly string? _generatedCppFilenameBase;
+    private readonly string _workingDirectory;
     private readonly IReadOnlyList<FileItem> _prerequisiteItems;
     private readonly IReadOnlyList<FileItem> _producedItems;
     private readonly IReadOnlyList<string> _commandArguments;
     private readonly IReadOnlyList<string> _reflectionHeaderRelativePaths;
     private readonly FileItem? _dependencyListFile;
+    private readonly string? _tier;
+    private readonly bool _simPath;
+    private readonly BuildConfiguration _configuration;
+    private readonly Platform _platform;
 
     /// <inheritdoc/>
     public override XActionType ActionType => XActionType.EmitReflectionAction;
@@ -99,7 +104,11 @@ public sealed class EmitReflectionAction : ActionBase
     public override IReadOnlyList<string> CommandArguments => _commandArguments;
 
     /// <inheritdoc/>
-    public override string WorkingDirectory => Directory.GetCurrentDirectory();
+    /// <remarks>
+    /// Audit fix R7-C2: see <see cref="ParseHeadersAction.WorkingDirectory"/>
+    /// for the rationale. Captured at construction; never re-read.
+    /// </remarks>
+    public override string WorkingDirectory => _workingDirectory;
 
     /// <inheritdoc/>
     public override string CommandDescription => "XHT.Emit";
@@ -120,6 +129,22 @@ public sealed class EmitReflectionAction : ActionBase
 
     /// <inheritdoc/>
     public override string? Module => _moduleName;
+
+    /// <inheritdoc/>
+    /// <remarks>Audit fix R7-C2: see <see cref="ParseHeadersAction.Tier"/>.</remarks>
+    public override string? Tier => _tier;
+
+    /// <inheritdoc/>
+    /// <remarks>Audit fix R7-C2: see <see cref="ParseHeadersAction.SimPath"/>.</remarks>
+    public override bool SimPath => _simPath;
+
+    /// <inheritdoc/>
+    /// <remarks>Audit fix R7-C2: see <see cref="ParseHeadersAction.Configuration"/>.</remarks>
+    public override BuildConfiguration Configuration => _configuration;
+
+    /// <inheritdoc/>
+    /// <remarks>Audit fix R7-C2: see <see cref="ParseHeadersAction.Platform"/>.</remarks>
+    public override Platform Platform => _platform;
 
     /// <inheritdoc/>
     public override FileItem? DependencyListFile => _dependencyListFile;
@@ -183,6 +208,22 @@ public sealed class EmitReflectionAction : ActionBase
     /// The module's <c>GeneratedCPPFilenameBase</c> from the manifest, or
     /// null to use the module name as the base.
     /// </param>
+    /// <param name="workingDirectory">
+    /// The action's working directory, captured at construction (audit
+    /// fix R7-C2). MUST be the manifest's <c>RootLocalPath</c> (the
+    /// canonical engine root) so two builds run from different shell
+    /// CWDs produce identical action commands. When null,
+    /// <see cref="Directory.GetCurrentDirectory"/> is captured once at
+    /// construction and stored verbatim.
+    /// </param>
+    /// <param name="tier">Owning module's tier or null. See <see cref="Tier"/>.</param>
+    /// <param name="configuration">
+    /// Build configuration. Folds into <see cref="IExternalAction.CommandVersion"/>.
+    /// </param>
+    /// <param name="platform">
+    /// Target platform. Folds into <see cref="IExternalAction.CommandVersion"/>.
+    /// </param>
+    /// <param name="simPath">True for sim-path translation units.</param>
     /// <param name="dependencyListFile">
     /// Phase-2 header-dependency hook. Phase 1 callers pass null.
     /// </param>
@@ -194,6 +235,11 @@ public sealed class EmitReflectionAction : ActionBase
         IReadOnlyList<FileItem> reflectionInputs,
         IReadOnlyList<string> reflectionHeaderRelativePaths,
         string? generatedCppFilenameBase = null,
+        string? workingDirectory = null,
+        string? tier = null,
+        BuildConfiguration configuration = default,
+        Platform platform = default,
+        bool simPath = false,
         FileItem? dependencyListFile = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(moduleName);
@@ -208,6 +254,11 @@ public sealed class EmitReflectionAction : ActionBase
         _manifestJsonPath = manifestJsonPath;
         _outputDirectory = outputDirectory;
         _generatedCppFilenameBase = generatedCppFilenameBase;
+        _workingDirectory = workingDirectory ?? Directory.GetCurrentDirectory();
+        _tier = tier;
+        _configuration = configuration;
+        _platform = platform;
+        _simPath = simPath;
         _dependencyListFile = dependencyListFile;
 
         // Snapshot the header-relative-path list (ordinal-sorted, deduped)
@@ -268,12 +319,20 @@ public sealed class EmitReflectionAction : ActionBase
 
         // Pre-discovery: derive every output filename from the module +
         // header set. Mirrors XHT.Emitter's filename derivation byte-for-byte
-        // (cross-tool-verified). Use a HashSet on stems to collapse two
-        // headers with the same stem in different directories
-        // (e.g. Public/X.h + Private/X.h) -- they would produce the same
-        // .gen.h, and the action graph forbids two ProducedItems at the
-        // same path. The first-wins behaviour matches XHT's own emitter.
-        HashSet<string> seenStems = new(StringComparer.Ordinal);
+        // (cross-tool-verified).
+        //
+        // Audit fix R7-C6: a HashSet-on-stems used to silently drop
+        // collisions when two headers reduced to the same stem
+        // (Public/Foo/XValve.h vs Public/Bar/XValve.h -- both produce
+        // XValve.gen.h). Silent elision lost the metadata for the
+        // dropped header at run time, with no diagnostic. The fix:
+        // detect at action emit time and throw with a clear diagnostic
+        // naming both colliding headers + the colliding stem. The
+        // caller catches XBTException and surfaces it as a build
+        // failure (exit code 50 -- ManifestMalformed -- since the
+        // collision is a configuration/discovery defect, not a
+        // toolchain or runtime error).
+        Dictionary<string, string> stemToFirstHeader = new(StringComparer.Ordinal);
         List<FileItem> produced = new();
         foreach (string headerRelative in _reflectionHeaderRelativePaths)
         {
@@ -288,10 +347,24 @@ public sealed class EmitReflectionAction : ActionBase
             string canonicalStem = stem.EndsWith(".gen", StringComparison.Ordinal)
                 ? stem[..^4]
                 : stem;
-            if (!seenStems.Add(canonicalStem))
+            if (stemToFirstHeader.TryGetValue(canonicalStem, out string? firstHeader))
             {
-                continue;
+                // Distinct rel paths but identical stem -- collision.
+                // (When the two reflectionHeaderRelativePaths inputs are
+                // the same string, the upstream Sort + Dedupe already
+                // collapsed them; this branch only fires when stems
+                // collide across distinct paths.)
+                throw new XBTException(
+                    $"Module '{moduleName}' has two reflection headers that reduce to the " +
+                    $"same generated stem '{canonicalStem}.gen.h':\n" +
+                    $"  '{firstHeader}'\n" +
+                    $"  '{headerRelative}'\n" +
+                    "Rename one of the headers (e.g. give them distinct stems) or move them " +
+                    "into separate modules. Silently dropping one would lose reflection " +
+                    "metadata for the elided header at run time.",
+                    exitCode: 50);
             }
+            stemToFirstHeader[canonicalStem] = headerRelative;
             produced.Add(FileItem.GetItemByPath(
                 Path.Combine(outputDirectory, XhtOutputNaming.GenHeaderFileName(headerRelative))));
             produced.Add(FileItem.GetItemByPath(
@@ -360,6 +433,18 @@ public sealed class EmitReflectionAction : ActionBase
         {
             UpdateUtf8(hasher, path);
         }
+
+        // 6. WorkingDirectory + Configuration + Platform + SimPath
+        //    (audit fix R7-C2). See ParseHeadersAction.ComputeCommandVersion
+        //    for rationale.
+        UpdateUtf8(hasher, _workingDirectory);
+        BitConverter.TryWriteBytes(intBuffer, (int)_configuration);
+        hasher.Update(intBuffer);
+        BitConverter.TryWriteBytes(intBuffer, (int)_platform);
+        hasher.Update(intBuffer);
+        Span<byte> simPathByte = stackalloc byte[1];
+        simPathByte[0] = _simPath ? (byte)1 : (byte)0;
+        hasher.Update(simPathByte);
 
         Span<byte> digest = stackalloc byte[IoHash.Length];
         hasher.Finalize(digest);

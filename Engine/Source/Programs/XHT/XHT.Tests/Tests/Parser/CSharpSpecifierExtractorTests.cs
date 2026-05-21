@@ -155,7 +155,7 @@ public class Foo { }
     }
 
     [Fact]
-    public void MalformedExpression_EmitsXHT114_OtherSpecifiersStillExtracted()
+    public void MalformedExpression_EmitsSyntaxError_OtherSpecifiersStillExtracted()
     {
         // 'x' + 1 is an unsupported argument form.
         (IReadOnlyList<Specifier> specs, List<DiagnosticRecord> diags) = Extract(

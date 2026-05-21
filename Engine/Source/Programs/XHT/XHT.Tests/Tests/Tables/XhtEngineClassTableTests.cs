@@ -43,7 +43,7 @@ public class XhtEngineClassTableTests
     [Fact]
     public void Lookup_ArbitraryTypeName_ReturnsNull()
     {
-        Assert.Null(XhtEngineClassTable.Lookup("AXValve"));
+        Assert.Null(XhtEngineClassTable.Lookup("XValve"));
         Assert.Null(XhtEngineClassTable.Lookup("Valve"));
         Assert.Null(XhtEngineClassTable.Lookup("UObject"));   // UE convention name; not adopted
         Assert.Null(XhtEngineClassTable.Lookup(""));
@@ -59,7 +59,7 @@ public class XhtEngineClassTableTests
     [InlineData("XObject", true)]
     [InlineData("XClass", true)]
     [InlineData("XProperty", true)]
-    [InlineData("AXValve", false)]
+    [InlineData("XValve", false)]
     [InlineData("xobject", false)]
     [InlineData("UObject", false)]
     [InlineData("", false)]

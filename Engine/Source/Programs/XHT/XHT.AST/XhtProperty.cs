@@ -12,7 +12,7 @@ namespace Simgenics.XPact.XHT.AST;
 /// <remarks>
 /// <para>
 /// <see cref="TypeIdentifier"/> is the type as authored (e.g.
-/// <c>"int32"</c>, <c>"TArray&lt;FString&gt;"</c>, <c>"AXValve*"</c>);
+/// <c>"int32"</c>, <c>"TArray&lt;FString&gt;"</c>, <c>"XValve*"</c>);
 /// the resolver's <c>StepResolveProperties</c> phase (Section 5.1)
 /// resolves it to a concrete <c>XhtProperty</c> subclass handle. Phase 1b
 /// only carries the string form; the concrete <c>XhtIntProperty</c> /

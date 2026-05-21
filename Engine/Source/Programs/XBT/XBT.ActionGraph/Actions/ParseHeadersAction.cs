@@ -64,10 +64,15 @@ public sealed class ParseHeadersAction : ActionBase
     private readonly string _xhtExecutablePath;
     private readonly string _manifestJsonPath;
     private readonly string _outputDirectory;
+    private readonly string _workingDirectory;
     private readonly IReadOnlyList<FileItem> _prerequisiteItems;
     private readonly IReadOnlyList<FileItem> _producedItems;
     private readonly IReadOnlyList<string> _commandArguments;
     private readonly FileItem? _dependencyListFile;
+    private readonly string? _tier;
+    private readonly bool _simPath;
+    private readonly BuildConfiguration _configuration;
+    private readonly Platform _platform;
 
     /// <inheritdoc/>
     public override XActionType ActionType => XActionType.ParseHeadersAction;
@@ -85,7 +90,21 @@ public sealed class ParseHeadersAction : ActionBase
     public override IReadOnlyList<string> CommandArguments => _commandArguments;
 
     /// <inheritdoc/>
-    public override string WorkingDirectory => Directory.GetCurrentDirectory();
+    /// <remarks>
+    /// Audit fix R7-C2: working directory is captured at construction
+    /// time and returned verbatim on every read. Prior to R7-C2 this
+    /// property returned <see cref="Directory.GetCurrentDirectory"/>
+    /// on every access, which violated the
+    /// <see cref="ActionBase.WorkingDirectory"/> contract ("captured at
+    /// construction; never re-read at execution"): two reads at
+    /// different shell CWDs would produce different command-version
+    /// hashes for the same action, defeating cache reuse across IDEs
+    /// + shells. The captured value is the manifest's
+    /// <c>RootLocalPath</c> (the canonical engine root, forward-slashed)
+    /// so two builds from different shell CWDs produce identical action
+    /// commands.
+    /// </remarks>
+    public override string WorkingDirectory => _workingDirectory;
 
     /// <inheritdoc/>
     public override string CommandDescription => "XHT.Parse";
@@ -112,6 +131,41 @@ public sealed class ParseHeadersAction : ActionBase
 
     /// <inheritdoc/>
     public override string? Module => _moduleName;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Audit fix R7-C2: surfaces the owning module's tier through the
+    /// JSON channel + build log per XBT.html §21.5. Null when the
+    /// caller did not supply a tier at construction.
+    /// </remarks>
+    public override string? Tier => _tier;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Audit fix R7-C2: surfaces the sim-path flag through the JSON
+    /// channel + the toolchain's banned-flag emission per
+    /// XToolchainContract.html Rev 13.6 §4. Defaults to false when not
+    /// supplied.
+    /// </remarks>
+    public override bool SimPath => _simPath;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Audit fix R7-C2: surfaces the action's build configuration so the
+    /// CommandVersion hash (which folds Configuration in via
+    /// <see cref="ExternalAction.ComputeCommandVersion"/>'s item 7
+    /// equivalent) differs between Debug / Release / Shipping invocations
+    /// of the same XHT parse, matching the C++ compile-action discipline.
+    /// </remarks>
+    public override BuildConfiguration Configuration => _configuration;
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Audit fix R7-C2: surfaces the action's target platform so the
+    /// CommandVersion hash differs between Win64 / Linux / Android
+    /// invocations even when the on-disk command line is the same.
+    /// </remarks>
+    public override Platform Platform => _platform;
 
     /// <inheritdoc/>
     public override FileItem? DependencyListFile => _dependencyListFile;
@@ -161,6 +215,35 @@ public sealed class ParseHeadersAction : ActionBase
     /// reads at parse time. The constructor sorts this list ordinal so
     /// the action-graph invariant holds.
     /// </param>
+    /// <param name="workingDirectory">
+    /// The action's working directory, captured at construction (audit
+    /// fix R7-C2). MUST be the manifest's <c>RootLocalPath</c> (the
+    /// canonical engine root) so two builds run from different shell
+    /// CWDs produce identical action commands. Passing
+    /// <see cref="Directory.GetCurrentDirectory"/> at the call site
+    /// would re-introduce the audit-flagged non-determinism. When null
+    /// (legacy callers and tests), <see cref="Directory.GetCurrentDirectory"/>
+    /// is captured once at construction and stored verbatim.
+    /// </param>
+    /// <param name="tier">
+    /// The owning module's tier (Engine / Studio / Project) or null
+    /// when not known. Surfaces through <see cref="Tier"/>.
+    /// </param>
+    /// <param name="configuration">
+    /// The action's build configuration. Folds into
+    /// <see cref="IExternalAction.CommandVersion"/> via the base
+    /// hashing pipeline so Debug / Release / Shipping invocations of
+    /// the same XHT parse produce distinct cache keys.
+    /// </param>
+    /// <param name="platform">
+    /// The action's target platform. Folds into
+    /// <see cref="IExternalAction.CommandVersion"/> for the same reason
+    /// <paramref name="configuration"/> does.
+    /// </param>
+    /// <param name="simPath">
+    /// True when the action originates from a sim-path translation unit.
+    /// Surfaces through <see cref="SimPath"/>.
+    /// </param>
     /// <param name="dependencyListFile">
     /// Phase-2 header-dependency hook per XBT.html Section 5.2. Phase 1
     /// callers pass null; XHT does not yet emit a depfile but the property
@@ -173,6 +256,11 @@ public sealed class ParseHeadersAction : ActionBase
         string manifestJsonPath,
         string outputDirectory,
         IReadOnlyList<FileItem> sourceFiles,
+        string? workingDirectory = null,
+        string? tier = null,
+        BuildConfiguration configuration = default,
+        Platform platform = default,
+        bool simPath = false,
         FileItem? dependencyListFile = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(moduleName);
@@ -185,6 +273,17 @@ public sealed class ParseHeadersAction : ActionBase
         _xhtExecutablePath = xhtExecutablePath;
         _manifestJsonPath = manifestJsonPath;
         _outputDirectory = outputDirectory;
+        // Audit fix R7-C2: capture working directory once at construction.
+        // Callers that don't supply one fall back to a one-time snapshot
+        // of the CWD; this preserves backwards compatibility for tests
+        // that construct actions in isolation without the manifest's
+        // RootLocalPath in scope. Production callers (BuildMode) always
+        // pass the canonical RootLocalPath.
+        _workingDirectory = workingDirectory ?? Directory.GetCurrentDirectory();
+        _tier = tier;
+        _configuration = configuration;
+        _platform = platform;
+        _simPath = simPath;
         _dependencyListFile = dependencyListFile;
 
         // Prerequisites: every source file + the XHT executable + the
@@ -275,6 +374,26 @@ public sealed class ParseHeadersAction : ActionBase
         UpdateUtf8(hasher, _moduleName);
         UpdateUtf8(hasher, _manifestJsonPath);
         UpdateUtf8(hasher, _outputDirectory);
+
+        // 5. WorkingDirectory -- captured at construction (audit fix
+        //    R7-C2). Two builds from different shell CWDs must produce
+        //    identical hashes, so the WD must always be the canonical
+        //    engine root (RootLocalPath); the construction-time capture
+        //    enforces this.
+        UpdateUtf8(hasher, _workingDirectory);
+
+        // 6. Configuration + Platform + SimPath (audit fix R7-C2): same
+        //    discipline as ExternalAction.ComputeCommandVersion item 7
+        //    + item 8. Two parse actions on the same headers at Debug
+        //    vs Release must produce distinct keys so the cache does
+        //    not alias.
+        BitConverter.TryWriteBytes(intBuffer, (int)_configuration);
+        hasher.Update(intBuffer);
+        BitConverter.TryWriteBytes(intBuffer, (int)_platform);
+        hasher.Update(intBuffer);
+        Span<byte> simPathByte = stackalloc byte[1];
+        simPathByte[0] = _simPath ? (byte)1 : (byte)0;
+        hasher.Update(simPathByte);
 
         Span<byte> digest = stackalloc byte[IoHash.Length];
         hasher.Finalize(digest);

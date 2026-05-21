@@ -108,6 +108,10 @@ public sealed class EmitModuleMode : IToolMode
         SymbolTable symbols = new();
         SpecifierRegistry registry = new(registerBuiltIns: true);
         List<DiagnosticRecord> diagnostics = new();
+        // Accumulates C# partial-class duplicates across walker
+        // invocations so the resolver can merge them in the Pairings
+        // phase per C3 audit (XHT.html Section 3.3).
+        List<XhtClass> extraPartials = new();
 
         // Parse C++ headers (in deterministic ordinal order).
         List<string> headerPaths = new();
@@ -239,12 +243,18 @@ public sealed class EmitModuleMode : IToolMode
             {
                 diagnostics.Add(d);
             }
+            // C3 audit: feed every C# partial-class duplicate to the
+            // resolver so the pairings phase can merge them properly.
+            extraPartials.AddRange(walker.ExtraPartials);
         }
 
         ct.ThrowIfCancellationRequested();
 
         // Resolver pipeline.
         ResolverPipeline pipeline = new(symbols, registry, manifest, module.Name);
+        // Seed the resolver context with any partial-class duplicates
+        // the walker(s) collected so the Pairings phase can merge them.
+        pipeline.Context.ExtraPartials.AddRange(extraPartials);
         IReadOnlyList<DiagnosticRecord> resolverDiagnostics = pipeline.ResolveAll();
         foreach (DiagnosticRecord d in resolverDiagnostics)
         {
@@ -309,9 +319,12 @@ public sealed class EmitModuleMode : IToolMode
             {
                 return repoRelative;
             }
-            // Strict mode reports the module-relative form as the
-            // expected location.
-            return moduleRelative;
+            // Per M14 audit: when neither resolves, return a composite
+            // path string that lists BOTH candidates so the upstream
+            // diagnostic naming "not found at <path>" surfaces both
+            // attempted locations. We use a single space separator so
+            // the message reads as a sentence.
+            return moduleRelative + " (also tried: " + repoRelative + ")";
         }
         return relativePath;
     }

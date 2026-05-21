@@ -354,11 +354,13 @@ public static class GenManifestWriter
     }
 
     /// <summary>
-    /// Escape carriage returns and newlines in diagnostic messages so
-    /// the line-oriented manifest format survives multi-line messages
-    /// (rare; sometimes from inner exceptions). The escape is
-    /// <c>"\\n"</c> / <c>"\\r"</c> (literal backslash + letter), reversed
-    /// by the reader.
+    /// Escape characters that would break the line-oriented manifest
+    /// format: carriage returns, newlines, embedded backslashes, AND
+    /// commas (per M15 audit -- commas are the [Diagnostics] section
+    /// field separator). The escape uses <c>"\\"</c> (double backslash)
+    /// for literal backslash, <c>"\n"</c> / <c>"\r"</c> for newlines,
+    /// and <c>"\,"</c> for embedded commas. The reader reverses every
+    /// escape on read so byte-identical round-trip holds.
     /// </summary>
     private static string EscapeMessage(string message)
     {
@@ -366,7 +368,10 @@ public static class GenManifestWriter
         {
             return string.Empty;
         }
-        if (!message.Contains('\n') && !message.Contains('\r') && !message.Contains('\\'))
+        if (!message.Contains('\n')
+            && !message.Contains('\r')
+            && !message.Contains('\\')
+            && !message.Contains(','))
         {
             return message;
         }
@@ -378,6 +383,7 @@ public static class GenManifestWriter
                 case '\\': sb.Append("\\\\"); break;
                 case '\n': sb.Append("\\n"); break;
                 case '\r': sb.Append("\\r"); break;
+                case ',':  sb.Append("\\,"); break;
                 default: sb.Append(c); break;
             }
         }

@@ -369,6 +369,30 @@ public sealed class ActionHistory
         string nonce = Guid.NewGuid().ToString("N");
         string tempPath = Path.Combine(directory, $"ActionHistory.bin.tmp.{pid}.{nonce}");
 
+        // Audit fix R7-M3: snapshot every partition in parallel BEFORE
+        // taking the file-write lock. Each per-partition snapshot
+        // serialises with the writer that may be racing it (per-
+        // partition mutex inside Partition.Snapshot), so dispatching
+        // the snapshots in parallel doesn't change the cross-
+        // partition contention; it just hides per-partition lock
+        // wait under wall-clock concurrency. The final write to disk
+        // is still serial because BinaryWriter is not thread-safe
+        // and the on-disk format is a single contiguous stream.
+        //
+        // Phase 2 TODO: when the per-partition split lands (one
+        // file per partition under <ConfigDir>/ActionHistory/), the
+        // write itself can also parallelize. The single-file format
+        // here keeps the cross-config disk footprint small.
+        IReadOnlyDictionary<string, IoHash>[] producerSnapshots =
+            new IReadOnlyDictionary<string, IoHash>[PartitionCount];
+        IReadOnlyDictionary<string, IoHash>[] contentSnapshots =
+            new IReadOnlyDictionary<string, IoHash>[PartitionCount];
+        System.Threading.Tasks.Parallel.For(0, PartitionCount, i =>
+        {
+            _partitions[i].Snapshot(out producerSnapshots[i]);
+            _partitions[i].SnapshotContent(out contentSnapshots[i]);
+        });
+
         using (FileStream stream = new(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
         {
             using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
@@ -384,7 +408,7 @@ public sealed class ActionHistory
                 for (int i = 0; i < PartitionCount; i++)
                 {
                     // ----- Producer-key map (v1 + v2) -----
-                    _partitions[i].Snapshot(out IReadOnlyDictionary<string, IoHash> entries);
+                    IReadOnlyDictionary<string, IoHash> entries = producerSnapshots[i];
                     writer.Write(entries.Count);
                     // Sort entries by path with StringComparer.Ordinal so
                     // the on-disk byte sequence is invariant across runs.
@@ -402,7 +426,7 @@ public sealed class ActionHistory
                     }
 
                     // ----- Content-hash map (v2; audit fix M3) -----
-                    _partitions[i].SnapshotContent(out IReadOnlyDictionary<string, IoHash> contentEntries);
+                    IReadOnlyDictionary<string, IoHash> contentEntries = contentSnapshots[i];
                     writer.Write(contentEntries.Count);
                     foreach ((string path, IoHash hash) in contentEntries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                     {
@@ -439,11 +463,24 @@ public sealed class ActionHistory
     /// truncated file = empty archive + a one-time warning.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Audit fix M15: stage partition reads into a local
     /// <see cref="Dictionary{TKey,TValue}"/> array; only commit to
     /// <see cref="_partitions"/> after every partition reads
     /// successfully. A torn-read mid-load no longer leaves a
     /// half-populated archive in memory.
+    /// </para>
+    /// <para>
+    /// TODO(Phase 2 -- TargetMakefile concurrent IO): load is still
+    /// serial because the single-file format does not include a
+    /// per-partition offset table. The Phase 2 per-bucket-file split
+    /// (one ActionHistory_<c>&lt;byte&gt;</c>.bin per partition under
+    /// the config directory) enables both parallel load and parallel
+    /// save without an offset table -- each bucket is an independent
+    /// file. Revisit when the partition-contention measurement
+    /// indicates the per-partition contention is real (current
+    /// 256-bucket scheme has not surfaced measurable contention).
+    /// </para>
     /// </remarks>
     private void LoadFromDisk()
     {
@@ -455,7 +492,12 @@ public sealed class ActionHistory
         Dictionary<string, IoHash>[]? staged = null;
         try
         {
-            using FileStream stream = new(_archivePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // Audit fix R7-C3: AV-retry-wrap the open so a sibling save's
+            // MoveFileEx scan window does not surface as a build failure.
+            // Once the open succeeds the file handle is stable; the rest
+            // of the load happens against the snapshotted handle.
+            using FileStream stream = FileSystemOps.RetryOnTransientIOException(
+                () => new FileStream(_archivePath, FileMode.Open, FileAccess.Read, FileShare.Read));
             using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: false);
 
             byte[] magic = reader.ReadBytes(4);

@@ -34,9 +34,15 @@ namespace Simgenics.XPact.XHT.Core;
 /// <para>
 /// <b>Exception filter.</b> We retry on <see cref="IOException"/> (the
 /// sharing-violation case) and <see cref="UnauthorizedAccessException"/>
-/// (the AV-quarantine case). Any other exception propagates immediately
-/// -- a missing-directory error, a permission-denied that is not an AV
-/// lock, etc. should not be papered over.
+/// (the AV-quarantine case). Per M13 audit: <c>FileNotFoundException</c>
+/// and <c>DirectoryNotFoundException</c> both derive from
+/// <see cref="IOException"/>, so they ARE swept into the retry by the
+/// catch clause. That is intentional -- AV racing with a freshly-created
+/// file can briefly report "not found" mid-quarantine before the file
+/// reappears; the retry surfaces the genuine miss as a final-attempt
+/// rethrow. Any other exception propagates immediately -- a permission-
+/// denied that is not an AV lock, malformed-path, etc. should not be
+/// papered over.
 /// </para>
 /// </remarks>
 public static class FileSystemOps

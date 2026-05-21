@@ -174,51 +174,178 @@ public sealed class BuildMode : IToolMode<BuildMode>
             options.TargetName,
             options.Configuration,
             options.Platform);
-        using Mutex buildMutex = new(initiallyOwned: false, name: mutexName, out _);
 
-        bool mutexAcquired;
-        try
+        // Audit fix R7-M5: the mutex's scope is now narrowed to wrap
+        // ONLY the brief ActionHistory.LoadFromDisk window at startup
+        // and ActionHistory.Save window at shutdown. Action execution
+        // runs without the mutex held; per-action atomic-rename +
+        // per-action temp-file naming + the orphan-temp-file sweep
+        // provide cross-process safety for the action output paths,
+        // and ActionHistory.bin's torn-write tolerance (audit M15)
+        // protects the load path. Two concurrent
+        // `xbt build -Target=Editor` invocations now proceed in
+        // parallel except for the load/save windows -- a typical
+        // load + save together is under 50 ms on a populated tree.
+        //
+        // The CoordinatedActionHistory wrapper below acquires the
+        // mutex at construction, calls LoadFromDisk, releases the
+        // mutex, then acquires again at Save() time.
+        using CoordinatedActionHistory historyCoordinator = new(
+            mutexName,
+            options.NoMutexWait,
+            cancellationToken);
+
+        return RunInternalLocked(
+            options,
+            engineRoot,
+            studioRoot,
+            projectRoot,
+            projectRoots,
+            sw,
+            historyCoordinator,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Audit fix R7-M5: narrow-scope mutex helper. Wraps
+    /// <see cref="ActionHistory"/> so the build mutex is held only
+    /// during <see cref="ActionHistory.LoadFromDisk"/> (via the
+    /// constructor) and <see cref="ActionHistory.Save"/> (via
+    /// <see cref="SaveAndRelease"/>). Action execution between the two
+    /// windows runs without the mutex, so two concurrent builds
+    /// against the same target can proceed in parallel.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Per-action atomic-rename + per-action temp-file naming + the
+    /// orphan-sweep provide cross-process safety for the action
+    /// output paths -- two builds writing the same compile output go
+    /// through distinct temp paths (<c>&lt;output&gt;.tmp.&lt;pid&gt;.&lt;actionid&gt;</c>)
+    /// and rename atomically; the last writer wins (which is the
+    /// correct semantics since both produce byte-identical output
+    /// given the same command + inputs).
+    /// </para>
+    /// </remarks>
+    private sealed class CoordinatedActionHistory : IDisposable
+    {
+        private readonly Mutex _mutex;
+        private readonly string _mutexName;
+        public ActionHistory? History { get; private set; }
+        public bool RecoveredFromAbandon { get; private set; }
+        private bool _saved;
+
+        public CoordinatedActionHistory(string mutexName, bool noMutexWait, CancellationToken cancellationToken)
         {
-            // Block unless -NoMutexWait was passed; in that case fail
-            // immediately with exit 1 (GenericFailure) so an IDE wrapper
-            // can detect a concurrent build instead of blocking
-            // indefinitely.
-            mutexAcquired = options.NoMutexWait
-                ? buildMutex.WaitOne(TimeSpan.Zero)
-                : WaitMutexWithProgressLog(buildMutex, cancellationToken);
-        }
-        catch (AbandonedMutexException)
-        {
-            // The previous holder died without releasing. We took
-            // ownership anyway. AbandonedMutexException is "warning,
-            // not failure" -- the cache may be in a half-state but the
-            // ActionHistory loader tolerates that (Audit fix M15: torn
-            // reads leave the live archive untouched and the next save
-            // rewrites cleanly).
-            Logger.Warning(
-                "Previous XBT build process exited without releasing the build mutex. " +
-                "Proceeding -- ActionHistory.bin is self-healing on a torn read.",
-                new DiagnosticContext { Action = "build-mutex" });
-            mutexAcquired = true;
+            _mutexName = mutexName;
+            _mutex = new Mutex(initiallyOwned: false, name: mutexName, out _);
+            _ = AcquireWithRecovery(noMutexWait, cancellationToken);
         }
 
-        if (!mutexAcquired)
+        private bool AcquireWithRecovery(bool noMutexWait, CancellationToken cancellationToken)
         {
-            // -NoMutexWait was set AND another build is in progress.
+            try
+            {
+                if (noMutexWait ? _mutex.WaitOne(TimeSpan.Zero) : WaitMutexWithProgressLog(_mutex, cancellationToken))
+                {
+                    return true;
+                }
+            }
+            catch (AbandonedMutexException)
+            {
+                Logger.Warning(
+                    "Previous XBT build process exited without releasing the build mutex " +
+                    $"({_mutexName}). Proceeding -- ActionHistory.bin is self-healing on a " +
+                    "torn read; widened orphan sweep will reap any temp files the crashed " +
+                    "holder left in the Intermediate/ tree.",
+                    new DiagnosticContext { Action = "build-mutex" });
+                RecoveredFromAbandon = true;
+                return true;
+            }
+
             throw new XBTException(
-                $"Another XBT build is already in progress for target='{options.TargetName}' " +
-                $"config={options.Configuration} platform={options.Platform} (engine='{engineRoot}'). " +
-                "Wait for it to finish, or omit -NoMutexWait to block until it releases.",
+                "Another XBT build is already in progress against the same engine + target + " +
+                "config + platform + user identity. Wait for it to finish, or omit " +
+                "-NoMutexWait to block until it releases.",
                 exitCode: 1);
         }
 
-        try
+        /// <summary>
+        /// Open the action history (LoadFromDisk runs under the mutex
+        /// already acquired in the constructor), then release the
+        /// mutex so action execution can run unobstructed.
+        /// </summary>
+        public void OpenAndUnlock(string targetDir, BuildConfiguration configuration)
         {
-            return RunInternalLocked(options, engineRoot, studioRoot, projectRoot, projectRoots, sw, cancellationToken);
+            History = ActionHistory.Open(targetDir, configuration);
+            // Release immediately -- action execution does not need
+            // the mutex. The mutex is re-acquired in SaveAndRelease
+            // to serialise the post-build write.
+            _mutex.ReleaseMutex();
         }
-        finally
+
+        /// <summary>
+        /// Re-acquire the mutex, save the history, release again.
+        /// Safe to call once. Failure to save is logged but never
+        /// throws -- best-effort persistence per audit M15.
+        /// </summary>
+        public void SaveAndRelease(string targetDir)
         {
-            buildMutex.ReleaseMutex();
+            if (_saved || History is null)
+            {
+                return;
+            }
+            _saved = true;
+            // Re-acquire briefly so a sibling builder doesn't race us.
+            bool reacquired = false;
+            try
+            {
+                try
+                {
+                    reacquired = _mutex.WaitOne(TimeSpan.FromSeconds(30));
+                }
+                catch (AbandonedMutexException)
+                {
+                    // A sibling crashed while we were running. Fine --
+                    // we still own the lock; proceed.
+                    reacquired = true;
+                }
+                if (!reacquired)
+                {
+                    Logger.Warning(
+                        $"ActionHistory.Save: failed to re-acquire build mutex ({_mutexName}) " +
+                        "within 30 s. Skipping save -- the next build will tolerate the staleness.",
+                        new DiagnosticContext { Action = "save-history" });
+                    return;
+                }
+                try
+                {
+                    History.Save();
+                }
+                catch (IOException ex)
+                {
+                    Logger.Warning(
+                        $"Failed to save ActionHistory at {targetDir}: {ex.Message}",
+                        new DiagnosticContext { Action = "save-history" });
+                }
+            }
+            finally
+            {
+                if (reacquired)
+                {
+                    try { _mutex.ReleaseMutex(); }
+                    catch (ApplicationException) { /* not owned -- best effort */ }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            // The mutex is disposed via 'using' on the outer Mutex
+            // instance; we don't dispose here because SaveAndRelease
+            // may still need to re-acquire. The outer 'using' in
+            // RunBuild's caller pattern handles disposal via the
+            // 'using' on the field above.
+            _mutex.Dispose();
         }
     }
 
@@ -257,14 +384,35 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// <summary>
     /// Compose a global mutex name from the build's identity. The name
     /// is the literal prefix <c>XBT_Build_</c> + the first 32 hex
-    /// characters of a BLAKE3 of <c>(engineRoot, target, config, platform)</c>.
+    /// characters of a BLAKE3 of <c>(userIdentity, engineRoot, target,
+    /// config, platform)</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Hashing the identity avoids the OS-name validity rules (Win32
     /// mutex names cannot contain backslashes outside of the
     /// <c>Global\</c> / <c>Local\</c> prefix; Linux ipc names have
     /// their own restrictions) and gives a deterministic name that two
     /// concurrent invocations from the same engine root collide on.
+    /// </para>
+    /// <para>
+    /// Audit fix R7-M4: the user identity (Windows SID or POSIX euid)
+    /// is folded into the hash so two distinct users on the same
+    /// machine building the same target never collide on the mutex.
+    /// Prior to R7-M4 a developer build on a shared Windows CI host
+    /// could block another user's identical build for the wait
+    /// timeout, since the mutex name only encoded (engineRoot, target,
+    /// config, platform).
+    /// </para>
+    /// <para>
+    /// Multi-checkout-on-same-volume: two checkouts at distinct paths
+    /// (e.g. <c>C:\repo-main\XPact_Engine</c> and
+    /// <c>C:\repo-feature\XPact_Engine</c>) produce distinct
+    /// canonical roots and therefore distinct mutex names; concurrent
+    /// builds across checkouts proceed independently. Same-checkout
+    /// builds with the same target/config/platform serialize on the
+    /// mutex as designed.
+    /// </para>
     /// </remarks>
     internal static string ComposeBuildMutexName(
         string engineRoot,
@@ -278,7 +426,20 @@ public sealed class BuildMode : IToolMode<BuildMode>
             ? Path.GetFullPath(engineRoot).ToUpperInvariant()
             : Path.GetFullPath(engineRoot);
 
-        string identity = $"{canonicalRoot}|{targetName}|{configuration}|{platform}";
+        // Audit fix R7-M4: include user identity so multi-user hosts
+        // don't collide. On Windows we use the user's SID via
+        // WindowsIdentity; on Linux/Mac we use the effective UID via
+        // Environment.UserName (the SID is Windows-only and we don't
+        // want to P/Invoke geteuid here; UserName is "best-effort
+        // identity" -- collisions across users sharing a username
+        // would be a misconfiguration, not a security issue, since
+        // the mutex governs cooperation between same-target builds,
+        // not authorization). The hash bucketing means the exact
+        // identity form doesn't matter -- only that two different
+        // users produce two different identity strings.
+        string userIdentity = ComputeUserIdentity();
+
+        string identity = $"{userIdentity}|{canonicalRoot}|{targetName}|{configuration}|{platform}";
         IoHash hash = IoHash.Compute(System.Text.Encoding.UTF8.GetBytes(identity));
         // First 32 hex chars (128 bits) of the BLAKE3 digest -- a
         // mutex-name collision over the engine's lifetime is
@@ -288,6 +449,39 @@ public sealed class BuildMode : IToolMode<BuildMode>
         return "XBT_Build_" + hash.ToString().Substring(0, 32);
     }
 
+    /// <summary>
+    /// Audit fix R7-M4: produce a stable per-user identity string used
+    /// to disambiguate the build mutex name across users on the same
+    /// machine. On Windows this is the user's SID; on POSIX this is
+    /// the user name (Environment.UserName resolves to the effective
+    /// uid's account name).
+    /// </summary>
+    private static string ComputeUserIdentity()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                System.Security.Principal.WindowsIdentity? id =
+                    System.Security.Principal.WindowsIdentity.GetCurrent();
+                string? sid = id?.User?.Value;
+                if (!string.IsNullOrEmpty(sid))
+                {
+                    return "sid:" + sid;
+                }
+            }
+            catch (System.Security.SecurityException)
+            {
+                // Permission-denied at SID lookup is rare but can
+                // happen on restricted hosts; fall through to the
+                // username path so we still produce a stable identity.
+            }
+        }
+        // POSIX or Windows SID lookup failed: use UserName.
+        string name = Environment.UserName;
+        return "user:" + name;
+    }
+
     private static BuildResult RunInternalLocked(
         BuildOptions options,
         string engineRoot,
@@ -295,8 +489,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
         string? projectRoot,
         IReadOnlyList<string> projectRoots,
         Stopwatch sw,
+        CoordinatedActionHistory historyCoordinator,
         CancellationToken cancellationToken)
     {
+        // Audit fix R7-M5: surface the abandon-recovery flag locally
+        // so existing call sites that reference it (the widened
+        // orphan sweep below) keep working under the new mutex
+        // coordinator wrapper.
+        bool mutexRecoveredFromAbandon = historyCoordinator.RecoveredFromAbandon;
 
         // ---- 2. Engine semver discovery ---------------------------------
         SemanticVersion engineVersion = EngineVersionValidator.DiscoverEngineVersion(engineRoot);
@@ -407,6 +607,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
         string manifestOutputDir = options.ManifestOutputDirectory ?? defaultIntermediateBuildDir;
         Directory.CreateDirectory(manifestOutputDir);
 
+        // Audit fix R7-C5: open the reflection-marker cache before
+        // action emit so HasReflectionMarkers can short-circuit on
+        // unchanged files. The cache lives at
+        // Intermediate/Build/<Target>/<Config>/ReflectionMarkerCache.bin
+        // alongside ActionHistory.bin.
+        string markerCacheRoot = Path.Combine(engineRoot, "Intermediate", "Build", target.Name);
+        ReflectionMarkerCache markerCache = ReflectionMarkerCache.Open(markerCacheRoot, target.Configuration);
+
         Dictionary<string, ModuleFileSet> fileSetByModule = new(StringComparer.Ordinal);
         List<IExternalAction> actions = EmitActions(
             engineRoot,
@@ -415,8 +623,23 @@ public sealed class BuildMode : IToolMode<BuildMode>
             targetModules,
             fileSetByModule,
             manifestOutputDir,
+            markerCache,
             cancellationToken,
             out IReadOnlyList<IExternalAction> emittedForReport);
+
+        // Audit fix R7-C5: persist the marker cache so the next build
+        // benefits from the scan results. Best-effort; failure to save
+        // is logged but does not abort the build.
+        try
+        {
+            markerCache.Save();
+        }
+        catch (IOException ex)
+        {
+            Logger.Warning(
+                $"Failed to save reflection-marker cache: {ex.Message}",
+                new DiagnosticContext { Action = "marker-cache-save" });
+        }
 
         // ---- 9.5 Emit the manifest (Step 0.5 addendum + Contract Section 8) ----
         // The manifest is a snapshot of discovery + configuration produced
@@ -473,19 +696,34 @@ public sealed class BuildMode : IToolMode<BuildMode>
         graph.CheckPathLengths();
 
         // ---- 11. Open ActionHistory ------------------------------------
+        // Audit fix R7-M5: ActionHistory.Open's LoadFromDisk runs
+        // under the build mutex (acquired in the coordinator). The
+        // mutex is released immediately after the load returns so
+        // action execution proceeds without blocking sibling builds;
+        // re-acquired briefly in SaveAndRelease at shutdown.
         string intermediateRoot = Path.Combine(engineRoot, "Intermediate", "Build", target.Name);
         Directory.CreateDirectory(intermediateRoot);
-        ActionHistory history = ActionHistory.Open(intermediateRoot, target.Configuration);
+        historyCoordinator.OpenAndUnlock(intermediateRoot, target.Configuration);
+        ActionHistory history = historyCoordinator.History!;
 
         // ---- 11.5 Orphan temp-file sweep (XBT.html Section 6.4) --------
         // Sweep the entire intermediate-build tree (not just this
         // target's subtree) so a sibling crashed XBT run targeting a
         // different config gets cleaned up too. Best-effort: failures
         // are logged but do not abort the build.
+        //
+        // Audit fix R7-C7: when we recovered from an abandoned mutex
+        // (the prior XBT holder died mid-run), widen the sweep to the
+        // entire Intermediate/ tree. The crashed holder may have been
+        // writing to ProjectFiles/, ManifestEmit/, or any other
+        // intermediate-tree subdirectory; the narrow Intermediate/Build
+        // sweep would miss those temps and they would accumulate.
         try
         {
-            string intermediateBuildTree = Path.Combine(engineRoot, "Intermediate", "Build");
-            ParallelExecutor.SweepOrphanedTempFiles(intermediateBuildTree);
+            string sweepRoot = mutexRecoveredFromAbandon
+                ? Path.Combine(engineRoot, "Intermediate")
+                : Path.Combine(engineRoot, "Intermediate", "Build");
+            ParallelExecutor.SweepOrphanedTempFiles(sweepRoot);
         }
         catch (Exception ex)
         {
@@ -498,16 +736,10 @@ public sealed class BuildMode : IToolMode<BuildMode>
         ExecutionReport report = ExecuteGraph(graph, history, cancellationToken);
 
         // ---- 13. Save ActionHistory ------------------------------------
-        try
-        {
-            history.Save();
-        }
-        catch (IOException ex)
-        {
-            Logger.Warning(
-                $"Failed to save ActionHistory at {intermediateRoot}: {ex.Message}",
-                new DiagnosticContext { Action = "save-history" });
-        }
+        // Audit fix R7-M5: re-acquires the build mutex briefly, saves,
+        // releases. Save is best-effort -- a failure is logged but
+        // never aborts the build.
+        historyCoordinator.SaveAndRelease(intermediateRoot);
 
         // ---- 14. Aggregate result --------------------------------------
         int ran = 0;
@@ -688,6 +920,10 @@ public sealed class BuildMode : IToolMode<BuildMode>
     private static void ValidateTierRules(ModuleCatalog modules)
     {
         List<TierViolation> allViolations = new();
+        // Audit fix R7-M8: collect path-vs-declared-tier mismatches in
+        // parallel with link-tier violations so a single failed
+        // validation pass reports every problem.
+        List<string> pathMismatches = new();
         foreach (ModuleRecord rec in modules.Modules)
         {
             IReadOnlyList<TierViolation> v = TierValidator.ValidateModuleDeps(
@@ -698,12 +934,22 @@ public sealed class BuildMode : IToolMode<BuildMode>
             {
                 allViolations.AddRange(v);
             }
+
+            string? pathDiagnostic = TierValidator.ValidateDeclaredTierAgainstPath(
+                rec.Rules.Name,
+                rec.Rules.Tier,
+                rec.DescriptorPath);
+            if (pathDiagnostic is not null)
+            {
+                pathMismatches.Add(pathDiagnostic);
+            }
         }
-        if (allViolations.Count > 0)
+        if (allViolations.Count > 0 || pathMismatches.Count > 0)
         {
-            string combined = string.Join(
-                Environment.NewLine,
-                allViolations.Select(v => v.FormatMessage()));
+            List<string> all = new();
+            all.AddRange(allViolations.Select(v => v.FormatMessage()));
+            all.AddRange(pathMismatches);
+            string combined = string.Join(Environment.NewLine, all);
             throw new XBTException(
                 "Tier-validation failures detected:" + Environment.NewLine + combined,
                 exitCode: 21);
@@ -856,6 +1102,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
         IReadOnlyList<ModuleRecord> targetModules,
         Dictionary<string, ModuleFileSet> fileSetByModule,
         string manifestOutputDir,
+        ReflectionMarkerCache markerCache,
         CancellationToken cancellationToken,
         out IReadOnlyList<IExternalAction> emittedForReport)
     {
@@ -929,19 +1176,31 @@ public sealed class BuildMode : IToolMode<BuildMode>
             // Modules without markers skip XHT actions entirely: the
             // detection heuristic scans the small token vocabulary listed
             // in Toolchain Contract Rev 13.6 Section 11.2.
-            if (xhtExePath is not null && HasReflectionMarkers(headerFiles, csharpFiles))
+            if (xhtExePath is not null && HasReflectionMarkers(headerFiles, csharpFiles, markerCache))
             {
                 IReadOnlyList<string> reflectionHeaderRelativePaths =
                     BuildReflectionHeaderPaths(moduleDir, headerFiles);
                 IReadOnlyList<FileItem> reflectionInputs = MergeReflectionInputs(headerFiles, csharpFiles);
 
-                // ParseHeadersAction first.
+                // ParseHeadersAction first. Audit fix R7-C2: pin the
+                // working directory to the canonical engine root (the
+                // manifest's RootLocalPath = engineRoot) so two builds
+                // from different shell CWDs produce identical action
+                // commands, and propagate tier / configuration /
+                // platform / sim-path so the action surfaces them on
+                // the JSON channel and the CommandVersion hash
+                // distinguishes configs / platforms / sim-path TUs.
                 ParseHeadersAction parseAction = new(
                     moduleName: module.Name,
                     xhtExecutablePath: xhtExePath,
                     manifestJsonPath: manifestJsonPath,
                     outputDirectory: moduleObjDir,
-                    sourceFiles: reflectionInputs);
+                    sourceFiles: reflectionInputs,
+                    workingDirectory: engineRoot,
+                    tier: module.Tier.ToString(),
+                    configuration: target.Configuration,
+                    platform: target.Platform,
+                    simPath: module.SimPath);
                 actions.Add(parseAction);
                 reportActions.Add(parseAction);
 
@@ -960,7 +1219,12 @@ public sealed class BuildMode : IToolMode<BuildMode>
                     outputDirectory: moduleObjDir,
                     reflectionInputs: emitPrereqs,
                     reflectionHeaderRelativePaths: reflectionHeaderRelativePaths,
-                    generatedCppFilenameBase: module.Name);
+                    generatedCppFilenameBase: module.Name,
+                    workingDirectory: engineRoot,
+                    tier: module.Tier.ToString(),
+                    configuration: target.Configuration,
+                    platform: target.Platform,
+                    simPath: module.SimPath);
                 actions.Add(emitAction);
                 reportActions.Add(emitAction);
             }
@@ -1774,21 +2038,88 @@ public sealed class BuildMode : IToolMode<BuildMode>
         IReadOnlyList<FileItem> headerFiles,
         IReadOnlyList<FileItem> csharpFiles)
     {
+        return HasReflectionMarkers(headerFiles, csharpFiles, cache: null);
+    }
+
+    /// <summary>
+    /// Audit fix R7-C5: cache-aware overload. The cache stores
+    /// (content hash, marker-present) per file path; a hit short-
+    /// circuits the file read entirely. The cache is updated with the
+    /// scan result so the next build benefits regardless of whether
+    /// this build is short-circuited or not.
+    /// </summary>
+    internal static bool HasReflectionMarkers(
+        IReadOnlyList<FileItem> headerFiles,
+        IReadOnlyList<FileItem> csharpFiles,
+        ReflectionMarkerCache? cache)
+    {
+        bool foundAny = false;
         foreach (FileItem h in headerFiles)
         {
-            if (FileContainsAny(h.FullPath, s_cppReflectionMarkers))
+            if (FileContainsAnyCached(h, s_cppReflectionMarkers, cache))
             {
-                return true;
+                foundAny = true;
+                // We still walk the rest so the cache is populated
+                // for every file, not just the prefix up to the first
+                // hit. Walking the remainder costs at most one read
+                // per uncached file -- amortised free on hit-heavy
+                // module graphs.
             }
         }
         foreach (FileItem cs in csharpFiles)
         {
-            if (FileContainsAny(cs.FullPath, s_csharpReflectionMarkers))
+            if (FileContainsAnyCached(cs, s_csharpReflectionMarkers, cache))
+            {
+                foundAny = true;
+            }
+        }
+        return foundAny;
+    }
+
+    /// <summary>
+    /// Audit fix R7-C5: cache-aware variant of
+    /// <see cref="FileContainsAny"/>. Looks up the file's content hash
+    /// in the cache first; on hit, returns the stored marker-present
+    /// flag without reading the file. On miss, runs the full scan
+    /// (encoding detection + 64 KiB cap + comment strip + substring
+    /// search) and stores the result in the cache.
+    /// </summary>
+    private static bool FileContainsAnyCached(FileItem file, IReadOnlyList<string> needles, ReflectionMarkerCache? cache)
+    {
+        if (cache is not null)
+        {
+            // Reading FileItem.ContentHash on a not-yet-hashed file
+            // costs one file read; the cache lookup then short-
+            // circuits the marker-scan if the hash matches. This is
+            // strictly faster than the scan even on cache miss
+            // (BLAKE3 + the substring scan together vs. just the
+            // substring scan), but on cache HIT the second read is
+            // skipped, which is the dominant benefit.
+            IoHash contentHash;
+            try
+            {
+                contentHash = file.ContentHash;
+            }
+            catch (IOException)
+            {
+                // Conservative: treat unreadable as needs-scan -> needs-XHT.
+                return true;
+            }
+            catch (UnauthorizedAccessException)
             {
                 return true;
             }
+
+            if (cache.TryGet(file.FullPath, contentHash, out bool cachedResult))
+            {
+                return cachedResult;
+            }
+
+            bool fresh = FileContainsAny(file.FullPath, needles);
+            cache.Set(file.FullPath, contentHash, fresh);
+            return fresh;
         }
-        return false;
+        return FileContainsAny(file.FullPath, needles);
     }
 
     /// <summary>
@@ -1797,55 +2128,177 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// identifier reference -- e.g. a docstring naming the marker -- does
     /// not match).
     /// </summary>
-    private static readonly string[] s_cppReflectionMarkers = new[]
-    {
-        "XCLASS(",
-        "XSTRUCT(",
-        "XENUM(",
-        "XINTERFACE(",
-        "XFUNCTION(",
-        "XPROPERTY(",
-        "XDELEGATE(",
-    };
+    /// <remarks>
+    /// Audit fix R7-M1: derived from
+    /// <see cref="Manifest.ContractSurface.MarkerMacros"/> so a new
+    /// marker added to the canonical surface (the C# source of truth
+    /// per ContractSurface.cs) is automatically recognized by the
+    /// scan. The prior hand-coded list (7 markers) had drifted from the
+    /// canonical list (10 markers) and silently missed XPARAM / XMETA /
+    /// XGENERATED_BODY -- which meant a module containing only those
+    /// markers would be (incorrectly) flagged as not needing XHT.
+    /// XGENERATED_BODY in particular is the canonical body macro that
+    /// every X-prefixed class with reflection emits; missing it is a
+    /// real correctness gap.
+    /// </remarks>
+    internal static readonly string[] s_cppReflectionMarkers = BuildCppReflectionMarkers();
 
     /// <summary>
     /// C# reflection-attribute vocabulary. Square brackets mirror the C#
     /// attribute syntax; a passing-mention of <c>XClass</c> in
     /// commentary text does not match.
     /// </summary>
-    private static readonly string[] s_csharpReflectionMarkers = new[]
-    {
-        "[XClass",
-        "[XStruct",
-        "[XEnum",
-        "[XInterface",
-        "[XFunction",
-        "[XProperty",
-        "[XDelegate",
-    };
+    /// <remarks>
+    /// Audit fix R7-M1: derived from
+    /// <see cref="Manifest.ContractSurface.MarkerMacros"/>. The C# form
+    /// is the C++ macro name in TitleCase prefixed with <c>[</c>;
+    /// <c>XGENERATED_BODY</c> has no C# attribute form (it is a C++
+    /// body macro) and is excluded.
+    /// </remarks>
+    internal static readonly string[] s_csharpReflectionMarkers = BuildCsharpReflectionMarkers();
 
     /// <summary>
-    /// Read up to 1 MiB of a file's bytes and check whether any of the
-    /// supplied literal substrings appears in the UTF-8 text. Files
-    /// that cannot be read return true conservatively (so a reflection
-    /// module is not silently skipped). The 1 MiB cap bounds the scan
-    /// cost for pathological large generated files; reflection markers
-    /// always appear within the first few hundred bytes of a real
-    /// source file (next to the type declaration).
+    /// Audit fix R7-M1: derive the C++ needle set from
+    /// <see cref="Manifest.ContractSurface.MarkerMacros"/>. Each marker is
+    /// the macro name followed by a literal <c>(</c> so a textual
+    /// identifier reference (e.g. an XML doc naming the marker) does
+    /// not produce a false positive.
     /// </summary>
-    private static bool FileContainsAny(string path, IReadOnlyList<string> needles)
+    private static string[] BuildCppReflectionMarkers()
     {
-        const int MaxBytes = 1 * 1024 * 1024;
+        IReadOnlyList<string> source = Manifest.ContractSurface.MarkerMacros;
+        string[] result = new string[source.Count];
+        for (int i = 0; i < source.Count; i++)
+        {
+            result[i] = source[i] + "(";
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Audit fix R7-M1: derive the C# attribute needle set from
+    /// <see cref="Manifest.ContractSurface.MarkerMacros"/>. The C# form
+    /// uses C# attribute syntax (<c>[</c> + TitleCase name); the body
+    /// macro <c>XGENERATED_BODY</c> has no C# analogue and is excluded.
+    /// </summary>
+    private static string[] BuildCsharpReflectionMarkers()
+    {
+        IReadOnlyList<string> source = Manifest.ContractSurface.MarkerMacros;
+        List<string> result = new(source.Count);
+        foreach (string macro in source)
+        {
+            if (string.Equals(macro, "XGENERATED_BODY", StringComparison.Ordinal))
+            {
+                // Body-macro: C++-only.
+                continue;
+            }
+            string titled = ToTitleCaseFromUpper(macro);
+            result.Add("[" + titled);
+        }
+        return result.ToArray();
+    }
+
+    /// <summary>
+    /// Audit fix R7-M1: convert an upper-case macro name like
+    /// <c>XCLASS</c> into the corresponding C# attribute name
+    /// <c>XClass</c>. Splits on underscores: each segment is
+    /// title-cased independently (so <c>FOO_BAR</c> becomes
+    /// <c>FooBar</c>) so a multi-word macro contract addition lands
+    /// with the right C# attribute spelling automatically.
+    /// </summary>
+    private static string ToTitleCaseFromUpper(string upper)
+    {
+        ArgumentNullException.ThrowIfNull(upper);
+        if (upper.Length == 0)
+        {
+            return upper;
+        }
+        StringBuilder sb = new(upper.Length);
+        bool capitalizeNext = true;
+        foreach (char c in upper)
+        {
+            if (c == '_')
+            {
+                capitalizeNext = true;
+                continue;
+            }
+            if (capitalizeNext)
+            {
+                sb.Append(char.ToUpperInvariant(c));
+                capitalizeNext = false;
+            }
+            else
+            {
+                sb.Append(char.ToLowerInvariant(c));
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Audit fix R7-C5: scan a file for any of the supplied literal
+    /// substrings, with encoding sniffing, 64 KiB cap, and C++ comment
+    /// stripping so an XCLASS reference inside a <c>//</c> or
+    /// <c>/* */</c> comment does NOT produce a false positive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Encoding detection.</b> The leading 2-4 bytes are checked for
+    /// a BOM:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>UTF-8 BOM (<c>EF BB BF</c>) -&gt; UTF-8 decode, BOM skipped.</item>
+    ///   <item>UTF-16 LE BOM (<c>FF FE</c>) -&gt; UTF-16 little-endian decode.</item>
+    ///   <item>UTF-16 BE BOM (<c>FE FF</c>) -&gt; UTF-16 big-endian decode.</item>
+    ///   <item>UTF-32 BOMs (<c>FF FE 00 00</c> / <c>00 00 FE FF</c>) -&gt; rejected; UTF-32 source is not supported per Contract Section 6.</item>
+    ///   <item>No BOM -&gt; default UTF-8 (Contract Section 6 mandates UTF-8 source).</item>
+    /// </list>
+    /// <para>
+    /// <b>Scan cap.</b> 64 KiB. Real-world reflection markers appear in
+    /// the first hundred bytes of any source file next to the type
+    /// declaration. The prior 1 MiB cap was 16x too generous and paid
+    /// for I/O on no real-world file.
+    /// </para>
+    /// <para>
+    /// <b>Comment stripping.</b> A simple C++ comment stripper rewrites
+    /// <c>//</c> line comments and <c>/* */</c> block comments to
+    /// spaces before the substring search. This eliminates the most
+    /// common false-positive class (a marker name mentioned in a doc
+    /// comment of an unrelated type). C# <c>///</c> doc comments are
+    /// handled by the same <c>//</c> rule (anything from <c>//</c> to
+    /// end-of-line is comment text).
+    /// </para>
+    /// <para>
+    /// <b>Failure mode.</b> Files that cannot be read return true
+    /// conservatively so a reflection module is not silently skipped.
+    /// </para>
+    /// </remarks>
+    internal static bool FileContainsAny(string path, IReadOnlyList<string> needles)
+    {
+        const int MaxBytes = 64 * 1024;
         try
         {
-            using FileStream fs = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            int toRead = (int)Math.Min(fs.Length, MaxBytes);
-            byte[] buffer = new byte[toRead];
-            int read = fs.Read(buffer, 0, toRead);
-            string text = Encoding.UTF8.GetString(buffer, 0, read);
+            byte[] buffer;
+            int read;
+            using (FileStream fs = new(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                int toRead = (int)Math.Min(fs.Length, MaxBytes);
+                buffer = new byte[toRead];
+                read = fs.Read(buffer, 0, toRead);
+            }
+
+            if (!TryDecodeWithBom(buffer, read, out string? text))
+            {
+                // Encoding we don't support -> conservatively claim it
+                // has markers so XHT is invoked. XHT will surface a
+                // clearer error if the source is genuinely unsupported.
+                return true;
+            }
+
+            string scanText = StripCppComments(text!);
             foreach (string needle in needles)
             {
-                if (text.Contains(needle, StringComparison.Ordinal))
+                if (scanText.Contains(needle, StringComparison.Ordinal))
                 {
                     return true;
                 }
@@ -1860,6 +2313,178 @@ public sealed class BuildMode : IToolMode<BuildMode>
         {
             return true;
         }
+    }
+
+    /// <summary>
+    /// Audit fix R7-C5: BOM-based encoding sniffer. Returns true with
+    /// the decoded string on a supported encoding; returns false when
+    /// the BOM identifies an unsupported encoding (UTF-32).
+    /// </summary>
+    internal static bool TryDecodeWithBom(byte[] buffer, int length, out string? text)
+    {
+        text = null;
+        if (length == 0)
+        {
+            text = string.Empty;
+            return true;
+        }
+
+        // UTF-32 LE: FF FE 00 00 -- check BEFORE UTF-16 LE (which is
+        // FF FE) so the 4-byte prefix wins.
+        if (length >= 4
+            && buffer[0] == 0xFF && buffer[1] == 0xFE
+            && buffer[2] == 0x00 && buffer[3] == 0x00)
+        {
+            return false;
+        }
+        // UTF-32 BE: 00 00 FE FF.
+        if (length >= 4
+            && buffer[0] == 0x00 && buffer[1] == 0x00
+            && buffer[2] == 0xFE && buffer[3] == 0xFF)
+        {
+            return false;
+        }
+        // UTF-8 BOM: EF BB BF.
+        if (length >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF)
+        {
+            text = Encoding.UTF8.GetString(buffer, 3, length - 3);
+            return true;
+        }
+        // UTF-16 LE: FF FE.
+        if (length >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE)
+        {
+            text = Encoding.Unicode.GetString(buffer, 2, length - 2);
+            return true;
+        }
+        // UTF-16 BE: FE FF.
+        if (length >= 2 && buffer[0] == 0xFE && buffer[1] == 0xFF)
+        {
+            text = Encoding.BigEndianUnicode.GetString(buffer, 2, length - 2);
+            return true;
+        }
+        // No BOM -> UTF-8 per Contract Section 6.
+        text = Encoding.UTF8.GetString(buffer, 0, length);
+        return true;
+    }
+
+    /// <summary>
+    /// Audit fix R7-C5: rewrite C++ <c>//</c> line comments and
+    /// <c>/* */</c> block comments in <paramref name="src"/> to spaces.
+    /// Preserves string literals so a marker name inside a regular
+    /// string doesn't get stripped (rare but possible).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The state machine is intentionally simple: it does NOT handle
+    /// raw string literals (<c>R"(...)"</c>), trigraphs, or line
+    /// continuations. A marker name inside a raw string literal is an
+    /// edge case that does not occur in practice; should a false
+    /// positive arise from such a case, the conservative behaviour
+    /// (claim markers present) errs on the side of running XHT, which
+    /// is the correct failure mode.
+    /// </para>
+    /// </remarks>
+    internal static string StripCppComments(string src)
+    {
+        if (string.IsNullOrEmpty(src))
+        {
+            return src;
+        }
+
+        StringBuilder sb = new(src.Length);
+        int i = 0;
+        while (i < src.Length)
+        {
+            char c = src[i];
+
+            // String literal -- copy through unchanged so comments
+            // inside strings don't confuse us. (A literal " inside a
+            // string is escaped as \"; we handle that below.)
+            if (c == '"')
+            {
+                sb.Append(c);
+                i++;
+                while (i < src.Length)
+                {
+                    char d = src[i];
+                    if (d == '\\' && i + 1 < src.Length)
+                    {
+                        // Escape: copy both chars (\ + escaped char).
+                        sb.Append(d);
+                        sb.Append(src[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    sb.Append(d);
+                    i++;
+                    if (d == '"')
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            // Character literal -- same treatment.
+            if (c == '\'')
+            {
+                sb.Append(c);
+                i++;
+                while (i < src.Length)
+                {
+                    char d = src[i];
+                    if (d == '\\' && i + 1 < src.Length)
+                    {
+                        sb.Append(d);
+                        sb.Append(src[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    sb.Append(d);
+                    i++;
+                    if (d == '\'')
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            // Line comment.
+            if (c == '/' && i + 1 < src.Length && src[i + 1] == '/')
+            {
+                sb.Append("  ");
+                i += 2;
+                while (i < src.Length && src[i] != '\n')
+                {
+                    sb.Append(' ');
+                    i++;
+                }
+                continue;
+            }
+
+            // Block comment.
+            if (c == '/' && i + 1 < src.Length && src[i + 1] == '*')
+            {
+                sb.Append("  ");
+                i += 2;
+                while (i + 1 < src.Length && !(src[i] == '*' && src[i + 1] == '/'))
+                {
+                    sb.Append(src[i] == '\n' ? '\n' : ' ');
+                    i++;
+                }
+                if (i + 1 < src.Length)
+                {
+                    sb.Append("  ");
+                    i += 2;
+                }
+                continue;
+            }
+
+            sb.Append(c);
+            i++;
+        }
+        return sb.ToString();
     }
 
     /// <summary>

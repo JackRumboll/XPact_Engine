@@ -235,4 +235,42 @@ public class SpecifierRegistryTests
         }
         return ctx;
     }
+
+    // ===== M5 audit: AllowOverride plugin extensibility =========
+
+    [Fact]
+    public void Register_BothAllowOverride_SecondWins()
+    {
+        // Per M5 audit (XHT.html Section 18.1): when both an existing
+        // entry and an incoming entry set AllowOverride=true, the
+        // incoming wins. Plugin-extensibility path.
+        SpecifierRegistry r = NewEmptyRegistry();
+        SpecifierDefinition base_ = new("PluginSpec", SpecifierContext.Class,
+            SpecifierValueKind.Flag, AllowMultiple: false, Documentation: "base",
+            AllowOverride: true);
+        SpecifierDefinition derived = new("PluginSpec", SpecifierContext.Property,
+            SpecifierValueKind.SingleValue, AllowMultiple: true, Documentation: "derived",
+            AllowOverride: true);
+
+        r.Register(base_);
+        r.Register(derived);
+
+        SpecifierDefinition? hit = r.Resolve("PluginSpec", SpecifierContext.Property);
+        Assert.NotNull(hit);
+        Assert.Equal("derived", hit!.Documentation);
+        Assert.True(hit.AllowMultiple);
+    }
+
+    [Fact]
+    public void Register_OnlyOneAllowOverride_StillThrowsOnConflict()
+    {
+        SpecifierRegistry r = NewEmptyRegistry();
+        SpecifierDefinition base_ = new("PluginSpec", SpecifierContext.Class,
+            SpecifierValueKind.Flag, false, null, AllowOverride: true);
+        SpecifierDefinition derived = new("PluginSpec", SpecifierContext.Property,
+            SpecifierValueKind.SingleValue, false, null, AllowOverride: false);
+
+        r.Register(base_);
+        Assert.Throws<InvalidOperationException>(() => r.Register(derived));
+    }
 }

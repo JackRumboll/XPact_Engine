@@ -98,17 +98,31 @@ public sealed class SpecifierRegistry : ISpecifierRegistry
             return;
         }
 
+        // Per M5 audit (XHT.html Section 18.1): the AllowOverride flag
+        // gates plugin-extensibility. When BOTH the existing entry AND
+        // the incoming one set AllowOverride, the incoming wins. This
+        // lets a derived plugin extend / replace a base plugin's
+        // specifier without requiring the base to be unloaded.
+        if (existing.AllowOverride && def.AllowOverride)
+        {
+            Logger.Warning(
+                "Specifier '{0}' replaced via AllowOverride (both definitions opted in).",
+                def.Name);
+            _byName[def.Name] = def;
+            return;
+        }
+
         // Conflict: two definitions with the same name but different
         // shapes. This is XHT140 territory. Throw a descriptive exception;
         // the resolver / plugin-loader maps this onto the XHT140 diagnostic.
         throw new InvalidOperationException(
             $"Specifier conflict on name '{def.Name}': "
             + $"existing=(ApplicableTo={existing.ApplicableTo}, ValueKind={existing.ValueKind}, "
-            + $"AllowMultiple={existing.AllowMultiple}), "
+            + $"AllowMultiple={existing.AllowMultiple}, AllowOverride={existing.AllowOverride}), "
             + $"attempted=(ApplicableTo={def.ApplicableTo}, ValueKind={def.ValueKind}, "
-            + $"AllowMultiple={def.AllowMultiple}). "
+            + $"AllowMultiple={def.AllowMultiple}, AllowOverride={def.AllowOverride}). "
             + "Two specifiers with the same name must be structurally identical "
-            + "or one must opt into AllowOverride (Phase 2). See XHT140.");
+            + "or both must set AllowOverride=true. See XHT140.");
     }
 
     /// <inheritdoc />

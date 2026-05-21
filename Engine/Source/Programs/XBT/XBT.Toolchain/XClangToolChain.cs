@@ -100,16 +100,25 @@ public sealed class XClangToolChain : XToolChain
     /// <c>/usr/bin/clang</c>; Android: <c>$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Audit fix R4-M2: instead of hardcoding <c>"18.0.0"</c>, the
-    /// discoverer now invokes <c>clang -dumpversion</c> to query the
+    /// discoverer invokes <c>clang -dumpversion</c> to query the
     /// installed version. The discovered version flows through the
     /// CacheKeyComponents of every compile action, so a Clang upgrade
     /// correctly invalidates the cache (mirrors the MSVC
-    /// <c>MsvcVersion=</c> cache-key contribution). Discovery failure
-    /// falls back to <c>"unknown"</c> so a malformed clang installation
-    /// does not abort discovery -- the resulting cache key is still
-    /// distinct from the previous-build value, which is the correct
-    /// failure mode.
+    /// <c>MsvcVersion=</c> cache-key contribution).
+    /// </para>
+    /// <para>
+    /// Audit fix R7-M10: a missing / unparseable Clang version is no
+    /// longer silently swallowed by the <c>"unknown"</c> sentinel. The
+    /// previous fallback produced an opaque cache-key component that
+    /// was distinct from any real version string, but downstream
+    /// diagnostics referencing the toolchain version couldn't surface
+    /// the real version, and the operator was left guessing why their
+    /// build was failing. The build now fails with exit 23
+    /// (<c>EngineOrToolchainVersionMismatch</c>) and a clear
+    /// diagnostic naming the clang path.
+    /// </para>
     /// </remarks>
     public static bool TryDiscover(Platform platform, string repoRoot, out XClangToolChain? toolchain)
     {
@@ -124,7 +133,19 @@ public sealed class XClangToolChain : XToolChain
         {
             return false;
         }
-        string version = QueryClangVersion(path) ?? "unknown";
+        // Audit fix R7-M10: fail-loud on unparseable version.
+        string? version = QueryClangVersion(path);
+        if (string.IsNullOrEmpty(version))
+        {
+            throw new Core.XBTException(
+                $"Failed to query Clang version from '{path}'. " +
+                "clang -dumpversion / --version did not return a parseable semver. " +
+                "Ensure the clang binary is functional and at least version 7 " +
+                "(the minimum Contract-supported version that emits a bare semver " +
+                "via -dumpversion). Re-run the build after fixing the toolchain " +
+                "installation.",
+                exitCode: 23);
+        }
         toolchain = new XClangToolChain(path, version, platform, repoRoot);
         return true;
     }

@@ -414,41 +414,95 @@ public sealed class ActionGraph
         }
 
         // DFS through prerequisites looking for any back edge.
-        Dictionary<LinkedAction, int> stackIndex = new();
-        List<LinkedAction> stack = new();
-        return DfsForCycle(start, stack, stackIndex);
+        return DfsForCycle(start);
     }
 
-    private static IReadOnlyList<string> DfsForCycle(
-        LinkedAction node,
-        List<LinkedAction> stack,
-        Dictionary<LinkedAction, int> stackIndex)
+    /// <summary>
+    /// Iterative DFS through prerequisite edges from <paramref name="start"/>
+    /// looking for any back edge that closes a cycle. On a hit the
+    /// returned list is the cycle path in traversal order with the
+    /// closing node repeated at the end.
+    /// </summary>
+    /// <remarks>
+    /// Audit fix R7-C4: rewritten from a recursive DFS to an explicit
+    /// <c>Stack&lt;(LinkedAction, int)&gt;</c> walk. The recursive form
+    /// blew the CLR stack on 10,000-deep action chains at engine scale
+    /// (e.g. a single deeply-included header file fan-out). The
+    /// iterative form bounds memory usage at the heap-allocated stack
+    /// and never blows the OS thread stack regardless of chain depth.
+    /// Mirrors the iterative pattern in <see cref="GetActionsForSubset"/>.
+    /// The traversal state per node is the index into the
+    /// <see cref="LinkedAction.PrerequisiteActions"/> list we are about
+    /// to visit next; advancing it lets us emulate the recursive call's
+    /// "continue from where we left off" behaviour after a descend.
+    /// </remarks>
+    private static IReadOnlyList<string> DfsForCycle(LinkedAction start)
     {
-        if (stackIndex.TryGetValue(node, out int existingIndex))
-        {
-            // Cycle closes between stack[existingIndex] and the top.
-            List<string> path = new();
-            for (int i = existingIndex; i < stack.Count; i++)
-            {
-                path.Add(stack[i].Description);
-            }
-            path.Add(node.Description);
-            return path;
-        }
-        stackIndex[node] = stack.Count;
-        stack.Add(node);
+        // Stack frame: (node, nextPrereqIndex). nextPrereqIndex is the
+        // index into node.PrerequisiteActions we are about to descend
+        // into. The same node may appear on the explicit stack via the
+        // index map exactly once (we never push a node already on the
+        // stack -- the cycle check happens at push time).
+        Stack<(LinkedAction Node, int NextIdx)> work = new();
+        // Open-set mapping: node -> position in the call stack at the
+        // time of push (== work.Count at the moment of push, i.e. the
+        // visited-depth). On a back edge we recover the cycle slice by
+        // unwinding the stack until we hit that position.
+        Dictionary<LinkedAction, int> stackIndex = new();
+        // The current stack contents in traversal order, used to format
+        // the cycle path on detection. Held alongside `work` because
+        // Stack<>'s enumerator order is LIFO; we want FIFO for the
+        // diagnostic.
+        List<LinkedAction> stackOrder = new();
 
-        foreach (LinkedAction prereq in node.PrerequisiteActions)
+        // Initial push.
+        stackIndex[start] = stackOrder.Count;
+        stackOrder.Add(start);
+        work.Push((start, 0));
+
+        while (work.Count > 0)
         {
-            IReadOnlyList<string> result = DfsForCycle(prereq, stack, stackIndex);
-            if (result.Count > 0)
+            (LinkedAction node, int nextIdx) = work.Peek();
+
+            // Are there more prerequisites to descend into from this
+            // node? If not, pop it.
+            if (nextIdx >= node.PrerequisiteActions.Count)
             {
-                return result;
+                work.Pop();
+                stackIndex.Remove(node);
+                stackOrder.RemoveAt(stackOrder.Count - 1);
+                continue;
             }
+
+            // Advance the parent's iteration index for the next pop.
+            // We do this BEFORE the descent so the parent's record on
+            // the stack reflects "we already started prereq nextIdx";
+            // when we return here we proceed to nextIdx + 1.
+            work.Pop();
+            work.Push((node, nextIdx + 1));
+
+            LinkedAction child = node.PrerequisiteActions[nextIdx];
+
+            // Cycle check: if the child is already on the visited
+            // stack, we found a back edge. Recover the cycle path from
+            // stackOrder + the closing node.
+            if (stackIndex.TryGetValue(child, out int existingIndex))
+            {
+                List<string> path = new(stackOrder.Count - existingIndex + 1);
+                for (int i = existingIndex; i < stackOrder.Count; i++)
+                {
+                    path.Add(stackOrder[i].Description);
+                }
+                path.Add(child.Description);
+                return path;
+            }
+
+            // Descend.
+            stackIndex[child] = stackOrder.Count;
+            stackOrder.Add(child);
+            work.Push((child, 0));
         }
 
-        stack.RemoveAt(stack.Count - 1);
-        stackIndex.Remove(node);
         return Array.Empty<string>();
     }
 

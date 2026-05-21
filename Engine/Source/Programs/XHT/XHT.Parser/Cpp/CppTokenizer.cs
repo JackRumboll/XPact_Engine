@@ -29,11 +29,16 @@ namespace Simgenics.XPact.XHT.Parser.Cpp;
 /// <para>
 /// <b>Position tracking.</b> Line / column are 1-based, UTF-16 code-unit
 /// indexed (matching .NET's native <see cref="string"/> view). A UTF-16
-/// surrogate pair counts as ONE column (consistent with how IDEs render
-/// astral-plane characters). Newlines reset column to 1 and advance line;
-/// <c>\r\n</c> is treated as one logical newline. Bare <c>\r</c>
-/// (old-Mac) is treated as a newline as well -- matches MSBuild
-/// diagnostic source-line handling.
+/// surrogate pair counts as TWO columns per M1 audit (one per code
+/// unit -- matches .NET <c>String.Length</c>). A tab character counts as
+/// ONE column (the diagnostic-column number is the raw character count;
+/// IDE tab-width settings are an IDE concern, not the tokenizer's).
+/// Newlines reset column to 1 and advance line; <c>\r\n</c> is treated
+/// as one logical newline. Bare <c>\r</c> (old-Mac) is treated as a
+/// newline as well -- matches MSBuild diagnostic source-line handling.
+/// A leading UTF-8 BOM at position 0 is silently skipped in the
+/// constructor (M2 audit; defensive belt-and-suspenders to
+/// <c>System.IO.File.ReadAllText</c>'s BOM handling).
 /// </para>
 /// <para>
 /// <b>Lookahead model.</b> The tokenizer scans linearly from the source
@@ -91,6 +96,19 @@ public sealed class CppTokenizer
     private int _column = 1;
 
     /// <summary>
+    /// True when the previous tokenizer transition crossed a physical
+    /// newline (set by <see cref="SkipWhitespaceInternal"/> when it
+    /// consumes a <c>\n</c> / <c>\r</c> sequence). The preprocessor-
+    /// directive recognizer in <see cref="ReadNextRaw"/> consults this
+    /// flag instead of <see cref="_column"/> alone, so a <c>#</c>
+    /// appearing after a <c>\\&lt;newline&gt;</c> continuation
+    /// (which RESETS <see cref="_column"/> to 1 but is logically still
+    /// part of the previous token) is NOT mis-classified as a
+    /// directive. Per C1 audit finding (XHT.html Section 3.1).
+    /// </summary>
+    private bool _atLogicalLineStart = true;
+
+    /// <summary>
     /// Construct a tokenizer for the named source.
     /// </summary>
     /// <param name="sourcePath">
@@ -112,6 +130,18 @@ public sealed class CppTokenizer
 
         _sourcePath = sourcePath;
         _source = sourceText;
+
+        // M2 audit: defensively skip a leading UTF-8 BOM. The U+FEFF
+        // character (decoded as the single-char string starting with
+        // ﻿) is produced when a caller forgets to strip it before
+        // reaching the tokenizer. File.ReadAllText already strips BOMs
+        // by default; this is a second line of defence for callers
+        // that bypass it. The BOM is invisible: column stays at 1 so
+        // the first real character of the source is at column 1.
+        if (_source.Length > 0 && _source[0] == '﻿')
+        {
+            _index = 1;
+        }
     }
 
     /// <summary>
@@ -231,16 +261,29 @@ public sealed class CppTokenizer
         }
 
         // Preprocessor directive recognition: '#' at start of a logical
-        // line. We track "start of line" by inspecting the character
-        // preceding the current position; an effective newline (or BOF)
-        // qualifies. We also allow leading whitespace on the line (the
-        // whitespace-skip above already consumed it; we look at the
-        // previous non-skipped character indirectly via the column
-        // value -- column 1 means we are at line start).
-        if (_source[_index] == '#' && _column == 1)
+        // line. Two conditions BOTH need to hold per the C1 audit
+        // finding (XHT.html Section 3.1):
+        //   (1) we are at column 1 OR have only seen whitespace since a
+        //       newline (covered by _atLogicalLineStart);
+        //   (2) we are at the beginning of file (defensively allowed).
+        // A bare column == 1 check is INSUFFICIENT because line
+        // continuations ('\\' + '\n') wrap _column back to 1 even
+        // though the next character is logically part of the previous
+        // line's token stream. _atLogicalLineStart tracks the
+        // logical-line transition explicitly and stays false until a
+        // real (non-continuation) newline fires.
+        if (_source[_index] == '#' && _atLogicalLineStart)
         {
-            return ReadPreprocessorDirective();
+            CppToken directive = ReadPreprocessorDirective();
+            // Directive runs to end-of-line, leaving _atLogicalLineStart
+            // set true by the trailing newline consume.
+            return directive;
         }
+
+        // From here on every real token consumed transitions us out of
+        // the logical-line-start state. The flag will be re-armed when
+        // SkipWhitespaceInternal next consumes a real newline.
+        _atLogicalLineStart = false;
 
         // Comment recognition. Both /* ... */ and // ... line forms.
         if (_source[_index] == '/' && _index + 1 < _source.Length)
@@ -305,6 +348,41 @@ public sealed class CppTokenizer
                 _column++;
                 continue;
             }
+            // Line-continuation: '\\' immediately followed by '\n' /
+            // '\r\n' / bare '\r' folds the next physical line into the
+            // current logical line per C1 audit + XHT.html Section 3.1.
+            // The continuation does NOT re-arm
+            // _atLogicalLineStart -- we are still inside the same
+            // logical line, so a '#' that follows is mid-statement (not
+            // a directive). Column is reset and line is advanced for
+            // diagnostic accuracy.
+            if (c == '\\' && _index + 1 < _source.Length)
+            {
+                char n1 = _source[_index + 1];
+                if (n1 == '\n')
+                {
+                    _index += 2;
+                    _line++;
+                    _column = 1;
+                    continue;
+                }
+                if (n1 == '\r')
+                {
+                    _index++; // '\\'
+                    _index++; // '\r'
+                    if (_index < _source.Length && _source[_index] == '\n')
+                    {
+                        _index++;
+                    }
+                    _line++;
+                    _column = 1;
+                    continue;
+                }
+                // '\\' followed by something else (e.g. a string-escape
+                // mid-stream) is NOT a line continuation; fall through
+                // and let the punctuator / literal reader consume it.
+                break;
+            }
             if (c == '\r')
             {
                 // \r\n -> single newline; bare \r -> newline.
@@ -315,6 +393,7 @@ public sealed class CppTokenizer
                 }
                 _line++;
                 _column = 1;
+                _atLogicalLineStart = true;
                 continue;
             }
             if (c == '\n')
@@ -322,6 +401,7 @@ public sealed class CppTokenizer
                 _index++;
                 _line++;
                 _column = 1;
+                _atLogicalLineStart = true;
                 continue;
             }
             break;
@@ -745,10 +825,25 @@ public sealed class CppTokenizer
         // Cursor sits on the opening '"'. Consume it.
         AdvanceOne();
 
-        // Read delimiter -- characters up to '(' (excluding ')').
+        // Read delimiter -- characters up to '('. Per M8 audit
+        // (XHT.html Section 3.1): the C++ raw-string grammar forbids
+        // ')' in the d-char sequence (so the terminator ')<delim>"'
+        // is unambiguous); reject it here as a malformed-literal.
         int delimStartIndex = _index;
-        while (_index < _source.Length && _source[_index] != '(' && _source[_index] != '"' && _source[_index] != '\n')
+        while (_index < _source.Length
+            && _source[_index] != '('
+            && _source[_index] != '"'
+            && _source[_index] != '\n')
         {
+            if (_source[_index] == ')')
+            {
+                EmitDiagnostic(DiagUnsupportedPunctuator, _line, _column,
+                    "Raw string-literal delimiter must not contain ')'; this is forbidden by the C++ grammar.");
+                // Advance past ')' to keep scanning; the rest of the
+                // line is most likely garbage but we don't bail.
+                AdvanceOne();
+                continue;
+            }
             AdvanceOne();
         }
         if (_index >= _source.Length || _source[_index] != '(')
@@ -858,7 +953,10 @@ public sealed class CppTokenizer
         int startColumn = _column;
 
         // Consume to end of line, honouring backslash-newline
-        // continuations.
+        // continuations. The trailing newline is NOT consumed here --
+        // we leave it for SkipWhitespaceInternal so the
+        // _atLogicalLineStart flag transitions correctly for the next
+        // token.
         while (_index < _source.Length)
         {
             char c = _source[_index];
@@ -878,6 +976,12 @@ public sealed class CppTokenizer
                     AdvanceOne();
                     continue;
                 }
+                if (peek < _source.Length && _source[peek] == '\r')
+                {
+                    AdvanceOne(); // '\\'
+                    AdvanceOne(); // '\r'
+                    continue;
+                }
             }
             if (c == '\n' || c == '\r')
             {
@@ -887,6 +991,9 @@ public sealed class CppTokenizer
         }
 
         string text = _source.Substring(startIndex, _index - startIndex);
+        // The directive token itself is on a logical line; the trailing
+        // newline (which SkipWhitespaceInternal will consume next) will
+        // re-arm _atLogicalLineStart for the following token.
         return new CppToken(CppTokenKind.PreprocessorDirective, MakeSpan(startLine, startColumn, text.Length), text);
     }
 
@@ -1054,13 +1161,16 @@ public sealed class CppTokenizer
         if (_index >= _source.Length) { return; }
         char c = _source[_index];
 
-        // Surrogate pair: count as one column. The pair is two UTF-16
-        // code units in the underlying .NET string but renders as one
-        // codepoint in the IDE.
+        // Surrogate pair: count as TWO columns (one per UTF-16 code
+        // unit) per M1 audit + XHT.html Section 3.1. This matches the
+        // .NET String.Length convention -- a single astral-plane
+        // codepoint at position N has Length == 2. IDEs that render
+        // each codepoint as one glyph will show a one-off column
+        // mismatch for diagnostics, which is the documented trade-off.
         if (char.IsHighSurrogate(c) && _index + 1 < _source.Length && char.IsLowSurrogate(_source[_index + 1]))
         {
             _index += 2;
-            _column++;
+            _column += 2;
             return;
         }
 

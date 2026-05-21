@@ -131,6 +131,23 @@ public static class LogicalPathSplitter
 
     private static string StripHeaderExtension(string path)
     {
+        // Per M10 audit: handle the compound .gen.h / .gen.cpp shape
+        // BEFORE the single-extension strip so a path like "X.gen.h"
+        // doesn't survive as "X.gen" through the FileId pipeline.
+        // .gen.* files are NOT supposed to flow through XHT as inputs
+        // (they're outputs); we reject them here with an exception so
+        // the caller surfaces a clear "cycle" diagnostic upstream.
+        string lower = path.ToLowerInvariant();
+        if (lower.EndsWith(".gen.h", System.StringComparison.Ordinal)
+            || lower.EndsWith(".gen.hpp", System.StringComparison.Ordinal)
+            || lower.EndsWith(".gen.cpp", System.StringComparison.Ordinal)
+            || lower.EndsWith(".gen.inl", System.StringComparison.Ordinal))
+        {
+            throw new System.ArgumentException(
+                $"Refusing to compute logical path for a .gen.* artefact ('{path}'); these are XHT outputs, never inputs.",
+                nameof(path));
+        }
+
         // Match against the well-known source-file extension set in a
         // single pass. Ordinal compare for OS-independence (the in-tree
         // manifest is canonical-cased). The body-macro FileId scheme is

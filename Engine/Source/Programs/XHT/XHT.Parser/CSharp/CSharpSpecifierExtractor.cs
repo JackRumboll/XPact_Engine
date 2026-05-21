@@ -49,7 +49,7 @@ namespace Simgenics.XPact.XHT.Parser.CSharp;
 ///     with zero arguments; the extractor returns an empty list.
 ///   </description></item>
 ///   <item><description>
-///     <c>[XClass(Within = typeof(AXActor))]</c> -- the
+///     <c>[XClass(Within = typeof(XActor))]</c> -- the
 ///     <see cref="TypeOfExpressionSyntax"/> form. The type's authored
 ///     name is extracted as a Reference value string.
 ///   </description></item>
@@ -89,8 +89,13 @@ public static class CSharpSpecifierExtractor
     /// <summary>Diagnostic code: specifier registered but not legal in this context.</summary>
     public const string DiagSpecifierIllegalInContext = "XHT111";
 
-    /// <summary>Diagnostic code: grammar error inside the attribute argument list.</summary>
-    public const string DiagSpecifierSyntaxError = "XHT114";
+    /// <summary>
+    /// Diagnostic code: grammar error inside the attribute argument
+    /// list. Per C7 audit (XHT.html Section 12.3): renumbered from
+    /// XHT114 to XHT065 to avoid collision with the validator-band
+    /// <c>DiagnosticCodes.ConfigConflictsWithNoExport</c>.
+    /// </summary>
+    public const string DiagSpecifierSyntaxError = "XHT065";
 
     /// <summary>
     /// Extract <see cref="Specifier"/> records from

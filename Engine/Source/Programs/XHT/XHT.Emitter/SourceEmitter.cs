@@ -149,16 +149,139 @@ public sealed class SourceEmitter
         sb.Append("() {}\n");
         sb.Append('\n');
 
-        // 6. Per-type emit blocks. Ordered by FullyQualifiedName ordinal
-        //    per Section 14.1.
+        // 6. Cross-module + same-module reference declarations per M9
+        //    audit (XHT.html Section 8.2). For each reflected referent
+        //    of a type in this header (super-class, interface, property-
+        //    type, etc.) emit an extern "C" singleton-getter forward
+        //    declaration so the local TU's ConstInit / RegisterType
+        //    callsites resolve at link time.
         List<HeaderEmitter.TypeEmitInfo> sorted = SortReflectedTypes(reflectedTypes);
+        EmitReferenceForwardDeclarations(sb, sorted);
 
+        // 7. Per-type emit blocks. Ordered by FullyQualifiedName ordinal
+        //    per Section 14.1.
         foreach (HeaderEmitter.TypeEmitInfo info in sorted)
         {
             EmitTypeBlock(sb, info);
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Per M9 audit: emit <c>extern "C" const X&lt;Role&gt;* Z_Construct_...()</c>
+    /// declarations for every reflected type referenced by the
+    /// reflected types in this header. References are gathered from
+    /// the resolver context (ResolvedSupers, ResolvedInterfaces,
+    /// ResolvedWithin, ResolvedPropertyTypes). Cross-module references
+    /// appear first under a "Cross-Module References" section header;
+    /// same-module references appear next under "Same-Module
+    /// References". Both sections are sorted by mangled symbol name
+    /// for determinism per Section 14.1.
+    /// </summary>
+    private void EmitReferenceForwardDeclarations(StringBuilder sb, List<HeaderEmitter.TypeEmitInfo> localTypes)
+    {
+        ResolverContext rc = _context.ResolverContext;
+        string thisModule = _context.Module.Name;
+
+        // Build a set of unique (target-module, target-name, target-role)
+        // triples referenced by the local types.
+        HashSet<XhtTypeBase> targets = new();
+        foreach (HeaderEmitter.TypeEmitInfo info in localTypes)
+        {
+            // Skip self-references (the per-type block emits the local
+            // singleton-getter as its own definition; no extern needed).
+            CollectReferences(info.Type, rc, targets);
+        }
+
+        // Filter out the local types themselves (they appear in the
+        // per-type emit block).
+        HashSet<XhtTypeBase> localSet = new();
+        foreach (HeaderEmitter.TypeEmitInfo info in localTypes)
+        {
+            localSet.Add(info.Type);
+        }
+
+        List<(string Section, string Symbol, string RoleToken)> entries = new();
+        foreach (XhtTypeBase target in targets)
+        {
+            if (localSet.Contains(target)) { continue; }
+
+            EngineRole role = HeaderEmitter.RoleOf(target);
+            string roleToken = SymbolNaming.RoleToken(role);
+            string symbol = SymbolNaming.SingletonGetter(target.ModuleName, target.Name, role);
+            string section = string.Equals(target.ModuleName, thisModule, StringComparison.Ordinal)
+                ? "Same-Module References"
+                : "Cross-Module References";
+            entries.Add((section, symbol, roleToken));
+        }
+
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        // Sort by section then by symbol for determinism.
+        entries.Sort((a, b) =>
+        {
+            int s = StringComparer.Ordinal.Compare(a.Section, b.Section);
+            return s != 0 ? s : StringComparer.Ordinal.Compare(a.Symbol, b.Symbol);
+        });
+
+        string? currentSection = null;
+        foreach ((string Section, string Symbol, string RoleToken) e in entries)
+        {
+            if (e.Section != currentSection)
+            {
+                sb.Append("// === ");
+                sb.Append(e.Section);
+                sb.Append(" ===\n");
+                currentSection = e.Section;
+            }
+            sb.Append("extern \"C\" const struct ");
+            sb.Append(e.RoleToken);
+            sb.Append("* ");
+            sb.Append(e.Symbol);
+            sb.Append("();\n");
+        }
+        sb.Append('\n');
+    }
+
+    private static void CollectReferences(XhtTypeBase t, ResolverContext rc, HashSet<XhtTypeBase> sink)
+    {
+        if (rc.ResolvedSupers.TryGetValue(t, out XhtTypeBase? super))
+        {
+            sink.Add(super);
+        }
+
+        if (t is XhtClass cls)
+        {
+            if (rc.ResolvedInterfaces.TryGetValue(cls, out List<XhtInterface>? ifaces))
+            {
+                foreach (XhtInterface iface in ifaces) { sink.Add(iface); }
+            }
+            if (rc.ResolvedWithin.TryGetValue(cls, out XhtClass? within))
+            {
+                sink.Add(within);
+            }
+            foreach (XhtProperty p in cls.Properties)
+            {
+                if (rc.ResolvedPropertyTypes.TryGetValue(p, out XhtTypeBase? pt))
+                {
+                    sink.Add(pt);
+                }
+            }
+        }
+        else if (t is XhtStruct st)
+        {
+            foreach (XhtProperty p in st.Properties)
+            {
+                if (rc.ResolvedPropertyTypes.TryGetValue(p, out XhtTypeBase? pt))
+                {
+                    sink.Add(pt);
+                }
+            }
+        }
     }
 
     private void EmitTypeBlock(StringBuilder sb, HeaderEmitter.TypeEmitInfo info)
@@ -175,134 +298,223 @@ public sealed class SourceEmitter
         sb.Append("namespace { // anonymous\n");
         sb.Append('\n');
 
-        // Property descriptor table (one comment line per declared
-        // property -- Phase 1e shape-only).
+        // Property descriptor table. Per C5 audit + Section 8.2: emit
+        // real XPropertyDescriptor records (Name + TypeName strings;
+        // STAGE-B fills in Offset / Size from the C++ layout at
+        // XCore-4b). Empty arrays still emit a placeholder zero entry
+        // so the resulting array is non-zero-sized (C++ forbids
+        // zero-sized arrays in some contexts; we sidestep by using
+        // nullptr / 0 in the descriptor's NumProperties field rather
+        // than emitting an empty array literal).
         IReadOnlyList<XhtProperty> properties = GetProperties(info.Type);
-        sb.Append("// Property descriptors for ");
-        sb.Append(info.Type.Name);
-        sb.Append(" (STAGE-B: byte layout TBD)\n");
-        sb.Append("static const struct XPropertyDescriptor s_props_");
-        sb.Append(SanitizeForCSymbol(info.Type.Name));
-        sb.Append("[] = {\n");
+        string propsArrayName = "s_props_" + SanitizeForCSymbol(info.Type.Name);
         if (properties.Count == 0)
         {
-            sb.Append("    /* STAGE-B: no reflected properties declared on this type */\n");
+            sb.Append("// No reflected properties on ");
+            sb.Append(info.Type.Name);
+            sb.Append('\n');
+            sb.Append("static constexpr const XPropertyDescriptor* ");
+            sb.Append(propsArrayName);
+            sb.Append(" = nullptr;\n");
         }
         else
         {
+            sb.Append("// Property descriptors for ");
+            sb.Append(info.Type.Name);
+            sb.Append(" (Offset / Size finalize at XCore-4b)\n");
+            sb.Append("static const XPropertyDescriptor ");
+            sb.Append(propsArrayName);
+            sb.Append("[] = {\n");
             foreach (XhtProperty p in properties)
             {
                 string resolved = ResolveTypeIdentifierDescription(p);
-                sb.Append("    /* STAGE-B: ");
-                sb.Append(p.Name);
-                sb.Append(": ");
-                sb.Append(SanitizeForComment(p.TypeIdentifier));
-                sb.Append(" -> ");
-                sb.Append(resolved);
-                sb.Append(" */\n");
+                sb.Append("    {\n");
+                sb.Append("        /* .Name        = */ ");
+                sb.Append(EncodeCStringLiteral(p.Name));
+                sb.Append(",\n");
+                sb.Append("        /* .TypeName    = */ ");
+                sb.Append(EncodeCStringLiteral(p.TypeIdentifier));
+                sb.Append(",\n");
+                sb.Append("        /* .Offset      = */ 0u,  // STAGE-B (XCore-4b)\n");
+                sb.Append("        /* .Size        = */ 0u,  // STAGE-B (XCore-4b)\n");
+                sb.Append("        /* .Flags       = */ 0u,  // STAGE-B (XCore-4b)\n");
+                sb.Append("        // resolved -> ");
+                sb.Append(SanitizeForComment(resolved));
+                sb.Append('\n');
+                sb.Append("    },\n");
             }
+            sb.Append("};\n");
         }
-        sb.Append("};\n");
         sb.Append('\n');
 
         // Function descriptor table.
         IReadOnlyList<XhtFunction> functions = GetFunctions(info.Type);
-        sb.Append("// Function descriptors for ");
-        sb.Append(info.Type.Name);
-        sb.Append(" (STAGE-B: byte layout TBD)\n");
-        sb.Append("static const struct XFunctionDescriptor s_funcs_");
-        sb.Append(SanitizeForCSymbol(info.Type.Name));
-        sb.Append("[] = {\n");
+        string funcsArrayName = "s_funcs_" + SanitizeForCSymbol(info.Type.Name);
         if (functions.Count == 0)
         {
-            sb.Append("    /* STAGE-B: no reflected functions declared on this type */\n");
+            sb.Append("// No reflected functions on ");
+            sb.Append(info.Type.Name);
+            sb.Append('\n');
+            sb.Append("static constexpr const XFunctionDescriptor* ");
+            sb.Append(funcsArrayName);
+            sb.Append(" = nullptr;\n");
         }
         else
         {
+            sb.Append("// Function descriptors for ");
+            sb.Append(info.Type.Name);
+            sb.Append(" (parameter arrays finalize at XCore-4b)\n");
+            sb.Append("static const XFunctionDescriptor ");
+            sb.Append(funcsArrayName);
+            sb.Append("[] = {\n");
             foreach (XhtFunction f in functions)
             {
-                sb.Append("    /* STAGE-B: ");
-                sb.Append(f.Name);
-                sb.Append('(');
-                bool firstParam = true;
-                foreach (XhtParam param in f.Parameters)
-                {
-                    if (!firstParam) { sb.Append(", "); }
-                    sb.Append(SanitizeForComment(param.TypeIdentifier));
-                    sb.Append(' ');
-                    sb.Append(param.Name);
-                    firstParam = false;
-                }
-                sb.Append(") -> ");
-                sb.Append(SanitizeForComment(f.ReturnType));
-                sb.Append(" */\n");
+                sb.Append("    {\n");
+                sb.Append("        /* .Name               = */ ");
+                sb.Append(EncodeCStringLiteral(f.Name));
+                sb.Append(",\n");
+                sb.Append("        /* .ReturnTypeName     = */ ");
+                sb.Append(EncodeCStringLiteral(f.ReturnType));
+                sb.Append(",\n");
+                sb.Append("        /* .NumParameters      = */ ");
+                sb.Append(f.Parameters.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("        /* .ParameterNames     = */ nullptr,  // STAGE-B (XCore-4b)\n");
+                sb.Append("        /* .ParameterTypeNames = */ nullptr,  // STAGE-B (XCore-4b)\n");
+                sb.Append("        /* .Flags              = */ 0u,       // STAGE-B (XCore-4b)\n");
+                sb.Append("    },\n");
             }
+            sb.Append("};\n");
         }
-        sb.Append("};\n");
         sb.Append('\n');
 
         // Enum-value descriptor table (only for enums).
         if (info.Type is XhtEnum xenum)
         {
-            sb.Append("// Enum-value descriptors for ");
-            sb.Append(xenum.Name);
-            sb.Append(" (STAGE-B: byte layout TBD)\n");
-            sb.Append("static const struct XEnumValueDescriptor s_values_");
-            sb.Append(SanitizeForCSymbol(xenum.Name));
-            sb.Append("[] = {\n");
+            string valuesArrayName = "s_values_" + SanitizeForCSymbol(xenum.Name);
             if (xenum.Values.Count == 0)
             {
-                sb.Append("    /* STAGE-B: enum has no declared values */\n");
+                sb.Append("// Enum '");
+                sb.Append(xenum.Name);
+                sb.Append("' has no declared values\n");
+                sb.Append("static constexpr const XEnumValueDescriptor* ");
+                sb.Append(valuesArrayName);
+                sb.Append(" = nullptr;\n");
             }
             else
             {
+                sb.Append("// Enum-value descriptors for ");
+                sb.Append(xenum.Name);
+                sb.Append('\n');
+                sb.Append("static const XEnumValueDescriptor ");
+                sb.Append(valuesArrayName);
+                sb.Append("[] = {\n");
                 foreach (XhtEnumValue v in xenum.Values)
                 {
-                    sb.Append("    /* STAGE-B: ");
-                    sb.Append(v.Name);
-                    sb.Append(" */\n");
+                    sb.Append("    { ");
+                    sb.Append(EncodeCStringLiteral(v.Name));
+                    sb.Append(", static_cast<int64_t>(");
+                    sb.Append(v.Value.ToString(CultureInfo.InvariantCulture));
+                    sb.Append("LL) },\n");
                 }
+                sb.Append("};\n");
             }
-            sb.Append("};\n");
             sb.Append('\n');
         }
 
         // Resolved super (read from ResolverContext.ResolvedSupers).
         string superName = ResolveSuperName(info.Type);
+        string superLiteral = superName.Length == 0
+            ? "nullptr"
+            : EncodeCStringLiteral(superName);
 
-        // ConstInit constant.
+        // ConstInit constant. The descriptor field set varies by role
+        // (XStructDescriptor lacks Functions; XEnumDescriptor uses
+        // Values not Properties). Each branch emits a strictly-typed
+        // initializer that matches the XReflectionRuntime.h descriptor
+        // layout per Contract Section 7.1 + Section 8.2.
         sb.Append("XCONSTINIT static const ");
         sb.Append(roleToken);
         sb.Append("Descriptor ");
         sb.Append(constInit);
         sb.Append(" = {\n");
-        sb.Append("    /* STAGE-B: actual field set TBD when XCore-4b ships at Step 4 */\n");
-        sb.Append("    .Name = \"");
-        sb.Append(info.Type.Name);
-        sb.Append("\",\n");
-        sb.Append("    .SuperName = ");
-        if (superName.Length == 0)
+
+        string nameLiteral = EncodeCStringLiteral(info.Type.Name);
+        string typeSym = SanitizeForCSymbol(info.Type.Name);
+
+        switch (info.Type)
         {
-            sb.Append("nullptr,\n");
+            case XhtClass:
+            case XhtDelegate:
+                sb.Append("    /* .Name           = */ ");
+                sb.Append(nameLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .SuperName      = */ ");
+                sb.Append(superLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .Properties     = */ s_props_");
+                sb.Append(typeSym);
+                sb.Append(",\n");
+                sb.Append("    /* .NumProperties  = */ ");
+                sb.Append(properties.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("    /* .Functions      = */ s_funcs_");
+                sb.Append(typeSym);
+                sb.Append(",\n");
+                sb.Append("    /* .NumFunctions   = */ ");
+                sb.Append(functions.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("    /* .Flags          = */ 0u,  // STAGE-B (XCore-4b)\n");
+                break;
+
+            case XhtStruct st:
+                sb.Append("    /* .Name           = */ ");
+                sb.Append(nameLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .SuperName      = */ ");
+                sb.Append(superLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .Properties     = */ s_props_");
+                sb.Append(typeSym);
+                sb.Append(",\n");
+                sb.Append("    /* .NumProperties  = */ ");
+                sb.Append(properties.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("    /* .Flags          = */ 0u,  // STAGE-B (XCore-4b)\n");
+                break;
+
+            case XhtEnum xen:
+                sb.Append("    /* .Name           = */ ");
+                sb.Append(nameLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .Values         = */ s_values_");
+                sb.Append(typeSym);
+                sb.Append(",\n");
+                sb.Append("    /* .NumValues      = */ ");
+                sb.Append(xen.Values.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("    /* .Flags          = */ ");
+                sb.Append(xen.IsFlags ? "1u" : "0u");
+                sb.Append(",  // bit 0 = IsFlags\n");
+                break;
+
+            case XhtInterface:
+                sb.Append("    /* .Name           = */ ");
+                sb.Append(nameLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .SuperName      = */ ");
+                sb.Append(superLiteral);
+                sb.Append(",\n");
+                sb.Append("    /* .Functions      = */ s_funcs_");
+                sb.Append(typeSym);
+                sb.Append(",\n");
+                sb.Append("    /* .NumFunctions   = */ ");
+                sb.Append(functions.Count.ToString(CultureInfo.InvariantCulture));
+                sb.Append("u,\n");
+                sb.Append("    /* .Flags          = */ 0u,  // STAGE-B (XCore-4b)\n");
+                break;
         }
-        else
-        {
-            sb.Append('"');
-            sb.Append(superName);
-            sb.Append("\",\n");
-        }
-        sb.Append("    .Properties = s_props_");
-        sb.Append(SanitizeForCSymbol(info.Type.Name));
-        sb.Append(",\n");
-        sb.Append("    .NumProperties = ");
-        sb.Append(properties.Count.ToString(CultureInfo.InvariantCulture));
-        sb.Append(",\n");
-        sb.Append("    .Functions = s_funcs_");
-        sb.Append(SanitizeForCSymbol(info.Type.Name));
-        sb.Append(",\n");
-        sb.Append("    .NumFunctions = ");
-        sb.Append(functions.Count.ToString(CultureInfo.InvariantCulture));
-        sb.Append(",\n");
+
         sb.Append("};\n");
         sb.Append('\n');
 
@@ -407,5 +619,51 @@ public sealed class SourceEmitter
         // embedded type identifier carrying a pointer-to-pointer pattern
         // doesn't accidentally terminate the comment block.
         return s.Replace("*/", "* /", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Encode an arbitrary string as a C string literal: wraps in
+    /// double quotes and escapes characters that would break the
+    /// literal (backslash, double-quote, control bytes). Used by the
+    /// descriptor-table emit so user-supplied identifiers don't
+    /// inject syntax. Per C5 audit + Section 8.2.
+    /// </summary>
+    /// <param name="s">The string to encode. May be null (returns <c>"nullptr"</c>).</param>
+    /// <returns>A C++ string literal, e.g. <c>"foo"</c>, with embedded quotes / backslashes escaped.</returns>
+    private static string EncodeCStringLiteral(string? s)
+    {
+        if (s is null)
+        {
+            return "nullptr";
+        }
+        StringBuilder sb = new(s.Length + 2);
+        sb.Append('"');
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\0': sb.Append("\\0"); break;
+                default:
+                    // Non-printable control characters get hex-escaped.
+                    if (c < 0x20)
+                    {
+                        sb.Append('\\');
+                        sb.Append('x');
+                        sb.Append(((int)c).ToString("X2", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
     }
 }

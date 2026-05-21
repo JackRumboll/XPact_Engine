@@ -276,26 +276,33 @@ public sealed class EmitReflectionActionTests : IDisposable
     }
 
     /// <summary>
-    /// Two headers with the same filename stem in different
-    /// directories collapse to a single produced-item pair (the action
-    /// graph forbids two ProducedItems at the same path).
+    /// Audit fix R7-C6: two headers with the same filename stem in
+    /// different directories fail the build with exit 50
+    /// (ManifestMalformed) at action-construct time. The prior
+    /// behaviour silently elided one of the headers, losing its
+    /// reflection metadata at run time. Fail-loud is the right
+    /// default per the engineering principles: a configuration
+    /// defect must surface at the earliest possible point.
     /// </summary>
     [Fact]
-    public void DuplicateHeaderStem_CollapsesToSinglePair()
+    public void DuplicateHeaderStem_ThrowsXBTException()
     {
         string xhtExe = MakeFile("xht.exe", "fake").FullPath;
         string manifest = MakeFile("Manifest.json", "{}").FullPath;
 
-        EmitReflectionAction action = new(
-            moduleName: "XScoring",
-            xhtExecutablePath: xhtExe,
-            manifestJsonPath: manifest,
-            outputDirectory: _scratchDir,
-            reflectionInputs: Array.Empty<FileItem>(),
-            reflectionHeaderRelativePaths: new[] { "Public/X.h", "Private/X.h" });
+        Simgenics.XPact.XBT.Core.XBTException ex =
+            Assert.Throws<Simgenics.XPact.XBT.Core.XBTException>(() => new EmitReflectionAction(
+                moduleName: "XScoring",
+                xhtExecutablePath: xhtExe,
+                manifestJsonPath: manifest,
+                outputDirectory: _scratchDir,
+                reflectionInputs: Array.Empty<FileItem>(),
+                reflectionHeaderRelativePaths: new[] { "Public/X.h", "Private/X.h" }));
 
-        // One .gen.h + one .gen.cpp + .init.gen.cpp + .gen.manifest = 4.
-        Assert.Equal(4, action.ProducedItems.Count);
+        Assert.Equal(50, ex.ExitCode);
+        Assert.Contains("Public/X.h", ex.Message);
+        Assert.Contains("Private/X.h", ex.Message);
+        Assert.Contains("X.gen.h", ex.Message);
     }
 
     /// <summary>

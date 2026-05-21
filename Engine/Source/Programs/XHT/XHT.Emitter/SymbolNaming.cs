@@ -159,9 +159,9 @@ public static class SymbolNaming
     /// Live Coding's patch link uses this name.
     /// </summary>
     /// <param name="moduleName">Module name as registered in the manifest. Must not be null / empty.</param>
-    /// <param name="typeName">Source type name (case preserved, e.g. <c>AXValve</c>). Must not be null / empty.</param>
+    /// <param name="typeName">Source type name (case preserved, e.g. <c>XValve</c>). Must not be null / empty.</param>
     /// <param name="role">The reflected-type role.</param>
-    /// <returns>The singleton-getter symbol (e.g. <c>Z_Construct_XClass_XGameFramework_AXValve</c>).</returns>
+    /// <returns>The singleton-getter symbol (e.g. <c>Z_Construct_XClass_XGameFramework_XValve</c>).</returns>
     /// <exception cref="ArgumentException">If <paramref name="moduleName"/> or <paramref name="typeName"/> is null / empty.</exception>
     public static string SingletonGetter(string moduleName, string typeName, EngineRole role)
     {
@@ -175,9 +175,9 @@ public static class SymbolNaming
     /// Format: <c>Z_ConstInit_X&lt;Kind&gt;_&lt;ModuleName&gt;_&lt;TypeName&gt;</c>.
     /// </summary>
     /// <param name="moduleName">Module name as registered in the manifest. Must not be null / empty.</param>
-    /// <param name="typeName">Source type name (case preserved, e.g. <c>AXValve</c>). Must not be null / empty.</param>
+    /// <param name="typeName">Source type name (case preserved, e.g. <c>XValve</c>). Must not be null / empty.</param>
     /// <param name="role">The reflected-type role.</param>
-    /// <returns>The ConstInit symbol (e.g. <c>Z_ConstInit_XClass_XGameFramework_AXValve</c>).</returns>
+    /// <returns>The ConstInit symbol (e.g. <c>Z_ConstInit_XClass_XGameFramework_XValve</c>).</returns>
     /// <exception cref="ArgumentException">If <paramref name="moduleName"/> or <paramref name="typeName"/> is null / empty.</exception>
     public static string ConstInitSymbol(string moduleName, string typeName, EngineRole role)
     {

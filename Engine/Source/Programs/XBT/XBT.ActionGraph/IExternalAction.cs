@@ -15,6 +15,23 @@ namespace Simgenics.XPact.XBT.ActionGraph;
 /// </summary>
 /// <remarks>
 /// <para>
+/// TODO(Phase 2 -- audit fix R7-M11): the surface here is 21
+/// properties wide. A Phase 2 audit should consider partitioning
+/// the surface into a core <see cref="IExternalAction"/> (action
+/// type + I/O + command + working directory) and per-feature
+/// interfaces (<c>ICacheable</c>, <c>IRemotable</c>,
+/// <c>IPatchable</c>) so a Phase 1 action can declare exactly which
+/// capabilities it participates in without paying the full schema
+/// surface cost. Until that refactor lands, every property below
+/// remains part of the
+/// <see cref="ActionHistory.CurrentVersion"/> schema digest --
+/// adding a property here rotates the digest and forces a one-time
+/// cache reset. Defer the refactor to Phase 2 because the changes
+/// cut across every action type and every cache layer.
+/// </para>
+/// </remarks>
+/// <remarks>
+/// <para>
 /// Every property is <c>get</c>-only; implementations are immutable
 /// once constructed. Determinism: every collection-shaped field returns
 /// a stably-ordered enumeration (sorted ordinal on prerequisites /

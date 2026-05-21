@@ -21,14 +21,14 @@ public class XhtClassTests
     public void Construct_TopLevelClass_PopulatesAllFields()
     {
         XhtClass c = new(
-            Name: "AXValve",
-            FullyQualifiedName: "Industrial::AXValve",
+            Name: "XValve",
+            FullyQualifiedName: "Industrial::XValve",
             OuterName: null,
             ModuleName: "XScoring",
             Language: Language.Cpp,
             Span: TestSpan(),
             Specifiers: Array.Empty<Specifier>(),
-            SuperIdentifier: "AXActor",
+            SuperIdentifier: "XActor",
             Super: null,
             Functions: Array.Empty<XhtFunction>(),
             Properties: Array.Empty<XhtProperty>(),
@@ -39,12 +39,12 @@ public class XhtClassTests
             RequiredAPIMacroName: "XSCORING_API",
             HasGeneratedBody: true);
 
-        Assert.Equal("AXValve", c.Name);
-        Assert.Equal("Industrial::AXValve", c.FullyQualifiedName);
+        Assert.Equal("XValve", c.Name);
+        Assert.Equal("Industrial::XValve", c.FullyQualifiedName);
         Assert.Null(c.OuterName);
         Assert.Equal("XScoring", c.ModuleName);
         Assert.Equal(Language.Cpp, c.Language);
-        Assert.Equal("AXActor", c.SuperIdentifier);
+        Assert.Equal("XActor", c.SuperIdentifier);
         Assert.Null(c.Super);
         Assert.Empty(c.Interfaces);
         Assert.Equal("XSCORING_API", c.RequiredAPIMacroName);
@@ -52,35 +52,39 @@ public class XhtClassTests
     }
 
     [Fact]
-    public void CaselessKey_CppPrefixedName_StripsLeadingPrefix_AndLowercases()
+    public void CaselessKey_PreservesX_AndLowercases()
     {
-        // Section 3.3 worked example: AXValve -> strip A -> xvalve.
-        XhtClass c = MakeMinimal("AXValve");
+        // Round-2 Section 3.3: the engine-name is the source identifier
+        // lowercased verbatim. XValve -> xvalve (X retained as XPact's
+        // permanent prefix; no UE-convention strip applied).
+        XhtClass c = MakeMinimal("XValve");
         Assert.Equal("xvalve", c.CaselessKey);
     }
 
     [Fact]
-    public void CaselessKey_CSharpName_LowercasesWithoutPrefixStrip()
+    public void CaselessKey_CSharpName_LowercasesVerbatim()
     {
-        // Section 3.3 C# example: Valve -> no UE prefix to strip -> valve.
         XhtClass c = MakeMinimal("Valve");
         Assert.Equal("valve", c.CaselessKey);
     }
 
     [Fact]
-    public void CaselessKey_XPrefixedCppName_DoesNotStripX()
+    public void CaselessKey_LegacyUePrefixedName_IsLowercasedVerbatim()
     {
-        // Section 3.3 X-is-permanent rule: XValve -> xvalve (X retained).
-        XhtClass c = MakeMinimal("XValve");
-        Assert.Equal("xvalve", c.CaselessKey);
+        // Round-2: legacy UE-style names (AXValve) are no longer stripped.
+        // They lowercase verbatim and produce a different engine-name
+        // from the canonical XValve. The expected XPact source form is
+        // simply "XValve".
+        XhtClass c = MakeMinimal("AXValve");
+        Assert.Equal("axvalve", c.CaselessKey);
     }
 
     [Fact]
     public void Record_WithSuperPattern_ProducesCopyWithMutatedField()
     {
         // The resolver mutates pointer fields via record `with` syntax.
-        XhtClass parent = MakeMinimal("AXActor");
-        XhtClass child = MakeMinimal("AXValve");
+        XhtClass parent = MakeMinimal("XActor");
+        XhtClass child = MakeMinimal("XValve");
         XhtClass resolved = child with { Super = parent };
 
         Assert.Null(child.Super);                  // original immutable
@@ -91,8 +95,8 @@ public class XhtClassTests
     [Fact]
     public void Equality_TwoIdenticalRecords_AreValueEqual()
     {
-        XhtClass a = MakeMinimal("AXValve");
-        XhtClass b = MakeMinimal("AXValve");
+        XhtClass a = MakeMinimal("XValve");
+        XhtClass b = MakeMinimal("XValve");
         Assert.Equal(a, b);
         Assert.Equal(a.GetHashCode(), b.GetHashCode());
     }
