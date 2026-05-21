@@ -1,0 +1,20 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Shared MSBuild targets for every XHT project.
+
+    Per /Documents/XHT.html Rev 5 Section 2.5: this file hosts the
+    git-tag-derived Version property used by XHT.Entry's `version` mode
+    (Section 1.1) to compose the printed
+        XHT v{semver}+{git-short-hash} ...
+    line. The git-tag derivation logic ships in Phase 1b alongside the
+    real version mode; this scaffold leaves the property surface empty
+    so the plumbing exists and can be extended without restructuring
+    the tree.
+
+    Mirrors the XBT precedent at
+    /Engine/Source/Programs/XBT/Directory.Build.targets.
+  -->
+
+</Project>

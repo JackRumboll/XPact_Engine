@@ -1,0 +1,75 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Shared MSBuild properties for every XHT project (XHT.Core, XHT.Manifest,
+    XHT.AST, XHT.Tables, XHT.Parser, XHT.Resolver, XHT.Emitter, XHT.Entry,
+    XHT.Tests).
+
+    Per /Documents/XHT.html Rev 5 Section 2 and Section 2.5: XHT is a
+    .NET 8 standalone tool, mirroring XBT's discipline at
+    /Engine/Source/Programs/XBT/Directory.Build.props.
+
+    This file is automatically imported by MSBuild from every .csproj
+    inside this directory tree. It must not import anything outside
+    /Engine/Source/Programs/XHT/.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      Reproducibility envelope mirroring XBT's Directory.Build.props.
+      Deterministic compilation + embedded sources guarantees byte-identical
+      output across two clean builds on the same machine. Per XHT.html
+      Section 14 byte-identical-output discipline.
+    -->
+    <Deterministic>true</Deterministic>
+    <EmbedAllSources>true</EmbedAllSources>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <DebugType>portable</DebugType>
+
+    <!--
+      Allow running with a newer .NET runtime (we target net8.0 but the
+      host machine may only have .NET 9+). Mirrors XBT and Unreal's
+      RollForward pattern.
+    -->
+    <RollForward>LatestMajor</RollForward>
+
+    <!--
+      XML documentation generation. Required by the brief: per-public-API
+      docs are emitted as part of the build. CS1591 (missing XML comment
+      on publicly visible type or member) is suppressed at this scaffold
+      stage so empty placeholder modules build clean; individual modules
+      may re-enable it once their public surface is documented.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <Copyright>Copyright Simgenics. All Rights Reserved.</Copyright>
+    <Company>Simgenics</Company>
+    <Product>XPact Header Tool</Product>
+
+    <!--
+      Packing is disabled tool-wide; XHT ships as a single self-contained
+      executable via dotnet publish, not as NuGet packages.
+    -->
+    <IsPackable>false</IsPackable>
+
+    <!--
+      Source generators / analyzers are disabled engine-wide for XHT
+      (mirrors XBT). XHT bakes its descriptor types by hand; Roslyn is
+      used only as a parser library inside XHT.Parser, never as an
+      analyzer host.
+    -->
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+</Project>

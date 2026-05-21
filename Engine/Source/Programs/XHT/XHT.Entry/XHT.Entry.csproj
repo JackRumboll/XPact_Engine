@@ -1,0 +1,38 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XHT.Entry</RootNamespace>
+    <AssemblyName>xht</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <Description>XHT executable: Main, mode dispatcher, CLI parser, contract-imported exit-code surface, JSON build-log writer, streaming JSON diagnostic channel writer. Phase 1a scaffold returns 0 unconditionally; real CLI ships in Phase 1b. Per /Documents/XHT.html Rev 5 Sections 1 and 2.</Description>
+
+    <!--
+      Release-time single-file publish properties per XHT.html Section 2.5.
+      PublishSingleFile / SelfContained are only honoured at `dotnet publish`
+      time, not at `dotnet build`. Declared here so a release pipeline can
+      publish without further configuration. Mirrors XBT.Entry's discipline.
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!--
+      RuntimeIdentifier is intentionally NOT set in the csproj. Per
+      XHT.html Section 2.5 the publish RID is picked at the publish
+      command line so the same source tree publishes for Win64, Linux,
+      and Android-host-x86_64 deterministically.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
+    <ProjectReference Include="..\XHT.Manifest\XHT.Manifest.csproj" />
+    <ProjectReference Include="..\XHT.AST\XHT.AST.csproj" />
+    <ProjectReference Include="..\XHT.Tables\XHT.Tables.csproj" />
+    <ProjectReference Include="..\XHT.Parser\XHT.Parser.csproj" />
+    <ProjectReference Include="..\XHT.Resolver\XHT.Resolver.csproj" />
+    <ProjectReference Include="..\XHT.Emitter\XHT.Emitter.csproj" />
+  </ItemGroup>
+
+</Project>

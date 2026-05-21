@@ -1,0 +1,70 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Central NuGet package version management for the XHT solution.
+
+    Per /Documents/XHT.html Rev 5 Section 2.5: XHT pins NuGet packages
+    via Directory.Packages.props. Individual csproj files reference
+    packages with <PackageReference Include="..." /> (no Version
+    attribute); MSBuild resolves the version from <PackageVersion>
+    entries below. Mirrors the dotnet central package management
+    convention.
+
+    Versions chosen to mirror XBT's pinned versions exactly where the
+    same package is shared (Microsoft.CodeAnalysis.CSharp.Scripting
+    4.11.0, FlatSharp 7.9.0, xUnit 2.9.3, etc.) so the two toolchains
+    stay in lockstep. See /Engine/Source/Programs/XBT/XBT.Configuration/
+    XBT.Configuration.csproj and XBT.Manifest/FlatSharp.targets for the
+    precedents.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      With central management on, transitive package versions must
+      also be governed by <PackageVersion>. Off-by-default warning
+      suppression is intentional: any package surfaced as transitive-
+      only and lacking a PackageVersion entry will fail the build,
+      which is the behaviour we want.
+    -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn: parse-only use by XHT.Parser per XHT.html Section 3.2.
+      Mirrors XBT.Configuration's pin of Microsoft.CodeAnalysis.CSharp
+      .Scripting 4.11.0 so both tools host the same Roslyn surface
+      (XBT for its .Build.cs escape hatch; XHT for its C# parser).
+      We reference the non-Scripting package because XHT does not run
+      CSharpScript; it only parses syntax trees.
+    -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+
+    <!--
+      FlatSharp: shared with XBT.Manifest (which pins 7.9.0 in
+      /Engine/Source/Programs/XBT/XBT.Manifest/FlatSharp.targets).
+      XHT.Manifest reads the same Manifest.fbs schema XBT emits. The
+      Runtime package is the public link; the Compiler package is
+      private (PrivateAssets=all) so downstream consumers never pick
+      it up as a transitive dependency. Phase 1a does not actually
+      compile any .fbs file in XHT (the reader DTOs ship in Phase 1b);
+      versions are pinned now so 1b drops in cleanly.
+    -->
+    <PackageVersion Include="FlatSharp.Runtime" Version="7.9.0" />
+    <PackageVersion Include="FlatSharp.Compiler" Version="7.9.0" />
+
+    <!--
+      xUnit + test infrastructure: mirrors XBT.Tests' pinned versions
+      so a single MSBuild upgrade across both Programs/ trees stays
+      consistent. See /Engine/Source/Programs/XBT/XBT.Tests/XBT.Tests
+      .csproj for the source-of-truth pins.
+    -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.2" />
+  </ItemGroup>
+
+</Project>

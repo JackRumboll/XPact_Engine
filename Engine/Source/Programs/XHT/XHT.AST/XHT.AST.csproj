@@ -1,0 +1,14 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XHT.AST</RootNamespace>
+    <AssemblyName>XHT.AST</AssemblyName>
+    <Description>Unified language-tagged type graph: XhtType base + XhtClass / XhtStruct / XhtEnum / XhtInterface / XhtFunction / XhtDelegate / XhtProperty + property subclasses. Every node carries a SourceLanguage tag (Cpp / CSharp) so emit can branch where the language matters. Per /Documents/XHT.html Rev 5 Section 4.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
+  </ItemGroup>
+
+</Project>

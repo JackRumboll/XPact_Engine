@@ -1,0 +1,16 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XHT.Emitter</RootNamespace>
+    <AssemblyName>XHT.Emitter</AssemblyName>
+    <Description>ConstInit-style emission (Toolchain Contract Section 7.1). Three emit targets per module: per-reflected-header {Header}.gen.h + per-reflected-header {Header}.gen.cpp + per-module {Module}.init.gen.cpp + per-module {Module}.gen.manifest. All writes use the atomic temp-file + rename pattern. Per /Documents/XHT.html Rev 5 Sections 8 and 9.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
+    <ProjectReference Include="..\XHT.AST\XHT.AST.csproj" />
+    <ProjectReference Include="..\XHT.Manifest\XHT.Manifest.csproj" />
+  </ItemGroup>
+
+</Project>

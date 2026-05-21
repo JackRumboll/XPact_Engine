@@ -1,0 +1,27 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XHT.Parser</RootNamespace>
+    <AssemblyName>XHT.Parser</AssemblyName>
+    <Description>Two parser engines, one shared registration model. C++ side: handwritten single-pass tokenizer with column-precise spans. C# side: Roslyn-based (Microsoft.CodeAnalysis.CSharp; parse-only, no semantic-model use, no analyzer hosting). Both feed a unified token stream consumed by the marker-driven dispatcher. Per /Documents/XHT.html Rev 5 Section 3.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XHT.Core\XHT.Core.csproj" />
+    <ProjectReference Include="..\XHT.AST\XHT.AST.csproj" />
+    <ProjectReference Include="..\XHT.Tables\XHT.Tables.csproj" />
+    <ProjectReference Include="..\XHT.Manifest\XHT.Manifest.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn parse-only surface. XHT.html Section 2 paragraph "Roslyn as
+      a dependency": referenced by XHT.Parser directly (not lazy-loaded
+      as in XBT) because every XHT invocation parses C#. Cold-start cost
+      ~250-400 ms amortised over the build.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+</Project>
