@@ -1,0 +1,86 @@
+# =====================================================================
+# tl_expected -- header-only vendored polyfill of std::expected.
+# =====================================================================
+#
+# Per XCore-4a Rev 3 / Section 13.1 fix B-M6: on C++20 toolchains the
+# engine vendors TartanLlama/expected (CC0 / MIT dual license; the
+# upstream is dual-licensed but the file's per-line header is CC0
+# "Public Domain Dedication") as the polyfill behind XCore::Result.
+# This module exists purely so XBT's per-module include-path
+# resolution mechanism makes the vendored header reachable from any
+# consumer that lists `tl_expected` as a public dependency.
+#
+# Layout:
+#   /Engine/Source/ThirdParty/tl_expected/
+#     expected.hpp                       -- the vendored header
+#     LICENSE.txt                        -- upstream license text
+#     tl_expected.Build.toml             -- this file
+#
+# Consumer usage:
+#   public_dependency_modules = [
+#       { name = "tl_expected", interface_module = true },
+#   ]
+# Then:
+#   #include "ThirdParty/tl_expected/expected.hpp"
+# resolves via the include search path
+# /Engine/Source/ThirdParty/tl_expected/../  (the module's
+# public_include_paths declared below; the `.` entry means the
+# module's own directory is added as an include root, so a path of
+# the form `ThirdParty/tl_expected/expected.hpp` would be malformed
+# but a direct `expected.hpp` works after the `/I` flag is emitted).
+#
+# Per the XBT TOML parser (BuildTomlParser.cs:602 ValidatePathField),
+# paths must be relative to the module's BaseDirectory and no `..`
+# segments are allowed. We therefore declare `.` (the module's
+# directory itself) as the public include path; consumers then
+# `#include "expected.hpp"` -- but the spec body explicitly states
+# the include form `#include "ThirdParty/tl_expected/expected.hpp"`,
+# which requires the parent of `ThirdParty` (i.e., /Engine/Source/)
+# to be the include root.
+#
+# RESOLUTION: declare the BUILD as exposing both `.` (the directory)
+# AND `..` (the ThirdParty parent containing the `tl_expected/`
+# subdirectory). Since the ValidatePathField bans `..`, we instead
+# adopt the "include the directory" pattern: consumers write
+#   #include "expected.hpp"
+# inside this module's include search path. XResult.h is updated to
+# use this shorter spelling.
+#
+# Acceptable trade: the spec's quoted include form is the long form;
+# the engineering-correct landed form is the short form. The mapping
+# is documented in XResult.h's banner.
+#
+# =====================================================================
+
+name = "tl_expected"
+tier = "Engine"
+module_type = "ThirdParty"
+languages = "Cpp"
+
+# Sim-path: this is a header-only polyfill. tl::expected is pure
+# C++; no libm, no platform calls, no locale-dependent code paths.
+# It is sim-path-safe by construction. Setting sim_path = false at
+# the module level so it can be consumed by both sim-path and non-
+# sim-path TUs (the same pattern XCore uses).
+sim_path = false
+
+simd_level = "Default"
+
+# The vendored header lives in the module's own directory; declaring
+# `.` makes that directory an include search root so consumers write
+# `#include "expected.hpp"`. The longer-form `#include
+# "ThirdParty/tl_expected/expected.hpp"` is documented in the spec
+# but requires the /Engine/Source/ directory to be an include root,
+# which the XBT TOML schema (no `..` traversal) forbids; the short
+# form is the engineering-correct compromise.
+public_include_paths = [
+    ".",
+]
+
+private_include_paths = []
+
+public_dependency_modules = []
+private_dependency_modules = []
+
+public_definitions = []
+private_definitions = []

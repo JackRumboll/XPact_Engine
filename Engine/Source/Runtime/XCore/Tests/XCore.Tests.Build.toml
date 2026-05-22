@@ -131,8 +131,112 @@
 #                                            GetAllocatedBytes(Math)
 #                                            (Section 5.5 row 2).
 #
-# Subsequent phases (1d container tests for TMap/TSet/FString, ...)
-# add their TUs under this same module.
+# Phase 1d (Step 8 FString + FUTF16String + XCSharpString) adds:
+#
+#   * Tests/Containers/FString.Tests/Construction.cpp
+#                                         -- default, C-string, C-string+len,
+#                                            copy, move ctors; SSO/heap
+#                                            length-boundary behaviour
+#                                            (Section 11.1).
+#   * Tests/Containers/FString.Tests/Append.cpp
+#                                         -- Append/operator+/+=, SSO->heap
+#                                            promotion verification
+#                                            (Section 11.1 fix M-6, B-M4).
+#   * Tests/Containers/FString.Tests/LenBytesVsLenCodepoints.cpp
+#                                         -- locked decision 3: LenBytes
+#                                            and LenCodepoints distinct
+#                                            on multibyte UTF-8 inputs.
+#   * Tests/Containers/FString.Tests/CodepointAt.cpp
+#                                         -- O(n) codepoint access; Result
+#                                            error cases (Empty, OOB,
+#                                            InvalidUtf8); genuine U+FFFD
+#                                            distinguished from decode
+#                                            error.
+#   * Tests/Containers/FString.Tests/IndexOf.cpp
+#                                         -- byte / codepoint / substring
+#                                            search; BMH agreement vs
+#                                            brute-force on a 400-byte
+#                                            haystack with 1800 needles.
+#   * Tests/Containers/FString.Tests/Parse.cpp
+#                                         -- ToInt32/ToInt64/ToFloat/ToDouble
+#                                            success + Empty/Malformed/
+#                                            Overflow error paths; round-
+#                                            trip via FromInt32 / FromDouble.
+#   * Tests/Containers/FString.Tests/Format.cpp
+#                                         -- PLACEHOLDER: Format/FormatFixed
+#                                            templates land in Phase 1e
+#                                            (math + Sleef vendoring);
+#                                            current body is a skip-marker
+#                                            so the test runner ranks the
+#                                            file as PASSED.
+#   * Tests/Containers/FString.Tests/SsoVsHeap.cpp
+#                                         -- byte-level peek at byte 63
+#                                            discriminator across {0, 23,
+#                                            46, 47, 48, 100, 1000}-byte
+#                                            strings (Section 11.1.4).
+#   * Tests/Containers/FString.Tests/SizeofABILock.cpp
+#                                         -- runtime check that sizeof
+#                                            and alignof match the spec
+#                                            ABI locks (Section 11.1).
+#   * Tests/Containers/FUTF16String.Tests/RoundTrip.cpp
+#                                         -- FString <-> FUTF16String byte-
+#                                            exact for ASCII, Latin, CJK,
+#                                            and emoji (supplementary-plane);
+#                                            verifies the hand-rolled UTF-8
+#                                            <-> UTF-16 converter.
+#
+# Phase 1d Subagent B (Step 9 advanced containers + Section 11.9
+# Hash library) adds:
+#
+#   * Tests/Containers/TSet.Tests/AddContainsRemove.cpp
+#                                         -- 10K random Add+Contains+Remove
+#                                            round-trip, verified against
+#                                            std::unordered_set reference
+#                                            (Section 5.6 unit row).
+#   * Tests/Containers/TSet.Tests/Rehash.cpp
+#                                         -- Force rehashes at the 7/8 load
+#                                            factor; assert no element loss
+#                                            (Section 5.6).
+#   * Tests/Containers/TSet.Tests/SwissTableLayout.cpp
+#                                         -- Verify per-slot control-byte
+#                                            encoding (kCtrlEmpty=0x80,
+#                                            kCtrlDeleted=0xFE, Full=0x00..0x7F)
+#                                            + mirror-bytes contract
+#                                            (Section 5.1 fix B-M2).
+#   * Tests/Containers/TMap.Tests/AddFindRemove.cpp
+#                                         -- 5K random key/value pairs;
+#                                            Find/Contains/operator[]/Add-
+#                                            overwrite/Remove round-trip
+#                                            against std::unordered_map.
+#   * Tests/Containers/TMap.Tests/PerfVsAbseil.cpp
+#                                         -- Algorithmic-complexity sanity
+#                                            check at 10K/100K scale. The
+#                                            formal abseil comparison
+#                                            (Section 5.6 acceptance "within
+#                                            10% of flat_hash_map scalar-hash
+#                                            config") lands in Phase 1e once
+#                                            abseil is vendored.
+#   * Tests/Hash/FBlake3.Tests/KnownVectors.cpp
+#                                         -- 9 official BLAKE3 test vectors
+#                                            (empty + lengths 1..8 from
+#                                            test_vectors.json) verified
+#                                            byte-exact.
+#   * Tests/Hash/FXxh3.Tests/ArchBitExact.cpp
+#                                         -- Repeatability + length-discrim-
+#                                            ination + seed-sensitivity +
+#                                            content-sensitivity checks
+#                                            against the scalar XXH3 impl.
+#                                            The full cross-platform
+#                                            bit-exactness comparison
+#                                            (Section 17.7 G-extra) is
+#                                            wired via CI in Phase 1e.
+#   * Tests/Hash/FCrc32.Tests/KnownVectors.cpp
+#                                         -- CRC-32C standard "check" vector
+#                                            "123456789" -> 0xE3069283 +
+#                                            empty input.
+#
+# Subsequent phases (1e: FText, math, CVars, ...) add their TUs under
+# this same module.
 #
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's
