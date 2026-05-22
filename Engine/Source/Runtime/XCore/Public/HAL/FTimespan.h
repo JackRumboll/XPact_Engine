@@ -208,9 +208,16 @@ public:
     //
     // The spaceship operator returns std::strong_ordering because the
     // underlying int64 has total ordering.
+    //
+    // C++20 standard requirement [class.compare.default]/1: the
+    // defaulted comparison operator inside a class must take
+    // `const T&` (not `T` by value). The Phase 1a wording at Section
+    // 7.5 spec lines 760-761 wrote `FTimespan Other` by value; MSVC
+    // 19.44 + Clang 17 + GCC 13 all reject the by-value form per
+    // strict C++20 conformance. Phase 1b fix: switch to const-ref.
     // -----------------------------------------------------------------
-    constexpr bool operator==(FTimespan Other) const noexcept = default;
-    constexpr auto operator<=>(FTimespan Other) const noexcept = default;
+    constexpr bool operator==(const FTimespan& Other) const noexcept = default;
+    constexpr auto operator<=>(const FTimespan& Other) const noexcept = default;
 };
 
 // ---------------------------------------------------------------------

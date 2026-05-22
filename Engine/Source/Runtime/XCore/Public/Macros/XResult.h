@@ -38,6 +38,7 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XErrorTypes.h"  // brings in FParseError, FBoundsError, etc., so consumers can declare Result<T, FBoundsError> without an extra include
+#include <utility>               // std::forward used by the Unexpected<E>() factory below (and by tl::expected's polyfill path); Phase-1b errata fix
 
 #if defined(__cpp_lib_expected) && __cpp_lib_expected >= 202202L
     #include <expected>

@@ -196,6 +196,36 @@ public:
     constexpr int64_t ToUnixMicros() const noexcept { return m_unixMicros; }
 
     // -----------------------------------------------------------------
+    // Field accessors (Section 7.5 spec lines 789-795).
+    //
+    // Each accessor decomposes m_unixMicros into the requested field
+    // via XDateTimeAlgorithms.h's proleptic-Gregorian primitives. The
+    // bodies live in Private/HAL/FDateTime.cpp; the surface here is
+    // Phase 1b-final.
+    //
+    // Year: proleptic-Gregorian year. Can be negative for dates before
+    //       year 1; year 0 is well-defined.
+    // Month: [1, 12].
+    // Day: [1, last_day_of_month(year, month)].
+    // Hour: [0, 23].
+    // Minute: [0, 59].
+    // Second: [0, 59]; leap seconds not modeled (the engine treats
+    //         leap seconds as smeared into the surrounding seconds).
+    // Microsecond: [0, 999999].
+    //
+    // Sim-path discipline: these accessors are FDateTime-typed and
+    // therefore sim-path-banned at the type level (Section 7.5).
+    // Sim-path code that needs duration arithmetic uses FTimespan.
+    // -----------------------------------------------------------------
+    [[nodiscard]] int32_t Year()        const noexcept;
+    [[nodiscard]] int32_t Month()       const noexcept;
+    [[nodiscard]] int32_t Day()         const noexcept;
+    [[nodiscard]] int32_t Hour()        const noexcept;
+    [[nodiscard]] int32_t Minute()      const noexcept;
+    [[nodiscard]] int32_t Second()      const noexcept;
+    [[nodiscard]] int32_t Microsecond() const noexcept;
+
+    // -----------------------------------------------------------------
     // Arithmetic methods (AddDays / AddHours / AddMinutes).
     //
     // Each adds a fixed-microsecond multiple to the current count.
@@ -262,9 +292,13 @@ public:
     // C++20 operator==/operator<=> defaulted; provides ==, !=, <, >,
     // <=, >=. The comparison is integer comparison on m_unixMicros
     // which is bit-exact across all three platforms.
+    //
+    // C++20 [class.compare.default]/1: defaulted comparison inside a
+    // class requires `const T&` (the Phase 1a wording used by-value
+    // which violates strict C++20 conformance; MSVC rejects).
     // -----------------------------------------------------------------
-    constexpr bool operator==(FDateTime Other) const noexcept = default;
-    constexpr auto operator<=>(FDateTime Other) const noexcept = default;
+    constexpr bool operator==(const FDateTime& Other) const noexcept = default;
+    constexpr auto operator<=>(const FDateTime& Other) const noexcept = default;
 };
 
 // ---------------------------------------------------------------------

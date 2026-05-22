@@ -14,13 +14,112 @@
 #     fix MAJOR XHT empty-emit).
 #   * Section 2 -- platforms: Win64, Linux, Android-ARM64.
 #
-# Phase 1a scope: only the header-macros layer (this subagent's
-# scope). Phase 1b-d land platform HAL, allocator, threading,
+# Phase 1a scope: header-macros layer (Step 1). Phase 1b adds Step 2
+# (Platform HAL abstract surface) + Step 3 (per-OS implementations) +
+# Step 4 (allocator: FMemory, FMallocBinnedX, FTLSBinCache,
+# FMemoryConfig) + Step 5 (leak detection: FLeakTracker + per-platform
+# StackWalk implementations). Phase 1c+ land threading primitives,
 # containers, math, CVars, stat, FText (per Section 14 implementation
-# order). The dependency list here reflects Phase 1a state -- no
-# private deps yet because the only Private/*.cpp file
-# (XAssertionMacros.cpp + XInitPhase.cpp) link against the standard
-# library only.
+# order). No external private deps yet; every .cpp links against the
+# C++ standard library + the platform's libc + (on Win64) dbghelp.lib
+# via #pragma.
+#
+# =====================================================================
+#
+# Phase 1b source layout:
+#
+#   Private/HAL/                       -- cross-platform .cpp files:
+#       FPlatformAtomics.cpp           -- std::atomic_ref-backed atomics
+#                                         (Section 7.6 row 3; one TU
+#                                          compiles for all 3 platforms).
+#       FDateTime.cpp                  -- FDateTime body; the only
+#                                         platform-divergent code is
+#                                         CaptureWallclockMicros which
+#                                         is `#if XPACT_PLATFORM_*`
+#                                         gated inline.
+#       XDateTimeAlgorithms.cpp        -- ISO 8601 parse/emit + Howard
+#                                         Hinnant primitives.
+#       XInitPhase.cpp                 -- pre-existing (Phase 1a).
+#
+#       FMemory.cpp                    -- Step 4 allocator facade
+#                                         (dispatcher to FMallocBinnedX).
+#       FMallocBinnedX.cpp             -- Step 4 binned allocator body
+#                                         (UE Binned3 descendant; 56 bins
+#                                          32 B - 16 KiB; per-bin 1 GiB
+#                                          VM reservation).
+#       FTLSBinCache.cpp               -- Step 4 per-thread bin cache
+#                                         (lazy-init; native thread_local
+#                                          for Phase 1b; TModuleSafeThreadLocal
+#                                          swap-in for Phase 1c).
+#       FMemoryConfig.cpp              -- Step 4 OOM-policy active global
+#                                         + test-only setter.
+#
+#       FLeakTracker.cpp               -- Step 5 leak tracker
+#                                         (per-tag shadow table; LRU
+#                                          eviction at 10 M live cap;
+#                                          installs FMemory Malloc/Free
+#                                          hooks).
+#
+#   Private/HAL/StackWalk/             -- per-platform stack walkers
+#                                         (each .cpp gates its body on
+#                                          XPACT_PLATFORM_* so only one
+#                                          compiles per target):
+#       Win64StackWalk.cpp             -- RtlCaptureStackBackTrace + dbghelp.
+#       UnixStackWalk.cpp              -- backtrace + backtrace_symbols.
+#       AndroidStackWalk.cpp           -- _Unwind_Backtrace + dladdr;
+#                                         libunwindstack richer-info is
+#                                         the Step 5 follow-up commit.
+#
+#   Private/HAL/Windows/               -- Win64-only .cpp files:
+#       Win64PlatformMisc.cpp
+#       Win64PlatformTime.cpp
+#       Win64PlatformProcess.cpp
+#       Win64PlatformMemory.cpp
+#       Win64PlatformProperties.cpp
+#
+#   Private/HAL/Unix/                  -- Linux-only .cpp files:
+#       LinuxPlatformMisc.cpp
+#       LinuxPlatformTime.cpp
+#       LinuxPlatformProcess.cpp
+#       LinuxPlatformMemory.cpp
+#       LinuxPlatformProperties.cpp
+#
+#   Private/HAL/Android/               -- Android-only .cpp files:
+#       AndroidPlatformMisc.cpp
+#       AndroidPlatformTime.cpp
+#       AndroidPlatformProcess.cpp
+#       AndroidPlatformMemory.cpp
+#       AndroidPlatformProperties.cpp
+#
+# Per-platform gating mechanism: each per-OS .cpp wraps its body in
+# `#if XPACT_PLATFORM_WIN64` / `#if XPACT_PLATFORM_LINUX` /
+# `#if XPACT_PLATFORM_ANDROID` (the XPACT_PLATFORM_* macros are defined
+# in Macros/XPactMacros.h lines 421-439, keyed off _WIN64 / __linux__ /
+# __ANDROID__). XBT discovers every .cpp recursively (BuildMode.cs
+# EnumerateModuleFiles line 2023) and submits them all to the
+# toolchain; the wrong-platform .cpp files compile to empty TUs.
+#
+# TODO(Phase 2 XBT integration): once XBT grows a typed per-platform
+# source filter (e.g., a `[private_sources]` TOML table with
+# `@expr` references like `if target.platform == 'Win64'`), the macro
+# gates can be removed in favour of the parser-side filter. The
+# benefit is faster compile times on non-host platforms (the empty TU
+# still incurs a toolchain invocation; the parser-side filter would
+# skip the invocation entirely). For Phase 1b the macro gate is
+# the principled minimum-viable approach.
+#
+# Step 4 + Step 5 link-dependencies (Section 4.6 + Section 12.5):
+#   * Win64:    dbghelp.lib via Win64StackWalk.cpp's
+#                #pragma comment(lib, "dbghelp.lib"). No TOML wiring
+#                needed (MSVC honours the pragma).
+#   * Linux:    libc-shipped backtrace + backtrace_symbols; -rdynamic
+#                linker flag recommended for full symbol resolution.
+#                TODO(Phase 1c): wire -rdynamic once the per-target
+#                linker-flag TOML schema lands.
+#   * Android:  -lunwind (NDK default). _Unwind_Backtrace lives in
+#                libunwind which the NDK toolchain links by default.
+#                TODO(Phase 1c): wire explicit `-lunwind` once the
+#                link_libs TOML schema lands.
 #
 # =====================================================================
 
@@ -52,22 +151,30 @@ public_include_paths = [
     "Public",
 ]
 
-# Private include paths -- XCore-4a's internal helpers (none yet at
-# Phase 1a; Private/Macros/XAssertionMacros.cpp and
-# Private/HAL/XInitPhase.cpp consume only Public headers).
+# Private include paths -- XCore-4a's internal helpers.
+# Phase 1b adds XDateTimeAlgorithms.h under Private/HAL; it is
+# consumed by FDateTime.cpp + XDateTimeAlgorithms.cpp (which deliver
+# the ISO 8601 round-trip body) and by the per-OS .cpp files indirectly
+# via #include "XDateTimeAlgorithms.h" (relative-to-Private path).
 private_include_paths = [
     "Private",
+    "Private/HAL",
 ]
 
-# Dependencies -- Phase 1a has none. The Platform HAL surface (Step 2
-# of Section 14) will introduce a private dep on the platform-specific
-# Win64/Linux/Android backing module once it lands; until then XCore
-# is dependency-free.
+# Dependencies -- Phase 1b stays standalone (no private deps on a
+# per-platform backing module). The Win64 Platform .cpp files link
+# against bcrypt.lib / Psapi.lib via #pragma comment(lib, ...) which
+# is the Visual Studio-native dependency-injection path; XBT propagates
+# the pragma to MSVC's linker without further configuration.
+#
+# Linux/Android need no external link beyond libc (all routines used
+# are in glibc/Bionic).
 public_dependency_modules = []
 private_dependency_modules = []
 
-# Definitions -- none at Phase 1a. The build-configuration flags
-# (XPACT_DEBUG / XPACT_DEVELOPMENT / XPACT_TEST / XPACT_SHIPPING) are
-# set by TargetRules at the target level, not at the module level.
+# Definitions -- none at Phase 1b. The build-configuration flags
+# (XPACT_DEBUG / XPACT_DEVELOPMENT / XPACT_TEST / XPACT_SHIPPING) and
+# the platform-selector flags (XPACT_PLATFORM_WIN64 etc.) are set by
+# TargetRules / detected from compiler-builtin macros at the TU level.
 public_definitions = []
 private_definitions = []

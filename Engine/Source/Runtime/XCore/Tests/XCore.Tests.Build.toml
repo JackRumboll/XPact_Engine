@@ -17,9 +17,39 @@
 # Subagent B's Platform HAL Phase 1a tests already live under
 # Tests/HAL/{FPlatformAtomics,FPlatformMisc,FTimespan,FDateTime}.Tests/;
 # this single test module aggregates both subagents' Phase 1a output
-# so the build runs them as one .exe (or one test binary). Subsequent
-# phases (1b allocator tests, 1c container tests, ...) add their TUs
-# under this same module.
+# so the build runs them as one .exe (or one test binary).
+#
+# Phase 1b (Step 4 allocator + Step 5 leak detection) adds:
+#
+#   * Tests/HAL/FMemory.Tests/MallocFreeRoundTrip.cpp
+#                                         -- 100K random Malloc/Free
+#                                            (Section 17.1 A1).
+#   * Tests/HAL/FMemory.Tests/MallocAlignments.cpp
+#                                         -- align in {1, 8, 16, 32, 64}
+#                                            (Section 4.6 unit test).
+#   * Tests/HAL/FMemory.Tests/MallocOrAbort.cpp
+#                                         -- MallocOrAbort smoke (death
+#                                            test deferred to Phase 1c).
+#   * Tests/HAL/FMemory.Tests/CrossThread.cpp
+#                                         -- 8-thread alloc + cross-thread
+#                                            free hammer (Section 17.1 A2).
+#   * Tests/HAL/FMemory.Tests/FMemTagAccounting.cpp
+#                                         -- per-tag GetAllocatedBytes
+#                                            correctness.
+#   * Tests/HAL/FMemory.Tests/FScopedNoAlloc.cpp
+#                                         -- FScopedNoAlloc bookkeeping
+#                                            (Section 4.3 fix A-MIN4).
+#   * Tests/HAL/FLeakTracker.Tests/SyntheticLeak.cpp
+#                                         -- 100x64-byte leak detection
+#                                            (Section 17.9 I1; gated on
+#                                             XPACT_LEAK_TRACKING_ENABLED).
+#   * Tests/HAL/FLeakTracker.Tests/ShadowTableOverflow.cpp
+#                                         -- LRU eviction counters smoke
+#                                            (Section 12.2 fix A-MIN5;
+#                                             gated on XPACT_LEAK_TRACKING_ENABLED).
+#
+# Subsequent phases (1c container tests, ...) add their TUs under this
+# same module.
 #
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's

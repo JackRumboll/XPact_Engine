@@ -37,10 +37,22 @@
 // instead the per-OS header chain inclues this header THEN overrides
 // the constants via an `#ifdef` slate inside Phase 1b's platform
 // selector header (`Engine/Source/Runtime/XCore/Public/HAL/Platform.h`
-// from the spec's macro suite). For Phase 1a we ship the defaults; a
-// `// TODO(Phase 1b)` per field documents the per-OS override target.
+// from the spec's macro suite). For Phase 1b the per-OS overrides are
+// resolved by `#if XPACT_PLATFORM_*` directly in this header (option
+// (a) from the Phase 1a TODO; the engineering-principle option (c) is
+// deferred to a future revision because it would change the user-
+// visible type name).
+//
+// Phase 1b resolution mechanism: the XPACT_PLATFORM_* macros (defined
+// in Macros/XPactMacros.h lines 421-439) select exactly one platform's
+// values. Per-OS .cpp marker files (Private/HAL/{Windows,Unix,Android}/
+// {Win64,Linux,Android}PlatformProperties.cpp) static_assert the active
+// resolution so a build whose XPACT_PLATFORM_* macros are inconsistent
+// fails cleanly at the linker rather than producing wrong values.
 //
 // =====================================================================
+
+#include "Macros/XPactMacros.h"  // XPACT_PLATFORM_WIN64 / LINUX / ANDROID
 
 namespace XCore::HAL
 {
@@ -54,116 +66,112 @@ namespace XCore::HAL
 //
 // ABI: zero -- the struct has no member storage; the constants are
 // inlined at every call site.
+//
+// Per-OS resolution (Phase 1b):
+//   * HasTouchInput               -- Android-only true; Win64/Linux false.
+//   * IsServer                    -- Linux true (server target); Win64/Android false.
+//                                    NOTE: this is currently keyed on
+//                                    OS, not on TargetRules.TargetType.
+//                                    A Win64 dedicated-server target
+//                                    would still report IsServer=false
+//                                    here; that drift is documented as
+//                                    TODO(Phase 1b XBT integration).
+//   * IsCaseSensitiveFilesystem   -- Linux + Android true; Win64 false.
+//   * RequiresCookedData          -- Android true (no editor on Quest 3);
+//                                    Win64/Linux false (editor + dev paths).
+//                                    NOTE: same TargetType caveat as IsServer.
+//   * PlatformName()              -- "Win64" / "Linux" / "Android".
 // ---------------------------------------------------------------------
 
 struct FPlatformProperties
 {
     // -----------------------------------------------------------------
     // HasTouchInput -- platform has touch-screen input as a primary
-    // pointing device.
-    //
-    // Defaults to false.
-    //
-    // TODO(Phase 1b): override to `true` in the Android platform
-    // selector; Win64 and Linux stay false. Drives the input
-    // subsystem's choice of mouse/keyboard vs touch path.
+    // pointing device. Phase 1b: Android-only.
     // -----------------------------------------------------------------
+#if XPACT_PLATFORM_ANDROID
+    static constexpr bool HasTouchInput = true;
+#else
     static constexpr bool HasTouchInput = false;
+#endif
 
     // -----------------------------------------------------------------
-    // IsServer -- platform is a dedicated server build.
+    // IsServer -- platform is a dedicated server build. Phase 1b:
+    // Linux-only (XPact's server target ships on Linux per Section 2).
     //
-    // Defaults to false (client builds).
-    //
-    // TODO(Phase 1b): override to `true` in the Linux platform
-    // selector when TargetRules.TargetType == Server. Note that the
-    // mapping is build-config-driven, not strictly OS-driven (a Win64
-    // server build is theoretically possible; the Phase 1b override
-    // will key on TargetType rather than EPlatform).
-    //
-    // Drives FPlatformTime::kTickRate (30 Hz vs 60 Hz; Phase 1b
-    // TargetRules wiring) and the renderer/audio compile-out.
+    // TODO(Phase 1b XBT integration): if XBT adds an
+    // XPACT_TARGET_SERVER preprocessor define that is independent of
+    // the OS (e.g., a Win64 dedicated-server build), key on that
+    // macro here. Until then OS == server is the locked default per
+    // Section 2 platforms row.
     // -----------------------------------------------------------------
+#if XPACT_PLATFORM_LINUX
+    static constexpr bool IsServer = true;
+#else
     static constexpr bool IsServer = false;
+#endif
 
     // -----------------------------------------------------------------
     // IsCaseSensitiveFilesystem -- platform's filesystem is
-    // case-sensitive.
-    //
-    // Defaults to false (Win64-default).
-    //
-    // TODO(Phase 1b): override to `true` in the Linux and Android
-    // platform selectors. Drives FString path-comparison semantics in
-    // the asset-path lookup (Section 11.1). Note that even on a
-    // case-insensitive filesystem, FString path operations are
-    // byte-sensitive unless explicitly told otherwise via the
-    // PathCompare helper.
-    //
-    // The split matters for the editor's "rename asset" path: an
-    // attempt to rename `MyAsset.uasset` to `myasset.uasset` succeeds
-    // on Linux (different filesystem entries) but fails on Win64
-    // (same entry, different case). The engine's rename UI consults
-    // this constant to surface the platform-specific behaviour.
+    // case-sensitive. Phase 1b: Linux + Android true (POSIX
+    // case-sensitive); Win64 false (NTFS case-insensitive default).
     // -----------------------------------------------------------------
+#if XPACT_PLATFORM_LINUX || XPACT_PLATFORM_ANDROID
+    static constexpr bool IsCaseSensitiveFilesystem = true;
+#else
     static constexpr bool IsCaseSensitiveFilesystem = false;
+#endif
 
     // -----------------------------------------------------------------
-    // RequiresCookedData -- platform requires assets to be pre-cooked
-    // (no raw asset loading at runtime).
+    // RequiresCookedData -- platform requires assets to be pre-cooked.
+    // Phase 1b: Android-only true (no editor on Quest 3 device);
+    // Win64 + Linux runtime builds keep raw-asset loading available.
     //
-    // Defaults to false (editor builds load raw assets).
-    //
-    // TODO(Phase 1b): override to `true` for runtime-only client/
-    // server builds (driven by TargetRules.BuildType == Game rather
-    // than EPlatform). The editor build keeps `false` regardless of
-    // platform.
-    //
-    // Drives the asset-loading path (cooked binary vs editor-source
-    // parse).
+    // TODO(Phase 1b XBT integration): the cooked-vs-raw split is
+    // properly TargetType-driven (Editor vs Game), not OS-driven. The
+    // current resolution is a placeholder until XBT exposes the
+    // target type as a preprocessor define.
     // -----------------------------------------------------------------
+#if XPACT_PLATFORM_ANDROID
+    static constexpr bool RequiresCookedData = true;
+#else
     static constexpr bool RequiresCookedData = false;
+#endif
 
     // -----------------------------------------------------------------
-    // PlatformName -- platform identifier string ("Win64" / "Linux" /
-    // "Android").
+    // PlatformName -- platform identifier string. Phase 1b: returns
+    // "Win64" / "Linux" / "Android" per the active platform selector.
     //
-    // Defaults to "Unknown".
-    //
-    // TODO(Phase 1b): override per OS in the platform selector. The
-    // returned const char* is a fixed string literal (lives in .rdata;
+    // The returned const char* is a string literal (lives in .rdata;
     // no allocation; safe to return by const-pointer indefinitely).
-    //
-    // Pattern reference: UE Core `GenericPlatformProperties.h:118`
-    // declares `PlatformName` as a per-platform required override
-    // (no default; missing implementation = link error). XPact's Phase
-    // 1a default is "Unknown" so the abstract surface compiles
-    // standalone; Phase 1b's per-OS slate replaces it.
-    //
-    // Constexpr-noexcept: callers can use the string at compile time
-    // (e.g., in static_assert messages) and in noexcept paths.
+    // Constexpr-noexcept: callers can use it in static_assert messages
+    // and in noexcept paths.
     // -----------------------------------------------------------------
     static constexpr const char* PlatformName() noexcept
     {
-        return "Unknown";  // TODO(Phase 1b): "Win64" / "Linux" / "Android"
+#if XPACT_PLATFORM_WIN64
+        return "Win64";
+#elif XPACT_PLATFORM_LINUX
+        return "Linux";
+#elif XPACT_PLATFORM_ANDROID
+        return "Android";
+#else
+        return "Unknown";
+#endif
     }
 };
 
 } // namespace XCore::HAL
 
 // =====================================================================
-// TODO(Phase 1b):
-//   - Override HasTouchInput=true for Android; stay false on Win64/Linux.
-//   - Override IsServer=true when TargetRules.TargetType == Server.
-//   - Override IsCaseSensitiveFilesystem=true on Linux/Android.
-//   - Override RequiresCookedData=true for runtime-only builds.
-//   - Override PlatformName() to return "Win64" / "Linux" / "Android"
-//     per the active platform selector.
-//   - Decide whether the Phase 1b override mechanism uses (a) #include
-//     of a per-OS .h file that #defines macros consumed here, or (b)
-//     partial specialization via a template parameter, or (c) a
-//     separate FPlatformProperties_Win64/Linux/Android type that the
-//     platform-selector aliases to `FPlatformProperties`. The
-//     engineering-principle preferred path is (c) because it keeps
-//     the const-correctness clean and avoids #define-based field
-//     overrides which fight the language's namespacing.
+// Phase 1b acceptance: exactly one of XPACT_PLATFORM_WIN64,
+// XPACT_PLATFORM_LINUX, XPACT_PLATFORM_ANDROID must be set to 1; the
+// rest must be 0. The per-OS marker .cpp files in
+// Private/HAL/{Windows,Unix,Android}/*PlatformProperties.cpp
+// static_assert this invariant.
 // =====================================================================
+static_assert((XPACT_PLATFORM_WIN64
+             + XPACT_PLATFORM_LINUX
+             + XPACT_PLATFORM_ANDROID) == 1,
+              "XPACT_PLATFORM_* macros: exactly one must be set; check "
+              "Macros/XPactMacros.h lines 421-439 for the resolution.");
