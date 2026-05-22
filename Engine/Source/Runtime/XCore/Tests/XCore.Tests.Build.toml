@@ -48,8 +48,91 @@
 #                                            (Section 12.2 fix A-MIN5;
 #                                             gated on XPACT_LEAK_TRACKING_ENABLED).
 #
-# Subsequent phases (1c container tests, ...) add their TUs under this
-# same module.
+# Phase 1c (Step 6 threading primitives) adds:
+#
+#   * Tests/HAL/FAtomicInt32.Tests/MemoryOrder.cpp
+#                                         -- named-variant + generic
+#                                            memory_order surface
+#                                            (Section 8.7 + fix M-4).
+#   * Tests/HAL/FAtomicInt32.Tests/CASContention.cpp
+#                                         -- 8-thread CAS hammer
+#                                            (Section 8.7 row 6).
+#   * Tests/HAL/FAtomicInt64.Tests/MemoryOrder.cpp
+#                                         -- 64-bit memory_order mirror.
+#   * Tests/HAL/FCriticalSection.Tests/Recursion.cpp
+#                                         -- same-thread Lock-Lock
+#                                            (Section 8.7 row 1).
+#   * Tests/HAL/FCriticalSection.Tests/Contention.cpp
+#                                         -- 8-thread contended locks
+#                                            (Section 8.7 row 1).
+#   * Tests/HAL/FMutex.Tests/NonRecursion.cpp
+#                                         -- deadlock-on-double-lock
+#                                            + XIsNonRecursiveMutex
+#                                            concept (Section 8.7 row 2).
+#   * Tests/HAL/FRWLock.Tests/ReadersAndWriters.cpp
+#                                         -- 4R + 1W concurrency
+#                                            (Section 8.7 row 3).
+#   * Tests/HAL/FEvent.Tests/AutoReset.cpp
+#                                         -- single-Trigger -> one
+#                                            waiter wakes (Section 8.7).
+#   * Tests/HAL/FEvent.Tests/ManualReset.cpp
+#                                         -- single-Trigger -> all
+#                                            waiters wake (Section 8.7).
+#   * Tests/HAL/FConditionVariable.Tests/WaitNotify.cpp
+#                                         -- producer/consumer + NotifyAll
+#                                            + concept-constraint
+#                                            verification (Section 8.7
+#                                            + fix M-5).
+#   * Tests/HAL/TSpscQueue.Tests/OneProducerOneConsumer.cpp
+#                                         -- 1P1C 100K round-trip
+#                                            (Section 8.7 row 8).
+#   * Tests/HAL/TMpscQueue.Tests/MPSC.cpp
+#                                         -- 4P1C with per-producer
+#                                            FIFO verification (Section
+#                                            8.7 row 6).
+#   * Tests/HAL/TBoundedMpscQueue.Tests/Backpressure.cpp
+#                                         -- fill-to-capacity + drain
+#                                            + multi-producer round-trip
+#                                            (Section 8.7 fix B-C4).
+#
+# Phase 1c (Step 7 foundational containers) adds:
+#
+#   * Tests/Containers/TArray.Tests/AddRemoveCapacity.cpp
+#                                         -- 100K Add + drain round-trip;
+#                                            Max() monotonicity (Section
+#                                            5.6).
+#   * Tests/Containers/TArray.Tests/GrowthFactor.cpp
+#                                         -- 1.375x grow formula verified
+#                                            via ComputeGrowCapacity
+#                                            (Section 5.1 / 5.6).
+#   * Tests/Containers/TArray.Tests/MoveOnlyForGCAware.cpp
+#                                         -- TArray<XObject*> move-only
+#                                            (Contract Section 3.4 M1;
+#                                            stub XObject for compile-
+#                                            time check).
+#   * Tests/Containers/TArrayView.Tests/Construction.cpp
+#                                         -- view ctors: default, ptr+count,
+#                                            C-array, TArray, initializer_list,
+#                                            constexpr.
+#   * Tests/Containers/TStaticArray.Tests/StackOnly.cpp
+#                                         -- pure-stack allocation; no
+#                                            heap interaction (Section
+#                                            5.1 / 18 OPEN-4).
+#   * Tests/Containers/TBitArray.Tests/FindFirstSet.cpp
+#                                         -- 100K random pattern; brute-
+#                                            force agreement (Section 5.6).
+#   * Tests/Containers/TBitArray.Tests/CountSetBits.cpp
+#                                         -- 100K random pattern; popcount
+#                                            agreement + trailing-bit
+#                                            normalization (Section 5.6).
+#   * Tests/Containers/DefaultAllocator.Tests/TagPropagation.cpp
+#                                         -- per-instance FMemTag carry
+#                                            verified via
+#                                            GetAllocatedBytes(Math)
+#                                            (Section 5.5 row 2).
+#
+# Subsequent phases (1d container tests for TMap/TSet/FString, ...)
+# add their TUs under this same module.
 #
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's

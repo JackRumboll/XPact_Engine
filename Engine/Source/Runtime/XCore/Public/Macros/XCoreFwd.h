@@ -42,7 +42,16 @@
 
 namespace XCore
 {
-    template<typename T>
+    // -----------------------------------------------------------------
+    // The default container allocator is forward-declared here so the
+    // TArray / TMap / TSet template signatures match the Phase-1c
+    // definitions exactly. The class body ships in
+    // Containers/DefaultAllocator.h (Phase 1c step 7 of the dependency
+    // graph; Section 5.1 / Section 5.5 row 2 "one default allocator").
+    // -----------------------------------------------------------------
+    class DefaultAllocator;
+
+    template<typename T, typename AllocatorT = DefaultAllocator>
     class TArray;
 
     template<typename K, typename V>
@@ -55,6 +64,30 @@ namespace XCore
     class TStaticArray;
 
     class TBitArray;
+
+    template<typename T>
+    class TArrayView;
+}
+
+// -----------------------------------------------------------------
+// XCore::Detail forward declarations (Section 5.1 fix C-3).
+//
+// TArrayCore is the internal primitive that backs both TArray<T> and
+// FString (Phase 1d). Living in the Detail namespace makes it
+// header-private in spirit -- consumers see TArray<T> / FString, not
+// the underlying primitive.
+//
+// IMPORTANT (locked decision in Section 5.1 fix C-3): "the public
+// TArray.h header takes only const char* in its diagnostic paths;
+// it NEVER includes FString.h". TArrayCore therefore takes no
+// FString parameter in any signature - the cycle resolves via that
+// rule. The IndexOf(const FString&) overload lives in FString.h
+// (step 8 of the dependency graph), not here.
+// -----------------------------------------------------------------
+namespace XCore::Detail
+{
+    template<typename T, typename AllocatorT>
+    class TArrayCore;
 }
 
 // ---------------------------------------------------------------------

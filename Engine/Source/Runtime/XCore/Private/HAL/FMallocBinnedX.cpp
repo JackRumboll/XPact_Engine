@@ -201,6 +201,15 @@ namespace XCore::HAL
             Pool.CommittedBytes      = 0;
             Pool.CentralFreeListHead = nullptr;
             Pool.CrossThreadReclaimHead.store(nullptr, ::std::memory_order_relaxed);
+
+            // Initialise the bounded MPSC reclaim queue (Section 8.1
+            // fix B-C4 swap-in landed in Phase 1c). The Vyukov
+            // invariant (slot[i].seq = i) is set here at Init()-time;
+            // the queue's default constructor leaves slot sequences
+            // at zero (constexpr-required) which would corrupt the
+            // algorithm's empty-vs-full distinction without this
+            // call.
+            Pool.CrossThreadReclaimQueue.Initialize();
         }
 
         // Zero-init per-tag accounting (atomic stores are no-ops on
@@ -239,6 +248,21 @@ namespace XCore::HAL
                 Pool.CommittedBytes      = 0;
                 Pool.CentralFreeListHead = nullptr;
                 Pool.CrossThreadReclaimHead.store(nullptr, ::std::memory_order_relaxed);
+
+                // Drain any remaining elements from the bounded MPSC
+                // queue. The blocks live in the bin's VM range
+                // (which we just released), so we don't free them
+                // individually -- the VM release reclaimed the
+                // memory wholesale. The TryDequeue calls below
+                // simply move the queue's internal cursors so the
+                // queue's destructor (when FMallocBinnedX itself is
+                // destroyed) doesn't try to revisit them.
+                FFreeBlock* Drained = nullptr;
+                while (Pool.CrossThreadReclaimQueue.TryDequeue(Drained))
+                {
+                    // Discard; memory already released.
+                    (void)Drained;
+                }
             }
         }
 
@@ -338,29 +362,70 @@ namespace XCore::HAL
     {
         FPoolTable& Pool = m_pools[BinIndex];
 
-        // Atomically take the entire cross-thread list. The list is
-        // a Treiber stack: pushers CAS new heads in; the owner thread
-        // swaps the whole head out under a single exchange.
-        FFreeBlock* Head = Pool.CrossThreadReclaimHead.exchange(nullptr, ::std::memory_order_acquire);
+        // Step 1: drain the bounded MPSC queue (Phase 1c fast path).
+        // We accumulate the drained blocks into a local list, then
+        // splice onto the central free list under Pool.Mutex.
+        //
+        // The drain loop runs single-consumer; no synchronisation
+        // beyond TryDequeue's internal atomics. We bound the drain
+        // count to the queue's capacity to avoid pathological
+        // looping if producers are racing to refill the queue
+        // (though that's a hot-path correctness concern, not a
+        // drain-loop concern -- the queue's invariant is that
+        // dequeue eventually catches up).
+        FFreeBlock* QueueHead = nullptr;
+        ::SIZE_T DrainCount = 0;
+        const ::SIZE_T MaxDrain = FPoolTable::kReclaimQueueCapacity;
+        FFreeBlock* Drained = nullptr;
+        while (DrainCount < MaxDrain &&
+               Pool.CrossThreadReclaimQueue.TryDequeue(Drained))
+        {
+            Drained->Next = QueueHead;
+            QueueHead     = Drained;
+            ++DrainCount;
+        }
 
-        if (Head == nullptr)
+        // Step 2: drain the Treiber stack fallback (Phase 1b path,
+        // used only when the bounded queue overflowed).
+        FFreeBlock* StackHead =
+            Pool.CrossThreadReclaimHead.exchange(nullptr, ::std::memory_order_acquire);
+
+        // Fast-path: nothing drained.
+        if (QueueHead == nullptr && StackHead == nullptr)
         {
             return;
         }
 
-        // Splice the taken list onto the central free list. Pool.Mutex
+        // Splice both lists onto the central free list. Pool.Mutex
         // protects CentralFreeListHead.
         ::std::lock_guard<::std::mutex> Lock(Pool.Mutex);
 
-        // Find the tail of the taken list.
-        FFreeBlock* Tail = Head;
-        while (Tail->Next != nullptr)
+        // Merge: append StackHead chain onto QueueHead chain (order
+        // doesn't matter for allocator correctness -- the central
+        // free list is unordered).
+        if (QueueHead != nullptr)
         {
-            Tail = Tail->Next;
+            FFreeBlock* QueueTail = QueueHead;
+            while (QueueTail->Next != nullptr)
+            {
+                QueueTail = QueueTail->Next;
+            }
+            QueueTail->Next = StackHead;
+            StackHead       = QueueHead;
         }
 
-        Tail->Next               = Pool.CentralFreeListHead;
-        Pool.CentralFreeListHead = Head;
+        // Find the tail of the merged list and splice onto the
+        // central free list.
+        if (StackHead != nullptr)
+        {
+            FFreeBlock* MergedTail = StackHead;
+            while (MergedTail->Next != nullptr)
+            {
+                MergedTail = MergedTail->Next;
+            }
+            MergedTail->Next         = Pool.CentralFreeListHead;
+            Pool.CentralFreeListHead = StackHead;
+        }
     }
 
     FFreeBlock* FMallocBinnedX::PullBundleFromCentral(::uint32 BinIndex) noexcept
@@ -668,39 +733,56 @@ namespace XCore::HAL
 
         // Push the freed block back into circulation.
         //
-        // SPEC CONTRACT (Section 4.2): cross-thread Free routes to the
-        // owner-thread MPSC reclaim queue; same-thread Free pushes to
-        // the local TLS cache.
+        // SPEC CONTRACT (Section 4.2 + Section 8.1 fix B-C4): cross-
+        // thread Free routes to the owner-thread MPSC reclaim queue
+        // (bounded, no per-Free allocation).
         //
-        // PHASE 1B IMPLEMENTATION: we do NOT track per-block owner
-        // thread (the slab is owned by the central pool, not by a
-        // thread). Instead the path is:
+        // PHASE 1C IMPLEMENTATION (Section 8.1 fix B-C4 landed):
+        // every Free routes through the bounded MPSC queue first.
+        // On queue-full, we fall back to the Treiber-stack path
+        // (which trades latency for guaranteed forward progress;
+        // the spec body explicitly names this as the back-pressure
+        // policy).
         //
-        //   1. Always push to the per-bin CrossThreadReclaimHead via
-        //      a lock-free CAS-push (Treiber stack). This is the
-        //      "simple atomic-linked-list" the dispatch + spec name.
-        //   2. Any allocator on any thread drains the reclaim list
-        //      before pulling from the central pool (the existing
-        //      DrainCrossThreadReclaim call inside
-        //      PullBundleFromCentral).
+        //   1. TryEnqueue onto Pool.CrossThreadReclaimQueue. In
+        //      normal operation the consumer drains continuously
+        //      and the queue stays nearly empty, so TryEnqueue
+        //      succeeds.
+        //   2. If TryEnqueue returns false (queue full -- rare),
+        //      fall back to the Treiber stack push (Phase 1b path,
+        //      retained).
+        //   3. The consumer (the bin's owner; effectively the next
+        //      thread to PullBundleFromCentral on this bin) drains
+        //      both the bounded queue AND the Treiber-stack
+        //      fallback before pulling new bundles.
         //
-        // This makes every Free behave like a cross-thread Free, which
-        // is correct but conservative: same-thread Frees pay one CAS
-        // they wouldn't strictly need. Phase 1c addresses by:
-        //   * Adding per-slab owner-thread tracking so same-thread
-        //     Frees hit the local cache without the CAS round-trip.
-        //   * Swapping the simple atomic-linked-list for the
-        //     TBoundedMpscQueue per Section 8.1 fix B-C4.
-        // TODO(Phase 1c): both routes above.
-        // Reset the block to FFreeBlock layout. The block's first 8
-        // bytes are FFreeBlock::Next; this overwrites the padding
-        // bytes 0..7 (within the [0..11] padding region) of the
-        // block start. The header at bytes 12..15 is overwritten too
-        // (we re-cast the block start to FFreeBlock so the Next
-        // pointer lands at offsets 0..7 of the block).
+        // TODO(Phase 1d): per-slab owner-thread tracking so same-
+        // thread Frees skip the queue and hit the local TLS cache
+        // directly. The current scheme treats every Free as a
+        // cross-thread Free, paying one TryEnqueue per Free.
+        //
+        // Reset the block to FFreeBlock layout. The block's first
+        // 8 bytes are FFreeBlock::Next; this overwrites the padding
+        // bytes 0..7 of the block start. The header at bytes 12..15
+        // is overwritten too (we re-cast the block start to
+        // FFreeBlock so the Next pointer lands at offsets 0..7).
         FPoolTable& Pool  = m_pools[BinIndex];
         FFreeBlock* Block = reinterpret_cast<FFreeBlock*>(UserToBlockStart(UserPtr));
 
+        // Block->Next is not used by the bounded queue (the queue
+        // stores FFreeBlock* directly); but we reset it to nullptr
+        // so a subsequent fallback-to-Treiber push has a clean
+        // starting state.
+        Block->Next = nullptr;
+
+        // Fast path: bounded MPSC.
+        if (XPACT_LIKELY(Pool.CrossThreadReclaimQueue.TryEnqueue(Block)))
+        {
+            return;
+        }
+
+        // Slow-path fallback: Treiber stack (Phase 1b path).
+        // Reached only when the bounded queue is full -- rare.
         FFreeBlock* OldHead = Pool.CrossThreadReclaimHead.load(::std::memory_order_relaxed);
         do
         {

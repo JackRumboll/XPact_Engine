@@ -18,11 +18,18 @@
 # (Platform HAL abstract surface) + Step 3 (per-OS implementations) +
 # Step 4 (allocator: FMemory, FMallocBinnedX, FTLSBinCache,
 # FMemoryConfig) + Step 5 (leak detection: FLeakTracker + per-platform
-# StackWalk implementations). Phase 1c+ land threading primitives,
-# containers, math, CVars, stat, FText (per Section 14 implementation
-# order). No external private deps yet; every .cpp links against the
-# C++ standard library + the platform's libc + (on Win64) dbghelp.lib
-# via #pragma.
+# StackWalk implementations). Phase 1c lands Step 6 (threading
+# primitives: FAtomicInt32/64/Ptr, FCriticalSection, FMutex, FRWLock,
+# FEvent, FConditionVariable, TSpscQueue/TMpscQueue/TBoundedMpscQueue;
+# plus the FMallocBinnedX cross-thread-reclaim swap-in from Treiber
+# stack to TBoundedMpscQueue per Section 8.1 fix B-C4) AND Step 7
+# (foundational containers: TArray + TArrayView + TStaticArray +
+# TBitArray + DefaultAllocator + internal TArrayCore primitive, per
+# Section 5.1). Phase 1d+ land FString (Section 11), TMap/TSet (the
+# SwissTable variants), math, CVars, stat, FText (per Section 14
+# implementation order). No external private deps yet; every .cpp
+# links against the C++ standard library + the platform's libc +
+# (on Win64) dbghelp.lib via #pragma.
 #
 # =====================================================================
 #
@@ -59,6 +66,32 @@
 #                                          eviction at 10 M live cap;
 #                                          installs FMemory Malloc/Free
 #                                          hooks).
+#
+#       FCriticalSection.cpp           -- Step 6 recursive mutex
+#                                         (Win64: CRITICAL_SECTION;
+#                                          POSIX: pthread_mutex_t with
+#                                          PTHREAD_MUTEX_RECURSIVE).
+#       FMutex.cpp                     -- Step 6 non-recursive mutex
+#                                         (Win64: SRWLOCK exclusive;
+#                                          POSIX: pthread_mutex_t with
+#                                          PTHREAD_MUTEX_NORMAL).
+#       FRWLock.cpp                    -- Step 6 shared mutex
+#                                         (Win64: SRWLOCK shared/exclusive;
+#                                          POSIX: pthread_rwlock_t).
+#       FEvent.cpp                     -- Step 6 waitable event
+#                                         (Win64: CreateEventW + Wait*;
+#                                          POSIX: condvar + mutex + flag).
+#       FConditionVariable.cpp         -- Step 6 condvar
+#                                         (Win64: CONDITION_VARIABLE +
+#                                          SleepConditionVariableSRW;
+#                                          POSIX: pthread_cond_t).
+#
+#   Phase 1c also modifies FMallocBinnedX.cpp / FMallocBinnedX.h to
+#   swap the cross-thread reclaim path from a simple Treiber stack
+#   to TBoundedMpscQueue<FFreeBlock*, 4096> per Section 8.1 fix
+#   B-C4. The Treiber stack stays as a fallback for queue-full
+#   conditions (rare under normal operation; consumer drains
+#   continuously).
 #
 #   Private/HAL/StackWalk/             -- per-platform stack walkers
 #                                         (each .cpp gates its body on

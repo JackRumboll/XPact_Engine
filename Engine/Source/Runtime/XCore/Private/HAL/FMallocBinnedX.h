@@ -106,6 +106,7 @@
 #include "Macros/XPactMacros.h"
 #include "HAL/FMemTag.h"
 #include "HAL/FOOMPolicy.h"
+#include "HAL/TBoundedMpscQueue.h"
 #include "Private/HAL/FTLSBinCache.h"
 
 #include <atomic>
@@ -326,26 +327,59 @@ namespace XCore::HAL
         // bundles back.
         FFreeBlock* CentralFreeListHead;
 
-        // Cross-thread reclaim list head. Frees from non-owner threads
-        // route here via an atomic CAS push; the owner thread drains
-        // on its next allocation.
+        // Cross-thread reclaim list head. Phase 1b's Treiber-stack
+        // path is RETAINED as the fallback for queue-full conditions
+        // (Section 8.1 fix B-C4: "the caller decides the back-
+        // pressure policy"). Free first attempts to TryEnqueue into
+        // the bounded MPSC queue below; on failure (queue full),
+        // falls through to the Treiber stack which trades latency
+        // for guaranteed forward progress.
         //
-        // Phase 1b: simple atomic linked list (lock-free push, owner-
-        // only pop). Phase 1c will swap to TBoundedMpscQueue per
-        // Section 8.1 fix B-C4.
-        // TODO(Phase 1c): swap to TBoundedMpscQueue.
+        // In normal operation, the consumer (owner thread) drains
+        // CrossThreadReclaimQueue every allocation-touch, so the
+        // queue stays nearly empty and TryEnqueue almost always
+        // succeeds.
         ::std::atomic<FFreeBlock*> CrossThreadReclaimHead;
+
+        // Bounded MPSC reclaim queue (Section 8.1 fix B-C4; landed
+        // in Phase 1c). Producers (any thread Freeing into this bin)
+        // TryEnqueue freed FFreeBlock*; consumer (the bin owner via
+        // DrainCrossThreadReclaim) drains. Capacity 4096 per bin --
+        // ample headroom for typical workloads; queue-full fallback
+        // is the Treiber stack above.
+        //
+        // The queue is constructed in-place via the FPoolTable's
+        // copy/move-deletion -- TBoundedMpscQueue is non-movable,
+        // and FPoolTable lives in a constinit array, so the queue
+        // is default-constructed at static-storage-duration time
+        // (its constructor is trivial: zero-initialises the slot
+        // sequences via the constexpr ctor).
+        //
+        // 4096 * sizeof(FFreeBlock*) = 32 KiB per bin per queue;
+        // 56 bins = 1.75 MiB total. Acceptable for the engine's
+        // memory footprint.
+        static constexpr ::SIZE_T kReclaimQueueCapacity = 4096;
+        TBoundedMpscQueue<FFreeBlock*, kReclaimQueueCapacity>
+            CrossThreadReclaimQueue;
 
         // Per-bin mutex protecting CentralFreeListHead +
         // CommittedBytes. Cross-thread reclaim list uses lock-free
-        // CAS; the mutex protects the central pool only.
+        // CAS / the bounded MPSC queue; the mutex protects the
+        // central pool only.
         //
-        // std::mutex is used here for portability; UE uses
-        // UE::FPlatformRecursiveMutex (MallocBinned3.h:147) which is
-        // a thinner wrapper. XPact's Phase 1c threading-primitives
-        // header (FCriticalSection) will replace this; for Phase 1b
-        // std::mutex is the right portable starting point.
-        // TODO(Phase 1c): swap to FCriticalSection.
+        // std::mutex is RETAINED here in Phase 1c (NOT swapped to
+        // FCriticalSection) because the allocator's FMallocBinnedX
+        // default constructor is constexpr (required for the
+        // constinit g_Allocator at static-storage-duration time),
+        // and FCriticalSection's constructor calls Initialize-
+        // CriticalSection / pthread_mutex_init which is NOT
+        // constexpr. C++20's std::mutex default ctor IS constexpr,
+        // so it can live in the constinit FPoolTable array. The
+        // TODO from Phase 1b is therefore RESOLVED to "keep std::
+        // mutex" rather than swap.
+        //
+        // The trade: std::mutex on MSVC is ~80 bytes vs FCritical-
+        // Section's 64 bytes; the size cost is acceptable.
         ::std::mutex Mutex;
 
         // The bin's allocation size in bytes (== kBinSizeTable[BinIndex]).
