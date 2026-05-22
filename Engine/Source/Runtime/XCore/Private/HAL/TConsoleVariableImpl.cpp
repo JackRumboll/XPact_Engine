@@ -23,7 +23,9 @@
 #include "Containers/FString.h"
 #include "HAL/FRWLock.h"
 #include "HAL/ECVarSetByPriority.h"
+#include "HAL/XInitPhase.h"        // Phase 1g fix M-9: EngineInitPhase guard
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"
 
 namespace XCore::Misc
 {
@@ -45,6 +47,12 @@ namespace XCore::Misc
 
     ::XCore::FString TConsoleVariableInt32::GetString() const noexcept
     {
+        // Phase 1g fix M-9: CVar reads are valid only at PostStaticInit
+        // or later (Section 9.5; CVar drain runs at PostStaticInit).
+        // A read from a PreStaticInit constructor would silently observe
+        // the default rather than the cascaded value; XPACT_CHECK
+        // aborts in Debug/Dev to surface the misuse at the call site.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         // Snapshot the value under the shared lock then format outside.
         const ::int32 V = m_data.LoadAcquire();
         return ::XCore::FString::FromInt32(V);
@@ -103,6 +111,8 @@ namespace XCore::Misc
 
     ::XCore::FString TConsoleVariableFloat::GetString() const noexcept
     {
+        // Phase 1g fix M-9: see TConsoleVariableInt32::GetString.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         const float V = m_data.LoadAcquire();
         return ::XCore::FString::FromFloat(V);
     }
@@ -152,6 +162,8 @@ namespace XCore::Misc
 
     ::int32 TConsoleVariableString::GetInt() const noexcept
     {
+        // Phase 1g fix M-9: see TConsoleVariableInt32::GetString.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         ::XCore::HAL::FScopedReadLock L(m_lock);
         const auto R = m_value.ToInt32();
         return R.has_value() ? R.value() : 0;
@@ -159,6 +171,8 @@ namespace XCore::Misc
 
     float TConsoleVariableString::GetFloat() const noexcept
     {
+        // Phase 1g fix M-9: see TConsoleVariableInt32::GetString.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         ::XCore::HAL::FScopedReadLock L(m_lock);
         const auto R = m_value.ToFloat();
         return R.has_value() ? R.value() : 0.0f;
@@ -166,6 +180,8 @@ namespace XCore::Misc
 
     ::XCore::FString TConsoleVariableString::GetString() const noexcept
     {
+        // Phase 1g fix M-9: see TConsoleVariableInt32::GetString.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         ::XCore::HAL::FScopedReadLock L(m_lock);
         // Deep copy of the FString -- the shared lock guarantees we
         // are not racing a concurrent setter.

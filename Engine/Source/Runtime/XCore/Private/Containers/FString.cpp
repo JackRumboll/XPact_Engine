@@ -790,13 +790,109 @@ bool FString::EndsWith(const FString& Needle) const noexcept
     return INDEX_NONE;
 }
 
-::int32 FString::LastIndexOf(char Needle) const noexcept
+::int32 FString::LastIndexOfByte(char Needle) const noexcept
 {
     const ::int32 N = LenBytes();
     const char*   D = Data();
     for (::int32 I = N - 1; I >= 0; --I)
     {
         if (D[I] == Needle) return I;
+    }
+    return INDEX_NONE;
+}
+
+// ---------------------------------------------------------------------
+// LastIndexOfByte(const FString&) -- reverse Boyer-Moore-Horspool
+// substring search (Section 11.1 fix M-1).
+//
+// Standard BMH walks forward with a bad-character skip table. For the
+// reverse-search variant we walk the haystack END-to-FRONT and treat
+// the FIRST byte of the needle as the "anchor" position. The skip
+// table is computed against the needle bytes 1..end (skip distances
+// for mismatches at the anchor). Returns the BYTE OFFSET of the first
+// byte of the last occurrence of Needle in *this; INDEX_NONE if not
+// found.
+//
+// Edge cases:
+//   * Empty needle -- returns the byte length (the "empty string is
+//     at every position; the last is at end()" convention from
+//     std::string::rfind).
+//   * Empty haystack with non-empty needle -- INDEX_NONE.
+//   * Needle longer than haystack -- INDEX_NONE.
+// ---------------------------------------------------------------------
+::int32 FString::LastIndexOfByte(const FString& Needle) const noexcept
+{
+    const ::int32 HLen = LenBytes();
+    const ::int32 NLen = Needle.LenBytes();
+    const char*   H    = Data();
+    const char*   N    = Needle.Data();
+
+    if (NLen == 0)
+    {
+        // std::string::rfind(empty) returns size() per the standard.
+        return HLen;
+    }
+    if (HLen < NLen)
+    {
+        return INDEX_NONE;
+    }
+    if (NLen == 1)
+    {
+        return LastIndexOfByte(N[0]);
+    }
+
+    // Bad-character skip table for the REVERSE walk: when the
+    // anchor byte (last comparison position relative to the search
+    // direction; here, the NEEDLE'S FIRST byte) mismatches, skip
+    // ahead by the distance from that byte to the leftmost occurrence
+    // of the haystack byte WITHIN N[1..NLen-1].
+    //
+    // Initialise all entries to NLen (full skip; the byte never
+    // appears in the prefix-after-first), then refine for bytes that
+    // do appear.
+    ::uint8 Skip[256];
+    for (::int32 I = 0; I < 256; ++I)
+    {
+        Skip[I] = static_cast<::uint8>(NLen);
+    }
+    // Walk the needle right-to-left, setting each byte's skip to its
+    // distance from the LEFTMOST (== last visited in this loop)
+    // occurrence past index 0. The anchor (index 0) is excluded so
+    // a self-anchor doesn't pin Skip to 0.
+    for (::int32 I = NLen - 1; I >= 1; --I)
+    {
+        // Skip value: distance to the anchor (== I).
+        const ::uint8 Byte = static_cast<::uint8>(N[I]);
+        // Only overwrite if not yet set (we're walking right-to-left,
+        // so the first write per byte is the rightmost-occurrence
+        // distance; that's what we want).
+        if (Skip[Byte] == static_cast<::uint8>(NLen))
+        {
+            Skip[Byte] = static_cast<::uint8>(I);
+        }
+    }
+
+    // Reverse walk: I is the candidate anchor offset (== start of a
+    // potential match in *this).
+    ::int32 I = HLen - NLen;
+    while (I >= 0)
+    {
+        if (H[I] == N[0])
+        {
+            if (::std::memcmp(H + I, N, static_cast<::SIZE_T>(NLen)) == 0)
+            {
+                return I;
+            }
+        }
+        // Use the byte at the anchor position to compute the skip.
+        // For the REVERSE walk we want to move LEFT (decrease I); use
+        // Skip[H[I]] as the leftward skip distance. The Skip value is
+        // the distance to the leftmost-occurrence past index 0, so
+        // shifting I left by Skip[H[I]] aligns that occurrence under
+        // the anchor on the next iteration.
+        const ::uint8 Step = Skip[static_cast<::uint8>(H[I])];
+        // Defense-in-depth: guarantee forward progress.
+        I -= (Step > 0) ? static_cast<::int32>(Step) : 1;
     }
     return INDEX_NONE;
 }

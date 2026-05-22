@@ -26,6 +26,7 @@
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"
 #include "Macros/XPactMacros.h"
+#include "HAL/FMutex.h"        // Phase 1g fix M-8: FMutex replaces std::mutex
 
 #if XPACT_LEAK_TRACKING_ENABLED && XPACT_PLATFORM_WIN64
 
@@ -41,16 +42,19 @@
 
 #include <atomic>
 #include <cstring>
-#include <mutex>
 
 namespace XCore::HAL
 {
     namespace
     {
         // dbghelp is single-threaded; serialise all access.
-        ::std::mutex& GetDbgHelpMutex() noexcept
+        //
+        // Phase 1g fix M-8: FMutex (XCore HAL primitive) replaces
+        // std::mutex. Function-local Meyers singleton; not constinit-
+        // required, so FMutex's non-constexpr ctor is fine here.
+        ::XCore::HAL::FMutex& GetDbgHelpMutex() noexcept
         {
-            static ::std::mutex Mutex;
+            static ::XCore::HAL::FMutex Mutex;
             return Mutex;
         }
 
@@ -72,7 +76,7 @@ namespace XCore::HAL
             return;  // already initialised
         }
 
-        ::std::lock_guard<::std::mutex> Lock(GetDbgHelpMutex());
+        ::XCore::HAL::FScopedMutexLock Lock(GetDbgHelpMutex());
 
         // SYMOPT_LOAD_LINES: load source-line info from PDB.
         // SYMOPT_DEFERRED_LOADS: only load PDB metadata on demand.
@@ -94,7 +98,7 @@ namespace XCore::HAL
             return;
         }
 
-        ::std::lock_guard<::std::mutex> Lock(GetDbgHelpMutex());
+        ::XCore::HAL::FScopedMutexLock Lock(GetDbgHelpMutex());
         ::SymCleanup(::GetCurrentProcess());
     }
 
@@ -133,7 +137,7 @@ namespace XCore::HAL
             InitStackWalk();  // lazy
         }
 
-        ::std::lock_guard<::std::mutex> Lock(GetDbgHelpMutex());
+        ::XCore::HAL::FScopedMutexLock Lock(GetDbgHelpMutex());
 
         // SYMBOL_INFO with trailing Name buffer.
         struct alignas(8) FSymBuf

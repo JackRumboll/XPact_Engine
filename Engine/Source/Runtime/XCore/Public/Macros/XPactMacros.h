@@ -439,15 +439,20 @@ namespace XCore::HAL
 #endif
 
 #if XPACT_PLATFORM_WIN64 || XPACT_PLATFORM_ANDROID
-    // Module-safe path: forward-declared template type. The
-    // implementation (XCore-4a Step 2) provides operator-> and a
-    // lazy-init Get() so call sites can write
-    //     g_shard.Get().counter++;
-    // The macro emits a declaration; the type's storage is owned by
-    // the Platform HAL's TLS-slot table.
+    // Module-safe path: TModuleSafeThreadLocal<Type> template wraps the
+    // Platform HAL's FPlatformTLS::AllocSlot. Call sites use ->/Get():
+    //     XPACT_TLS_MODULE_SAFE(FStatShard, g_shard);
+    //     g_shard->Inc(Hash);          // or g_shard.Get()->Inc(Hash)
+    // The slot's per-thread destructor runs T::~T() on thread exit,
+    // so FStatShard's Treiber-stack handoff destructor runs through
+    // the OS thread-exit path. The slot itself is freed when the
+    // owning module unloads; no thread sees a dangling slot.
     #define XPACT_TLS_MODULE_SAFE(Type, Name) \
         ::XCore::HAL::TModuleSafeThreadLocal<Type> Name
 #else  // Linux server (no DLL hot-reload in MVP)
+    // Native thread_local: cheaper (one TLS access vs the slot
+    // indirection). Per-thread destructor runs via the C++20 standard
+    // thread_local destruction rule.
     #define XPACT_TLS_MODULE_SAFE(Type, Name) \
         thread_local Type Name
 #endif

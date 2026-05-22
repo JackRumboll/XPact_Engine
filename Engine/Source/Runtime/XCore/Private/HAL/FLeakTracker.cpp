@@ -42,6 +42,7 @@
 
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
+#include "HAL/FMutex.h"            // Phase 1g fix M-8: FMutex replaces std::mutex
 #include "HAL/FPlatformMemory.h"
 #include "Private/HAL/FMallocBinnedX.h"
 #include "Private/HAL/StackWalk/IStackWalk.h"
@@ -52,9 +53,7 @@
 
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>     // std::malloc / std::free for bucket storage
 #include <cstring>
-#include <mutex>
 
 namespace XCore::HAL
 {
@@ -150,7 +149,13 @@ namespace XCore::HAL
             // the bottleneck at the per-alloc level. Phase 1c may
             // shard the table per-thread if benchmarks indicate
             // contention.
-            ::std::mutex Mutex;
+            //
+            // Phase 1g fix M-8: FMutex (XCore's HAL primitive) replaces
+            // std::mutex. FTrackerState is held in a Meyers singleton
+            // (GetState() returns `static FTrackerState State{};`); it
+            // is not constinit-required, so FMutex's non-constexpr
+            // ctor is fine here.
+            ::XCore::HAL::FMutex Mutex;
 
             // Initialised guard.
             ::std::atomic<bool> Initialized;
@@ -317,7 +322,7 @@ namespace XCore::HAL
 
             g_inHook = true;
 
-            ::std::lock_guard<::std::mutex> Lock(State.Mutex);
+            ::XCore::HAL::FScopedMutexLock Lock(State.Mutex);
 
             // Get a slot.
             FAllocRecord* Rec = PopFreeSlot();
@@ -400,7 +405,7 @@ namespace XCore::HAL
 
             g_inHook = true;
 
-            ::std::lock_guard<::std::mutex> Lock(State.Mutex);
+            ::XCore::HAL::FScopedMutexLock Lock(State.Mutex);
 
             const ::SIZE_T Bucket = HashPtr(Ptr);
             FAllocRecord** Slot   = &State.Buckets[Bucket];
@@ -543,125 +548,42 @@ namespace XCore::HAL
     }
 
     // =====================================================================
-    // FLeakTracker::CaptureReport
+    // FLeakTracker::CaptureReport (Phase 1g fix M-7: TArray-backed)
     // =====================================================================
-
-    namespace
-    {
-        // BucketsImpl storage: a malloc-backed FStackBucket[] array.
-        // Allocated via std::malloc (NOT via FMemory::Malloc; the
-        // tracker must not recurse into the allocator's hooks at
-        // CaptureReport time). Phase 1c will swap to FMemory::Malloc
-        // tagged FMemTag::LeakTracker once the hook recursion guard
-        // is verified safe under the snapshot path.
-        struct FBucketsArray
-        {
-            FLeakTracker::FStackBucket* Data;
-            ::SIZE_T                    Count;
-            ::SIZE_T                    Capacity;
-        };
-    } // anonymous
-
-    // -----------------------------------------------------------------
-    // FLeakReport methods.
-    // -----------------------------------------------------------------
-
-    FLeakTracker::FLeakReport::~FLeakReport() noexcept
-    {
-        if (BucketsImpl)
-        {
-            FBucketsArray* Arr = static_cast<FBucketsArray*>(BucketsImpl);
-            ::std::free(Arr->Data);
-            ::std::free(Arr);
-            BucketsImpl = nullptr;
-        }
-    }
-
-    FLeakTracker::FLeakReport::FLeakReport(FLeakReport&& Other) noexcept
-        : TotalLeakedBytes(Other.TotalLeakedBytes),
-          LeakedAllocationCount(Other.LeakedAllocationCount),
-          BucketCount(Other.BucketCount),
-          BucketsImpl(Other.BucketsImpl)
-    {
-        Other.BucketsImpl           = nullptr;
-        Other.BucketCount           = 0;
-        Other.TotalLeakedBytes      = 0;
-        Other.LeakedAllocationCount = 0;
-    }
-
-    FLeakTracker::FLeakReport& FLeakTracker::FLeakReport::operator=(FLeakReport&& Other) noexcept
-    {
-        if (this != &Other)
-        {
-            // Free our own storage first.
-            if (BucketsImpl)
-            {
-                FBucketsArray* Arr = static_cast<FBucketsArray*>(BucketsImpl);
-                ::std::free(Arr->Data);
-                ::std::free(Arr);
-            }
-            TotalLeakedBytes      = Other.TotalLeakedBytes;
-            LeakedAllocationCount = Other.LeakedAllocationCount;
-            BucketCount           = Other.BucketCount;
-            BucketsImpl           = Other.BucketsImpl;
-
-            Other.BucketsImpl           = nullptr;
-            Other.BucketCount           = 0;
-            Other.TotalLeakedBytes      = 0;
-            Other.LeakedAllocationCount = 0;
-        }
-        return *this;
-    }
-
-    FLeakTracker::FStackBucket FLeakTracker::FLeakReport::GetBucket(::SIZE_T I) const noexcept
-    {
-        // Bounds check (Debug/Dev only; Shipping UB-on-OOB matches the
-        // rest of the engine's accessor policy).
-        XPACT_CHECK(I < BucketCount);
-        FStackBucket Empty{};
-        if (BucketsImpl == nullptr || I >= BucketCount)
-        {
-            return Empty;
-        }
-        const FBucketsArray* Arr = static_cast<const FBucketsArray*>(BucketsImpl);
-        return Arr->Data[I];
-    }
-
-    // -----------------------------------------------------------------
-    // FLeakTracker::CaptureReport
+    //
+    // The Phase 1b opaque-pointer / std::malloc-backed FBucketsArray
+    // shim has been removed. FLeakReport::Buckets is now a value-
+    // embedded TArray<FStackBucket>, populated directly via Add()
+    // during the aggregation pass. The TArray uses the default XCore
+    // allocator (FMemory::Malloc tagged FMemTag::LeakTracker via
+    // DefaultAllocator); the tracker's existing g_inHook recursion
+    // guard prevents re-entry into the per-allocation hook from the
+    // bucket-array growth path because CaptureReport is called from
+    // outside any malloc-hook scope.
+    //
+    // Move ctor + move assignment are now compiler-generated (= default
+    // in the header) — TArray supplies the right move semantics.
     // -----------------------------------------------------------------
 
     void FLeakTracker::CaptureReport(FLeakReport& Out) noexcept
     {
         FTrackerState& State = GetState();
 
-        // Free any existing storage.
+        // Reset the report. Buckets.Reset() preserves capacity which
+        // is harmless on a repeat-capture; the move-overwrite of Out
+        // by the caller is the dominant use pattern.
         Out.TotalLeakedBytes      = 0;
         Out.LeakedAllocationCount = 0;
-        Out.BucketCount           = 0;
-        if (Out.BucketsImpl)
-        {
-            FBucketsArray* OldArr = static_cast<FBucketsArray*>(Out.BucketsImpl);
-            ::std::free(OldArr->Data);
-            ::std::free(OldArr);
-            Out.BucketsImpl = nullptr;
-        }
+        Out.Buckets.Reset();
 
         if (!State.Initialized.load(::std::memory_order_acquire))
         {
             return;
         }
 
-        ::std::lock_guard<::std::mutex> Lock(State.Mutex);
+        ::XCore::HAL::FScopedMutexLock Lock(State.Mutex);
 
-        // First pass: tally aggregates + count distinct call-stack
-        // buckets (frame-array equality).
-        // Phase 1b: simple O(N*N) bucket grouping. N is bounded by the
-        // live-alloc count (<= 10M; typically much smaller). For the
-        // synthetic-leak test (100 records) the cost is negligible.
-        // Phase 1c will use a hash on the frame-array contents.
-        // TODO(Phase 1c): hash-table-based bucket grouping.
-
+        // First pass: tally aggregates.
         for (FAllocRecord* Cur = State.LRUHead; Cur; Cur = Cur->OlderInLRU)
         {
             if (Cur->InUse)
@@ -671,32 +593,23 @@ namespace XCore::HAL
             }
         }
 
-        // Optional bucketing pass: allocate up to LiveCount buckets
-        // (worst case = all distinct). If the report has 0 live allocs
-        // skip the allocation entirely.
         if (Out.LeakedAllocationCount == 0)
         {
             return;
         }
 
-        FBucketsArray* Arr = static_cast<FBucketsArray*>(::std::malloc(sizeof(FBucketsArray)));
-        if (Arr == nullptr)
-        {
-            return;  // out-of-host-memory; report ships with bucket
-                     // count 0 but aggregate counts intact.
-        }
-        Arr->Capacity = Out.LeakedAllocationCount;
-        Arr->Count    = 0;
-        Arr->Data     = static_cast<FStackBucket*>(
-                            ::std::malloc(Arr->Capacity * sizeof(FStackBucket)));
-        if (Arr->Data == nullptr)
-        {
-            ::std::free(Arr);
-            return;
-        }
-        ::std::memset(Arr->Data, 0, Arr->Capacity * sizeof(FStackBucket));
+        // Reserve enough capacity for the worst case (all distinct).
+        // The actual bucket count is typically much smaller; the
+        // reserve avoids reallocation during the grouping pass. The
+        // cast to int32 is safe: live alloc count is bounded by the
+        // 10M record-pool capacity which fits easily in int32.
+        Out.Buckets.Reserve(static_cast<::int32>(Out.LeakedAllocationCount));
 
-        // Group by frame-array equality.
+        // Second pass: group by frame-array equality. O(N*B) where
+        // B is the bucket count; for the synthetic-leak test
+        // workload (100 records, typically <10 distinct stacks)
+        // the cost is negligible. TODO: hash-table-based grouping
+        // if production workloads show this in profile.
         for (FAllocRecord* Cur = State.LRUHead; Cur; Cur = Cur->OlderInLRU)
         {
             if (!Cur->InUse)
@@ -705,11 +618,13 @@ namespace XCore::HAL
             }
 
             // Find an existing bucket with the same frame array.
-            ::SIZE_T FoundIdx = ~::SIZE_T(0);
-            for (::SIZE_T B = 0; B < Arr->Count; ++B)
+            ::int32 FoundIdx  = -1;
+            const ::int32 NumBuckets = Out.Buckets.Num();
+            for (::int32 B = 0; B < NumBuckets; ++B)
             {
-                if (Arr->Data[B].FrameCount == Cur->FrameCount &&
-                    ::std::memcmp(Arr->Data[B].Frames, Cur->Frames,
+                const FStackBucket& Existing = Out.Buckets[B];
+                if (static_cast<int>(Existing.FrameCount) == Cur->FrameCount &&
+                    ::std::memcmp(Existing.Frames, Cur->Frames,
                                   Cur->FrameCount * sizeof(void*)) == 0)
                 {
                     FoundIdx = B;
@@ -717,24 +632,28 @@ namespace XCore::HAL
                 }
             }
 
-            if (FoundIdx == ~::SIZE_T(0))
+            if (FoundIdx == -1)
             {
                 // New bucket.
-                FoundIdx = Arr->Count++;
-                FStackBucket& Bucket = Arr->Data[FoundIdx];
-                ::std::memcpy(Bucket.Frames, Cur->Frames,
+                FStackBucket NewBucket{};
+                ::std::memcpy(NewBucket.Frames, Cur->Frames,
                               kMaxStackFrames * sizeof(void*));
-                Bucket.FrameCount      = Cur->FrameCount;
-                Bucket.TotalBytes      = 0;
-                Bucket.AllocationCount = 0;
+                NewBucket.FrameCount      = Cur->FrameCount;
+                NewBucket.TotalBytes      = Cur->Size;
+                NewBucket.AllocationCount = 1;
+                // FStackBucket is trivially copyable (POD of 24
+                // void* + a few size_t / int); Add (const T&) and
+                // Emplace (T&&) generate identical code. Use Emplace
+                // for stylistic correctness.
+                Out.Buckets.Emplace(::std::move(NewBucket));
             }
-
-            Arr->Data[FoundIdx].TotalBytes      += Cur->Size;
-            Arr->Data[FoundIdx].AllocationCount += 1;
+            else
+            {
+                FStackBucket& Bkt = Out.Buckets[FoundIdx];
+                Bkt.TotalBytes      += Cur->Size;
+                Bkt.AllocationCount += 1;
+            }
         }
-
-        Out.BucketCount = Arr->Count;
-        Out.BucketsImpl = Arr;
     }
 
     // =====================================================================

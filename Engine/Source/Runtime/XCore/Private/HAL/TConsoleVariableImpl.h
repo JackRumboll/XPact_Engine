@@ -38,12 +38,14 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"
 #include "Containers/FString.h"
 #include "HAL/ECVarFlags.h"
 #include "HAL/ECVarSetByPriority.h"
 #include "HAL/FRWLock.h"
 #include "HAL/IConsoleVariable.h"
 #include "HAL/TConsoleVariableData.h"
+#include "HAL/XInitPhase.h"     // Phase 1g fix M-9: EngineInitPhase guard on inline Get*
 
 namespace XCore::Misc
 {
@@ -65,11 +67,15 @@ namespace XCore::Misc
 
         [[nodiscard]] ::int32 GetInt() const noexcept override
         {
+            // Phase 1g fix M-9: CVar reads valid only at PostStaticInit+.
+            XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
             return m_data.LoadAcquire();
         }
 
         [[nodiscard]] float GetFloat() const noexcept override
         {
+            // Phase 1g fix M-9: CVar reads valid only at PostStaticInit+.
+            XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
             return static_cast<float>(m_data.LoadAcquire());
         }
 
@@ -145,11 +151,15 @@ namespace XCore::Misc
 
         [[nodiscard]] ::int32 GetInt() const noexcept override
         {
+            // Phase 1g fix M-9: CVar reads valid only at PostStaticInit+.
+            XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
             return static_cast<::int32>(m_data.LoadAcquire());
         }
 
         [[nodiscard]] float GetFloat() const noexcept override
         {
+            // Phase 1g fix M-9: CVar reads valid only at PostStaticInit+.
+            XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
             return m_data.LoadAcquire();
         }
 

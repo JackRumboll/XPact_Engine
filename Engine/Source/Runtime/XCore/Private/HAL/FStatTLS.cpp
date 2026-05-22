@@ -18,8 +18,10 @@
 
 #include "HAL/FStatTLS.h"
 
+#include "HAL/FMemory.h"                // Phase 1g fix F-3: FMemory::IsAlive guard
 #include "HAL/FPlatformTime.h"          // FPlatformTime::Cycles64
 #include "HAL/FStatShard.h"
+#include "HAL/TModuleSafeThreadLocal.h" // XPACT_TLS_MODULE_SAFE backing
 #include "Macros/XPactMacros.h"
 
 #include <atomic>
@@ -30,24 +32,59 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     // The per-thread shard.
     //
-    // Per Section 10.5: route through XPACT_TLS_MODULE_SAFE on
-    // hot-reloadable DLL targets (Win64 / Android) and through native
-    // thread_local on Linux server.
+    // Per Section 10.5 + Section 13.1 fix B-C1: route through
+    // XPACT_TLS_MODULE_SAFE on hot-reloadable DLL targets (Win64 /
+    // Android via TModuleSafeThreadLocal<FStatShard>) and through
+    // native thread_local on Linux server.
     //
-    // TEMPORARY PHASE 1F NOTE: TModuleSafeThreadLocal<T> is forward-
-    // declared in XPactMacros.h but its Platform-HAL definition is
-    // out-of-scope for Phase 1c (only the forward decl ships). The
-    // current implementation falls through to a plain thread_local
-    // on every target. Phase 1g audit cycle replaces this with the
-    // TModuleSafeThreadLocal-routed shard once the Platform HAL
-    // implementation lands.
+    // Phase 1g (Fix M-4): the TModuleSafeThreadLocal Platform HAL
+    // surface (FPlatformTLS::AllocSlot with per-thread destructor)
+    // is in place. The macro emits one of:
+    //   * Win64 / Android: ::XCore::HAL::TModuleSafeThreadLocal<FStatShard> g_shard;
+    //                     accessed as `g_shard->Inc(Hash)`. Lazy-alloc
+    //                     per thread; OS-driven destructor on thread
+    //                     exit routes the shard's contents to the
+    //                     Treiber overflow stack via FStatShard::~ctor
+    //                     (which runs from the destructor callback).
+    //   * Linux:          thread_local FStatShard g_shard;
+    //                     accessed as `g_shard.Inc(Hash)`.
     //
-    // The fall-through is safe for the unit tests in Phase 1f
-    // (single-DLL test process; no DLL unload). The hot-reload
-    // failure mode (DLL unload leaves dangling shard storage) is
-    // captured as a Phase 1g TODO below.
+    // The g_shard symbol exposes both forms via the GetShard() inline
+    // helper below; the helper returns FStatShard& on every platform
+    // so the call sites read uniformly.
     // -----------------------------------------------------------------
-    static thread_local FStatShard g_shard;
+    namespace
+    {
+        XPACT_TLS_MODULE_SAFE(FStatShard, g_shard);
+
+        // Inline helper that abstracts over the macro's two forms.
+        // On the slot-allocator platforms (Win64/Android) `g_shard` is
+        // a TModuleSafeThreadLocal<FStatShard>; `Get()` returns the
+        // per-thread pointer (lazy-allocates on first call).
+        // On Linux `g_shard` is a plain thread_local FStatShard; we
+        // return its address directly.
+        //
+        // TODO(Phase 2 SIOF): on Win64/Android the g_shard global's
+        // non-constexpr ctor (FPlatformTLS::AllocSlot) runs at
+        // static-storage-duration init. If a constinit constructor in
+        // another TU calls XSTAT_INC BEFORE g_shard's ctor runs (a
+        // SIOF -- static init order fiasco), the Get() path reads
+        // m_slotIdx as zero-initialized (slot 0, which Win32 typically
+        // owns for the C runtime). The fix is a Schwarz-counter
+        // pattern that forces g_shard's ctor to run before any other
+        // TU's static-storage-duration init. The Phase 1g MIN-3 test
+        // (ConstinitCtor.cpp) does NOT trigger this on Linux because
+        // native thread_local is zero-init-safe; the Win64/Android
+        // path may need the counter wrapper.
+        XPACT_FORCEINLINE FStatShard& GetShard() noexcept
+        {
+#if XPACT_PLATFORM_WIN64 || XPACT_PLATFORM_ANDROID
+            return *g_shard.Get();
+#else
+            return g_shard;
+#endif
+        }
+    }
 
     // -----------------------------------------------------------------
     // The static FStatExitOverflowQueue -- Treiber stack at file scope.
@@ -71,17 +108,17 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     void FStatTLS::Inc(const FStatId& Id) noexcept
     {
-        g_shard.Inc(Id.Hash);
+        GetShard().Inc(Id.Hash);
     }
 
     void FStatTLS::Add(const FStatId& Id, ::int64 Delta) noexcept
     {
-        g_shard.Add(Id.Hash, Delta);
+        GetShard().Add(Id.Hash, Delta);
     }
 
     void FStatTLS::AddCycles(const FStatId& Id, ::uint64 Cycles) noexcept
     {
-        g_shard.AddCycles(Id.Hash, Cycles);
+        GetShard().AddCycles(Id.Hash, Cycles);
     }
 
     // -----------------------------------------------------------------
@@ -154,6 +191,23 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     FStatShard::~FStatShard() noexcept
     {
+        // Phase 1g fix F-3: shutdown-ordering guard.
+        //
+        // The migration below routes un-merged counts through
+        // PushThreadExitEntry -> FMemory::MallocOrAbort, which is only
+        // valid while the allocator is alive. If this destructor is
+        // called AFTER FMemory::__Shutdown has cleared g_AllocatorAlive
+        // (a real risk on a thread whose teardown beats the engine's
+        // shutdown ordering), MallocOrAbort would either abort the
+        // process during shutdown or return memory on a torn-down
+        // allocator. Either is worse than dropping the counts: at
+        // process shutdown, un-merged counts are by definition
+        // unobservable (no live thread can read them).
+        if (!::XCore::HAL::FMemory::IsAlive())
+        {
+            return;
+        }
+
         // Walk main slots.
         for (::int32 i = 0; i < kStatShardSlotCount; ++i)
         {
@@ -264,7 +318,7 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     FStatShard* __GetCurrentThreadShard() noexcept
     {
-        return &g_shard;
+        return &GetShard();
     }
 
 } // namespace XCore::Stat

@@ -73,10 +73,14 @@
 #include "Macros/XCoreFwd.h"          // FString forward decl (already there)
 #include "HAL/FMemory.h"              // FMemory::MallocOrAbort / Free
 #include "HAL/FMemTag.h"              // FMemTag::Localization (FString fallback) / Container
+#include "HAL/FormatString.h"         // XCore::HAL::FormatString<Args...> alias (Section 11.1 fix Rev 3 M4)
 
 #include <cstddef>                    // std::byte
 #include <cstring>                    // std::memcpy, std::memmove, std::strlen
+#include <format>                     // std::vformat / std::make_format_args / std::format_to_n
+#include <string>                     // std::string (return-type of std::vformat)
 #include <type_traits>                // std::is_same_v
+#include <utility>                    // std::forward
 
 // Forward declare TArray<FString> for Split's return type. The full
 // TArray template definition is intentionally NOT included here;
@@ -331,8 +335,19 @@ public:
     [[nodiscard]] ::int32 IndexOf(const FString& Needle) const noexcept;
 
     // Last-occurrence variants.
-    [[nodiscard]] ::int32 LastIndexOf            (char     Needle) const noexcept;
+    [[nodiscard]] ::int32 LastIndexOfByte        (char     Needle) const noexcept;
+    [[nodiscard]] ::int32 LastIndexOfByte        (const FString& Needle) const noexcept;
     [[nodiscard]] ::int32 LastIndexOfCodepoint   (char32_t Needle) const noexcept;
+
+    // Compatibility alias: the byte single-char form is named
+    // LastIndexOf in some legacy spots; the new explicit name is
+    // LastIndexOfByte (per Section 11.1 table). The byte form keeps
+    // a thin forwarder so older call sites compile during the
+    // migration window.
+    [[nodiscard]] XPACT_FORCEINLINE ::int32 LastIndexOf(char Needle) const noexcept
+    {
+        return LastIndexOfByte(Needle);
+    }
 
     // -------------------------------------------------------------
     // Equality (Section 11.1).
@@ -388,36 +403,86 @@ public:
     [[nodiscard]] static FString FromDouble(double   Value);
 
     // -------------------------------------------------------------
-    // Format -- compile-time-checked format-string facility.
+    // Format -- compile-time-checked format-string facility
+    // (Section 11.1 fix Rev 3 M4).
     //
-    // SPEC INTENT (Section 11.1 fix Rev 3 M4):
-    //   * Format     -- locale-defaulted; NOT sim-path-safe.
-    //   * FormatFixed -- fixed C locale; sim-path-safe.
+    //   * Format      -- locale-defaulted; NOT sim-path-safe (the
+    //                    {:L} grouping specifier admits divergence
+    //                    across glibc / MSVC / Bionic locales).
+    //                    Sim-path TUs see a [[deprecated]] decoration
+    //                    via the sim-path overlay header.
+    //   * FormatFixed -- C-locale-fixed; sim-path-safe; bit-exact
+    //                    across platforms for {:f}, {:e}, {:g}, etc.
     //
-    // PHASE 1D STATUS:
-    //   * On C++23 toolchains where `__cpp_lib_format >= 202207L`,
-    //     `std::format_string<Args...>` is used and `std::format`
-    //     / `std::format_to_n` back the implementations.
-    //   * On C++20 toolchains, MSVC 17.10+ / libstdc++ 13+ / libc++
-    //     16+ ship `std::format` already; the polyfill detection
-    //     in FStringFormat.cpp falls back to one of those, OR to
-    //     a stub that aborts with a clear "fmt not vendored"
-    //     diagnostic. The fmt vendoring per Master Plan ThirdParty
-    //     inventory is a Phase 1e task; see TODO marker in
-    //     FStringFormat.cpp.
-    //
-    // The templates here are declared in the header so a
-    // compile-time-bad format string fails at the call site (rather
-    // than at the .cpp body). The bodies dispatch to non-template
-    // helpers that perform the actual std::format invocation.
+    // Both templates are declared in the header so compile-time-bad
+    // format strings fail at the call site (the FormatString<Args...>
+    // parameter is std::format_string<Args...> which performs the
+    // compile-time check). The bodies dispatch via std::vformat /
+    // std::format_to_n to non-template helpers in FStringFormat.cpp
+    // for the actual implementation.
     // -------------------------------------------------------------
 
-    // NOTE: FormatString<Args...> alias would normally live at
-    // XCore::HAL::FormatString. For Phase 1d we wire the templated
-    // wrapper bodies in FStringFormat.cpp; the public declarations
-    // here are the surface contract. If the toolchain lacks
-    // std::format, the .cpp body aborts at runtime with a clear
-    // diagnostic. The TODO for fmt-vendoring is in FStringFormat.cpp.
+    template<typename... Args>
+    [[nodiscard]] static FString Format(::XCore::HAL::FormatString<Args...> Fmt, Args&&... Vs)
+    {
+        // std::vformat performs the locale-dependent formatting
+        // (uses the thread-local locale; can be set via
+        // std::locale::global). Returns std::string with UTF-8 bytes
+        // when the source format string was UTF-8.
+        ::std::string Out = ::std::vformat(
+            Fmt.get(),
+            ::std::make_format_args(Vs...));
+        return FString(Out.data(), static_cast<::int32>(Out.size()));
+    }
+
+    template<typename... Args>
+    [[nodiscard]] static FString FormatFixed(::XCore::HAL::FormatString<Args...> Fmt, Args&&... Vs) noexcept
+    {
+        // FormatFixed uses std::format_to_n with the imbued C locale
+        // for sim-path bit-exactness. Implementation strategy:
+        //
+        //   1. Pre-flight: format to a small stack buffer with
+        //      format_to_n to learn the required size.
+        //   2. If the result fits in the stack buffer, return.
+        //   3. Otherwise allocate via FMemory and re-emit.
+        //
+        // The C-locale guarantee comes from passing an explicit
+        // locale-less format_to_n (std::format_to_n is locale-
+        // independent by default; the locale-aware behaviour is
+        // opt-in via the {:L} specifier which sim-path TUs forbid via
+        // the lints in §11.1.3). Bit-exactness across platforms is
+        // pinned by the standard for the basic {:f}, {:e}, {:g}
+        // specifiers (P0067R5 + N4885 §28.5.2.4).
+        //
+        // The implementation re-uses the std::vformat path because
+        // std::vformat's specification is locale-defaulted; the
+        // sim-path discipline is enforced at the lint layer (the
+        // overlay header bans the {:L} specifier and certain locale-
+        // aware functions). For Phase 1g we share the body with
+        // Format -- the user-visible difference is the [[deprecated]]
+        // applied to Format (not FormatFixed) in sim-path TUs.
+
+        // The body is wrapped in a try/catch-free path: std::vformat
+        // can throw std::format_error on internal-state issues that
+        // should never happen with a compile-time-checked format
+        // string. We funnel any throw into a defensive abort path in
+        // FormatFixedRuntime so the noexcept contract is honoured.
+        return FormatFixedRuntime(
+            ::std::string_view(Fmt.get()),
+            ::std::make_format_args(Vs...));
+    }
+
+private:
+    // Non-template helper for FormatFixed; defined in FStringFormat.cpp
+    // so the noexcept contract is honoured by funneling the
+    // std::vformat throw path to an abort. The std::format_args type
+    // is opaque + non-template; making the helper non-template lets
+    // the body live in the .cpp.
+    [[nodiscard]] static FString FormatFixedRuntime(
+        ::std::string_view Fmt,
+        ::std::format_args Args) noexcept;
+
+public:
 
     // -------------------------------------------------------------
     // C-string accessors (Section 11.1).

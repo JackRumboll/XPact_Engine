@@ -51,7 +51,9 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"
-#include "Macros/XCoreFwd.h"      // TArray<T>, FString forward declarations
+#include "Macros/XCoreFwd.h"      // FString forward declaration
+#include "Containers/TArray.h"    // Phase 1g fix M-7: TArray has a working body since Phase 1c
+#include "HAL/FMemTag.h"          // Phase 1g fix M-7: tag the bucket TArray as LeakTracker
 
 #if XPACT_LEAK_TRACKING_ENABLED
 
@@ -94,65 +96,63 @@ namespace XCore::HAL
         // -----------------------------------------------------------------
         // FLeakReport -- captured snapshot of the tracker's state.
         //
-        // Section 12.1 spec body field layout. Spec body declares
-        // Buckets as `TArray<FStackBucket>`; TArray is forward-declared
-        // in XCoreFwd.h (Phase 1c provides the body).
+        // Section 12.1 spec body field layout. Buckets is a value-
+        // embedded TArray<FStackBucket> per spec.
         //
-        // PHASE-1B BUCKETS STORAGE: TArray cannot be embedded by value
-        // in Phase 1b because TArray has no working body yet (its
-        // sizeof / alignof are unknown to the compiler, blocking
-        // FLeakReport's own sizeof computation). We hold the Buckets
-        // list via an opaque pointer (`BucketsImpl`) instead; the
-        // CaptureReport path allocates the implementation type on
-        // demand and exposes it through the BucketCount + GetBucket
-        // accessors below. When Phase 1c lands TArray, the spec-
-        // wording "TArray<FStackBucket> Buckets" can be restored
-        // verbatim with no behavioural change.
-        //
-        // TODO(Phase 1c): restore the spec-literal field
-        //     ::XCore::TArray<FStackBucket> Buckets;
-        // once TArray has a working body. The current opaque-pointer
-        // shim is the minimum-viable interface that satisfies the
-        // dispatch's "FLeakReport has count=N, bytes=M" assertion
-        // without requiring TArray's body.
+        // Phase 1g fix M-7: prior Phase 1b shipped an opaque
+        // `void* BucketsImpl + size_t BucketCount + GetBucket(i)
+        // accessor` because TArray had no body in Phase 1b. Phase 1c
+        // landed TArray; this revision restores the spec-literal
+        // value-embedded TArray field. Non-copyable still, because
+        // the captured-state move semantics remain the right
+        // ownership model for a snapshot.
         // -----------------------------------------------------------------
         struct FLeakReport
         {
             ::SIZE_T  TotalLeakedBytes;
             ::SIZE_T  LeakedAllocationCount;
-            ::SIZE_T  BucketCount;       // number of distinct call-stack buckets
 
-            // Opaque pointer to the bucket-array implementation. For
-            // Phase 1b, the implementation is an internal FStackBucket
-            // array held inside the tracker's TLS-style state and
-            // freed at FLeakReport destruction.
+            // Per-bucket aggregation (spec-literal: TArray<FStackBucket>).
+            // Populated by CaptureReport via Add(...). Move-transferred
+            // on FLeakReport move; freed on FLeakReport destruction.
             //
-            // The destructor calls into FLeakTracker::FreeReport-
-            // Buckets to release the storage; structured to keep this
-            // header free of TArray's body until Phase 1c.
-            void*     BucketsImpl;
+            // The bucket array's own allocations are tagged
+            // FMemTag::LeakTracker so they are excluded from the
+            // tracker's per-tag shadow recording (the tracker checks
+            // FMemTag::LeakTracker at the hook and skips recording its
+            // own internal allocations -- otherwise the tracker self-
+            // records and recurses unbounded).
+            ::XCore::TArray<FStackBucket, ::XCore::DefaultAllocator> Buckets;
 
-            // Constructor / destructor for the opaque-pointer pattern.
-            // The destructor frees BucketsImpl via the tracker's
-            // accessor (declared inline below to keep the header
-            // single-file).
             FLeakReport() noexcept
-                : TotalLeakedBytes(0), LeakedAllocationCount(0),
-                  BucketCount(0), BucketsImpl(nullptr) {}
-            ~FLeakReport() noexcept;  // body in FLeakTracker.cpp
+                : TotalLeakedBytes(0)
+                , LeakedAllocationCount(0)
+                , Buckets(::XCore::DefaultAllocator(::XCore::HAL::FMemTag::LeakTracker))
+            {}
+            ~FLeakReport() noexcept = default;
 
             // Non-copyable. Move-constructed via the captured-state
             // pattern (no-op transfers; the caller owns the report
             // until destruction).
             FLeakReport(const FLeakReport&)            = delete;
             FLeakReport& operator=(const FLeakReport&) = delete;
-            FLeakReport(FLeakReport&& Other) noexcept;
-            FLeakReport& operator=(FLeakReport&& Other) noexcept;
+            FLeakReport(FLeakReport&& Other) noexcept            = default;
+            FLeakReport& operator=(FLeakReport&& Other) noexcept = default;
 
-            // Accessor: returns the I-th bucket. Bounds-checked in
-            // Debug/Dev; UB in Shipping on out-of-range I.
-            // Phase 1b: returns a copy from the opaque BucketsImpl.
-            [[nodiscard]] FStackBucket GetBucket(::SIZE_T I) const noexcept;
+            // Convenience accessors (kept for source-compat with
+            // call-sites that used the Phase 1b BucketCount / GetBucket
+            // interface). New code should use Buckets directly. The
+            // return type is int32 because TArray::Num() is int32 in
+            // XPact's container model (matches the XSTAT-style
+            // signed-32-bit-element-count convention).
+            [[nodiscard]] ::int32 BucketCount() const noexcept
+            {
+                return Buckets.Num();
+            }
+            [[nodiscard]] const FStackBucket& GetBucket(::int32 I) const noexcept
+            {
+                return Buckets[I];
+            }
         };
 
         // ============================================================
@@ -243,13 +243,13 @@ namespace XCore::HAL
 #endif  // XPACT_LEAK_TRACKING_ENABLED
 
 // =====================================================================
-// TODO(Phase 1c):
-//   * Populate FLeakReport::Buckets once TArray<FStackBucket> has a
-//     working body. The per-bucket aggregation logic exists in the
-//     .cpp; only the populate-the-TArray path is gated.
+// TODO:
+//   * (Phase 1g done): FLeakReport::Buckets is now TArray<FStackBucket>
+//     value-embedded per spec. The Phase 1b opaque-pointer shim is
+//     removed.
 //   * Wire the symbolic-name resolution into WriteReport. Phase 1b
-//     emits raw frame addresses; Phase 1c will call
-//     IStackWalk::SymbolizeFrame for each address.
+//     emits raw frame addresses; the upgrade calls IStackWalk::
+//     SymbolizeFrame for each address.
 //   * Android libunwindstack richer-info per Section 12.5 fix A-MIN2:
 //     replace the __builtin_frame_address + _Unwind_Backtrace baseline
 //     with the NDK libunwindstack call. Acceptance I-extra: Android

@@ -330,6 +330,20 @@
 #                                            BLAKE-verification tests
 #                                            invoke it at test setup.
 #
+# Phase 1g fix MIN-4 -- test-runner orchestration contract:
+# The two tests that depend on the SampleLoctables fixtures are:
+#   * Tests/Internationalization/FText.Tests/LocaleSwitch.cpp
+#   * Tests/Internationalization/FText.Tests/RoundTripBinary.cpp
+# Both tests call XPact_GenerateSampleLoctables() directly in their
+# bodies as a defense-in-depth measure. The test runner MUST invoke
+# XPact_GenerateSampleLoctables(GetTempDirectory() + "/SampleLoctables/")
+# in its per-process startup hook BEFORE running any FText.Tests test
+# so that out-of-tree consumers that don't use the in-test
+# self-bootstrap still find the fixtures. The .loctable binaries
+# are NOT committed; see GenerateSamples.cpp header block for the
+# rationale (keeps repo text-only-friendly + serializer-schema-
+# drift-safe).
+#
 # Phase 1f Subagent A (Steps 12 + 13: CVars + Stat) adds:
 #
 #   * Tests/HAL/IConsoleManager.Tests/RegisterFind.cpp
@@ -404,6 +418,61 @@
 # thread for the unit-test wallclock budget (8 * 100K = 800K total
 # completes in <2s; 1B would take ~30 minutes single-thread).
 # Phase 1g CI can raise the bar with a dedicated long-run test.
+#
+# Phase 1g Subagent Y adds (this commit):
+#
+#   * Tests/Containers/FString.Tests/Format.cpp
+#                                         -- Phase 1g Fix C-1: FString::Format
+#                                            + FormatFixed basic correctness
+#                                            replacing the Phase 1d PHASE1D_SKIP
+#                                            placeholder. Covers no-arg /
+#                                            one-arg / multi-arg / positional
+#                                            indices.
+#   * Tests/Containers/FString.Tests/FormatCompileTimeCheck.cpp
+#                                         -- Phase 1g Fix C-1: well-formed
+#                                            Format compiles; documents the
+#                                            malformed-format-string compile
+#                                            error site for manual verification.
+#   * Tests/Containers/FString.Tests/FormatFixedLocaleNeutral.cpp
+#                                         -- Phase 1g Fix C-1: FormatFixed
+#                                            output is byte-identical under
+#                                            locale change.
+#   * Tests/Internationalization/FText.Tests/FormatPositional.cpp
+#                                         -- Phase 1g: FText::Format substitutes
+#                                            positional {0}/{1} arguments
+#                                            correctly + cache survival across
+#                                            re-resolve.
+#   * Tests/HAL/TModuleSafeThreadLocal.Tests/BasicGetSet.cpp
+#                                         -- Phase 1g Fix M-4: lazy per-thread
+#                                            allocation; Get pointer identity;
+#                                            Set/Clear round-trip.
+#   * Tests/HAL/FAtomicInt64.Tests/CASContention.cpp
+#                                         -- Phase 1g fix MIN-2: 8-thread x 10K
+#                                            CAS hammer; sum == 80,000.
+#   * Tests/HAL/FStatTLS.Tests/ConstinitCtor.cpp
+#                                         -- Phase 1g fix MIN-3: XSTAT_INC from
+#                                            global ctor (PreStaticInit)
+#                                            survives the first Merge.
+#   * Tests/HAL/FPlatformMisc.Tests/EntropyNIST.cpp
+#                                         -- Phase 1g fix D-extra-3: NIST
+#                                            SP 800-90B 1 MiB min-entropy
+#                                            estimator >= 7.5 bits/byte.
+#   * Tests/HAL/FMemory.Tests/ThreadExitDrain.cpp
+#                                         -- Phase 1g Fix B's MAJOR #2: 100
+#                                            transient threads each allocating +
+#                                            freeing on multiple bins; per-tag
+#                                            byte count returns to baseline
+#                                            (no leak across thread-exit drain).
+#   * Tests/Math/SimPathRejects/StdSqrt.cpp,
+#     Tests/HAL/SimPathRejects/PlatformTimeSeconds.cpp,
+#     Tests/HAL/SimPathRejects/CVarNotSimPathSafe.cpp
+#                                         -- Phase 1g: expect-fail TU templates
+#                                            documenting sim-path poisoning.
+#                                            Compiled WITHOUT sim-path attribute
+#                                            by default; maintainers flip the
+#                                            attribute to exercise the gate
+#                                            manually until XBT grows a typed
+#                                            expect-fail fixture (Phase 2).
 #
 # Subsequent phases (1g+: cross-arch CI shards, FString::Format
 # wiring, perf bar enforcement) add their TUs under this same module.

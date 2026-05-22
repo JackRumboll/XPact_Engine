@@ -22,6 +22,38 @@
 //   * ja-JP.loctable: Japanese (Hiragana + Kanji) translations.
 //
 // =====================================================================
+// TEST ORCHESTRATION CONTRACT (Phase 1g fix MIN-4):
+//
+// The test runner MUST invoke
+//     XPact_GenerateSampleLoctables(GetTempDirectory() + "/SampleLoctables/")
+// in its per-process startup hook BEFORE running any FText.Tests test.
+//
+// The two tests that depend on these fixtures are:
+//   * Engine/Source/Runtime/XCore/Tests/Internationalization/
+//       FText.Tests/LocaleSwitch.cpp
+//   * Engine/Source/Runtime/XCore/Tests/Internationalization/
+//       FText.Tests/RoundTripBinary.cpp
+//
+// Both tests call XPact_GenerateSampleLoctables() directly in their
+// test bodies as a defense-in-depth measure (so they pass when invoked
+// in isolation), but the test runner should be aware that these
+// fixtures are NOT committed binaries -- they are generated artefacts
+// that live under the test process's temp directory for the duration
+// of the run, then deleted by the runner's teardown.
+//
+// Rationale for not committing the .loctable binaries:
+//   * Binary fixtures drift quietly when the FLocTable serializer
+//     evolves; regenerating from a source script keeps the binary
+//     in lock-step with the schema.
+//   * The repo stays text-only-changes-friendly (no large-file diffs
+//     on serializer revisions).
+//   * The runner's startup-hook contract surfaces missing-fixture
+//     scenarios immediately rather than letting them masquerade as
+//     test failures.
+//
+// XCore.Tests.Build.toml lists the test-runner dependency on this
+// TU; see the corresponding documentation block there.
+// =====================================================================
 
 #include "Internationalization/FLocTableLoader.h"
 #include "Internationalization/FLocTable.h"

@@ -443,6 +443,12 @@
 #       Win64PlatformProcess.cpp
 #       Win64PlatformMemory.cpp
 #       Win64PlatformProperties.cpp
+#       Win64PlatformTLS.cpp           -- Phase 1g Fix M-4: FPlatformTLS
+#                                         AllocSlot / GetValueInSlot /
+#                                         SetValueInSlot via FlsAlloc
+#                                         (when a thread-exit destructor
+#                                         is requested) or TlsAlloc (no
+#                                         destructor; fast path).
 #
 #   Private/HAL/Unix/                  -- Linux-only .cpp files:
 #       LinuxPlatformMisc.cpp
@@ -450,6 +456,11 @@
 #       LinuxPlatformProcess.cpp
 #       LinuxPlatformMemory.cpp
 #       LinuxPlatformProperties.cpp
+#       LinuxPlatformTLS.cpp           -- Phase 1g Fix M-4: FPlatformTLS
+#                                         via pthread_key_create /
+#                                         _delete / _getspecific /
+#                                         _setspecific. Destructor
+#                                         argument forwarded directly.
 #
 #   Private/HAL/Android/               -- Android-only .cpp files:
 #       AndroidPlatformMisc.cpp
@@ -457,6 +468,10 @@
 #       AndroidPlatformProcess.cpp
 #       AndroidPlatformMemory.cpp
 #       AndroidPlatformProperties.cpp
+#       AndroidPlatformTLS.cpp         -- Phase 1g Fix M-4: same Bionic
+#                                         pthread surface as Linux;
+#                                         distinct file for the platform
+#                                         guard.
 #
 # Per-platform gating mechanism: each per-OS .cpp wraps its body in
 # `#if XPACT_PLATFORM_WIN64` / `#if XPACT_PLATFORM_LINUX` /

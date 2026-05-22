@@ -30,7 +30,9 @@
 #include "HAL/FMemTag.h"
 #include "HAL/FStatShard.h"
 #include "HAL/FRWLock.h"
+#include "HAL/XInitPhase.h"       // Phase 1g fix M-9: EngineInitPhase guard
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"
 
 #include <cstring>
 #include <new>
@@ -174,6 +176,14 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     void FStatRegistry::MergeFromAllThreads() noexcept
     {
+        // Phase 1g fix M-9: MergeFromAllThreads consumes the per-frame
+        // shard deltas and folds them into the global tree; the global
+        // tree's storage is allocated lazily inside FindOrAdd through
+        // FMemory::Malloc, which is itself valid only at PostStaticInit+.
+        // (The hot-path XSTAT_INC at PreStaticInit is fine — it writes
+        // into the constinit-zero shard slot; only the merger needs
+        // PostStaticInit because it allocates.)
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         FStatRegistryState& State = GetRegistryState();
         ::XCore::HAL::FScopedWriteLock L(State.Lock);
 
@@ -251,6 +261,9 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     void FStatRegistry::Snapshot(FStatSnapshot& Out) noexcept
     {
+        // Phase 1g fix M-9: Snapshot reads the global tree built by
+        // MergeFromAllThreads; valid only at PostStaticInit+.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
         FStatRegistryState& State = GetRegistryState();
         ::XCore::HAL::FScopedReadLock L(State.Lock);
 

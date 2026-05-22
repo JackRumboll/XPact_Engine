@@ -47,12 +47,25 @@
 #include "Sleef.h"
 
 #ifndef XPACT_SIMPATH_PROVISIONAL
-/* If the consumer build did not pick up the provisional fallback flag,
- * default to ON for this Phase 1e landing.  The flag is documented in
- * XCore-4a Section 6.3 and is removed by Phase 1g once the upstream
- * Sleef tarball polynomial bodies are dropped in. */
-#define XPACT_SIMPATH_PROVISIONAL 1
+/* Phase 1g (Subagent X fix MIN-1): default is now 0.  Phase 1e
+ * shipped this defaulted to 1 (libm fallback) as a documented
+ * transition state; Phase 1g elevates Sleef out of "provisional libm
+ * fallback" to its actual scalar implementation (Subagent Y owns the
+ * upstream Sleef-3.6 tarball swap-in).  Defaulting to 0 makes the
+ * non-provisional path the build's default.  The C-side static_assert
+ * below enforces "must be 0 in Phase 1g+" so a future revert is
+ * caught at build time. */
+#define XPACT_SIMPATH_PROVISIONAL 0
 #endif
+
+/* Phase 1g (Subagent X fix MIN-1): CI-gated invariant.  The Phase 1e
+ * provisional libm-fallback shim is gone in Phase 1g.  Any consumer
+ * that re-enables PROVISIONAL=1 in Phase 1g+ is reverting an audit-
+ * landed cleanup; the build fails with a clear diagnostic. */
+_Static_assert(XPACT_SIMPATH_PROVISIONAL == 0,
+               "XPACT_SIMPATH_PROVISIONAL must be 0 in Phase 1g+; "
+               "libm-fallback was a Phase 1e transition state. See "
+               "XCore-4a Section 6.3 Phase 1g errata.");
 
 #if XPACT_SIMPATH_PROVISIONAL
 /* Provisional fallback: route to platform libm.

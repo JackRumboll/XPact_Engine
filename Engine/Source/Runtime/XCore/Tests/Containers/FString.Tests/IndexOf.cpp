@@ -71,6 +71,23 @@ int main()
         if (S.LastIndexOf('h') != 0)  { std::fprintf(stderr, "FAIL: LastIndexOf('h')\n"); return 1; }
     }
 
+    // LastIndexOfByte(const FString&) -- Phase 1g fix M-1 substring variant.
+    {
+        ::XCore::FString H("abracadabra");
+        if (H.LastIndexOfByte(::XCore::FString("a")) != 10)
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte('a') in 'abracadabra' (got %d, expected 10)\n", H.LastIndexOfByte(::XCore::FString("a"))); return 1; }
+        if (H.LastIndexOfByte(::XCore::FString("br")) != 8)
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte('br') in 'abracadabra' (got %d, expected 8)\n", H.LastIndexOfByte(::XCore::FString("br"))); return 1; }
+        if (H.LastIndexOfByte(::XCore::FString("abra")) != 7)
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte('abra') in 'abracadabra' (got %d, expected 7)\n", H.LastIndexOfByte(::XCore::FString("abra"))); return 1; }
+        if (H.LastIndexOfByte(::XCore::FString("xyz")) != ::INDEX_NONE)
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte('xyz') should be INDEX_NONE\n"); return 1; }
+        if (H.LastIndexOfByte(::XCore::FString("")) != H.LenBytes())
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte(empty) should return LenBytes (got %d)\n", H.LastIndexOfByte(::XCore::FString(""))); return 1; }
+        if (H.LastIndexOfByte(::XCore::FString("abracadabraXYZ")) != ::INDEX_NONE)
+            { std::fprintf(stderr, "FAIL: LastIndexOfByte(needle longer than haystack)\n"); return 1; }
+    }
+
     // BMH cross-check: synthetic strings.
     {
         char Hay[400];

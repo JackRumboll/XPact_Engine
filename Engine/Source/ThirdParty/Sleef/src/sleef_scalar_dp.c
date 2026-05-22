@@ -20,8 +20,17 @@
 #include "Sleef.h"
 
 #ifndef XPACT_SIMPATH_PROVISIONAL
-#define XPACT_SIMPATH_PROVISIONAL 1
+/* Phase 1g (Subagent X fix MIN-1): default is now 0. See sleef_scalar_sp.c
+ * for full rationale. The provisional libm-fallback path was a Phase 1e
+ * transition state; Phase 1g elevates Sleef to its actual scalar
+ * implementation (Subagent Y owns the upstream-tarball swap-in). */
+#define XPACT_SIMPATH_PROVISIONAL 0
 #endif
+
+_Static_assert(XPACT_SIMPATH_PROVISIONAL == 0,
+               "XPACT_SIMPATH_PROVISIONAL must be 0 in Phase 1g+; "
+               "libm-fallback was a Phase 1e transition state. See "
+               "XCore-4a Section 6.3 Phase 1g errata.");
 
 #if XPACT_SIMPATH_PROVISIONAL
 double Sleef_sin_u35  (double x)            { return sin (x);     }

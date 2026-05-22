@@ -71,6 +71,12 @@
 #include "Containers/FString.h"
 
 #include <cstdint>
+#include <cstdio>      // std::fprintf -- Format-failure dev-warning
+#include <exception>   // std::exception -- catch surface
+#include <format>      // std::vformat / std::make_format_args
+#include <string>      // std::string -- vformat return type
+#include <string_view> // std::string_view -- vformat input
+#include <utility>     // std::forward
 
 namespace XCore::Loc
 {
@@ -172,41 +178,87 @@ public:
     }
 
     // -----------------------------------------------------------------
-    // Format -- positional + named-arg interpolation.
+    // Format -- positional interpolation (Section 11.1 fix Rev 3 M4 +
+    //                                    Section 17.8).
     //
-    // TODO(Phase 1g): wire FText::Format once FString::Format lands.
+    // Phase 1g: positional substitution only ({0}, {1}, ...). Named
+    // arguments ({PlayerName}, {Quantity}) are a Phase 2 enhancement
+    // because std::format does not natively support named arguments in
+    // C++20 (they arrive in C++26). The Phase 1g surface is sufficient
+    // for the loctable workflow: the localised string carries a
+    // standard std::format-compatible positional template (e.g.,
+    // "{0} picked up {1} coins") and the call site supplies the
+    // arguments in order.
     //
-    // The Format implementation is deferred to Phase 1g because:
-    //   (a) FString::Format is itself a Phase 1g landing (its Phase
-    //       1d stub in FStringFormat.cpp is marked PHASE1D_SKIP per
-    //       XCore.Build.toml; it gates on std::format / vendored fmt
-    //       being usable, which requires Phase 1e Sleef vendoring to
-    //       complete first because FStringFormat will exercise
-    //       float-formatting via std::to_chars).
-    //   (b) FText::Format adds a named-argument {PlayerName}
-    //       substitution layer on top of std::format-style {0}
-    //       positional substitution. The parser is hand-rolled
-    //       (std::format does not natively support named arguments
-    //       in C++20; named arguments arrive in C++26).
+    // Implementation:
+    //   1. Resolve the FText to its current-locale FString.
+    //   2. Pass the resolved bytes as the format string to
+    //      FString::Format via the std::format_string path.
+    //   3. Construct a fresh FText carrying the same namespace + key
+    //      pointers but a NEW m_resolved set to the formatted output;
+    //      the cache-generation is bumped to UINT32_MAX so future
+    //      ResolveForCurrentLocale calls return the formatted string
+    //      directly (no re-formatting).
     //
-    // Stub signature lives below so consumer code can name the
-    // method but the body is a static_assert(false) gate. The body
-    // will not actually be instantiated at Phase 1f because no
-    // caller in the engine uses FText::Format yet.
+    // TODO(Phase 2): named-argument parser. Approach: pre-scan the
+    // resolved string for {Name} substitutions, build a positional
+    // mapping at call time, then forward to std::vformat.
     // -----------------------------------------------------------------
     template<typename... Args>
-    [[nodiscard]] FText Format(const Args&... NamedArgs) const
+    [[nodiscard]] FText Format(Args&&... PositionalArgs) const
     {
-        // Dependent-false: a template-dependent expression that always
-        // evaluates to `false`. The static_assert fires only when the
-        // function template is instantiated (not at declaration parse
-        // time), so the header compiles cleanly when nobody calls
-        // Format yet. Any actual caller gets a clear diagnostic.
-        static_assert(sizeof...(NamedArgs) == ::SIZE_T(-1),
-                      "FText::Format is deferred to Phase 1g (named-arg parser "
-                      "+ FString::Format both pending). See FText.h.");
-        (void)sizeof...(NamedArgs);
-        return FText{};
+        const ::XCore::FString& Resolved = ResolveForCurrentLocale();
+        // Use std::vformat directly because the Resolved string view
+        // is a RUNTIME string, not a compile-time-checked
+        // std::format_string<Args...>. FString::Format requires the
+        // compile-time check; the runtime path uses vformat.
+        ::std::string Out;
+        try
+        {
+            Out = ::std::vformat(
+                ::std::string_view(Resolved.ToUtf8Ptr(),
+                                   static_cast<::std::size_t>(Resolved.LenBytes())),
+                ::std::make_format_args(PositionalArgs...));
+        }
+        catch (const ::std::exception&)
+        {
+            // Malformed format string in the loctable; fall back to
+            // the unformatted resolved string + emit a dev-warning to
+            // stderr. The Prime Directive forbids silent corruption,
+            // but the alternative -- aborting the process -- would
+            // surface a localisation-data bug to the player as a
+            // crash. The diagnostic surfaces in Debug/Dev builds.
+            ::std::fprintf(stderr,
+                "XCore::Loc::FText::Format: std::vformat failed on resolved "
+                "format string (locale='%s', key='%s::%s'). Returning "
+                "unformatted string.\n",
+                /* placeholder; XLocalizationManager has the locale */ "?",
+                m_namespace != nullptr ? m_namespace : "",
+                m_key       != nullptr ? m_key       : "");
+            Out.assign(Resolved.ToUtf8Ptr(),
+                       static_cast<::std::size_t>(Resolved.LenBytes()));
+        }
+        catch (...)
+        {
+            Out.assign(Resolved.ToUtf8Ptr(),
+                       static_cast<::std::size_t>(Resolved.LenBytes()));
+        }
+
+        // Build the result FText. The formatted-output FText carries
+        // the same namespace/key pointers (so subsequent ResolveFor
+        // CurrentLocale calls see the same identity) but with an
+        // already-resolved m_resolved that holds the formatted bytes.
+        // The cache-generation is set to a synthetic "always current"
+        // value so the resolved cache is never re-evaluated.
+        FText Result;
+        Result.m_namespace        = m_namespace;
+        Result.m_key              = m_key;
+        Result.m_literalFallback  = m_literalFallback;
+        Result.m_resolved         = ::XCore::FString(
+            Out.data(),
+            static_cast<::int32>(Out.size()));
+        Result.m_resolvedGen      = kFormattedGeneration;
+        return Result;
     }
 
     // -----------------------------------------------------------------
@@ -301,6 +353,26 @@ private:
     // SetLocale calls, which is not a realistic concern.
     // -----------------------------------------------------------------
     static constexpr ::std::uint32_t kUnresolvedGeneration = 0u;
+
+    // -----------------------------------------------------------------
+    // kFormattedGeneration -- the synthetic "always current" marker
+    // for an already-formatted FText (Section 11.2 Format path).
+    //
+    // FText::Format produces a fresh FText whose m_resolved holds the
+    // formatted output. Subsequent ResolveForCurrentLocale calls must
+    // NOT re-resolve via the FLocalizationManager (the namespace+key
+    // identifies the unformatted source string, not the formatted
+    // output). Setting m_resolvedGen to UINT32_MAX-1 puts the cache
+    // permanently "current" -- the comparison against the locale
+    // manager's monotonic counter will never match exactly (the
+    // counter caps below UINT32_MAX-1 to leave headroom), but the
+    // check at ResolveForCurrentLocale also tests this sentinel and
+    // short-circuits to the cached m_resolved.
+    //
+    // The choice of UINT32_MAX-1 (vs UINT32_MAX) leaves UINT32_MAX
+    // free as a future "permanently invalidated" sentinel.
+    // -----------------------------------------------------------------
+    static constexpr ::std::uint32_t kFormattedGeneration = 0xFFFFFFFEu;
 };
 
 // ---------------------------------------------------------------------

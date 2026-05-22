@@ -447,6 +447,34 @@ namespace XCore::HAL
         [[nodiscard]] static ::uint32 BinIndexToBinSize(::uint16 BinIndex) noexcept;
 
         // ============================================================
+        // PoolIndexFromPtr -- VM-range bin-index recovery (Phase 1g
+        // partial landing of Fix B's MAJOR #1).
+        // ============================================================
+        //
+        // Given a user pointer (or any pointer into a bin's slab),
+        // returns the bin index whose 1 GiB VM reservation contains
+        // it. Returns kLargeAllocBinIndex (= kBinCount) if the pointer
+        // is outside every bin's VM reservation; the caller then
+        // routes to the large-alloc map.
+        //
+        // Phase 1g uses this for defense-in-depth validation against
+        // the FBlockHeader BinIndex (catches header corruption / alien
+        // pointers passed to Free).
+        //
+        // TODO(Phase 2): once the spec migrates to header-less blocks
+        // (per the §4 dispatch goal "eliminate the 8-byte FBlockHeader
+        // overhead"), PoolIndexFromPtr replaces the header read on
+        // every Free path. The tag + UserSize fields still need a
+        // home: either a per-page sidecar table (one entry per page,
+        // covering all blocks on that page when they share a tag) or
+        // a hash table keyed by user pointer. The choice depends on
+        // the measured allocation-pattern distribution; Phase 2
+        // benchmarks decide. For Phase 1g we ship the helper +
+        // validation hook so the full swap can land incrementally
+        // without destabilising the current test suite.
+        [[nodiscard]] ::uint16 PoolIndexFromPtr(const void* UserPtr) const noexcept;
+
+        // ============================================================
         // Leak-tracker hook (Section 12).
         // ============================================================
 
@@ -478,6 +506,25 @@ namespace XCore::HAL
         // Slow path: flush a bundle back to the central pool when the
         // TLS cache exceeds the per-bin cap. Called from FreeSmall.
         void FlushBundleToCentral(::uint32 BinIndex, FFreeBlock* Head, ::uint32 Count) noexcept;
+
+    public:
+        // ============================================================
+        // Thread-exit drain hook (Fix B's MAJOR #2 / Phase 1g).
+        //
+        // Called from FTLSBinCache::CrossThreadFlushOnExit when a
+        // thread terminates with non-empty per-bin free-lists. The
+        // exiting thread's blocks are routed to the central pool's
+        // reclaim queue / Treiber-stack fallback per bin so the
+        // blocks are not leaked. The interface is engine-internal
+        // (prefixed with __) and used only by the TLS cache.
+        //
+        // The Head/Count pair describes the exiting thread's per-bin
+        // free list. The function takes ownership of the Head chain;
+        // post-call the head pointer must NOT be used by the caller.
+        // ============================================================
+        void __ThreadExitFlushBundle(::uint32 BinIndex, FFreeBlock* Head, ::uint32 Count) noexcept;
+
+    private:
 
         // Drain cross-thread reclaim list for the given bin. Called
         // by MallocSmall before pulling from the central pool, so

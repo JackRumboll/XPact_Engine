@@ -631,7 +631,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
             manifestOutputDir,
             markerCache,
             cancellationToken,
-            out IReadOnlyList<IExternalAction> emittedForReport);
+            out IReadOnlyList<IExternalAction> emittedForReport,
+            out IReadOnlyList<SimPathArtefact> pendingSimPathArtefacts);
 
         // Audit fix R7-C5: persist the marker cache so the next build
         // benefits from the scan results. Best-effort; failure to save
@@ -781,6 +782,72 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 "discovered in this run; the cache is self-healing on the next " +
                 "successful save.",
                 new DiagnosticContext { Action = "cppdeps-save" });
+        }
+
+        // ---- 13.5 Sim-path SleefFMACheck verification ------------------
+        // Phase 1g Fix B-2 + XCore-4a Rev 3 Section 17.3 C-extra:
+        // every sim-path linked artefact must be FMA-free. The check
+        // is gated to runs where every action succeeded (no point
+        // scanning a binary that did not link), and to platforms /
+        // configurations where llvm-objdump is available. A failure
+        // here surfaces the build with exit code 41 -- the
+        // sim-path-determinism violation slot.
+        if (report.Results.Count > 0)
+        {
+            bool everyActionSucceeded = true;
+            foreach (var kvp in report.Results)
+            {
+                if (!kvp.Value.Success)
+                {
+                    everyActionSucceeded = false;
+                    break;
+                }
+            }
+            if (everyActionSucceeded)
+            {
+                // We collected sim-path artefacts at link-emission
+                // time; the artefacts list is propagated into the
+                // BuildResult-time scan loop below. The integration
+                // helper handles llvm-objdump location + arch-string
+                // derivation.
+                foreach (SimPathArtefact artefact in pendingSimPathArtefacts)
+                {
+                    try
+                    {
+                        Simgenics.XPact.XBT.Toolchain.SleefFMACheckIntegration
+                            .VerifyArtefact(artefact.ArtefactPath, artefact.Platform);
+                    }
+                    catch (FileNotFoundException ex) when (
+                        ex.FileName?.Contains("llvm-objdump",
+                            StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        // llvm-objdump unavailable: emit warning, do
+                        // not fail the build. CI shards set
+                        // LLVM_OBJDUMP and pin the check; local dev
+                        // builds without the binary skip the scan
+                        // (the determinism contract is a CI gate, not
+                        // a per-build-on-every-developer gate).
+                        Logger.Warning(
+                            $"SleefFMACheck: skipping FMA scan of "
+                            + $"'{artefact.ArtefactPath}' (module "
+                            + $"'{artefact.ModuleName}') -- llvm-objdump "
+                            + "not located. Set LLVM_OBJDUMP to enable the "
+                            + "post-link sim-path determinism check.",
+                            new DiagnosticContext { Action = "sleef-fma-scan" });
+                    }
+                    catch (Simgenics.XPact.XBT.Toolchain.ToolchainBannedFlagException ex)
+                    {
+                        // Explicit FMA hit. Re-throw so the build's
+                        // exit code carries the 41 / sim-path-
+                        // determinism failure surface.
+                        throw new XBTException(
+                            $"SleefFMACheck failed for module "
+                            + $"'{artefact.ModuleName}' at '{artefact.ArtefactPath}': "
+                            + ex.Message,
+                            exitCode: 41);
+                    }
+                }
+            }
         }
 
         // ---- 14. Aggregate result --------------------------------------
@@ -1146,7 +1213,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
         string manifestOutputDir,
         ReflectionMarkerCache markerCache,
         CancellationToken cancellationToken,
-        out IReadOnlyList<IExternalAction> emittedForReport)
+        out IReadOnlyList<IExternalAction> emittedForReport,
+        out IReadOnlyList<SimPathArtefact> pendingSimPathArtefactsOut)
     {
         // Audit fix C9: the cancellation token is now plumbed through
         // every per-module and per-source iteration so a long emit pass
@@ -1156,6 +1224,15 @@ public sealed class BuildMode : IToolMode<BuildMode>
         List<IExternalAction> actions = new();
         List<FileItem> allSourceFiles = new();
         List<IExternalAction> reportActions = new();
+
+        // Phase 1g Fix B-2: collect sim-path linked artefacts emitted
+        // during the per-module loop. After the loop completes, the
+        // runner verifies each artefact via SleefFMACheckIntegration
+        // (post-link disassembly scan for forbidden FMA instructions).
+        // Integration ships as a synchronous side-band check rather
+        // than a new XActionType to avoid rotating
+        // ActionHistory.CurrentVersion.
+        List<SimPathArtefact> pendingSimPathArtefacts = new();
 
         // Phase 1f (XHT wiring): the manifest path the eventual XHT
         // subprocesses read. The manifest itself is written by
@@ -1326,6 +1403,41 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 IExternalAction link = toolchain.LinkModule(module, target, objectFiles, moduleBinDir);
                 actions.Add(link);
                 reportActions.Add(link);
+
+                // Phase 1g Fix B-2: post-link SleefFMACheck for sim-path
+                // modules. Per XCore-4a Rev 3 Section 17.3 C-extra,
+                // every sim-path linked artefact must be FMA-free.
+                // The scan runs synchronously after the link succeeds
+                // and aborts the build with exit code 41 on a hit.
+                //
+                // We register the verification as a follow-on closure
+                // tied to the link action's outputs; the runner invokes
+                // it after the link action completes. This integration
+                // is intentionally NOT a new XActionType slot because
+                // a slot addition rotates ActionHistory.CurrentVersion
+                // and invalidates every cache entry across the engine.
+                if (module.SimPath)
+                {
+                    foreach (FileItem produced in link.ProducedItems)
+                    {
+                        // Only scan the primary linked binary (.dll / .so /
+                        // .lib / .a). Other artefacts (import libraries,
+                        // PDBs) are not disassemble-able for FMA purposes.
+                        string ext = Path.GetExtension(produced.FullPath);
+                        bool isLinkBinary = ext is ".dll" or ".so" or ".lib"
+                                                 or ".a"  or ".exe" or ".o";
+                        if (!isLinkBinary)
+                        {
+                            continue;
+                        }
+
+                        pendingSimPathArtefacts.Add(
+                            new SimPathArtefact(
+                                ArtefactPath: produced.FullPath,
+                                Platform: target.Platform,
+                                ModuleName: module.Name));
+                    }
+                }
             }
 
             // Audit fix M7: lift module-declared PreBuildHooks /
@@ -1374,6 +1486,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
         }
 
         emittedForReport = reportActions;
+        pendingSimPathArtefactsOut = pendingSimPathArtefacts;
         return actions;
     }
 
@@ -3008,3 +3121,20 @@ internal sealed class BuildOptionsParseException : XBTException
 {
     public BuildOptionsParseException(string message) : base(message, exitCode: 10) { }
 }
+
+/// <summary>
+/// One linked sim-path artefact pending the post-link SleefFMACheck
+/// disassembly scan. Per XCore-4a Rev 3 Section 17.3 C-extra + Phase
+/// 1g Fix B-2, sim-path-linked artefacts must be FMA-free for cross-
+/// architecture bit-exactness; the scan runs after every action in
+/// the build graph succeeds and surfaces exit code 41 on a hit.
+/// </summary>
+/// <param name="ArtefactPath">Absolute path to the linked binary.</param>
+/// <param name="Platform">Target platform (drives the architecture
+/// string for <see cref="Simgenics.XPact.XBT.Toolchain.SleefFMACheck"/>).</param>
+/// <param name="ModuleName">Owning module name (surfaced in the
+/// diagnostic on hit).</param>
+public sealed record SimPathArtefact(
+    string ArtefactPath,
+    Platform Platform,
+    string ModuleName);

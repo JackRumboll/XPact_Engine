@@ -340,6 +340,32 @@ namespace XCore::HAL
         // are no-ops in those configs).
         // -----------------------------------------------------------------
         [[nodiscard]] static bool IsNoAllocScopeActive() noexcept;
+
+        // -----------------------------------------------------------------
+        // IsAlive -- has the allocator been initialised and not yet
+        // shut down?
+        //
+        // Phase 1g fix F-3: published for the FStatShard destructor (and
+        // any future thread-local destructor that allocates) to guard
+        // against the shutdown-ordering race in which a thread exits
+        // AFTER FMemory::__Shutdown has torn down the allocator.
+        // Calling FMemory::Malloc on a torn-down allocator is undefined
+        // behaviour; consumers must check IsAlive() and skip the
+        // allocation when it returns false. Counts / data leaked at
+        // process-shutdown post-allocator-teardown are by definition
+        // unobservable (no live thread can read them) and are
+        // acceptable.
+        //
+        // Internally backed by an atomic<bool> in FMemory.cpp, stored
+        // with memory_order_release at the END of __Init() and at the
+        // START of __Shutdown(). Reads use memory_order_acquire so a
+        // subsequent FMemory::Malloc call's stores are happens-after
+        // the publish of `true`.
+        //
+        // The state machine is monotonic per-process: false -> true at
+        // __Init; true -> false at __Shutdown; no further transitions.
+        // -----------------------------------------------------------------
+        [[nodiscard]] static bool IsAlive() noexcept;
     };
 
 } // namespace XCore::HAL

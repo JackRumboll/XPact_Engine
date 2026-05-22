@@ -21,7 +21,9 @@
 // =====================================================================
 
 #include "Private/HAL/FTLSBinCache.h"
+#include "Private/HAL/FMallocBinnedX.h"   // FMallocBinnedX::__ThreadExitFlushBundle (Phase 1g)
 
+#include "HAL/FMemory.h"                  // FMemory::IsAlive guard for post-shutdown drain
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"
 #include "Macros/XPactMacros.h"
@@ -40,6 +42,14 @@ namespace XCore::HAL
     // bInitialized = false sentinel fires the lazy-init path the first
     // time GetThreadCache is called on the thread.
     //
+    // Thread-exit drain (Phase 1g Fix B's MAJOR #2):
+    //
+    // The C++20 thread_local destruction guarantee runs the wrapper
+    // class's destructor when the owning thread exits. We wrap the
+    // FTLSBinCache in FTLSBinCacheGuard whose ~ctor calls
+    // CrossThreadFlushOnExit on the embedded cache. The wrapper has
+    // zero-cost storage (one bool of padding on top of FTLSBinCache).
+    //
     // The struct is in an anonymous namespace so it has internal
     // linkage and the thread_local symbol does not leak into the
     // module's exported surface. Downstream callers go through
@@ -47,7 +57,27 @@ namespace XCore::HAL
     // -----------------------------------------------------------------
     namespace
     {
-        thread_local FTLSBinCache g_tlsCache = {};
+        struct FTLSBinCacheGuard
+        {
+            FTLSBinCache Cache;
+            // No explicit ctor: zero-initialise the cache.
+            // The destructor routes through CrossThreadFlushOnExit so
+            // exiting threads drain their per-bin caches to the
+            // allocator's reclaim queue before the TLS storage is
+            // torn down.
+            ~FTLSBinCacheGuard() noexcept
+            {
+                CrossThreadFlushOnExit(Cache);
+            }
+        };
+
+        thread_local FTLSBinCacheGuard g_tlsCacheGuard = {};
+        // Backward-compat alias for the existing `g_tlsCache` references;
+        // a reference to the guard's Cache field reads identically.
+        XPACT_FORCEINLINE FTLSBinCache& AccessTlsCache() noexcept
+        {
+            return g_tlsCacheGuard.Cache;
+        }
 
         // -----------------------------------------------------------------
         // GetCurrentThreadIdPhase1b -- platform-neutral thread ID stub.
@@ -102,29 +132,74 @@ namespace XCore::HAL
     // -----------------------------------------------------------------
     FTLSBinCache& GetThreadCache() noexcept
     {
-        FTLSBinCache& Cache = g_tlsCache;
+        FTLSBinCache& Cache = AccessTlsCache();
         EnsureInitialized(Cache);
         return Cache;
     }
 
     // -----------------------------------------------------------------
-    // CrossThreadFlushOnExit -- thread-exit hook.
+    // CrossThreadFlushOnExit -- thread-exit hook (Phase 1g Fix B's
+    // MAJOR #2).
     //
-    // Phase 1b stub: the per-thread exit drain is wired in Phase 1c
-    // via FPlatformTLS::RegisterDestructor. For Phase 1b the engine
-    // shutdown path (FMallocBinnedX::__Shutdown) handles drain at
-    // program exit.
+    // Walks Cache.FreeListHead[bin] for every bin and routes each
+    // FreeBlock to the central allocator's per-bin reclaim queue via
+    // FMallocBinnedX::__ThreadExitFlushBundle. After the walk the
+    // per-bin head pointers + counts are reset to zero and the cache
+    // is marked un-initialised so a subsequent same-thread reuse of
+    // the slot re-inits cleanly.
     //
-    // The stub still resets bInitialized so a subsequent
-    // GetThreadCache call on the same thread (after a hypothetical
-    // re-init path) re-runs the lazy-init.
+    // Threading: this runs on the EXITING thread, so the cache's
+    // owner is the caller; no cross-thread CAS on the cache itself.
+    // The route-target queue (FPoolTable::CrossThreadReclaimQueue) is
+    // MPSC-safe so the per-block TryEnqueue is correct.
+    //
+    // No allocations happen on this path; the FreeBlock storage is
+    // already owned by the allocator (just being returned).
     // -----------------------------------------------------------------
     void CrossThreadFlushOnExit(FTLSBinCache& Cache) noexcept
     {
-        // TODO(Phase 1c): walk Cache.FreeListHead per bin, route each
-        // free block to the central allocator's reclaim queue.
-        // For Phase 1b we mark the cache as un-init so any
-        // subsequent same-thread reuse of the slot re-inits cleanly.
+        if (!Cache.bInitialized)
+        {
+            // Never touched on this thread: nothing to flush.
+            return;
+        }
+
+        // Post-shutdown guard: if FMemory has already torn down (e.g.,
+        // a thread is exiting AFTER FMemory::__Shutdown drained the
+        // pools), routing through the central allocator would touch
+        // freed state. Silently drop the chains; the engine is shutting
+        // down and the blocks will be reclaimed by the process exit.
+        if (!::XCore::HAL::FMemory::IsAlive())
+        {
+            Cache.bInitialized = false;
+            return;
+        }
+
+        for (::SIZE_T BinIdx = 0; BinIdx < kBinCount; ++BinIdx)
+        {
+            FFreeBlock* Head  = Cache.FreeListHead[BinIdx];
+            const ::uint32 N  = Cache.FreeListCount[BinIdx];
+            if (Head == nullptr || N == 0)
+            {
+                continue;
+            }
+
+            // Hand the bin's chain to the central allocator. The
+            // allocator takes ownership (the blocks land in either
+            // the bounded MPSC queue or the Treiber-stack fallback).
+            g_Allocator.__ThreadExitFlushBundle(
+                static_cast<::uint32>(BinIdx), Head, N);
+
+            // Reset the per-bin head + count; the cache is being
+            // torn down but defense-in-depth covers a re-init path
+            // observing stale pointers.
+            Cache.FreeListHead[BinIdx]  = nullptr;
+            Cache.FreeListCount[BinIdx] = 0;
+        }
+
+        // Mark un-init so any subsequent same-thread reuse of the slot
+        // re-inits cleanly. The TLS slot itself is freed by the OS
+        // destructor when this hook completes.
         Cache.bInitialized = false;
     }
 

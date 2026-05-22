@@ -93,6 +93,16 @@ const ::XCore::FString& FText::ResolveForCurrentLocale() const
         return m_resolved;
     }
 
+    // kFormattedGeneration: an already-formatted FText produced by
+    // FText::Format. m_resolved holds the formatted output bytes; the
+    // namespace+key identify the SOURCE FText but a subsequent
+    // re-resolve would replace the formatted output with the
+    // unformatted localised value. Short-circuit to the cached bytes.
+    if (m_resolvedGen == kFormattedGeneration)
+    {
+        return m_resolved;
+    }
+
     // Cache miss -- do the lookup.
     const ::XCore::FString* Hit = FLocalizationManager::Lookup(m_namespace, m_key);
     if (Hit != nullptr)

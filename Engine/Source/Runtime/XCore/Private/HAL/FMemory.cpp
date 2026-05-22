@@ -56,6 +56,18 @@ namespace XCore::HAL
     namespace
     {
         thread_local ::uint32 g_noAllocScopeDepth = 0;
+
+        // Phase 1g fix F-3: allocator-alive flag. Set true at the end
+        // of __Init(); false at the start of __Shutdown(). Reads use
+        // memory_order_acquire to pair with the release stores at the
+        // transition points.
+        //
+        // constinit-initialised to false so reads from a TLS
+        // destructor BEFORE __Init has run (a configuration that
+        // should not occur in a well-formed program but is the right
+        // safe default if it does) also short-circuit to "skip the
+        // allocation".
+        ::std::atomic<bool> g_AllocatorAlive{ false };
     } // anonymous
 
     // =====================================================================
@@ -84,6 +96,14 @@ namespace XCore::HAL
 #else
         return false;
 #endif
+    }
+
+    // -----------------------------------------------------------------
+    // FMemory::IsAlive (Phase 1g fix F-3)
+    // -----------------------------------------------------------------
+    bool FMemory::IsAlive() noexcept
+    {
+        return g_AllocatorAlive.load(::std::memory_order_acquire);
     }
 
     // =====================================================================
@@ -185,10 +205,21 @@ namespace XCore::HAL
     void FMemory::__Init() noexcept
     {
         g_Allocator.Init();
+        // Phase 1g fix F-3: publish allocator-alive flag AFTER the
+        // allocator's own Init has succeeded. memory_order_release so a
+        // subsequent IsAlive() acquire-load is happens-after the
+        // allocator's internal initialisation.
+        g_AllocatorAlive.store(true, ::std::memory_order_release);
     }
 
     void FMemory::__Shutdown() noexcept
     {
+        // Phase 1g fix F-3: clear allocator-alive flag BEFORE tearing
+        // down the allocator. Any thread-local destructor that runs
+        // between this store and Shutdown's completion sees IsAlive()
+        // == false and skips the allocation. memory_order_release
+        // pairs with subsequent acquire-loads.
+        g_AllocatorAlive.store(false, ::std::memory_order_release);
         g_Allocator.Shutdown();
     }
 

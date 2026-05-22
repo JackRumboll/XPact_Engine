@@ -290,7 +290,7 @@ void RegisterXObjectAllocator(void* (*Fn)(size_t, size_t) noexcept) noexcept {
 <table border="1" cellpadding="6" cellspacing="0">
 <thead><tr><th>UE pattern</th><th>UE file:line</th><th>XPact alternative</th><th>Engineering principle</th></tr></thead>
 <tbody>
-<tr><td><code>FMemory::Malloc(Size, Align)</code> &mdash; no tag.</td><td><code>HAL/UnrealMemory.h:91</code></td><td><code>FMemory::Malloc(Size, Align, FMemTag)</code> &mdash; tag mandatory.</td><td>Prime Directive: always-on leak attribution beats opt-in (UE LLM is opt-in and routinely missing on hot paths). Cost +2 bytes per block.</td></tr>
+<tr><td><code>FMemory::Malloc(Size, Align)</code> &mdash; no tag.</td><td><code>HAL/UnrealMemory.h:91</code></td><td><code>FMemory::Malloc(Size, Align, FMemTag)</code> &mdash; tag mandatory.</td><td>Prime Directive: always-on leak attribution beats opt-in (UE LLM is opt-in and routinely missing on hot paths). Cost +2 bytes per block (target; Phase 1g errata — shipping <code>FBlockHeader</code> in <code>FMallocBinnedX.h:218-265</code> is currently 8 bytes carrying Tag + BinIndex + UserSize; Subagent Y is in-flight on the UE-Binned3-equivalent <code>PoolIndexFromPtr</code> swap that recovers BinIndex from the pointer's slab address and reduces the header back toward the 2-byte target. Tag overhead alone is 2 bytes — the additional 6 bytes is BinIndex+UserSize storage that <code>PoolIndexFromPtr</code> eliminates).</td></tr>
 <tr><td>UE ships four allocators (Binned2/3/4 + Ansi).</td><td><code>HAL/MemoryBase.h</code></td><td>One allocator. Bin sizes are tunable via Stat instrumentation, not via runtime allocator switching.</td><td>"No instability." Runtime allocator selection is a footgun; loses A/B-test capability across tiers; breaks replay-bit-exact.</td></tr>
 <tr><td>OOM: log + fallback + maybe-abort.</td><td><code>HAL/UnrealMemory.h</code></td><td><code>FOOMPolicy</code> per build config: Shipping = Abort; Dev = ReturnNull; Trainee = PanicSnapshot.</td><td>Result&lt;T,E&gt; lowering forbids "alloc may throw" in Shipping. Abort is honest.</td></tr>
 <tr><td>UE uses TCMalloc on server, Binned on client.</td><td><code>HAL/PlatformMemory.cpp</code> (per-platform overrides)</td><td>Same allocator on all targets.</td><td>Different allocators break replay-bit-exact across tiers.</td></tr>
@@ -1162,7 +1162,7 @@ public:
 struct FStatId { uint64_t Hash; const char* Name; const char* Group; };
 
 #define XSTAT_DECL(Name, Group) \
-    inline constexpr FStatId Name##_StatId = { /* compile-time xxh3-64(name + group) */, #Name, #Group };
+    inline constexpr FStatId Name##_StatId = { /* compile-time FNV-1a-64(name + group); see Phase 1g errata below */, #Name, #Group };
 
 #define XSTAT_INC(Name)               ::XCore::Stat::FStatTLS::Inc(Name##_StatId)
 #define XSTAT_ADD(Name, Delta)        ::XCore::Stat::FStatTLS::Add(Name##_StatId, (Delta))
@@ -1191,6 +1191,8 @@ public:
 
 <p>Stat IDs are compile-time 64-bit hashes of the stat's textual name + group (fix M-3; replaces Subagent A's earlier 32-bit recommendation). The 64-bit width was chosen for defence-in-depth: with an expected stat-name population of &le; 10,000 distinct stats over the engine's lifetime, the 64-bit birthday-collision probability is <strong>~2.7&times;10&minus;&sup1;&sup2;</strong> &mdash; effectively zero. The build-time collision check remains as a belt-and-braces safeguard rather than the primary defence. A side table maps <code>StatId -&gt; (Name, Group)</code> for the profiler / dump output and is built at module init (Section 10.5). The earlier 32-bit width carried a 1-in-4-billion collision probability per stat-pair, which while small was high enough to warrant manual conflict resolution; 64-bit removes the concern entirely. When XCore-4b ships, the FName-backed identifier system aligns: FName indices map to 64-bit hash space via the shared interning table.</p>
 
+<p><strong>Phase 1g errata (M-3 hash-family rationale).</strong> The textual specification above says "compile-time xxh3-64(name + group)"; the shipping implementation (<code>FStatTLS.h:163-205</code>) uses <strong>compile-time FNV-1a-64</strong> because <code>FXxh3</code> has not been made <code>constexpr</code> in Phase 1d. Cross-phase consistency note (resolves audit finding X-2: three subsystems use XXH3, FStatId uses FNV): the divergence is intentional and documented, not an oversight. Collision math is identical at 64-bit width (FNV-1a-64 has comparable mixing-quality to XXH3 at this width when fed short ASCII keys characteristic of stat names); with &le;10k stats the birthday-collision probability stays ~2.7&times;10&minus;&sup1;&sup2;. Revisit in Phase 2 if <code>constexpr</code> XXH3 ships &mdash; switching the hash family is a breaking change to <code>FStatId.Hash</code> values and requires re-baking the generated perfect-hash header at the same time, so the migration cost is non-trivial.</p>
+
 <h3>10.2 Threading contract</h3>
 
 <p>Hot path (<code>Inc</code>/<code>Add</code>/<code>AddCycles</code>) writes a per-thread shard &mdash; no atomics, no locks. <code>MergeFromAllThreads</code>, called once per frame between Tick and Render, aggregates shards into the global tree. Shards are 16 KiB fixed; an overflow path (rare) takes a global lock and asserts in Debug. Correctness is guaranteed by the sync point (no Tick code running during Merge).</p>
@@ -1207,7 +1209,7 @@ public:
 
 <p>Per-thread shards. <code>XSTAT_INC</code> writes to <code>XPACT_TLS_MODULE_SAFE(FStatShard, g_shard)</code> (Section 13) with no synchronization. The module-safe macro is mandatory: raw <code>thread_local FStatShard m_shard</code> in a hot-reloadable DLL on Win64/Android leaves the shard dangling on unload, which corrupts the next module's first stat write into that thread's slot. Linux server falls through to native <code>thread_local</code>.</p>
 
-<p><strong>Shard layout (fix M-10).</strong> Each shard is a 24 KiB fixed array of 1024 slots, each slot 24 bytes: <code>(uint64_t hash, int64_t count, uint64_t padding)</code>. Indexing is <code>FStatId.Hash &amp; (1024 - 1)</code>. Collision policy is <strong>open-addressing with linear probing</strong> (up to 8 slots forward); if all 8 probe slots are occupied with non-matching hashes, the write falls through to a per-thread overflow heap (a small <code>TMap&lt;uint64_t, int64_t&gt;</code> that logs a Dev warning on first insertion). Chaining is rejected because it requires per-slot pointer chasing in the hot path; open-addressing keeps the hot path cache-friendly.</p>
+<p><strong>Shard layout (fix M-10).</strong> Each shard is a 24 KiB fixed array of 1024 slots, each slot 24 bytes: <code>(uint64_t hash, int64_t count, uint64_t padding)</code>. Indexing is <code>FStatId.Hash &amp; (1024 - 1)</code>. Collision policy is <strong>open-addressing with linear probing</strong> (up to 8 slots forward); if all 8 probe slots are occupied with non-matching hashes, the write falls through to a per-thread overflow path — a <strong>16-entry linear-probe overflow array</strong> (Phase 1g spec correction: prior Rev 3 text said "a small <code>TMap&lt;uint64_t, int64_t&gt;</code>"; the shipping implementation in <code>FStatShard.h:106</code> uses a 16-entry linear-probe array, which avoids TMap hot-path cross-coupling per Prime Directive "absolute performance" — TMap pulls in the SwissTable load-factor + allocator path on a code path that should only see ~zero traffic in well-tuned production). Overflow writes log a Dev warning on first insertion. Chaining is rejected because it requires per-slot pointer chasing in the hot path; open-addressing keeps the hot path cache-friendly.</p>
 
 <p><strong>Perfect-hash build-time table (fix M-10).</strong> At module init, the Stat side-table is built from a generated header that XBT's <code>XSTAT_DECL</code> scan emits during the reflection-marker pass. The generated header contains a perfect-hash table mapping each declared <code>FStatId.Hash</code> to a fixed shard slot, eliminating runtime probing for declared stats entirely. Stats inserted dynamically (e.g., a plugin's <code>XSTAT_DECL</code> in a hot-reloaded module) use the runtime open-addressing path until the next perfect-hash regeneration; the perfect-hash table is keyed by the generated-header content's BLAKE3 hash so a stale plugin against a fresh table fails the patch's manifest-validation pass.</p>
 
@@ -1317,7 +1319,7 @@ public:
 
     // Mutation / search (fix M-6):
     FString Replace(const FString&amp; Needle, const FString&amp; Replacement) const;
-    TArray&lt;FString&gt; Split(const FString&amp; Delimiter) const;
+    TArray&lt;FString, DefaultAllocator&gt; Split(const FString&amp; Delimiter) const;     // Phase 1g spec correction: allocator parameter is explicit in the shipping signature (FString.h:300) — prior Rev 3 text said TArray&lt;FString&gt; with the allocator implicit, which is not how XPact-style TArray<T, Allocator> is spelled.
     FString Trim()      const;                       // both ends
     FString TrimStart() const;                       // left
     FString TrimEnd()   const;                       // right
@@ -2031,7 +2033,7 @@ namespace XCore::HAL {
 
 <h3>17.3 Math (C)</h3>
 <ul>
-<li><strong>C1:</strong> Basic vector ops match standard RH-Z-up semantics; <code>Cross(ForwardVector, RightVector) == -UpVector</code>.</li>
+<li><strong>C1:</strong> Basic vector ops match standard RH-Z-up semantics; <code>Cross(ForwardVector, RightVector) == +UpVector</code>. (Phase 1g errata: prior Rev 3 text said <code>-UpVector</code> in §17.3 C1 only; §2 + §6.1 + §6.6 already said <code>+UpVector</code>. The RH-Z-up identity X &times; Y = Z is the canonical sign — thumb-forward, index-right, middle-up.)</li>
 <li><strong>C2:</strong> Sim-path determinism: 1000-iter trajectory under FVector + Sleef-non-FMA transcendentals is byte-identical across Win64, Linux, Android-ARM64 (gates on &sect;14 Step 11.5 Sleef vendoring).</li>
 <li><strong>C3:</strong> <code>FQuat</code> &harr; <code>FRotator</code> round-trip is identity within documented tolerance.</li>
 <li><strong>C4:</strong> Sim-path <code>FMatrix::Inverse</code> emits no FMA instructions (disassembly assertion).</li>
