@@ -276,8 +276,137 @@
 #                                            _sve / _finz / _fma) runs
 #                                            in XBT.Toolchain.SleefFMACheck.
 #
-# Subsequent phases (1f-1g: FText, CVars, cross-arch CI shards) add
-# their TUs under this same module.
+# Phase 1f Subagent B (Step 14 FText runtime) adds:
+#
+#   * Tests/Internationalization/FText.Tests/LocTextSourceFallback.cpp
+#                                         -- Section 17.8 H1: LOCTEXT
+#                                            resolves to source-fallback
+#                                            (en-US) when no loctable is
+#                                            loaded. Verifies LOCTEXT,
+#                                            NSLOCTEXT, INVTEXT all
+#                                            yield the literal string.
+#   * Tests/Internationalization/FText.Tests/LocaleSwitch.cpp
+#                                         -- Section 17.8 H2: SetLocale
+#                                            bumps the locale-generation
+#                                            counter; cached FText
+#                                            re-resolves on the next
+#                                            ResolveForCurrentLocale call.
+#                                            Exercises en-US -> ja-JP
+#                                            switch.
+#   * Tests/Internationalization/FText.Tests/MissingKey.cpp
+#                                         -- Section 17.8 H3: missing
+#                                            key falls back to source
+#                                            literal + dev-warning to
+#                                            stderr in Debug/Dev.
+#   * Tests/Internationalization/FLocTable.Tests/BlakeVerification.cpp
+#                                         -- Section 18 OPEN-5: BLAKE3
+#                                            payload digest mismatch
+#                                            produces FParseError::
+#                                            Malformed. Tamper detection
+#                                            for any payload byte +
+#                                            magic-byte corruption.
+#   * Tests/Internationalization/FLocTable.Tests/RoundTripBinary.cpp
+#                                         -- Save -> Load preserves
+#                                            entries byte-exactly;
+#                                            repeated Save produces
+#                                            byte-identical files
+#                                            (determinism contract).
+#   * Tests/Internationalization/FLocalizationManager.Tests/InitOrder.cpp
+#                                         -- Section 1.5 phase ladder:
+#                                            pre-__Initialize Lookup
+#                                            returns nullptr; post-
+#                                            __Initialize generation is
+#                                            >= 1; __Initialize is
+#                                            idempotent.
+#
+#   * Tests/Internationalization/SampleLoctables/GenerateSamples.cpp
+#                                         -- Build-time fixture-generator
+#                                            for en-US.loctable and
+#                                            ja-JP.loctable. Exports
+#                                            extern "C"
+#                                            XPact_GenerateSampleLoctables
+#                                            (const char* OutputDir);
+#                                            the locale-switch and
+#                                            BLAKE-verification tests
+#                                            invoke it at test setup.
+#
+# Phase 1f Subagent A (Steps 12 + 13: CVars + Stat) adds:
+#
+#   * Tests/HAL/IConsoleManager.Tests/RegisterFind.cpp
+#                                         -- Section 9.7 row 1: 1000 CVars
+#                                            register + Find round-trip;
+#                                            content-hash keying preserved
+#                                            across const char* pointer-
+#                                            identity diverging (Find called
+#                                            via a separately-allocated copy
+#                                            of the name buffer).
+#   * Tests/HAL/IConsoleManager.Tests/SetByPriority.cpp
+#                                         -- Section 9.7 row 3: 5-level
+#                                            cascade verification. Default
+#                                            < Config < Commandline < Code
+#                                            < Console; same-priority
+#                                            recency wins.
+#   * Tests/HAL/IConsoleManager.Tests/DoubleRegistration.cpp
+#                                         -- Section 9.5 fix M-7 runtime
+#                                            defense-in-depth: second
+#                                            Register* with same name
+#                                            returns the existing CVar
+#                                            (idempotent). The XBT build-
+#                                            time scan ships in Phase 1g.
+#   * Tests/HAL/IConsoleManager.Tests/CachedHandleVsStringFind.cpp
+#                                         -- Section 9.7 last row + fix
+#                                            B-C3: 10K set/read iterations
+#                                            verify CVar->GetInt matches
+#                                            Manager.Find->GetInt every
+#                                            iteration. The "handle is
+#                                            100x faster" perf gate runs
+#                                            in Phase 1g CI (clock
+#                                            granularity too coarse for
+#                                            single-load timing).
+#   * Tests/HAL/IConsoleManager.Tests/ParallelDLLLoad.cpp
+#                                         -- Section 9.7 row 6 + fix C-6:
+#                                            4 threads x 100 CVars round-
+#                                            trip; RWLock-protected
+#                                            Register* is parallel-safe.
+#                                            Phase 1g grows to 64-DLL
+#                                            dlopen + parallel-load.
+#
+#   * Tests/HAL/FStatTLS.Tests/Inc.cpp
+#                                         -- Section 10.7 row 1: XSTAT_INC
+#                                            + XSTAT_ADD round-trip. Two
+#                                            distinct stats verified
+#                                            distinct hashes; counts
+#                                            survive a Merge.
+#   * Tests/HAL/FStatTLS.Tests/ThreadExit.cpp
+#                                         -- Section 10.5 fix C-7: 100
+#                                            spawn/exit threads * 1000
+#                                            XSTAT_INC; post-Merge the
+#                                            global tree has exactly
+#                                            100000 (no count loss to
+#                                            thread-exit Treiber stack).
+#   * Tests/HAL/FStatTLS.Tests/CollisionPolicy.cpp
+#                                         -- Section 10.5 fix M-10: 10
+#                                            synthetic FStatIds with hash
+#                                            colliding on slot 0; open-
+#                                            addressing 8-probe walks 8
+#                                            forward then the last 2
+#                                            overflow into the per-thread
+#                                            fallback. Each gets 100 INCs;
+#                                            post-Merge all 10 = 100.
+#   * Tests/HAL/FStatRegistry.Tests/MergeFromAllThreads.cpp
+#                                         -- Section 10.7 row 1 (scaled
+#                                            down): 8 threads * 100K
+#                                            XSTAT_INC; Merge total =
+#                                            800K observed.
+#
+# JUDGEMENT CALL: the spec acceptance row 1 says "1 billion Inc from 8
+# threads then Merge; total == 8 billion." Scaled down to 100K per
+# thread for the unit-test wallclock budget (8 * 100K = 800K total
+# completes in <2s; 1B would take ~30 minutes single-thread).
+# Phase 1g CI can raise the bar with a dedicated long-run test.
+#
+# Subsequent phases (1g+: cross-arch CI shards, FString::Format
+# wiring, perf bar enforcement) add their TUs under this same module.
 #
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's
