@@ -1,0 +1,73 @@
+# Copyright Simgenics. All Rights Reserved.
+
+# =====================================================================
+# XCore -- XPact Engine's no-reflection C++ foundation (XCore-4a).
+# =====================================================================
+#
+# Per XCore-4a Rev 3:
+#   * Section 1.1 -- "first C++ system in the engine build order
+#     (plan Section 4 Step 3); the substrate every later C++ module
+#     sits on."
+#   * Section 1.4 -- depends on XBT (System 1) for compilation and
+#     XHT (System 2) for the reflection-marker scan. XHT's emit for
+#     XCore-4a is the empty-no-op manifest baseline (Section 1.4
+#     fix MAJOR XHT empty-emit).
+#   * Section 2 -- platforms: Win64, Linux, Android-ARM64.
+#
+# Phase 1a scope: only the header-macros layer (this subagent's
+# scope). Phase 1b-d land platform HAL, allocator, threading,
+# containers, math, CVars, stat, FText (per Section 14 implementation
+# order). The dependency list here reflects Phase 1a state -- no
+# private deps yet because the only Private/*.cpp file
+# (XAssertionMacros.cpp + XInitPhase.cpp) link against the standard
+# library only.
+#
+# =====================================================================
+
+name = "XCore"
+tier = "Engine"
+module_type = "Runtime"
+languages = "Cpp"
+
+# Sim-path discipline: XCore is the foundation of EVERY downstream
+# module including the sim-path TUs. Setting sim_path = false at the
+# module level means XCore's headers can be included from both
+# sim-path and non-sim-path TUs; the sim-path TU's overlay header
+# (XSimPathMathOverrides.h) flips XPACT_SIMPATH = 1 at the TU level
+# and turns on the sim-path-poisoning of libm / std::sqrt et al.
+# This is the correct discipline-by-TU pattern (Section 6 of the
+# spec); module-level sim_path is for downstream modules whose
+# every TU is sim-path.
+sim_path = false
+
+# SimdLevel.Default: resolves at flag-derivation time by reading
+# TargetRules.SimdLevelDefault (which the production target sets to
+# SimdLevel.SSE42). SimPath modules are additionally clamped to <=
+# SSE42 per Section 4.2; non-sim-path XCore is unconstrained.
+simd_level = "Default"
+
+# Public include paths -- the XCore-4a public API surface every
+# downstream module compiles against.
+public_include_paths = [
+    "Public",
+]
+
+# Private include paths -- XCore-4a's internal helpers (none yet at
+# Phase 1a; Private/Macros/XAssertionMacros.cpp and
+# Private/HAL/XInitPhase.cpp consume only Public headers).
+private_include_paths = [
+    "Private",
+]
+
+# Dependencies -- Phase 1a has none. The Platform HAL surface (Step 2
+# of Section 14) will introduce a private dep on the platform-specific
+# Win64/Linux/Android backing module once it lands; until then XCore
+# is dependency-free.
+public_dependency_modules = []
+private_dependency_modules = []
+
+# Definitions -- none at Phase 1a. The build-configuration flags
+# (XPACT_DEBUG / XPACT_DEVELOPMENT / XPACT_TEST / XPACT_SHIPPING) are
+# set by TargetRules at the target level, not at the module level.
+public_definitions = []
+private_definitions = []

@@ -1,0 +1,65 @@
+# Copyright Simgenics. All Rights Reserved.
+
+# =====================================================================
+# XCore.Tests -- the XCore-4a unit test module.
+# =====================================================================
+#
+# Per XCore-4a Section 17 acceptance criteria, every XCore-4a TU has a
+# corresponding test TU. Phase 1a (header macros + configuration)
+# contributes the following compile-time + minimal-runtime tests:
+#
+#   * Tests/Macros/SizeofTypes.cpp       -- XCoreTypes.h ABI lock
+#   * Tests/Macros/FNameForwardDecl.cpp  -- FName ABI lock (8 bytes)
+#   * Tests/Macros/MacroExpansion.cpp    -- XPACT_* macro compile test
+#   * Tests/GC/SpanLayout.cpp            -- XGCRootSpan 32-byte lock
+#   * Tests/HAL/PhaseAdvancement.cpp     -- __AdvanceInitPhase contract
+#
+# Subagent B's Platform HAL Phase 1a tests already live under
+# Tests/HAL/{FPlatformAtomics,FPlatformMisc,FTimespan,FDateTime}.Tests/;
+# this single test module aggregates both subagents' Phase 1a output
+# so the build runs them as one .exe (or one test binary). Subsequent
+# phases (1b allocator tests, 1c container tests, ...) add their TUs
+# under this same module.
+#
+# Each test file is a standalone `int main()` so XBT can either:
+#   (a) compile each .cpp as its own .exe (matching XBT.Tests's
+#       per-fixture pattern), or
+#   (b) compile them all into one aggregator .exe whose main() calls
+#       each test's body (matching GoogleTest's pattern).
+# The choice between (a) and (b) is the test-runner's concern, not
+# this module's; the module declares its sources, the test runner
+# does the rest.
+#
+# =====================================================================
+
+name = "XCore.Tests"
+tier = "Engine"
+module_type = "Runtime"
+languages = "Cpp"
+b_is_test_module = true
+
+# Sim-path: tests of sim-path-safe code can run as sim-path TUs;
+# tests of non-sim-path code cannot. Phase 1a's macros are all
+# sim-path-safe at the surface (they don't pull libm or wall-clock
+# time), so this module COULD be sim-path. We leave it as non-sim
+# until container-layer tests are added (where the sim/non-sim split
+# is meaningful) -- mixed sim/non-sim within one module is awkward,
+# and Phase 1a doesn't gain anything from sim-path discipline.
+sim_path = false
+
+simd_level = "Default"
+
+# Include paths -- the tests are themselves leaf TUs (no headers
+# exported); they consume XCore's Public headers.
+public_include_paths = []
+private_include_paths = []
+
+# Dependencies -- the tests link against XCore. Public dep so the
+# test TUs can include XCore's Public/* headers naturally.
+public_dependency_modules = [
+    { name = "XCore", interface_module = false },
+]
+private_dependency_modules = []
+
+public_definitions = []
+private_definitions = []
