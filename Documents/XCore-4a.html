@@ -126,7 +126,7 @@ inline EInitPhase EngineInitPhase() noexcept { return g_EngineInitPhase.load(std
 <thead><tr><th>Decision</th><th>Value</th><th>Plan / Contract row</th><th>XCore-4a impact</th></tr></thead>
 <tbody>
 <tr><td>String encoding</td><td>UTF-8 universally; UTF-16 only at Win32 wide-char syscall boundary via <code>FUTF16String</code></td><td>Plan Section 2 String encoding row; Contract &sect;6</td><td>&sect;11 FString is UTF-8 native; <code>operator[]</code> returns a byte; codepoint access is O(n) via <code>CodepointAt</code></td></tr>
-<tr><td>Coordinate system</td><td>RH, Z-up, meters</td><td>Plan Section 2 Coordinate system row</td><td>&sect;6 Math: <code>FVector::ForwardVector = (1,0,0)</code>, <code>RightVector = (0,1,0)</code>, <code>UpVector = (0,0,1)</code>; <code>Forward &times; Right = -Up</code> (RH); default units are meters (e.g., <code>FVector(1,0,0)</code> = 1 m forward)</td></tr>
+<tr><td>Coordinate system</td><td>RH, Z-up, meters</td><td>Plan Section 2 Coordinate system row</td><td>&sect;6 Math: <code>FVector::ForwardVector = (1,0,0)</code>, <code>RightVector = (0,1,0)</code>, <code>UpVector = (0,0,1)</code>; <code>Forward &times; Right = +Up</code> (standard RH-Z-up identity: thumb-forward, index-right means middle-finger-up). Default units are meters (e.g., <code>FVector(1,0,0)</code> = 1 m forward). <em>Errata note (Phase 1e implementation finding): earlier draft revisions stated <code>Forward &times; Right = -Up</code> here; that was a sign error inherited from the LH-convention reasoning in &sect;6.5 row 1. The mathematically correct RH cross product with the declared basis produces <code>+Up</code>, which matches what every standard math library + Subagent A's implementation does.</em></td></tr>
 <tr><td>GC architecture</td><td>Hybrid: non-moving mark-and-sweep collector with card-table write barriers</td><td>Plan Section 2 Memory model row; Contract &sect;3</td><td>&sect;5 Containers embed <code>XGCRootSpan</code> via partial template specialization; &sect;13 declares <code>XGC_WriteBarrier</code></td></tr>
 <tr><td>Sim-path determinism</td><td>Bit-exact replay across Win64 / Linux / Android-ARM64 for sim-path TUs</td><td>Plan Section 2 Determinism row; Contract &sect;4</td><td>&sect;6 Math two-header model; &sect;7 Platform HAL <code>FPlatformTime::Seconds</code> poisoned on sim-path; &sect;11 FString <code>s[i]</code> compile-error on sim-path; &sect;10 Stat cycle counters compile-error on sim-path</td></tr>
 <tr><td>Exception lowering</td><td>Two-tier: ABI-stable boundary lowers exceptions to <code>Result&lt;T,E&gt;</code>; intra-module C++ may throw. <strong>(Fix B-M6)</strong> <code>Result&lt;T, E&gt;</code> is a type alias for C++23 <code>std::expected&lt;T, E&gt;</code>; on C++20 builds the engine vendors <code>tl::expected</code> (header-only MIT) as polyfill at <code>XCore/Public/Polyfill/TLExpected.h</code>. <strong>(Fix Rev 3 M4)</strong> Similarly, <code>XCore::HAL::FormatString&lt;Args...&gt;</code> is a type alias for C++23 <code>std::format_string</code>; on C++20 builds the engine vendors <code>fmt::format_string</code> from <code>fmtlib/fmt</code> (header-only MIT) as polyfill. The polyfill preserves compile-time format-string validation, matching or exceeding UE's <code>TCheckedFormatString</code>. Both polyfills land at <code>XCore/Public/Polyfill/</code> for symmetric placement.</td><td>Plan Section 2 Error handling row; Contract &sect;5</td><td>&sect;4 OOM policy; &sect;5 <code>TArray::At()-&gt;Result&lt;reference_wrapper&lt;T&gt;, FBoundsError&gt;</code> recommended sim-path accessor; &sect;13 alias declaration</td></tr>
@@ -524,7 +524,7 @@ static_assert(sizeof(FMatrix)  == 64 &amp;&amp; alignof(FMatrix)  == 16, "FMatri
 static constexpr FVector ForwardVector  = { 1, 0, 0 };
 static constexpr FVector RightVector    = { 0, 1, 0 };
 static constexpr FVector UpVector       = { 0, 0, 1 };
-// Note: Forward x Right = -Up (RH convention).
+// Note: Forward x Right = +Up (standard RH-Z-up identity X x Y = Z; thumb-forward, index-right, middle-up).
 
 // Free functions:
 FVector  Cross    (FVector A, FVector B) noexcept;
@@ -647,7 +647,7 @@ Sim-path TUs CANNOT reach this surface: <code>FPlatformMisc::GetEntropy</code> i
 <li><strong>SimPath isolation:</strong> a sim-path TU calling <code>std::sqrt</code> must fail the build with the deprecation diagnostic. A <code>FMatrix::Inverse</code> in a sim-path TU emits no FMA instructions (disassembly assertion).</li>
 <li><strong>Adversarial:</strong> denormals round-to-zero consistently per <code>-ffp-contract=off</code>; NaN inputs do not poison the frame; inf inputs saturate.</li>
 <li><strong>Perf:</strong> Cross/Dot/Normalize within 10% of XMVECTOR on Win64; SSE42-only within 30% of AVX2 (sim-path tax accepted per OPEN-6).</li>
-<li><strong>Handedness:</strong> assert <code>Cross(ForwardVector, RightVector) == -UpVector</code> (the RH-Z-up cross-product convention).</li>
+<li><strong>Handedness:</strong> assert <code>Cross(ForwardVector, RightVector) == +UpVector</code> (the standard RH-Z-up cross-product identity X &times; Y = Z; thumb-forward, index-right, middle-up).</li>
 </ul>
 
 <hr>

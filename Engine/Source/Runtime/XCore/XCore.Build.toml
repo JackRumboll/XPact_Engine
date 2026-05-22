@@ -314,6 +314,19 @@ private_include_paths = [
 # external link beyond libc (all routines used are in glibc/Bionic).
 public_dependency_modules = [
     { name = "tl_expected", interface_module = true },
+    # Sleef-3.6+ scalar transcendental library (BSL-1.0) per
+    # XCore-4a Rev 3 Section 14 Step 11.5.  Public dep so the
+    # XSimPathMathOverrides.h header (which is /FI-included into every
+    # sim-path consumer of XCore) can `#include "Sleef.h"` and resolve
+    # via Sleef's public_include_paths field.  The link edge is real:
+    # sim-path TUs that resolve XCore::Math to XCore::SimMath will
+    # generate Sleef_sinf_u35 (etc.) call sites that require the
+    # Sleef object archive at link time.  Non-sim-path consumers do
+    # not include XSimPathMathOverrides.h (XBT only /FI-includes it on
+    # sim-path modules per Contract Section 4.3) and do not call
+    # XCore::SimMath::* directly, so the link edge is dead-code-
+    # stripped on non-sim builds via standard linker GC.
+    { name = "Sleef", interface_module = false },
 ]
 private_dependency_modules = []
 

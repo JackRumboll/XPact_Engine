@@ -1,0 +1,95 @@
+# Copyright Naoki Shibata and contributors 2010 - 2024.
+# Vendored under the Boost Software License, Version 1.0.
+
+# =====================================================================
+# Sleef -- vendored scalar transcendental library (BSL-1.0).
+# =====================================================================
+#
+# Per XCore-4a Rev 3 Section 14 Step 11.5 + Rev 3 fix M3.  Provides
+# bit-exact scalar transcendentals (Sleef_sinf_u35, Sleef_cosf_u35,
+# etc.) for sim-path translation units.  Layout + ULP-tier choice +
+# pre-Foundation-Prototype fallback are documented in
+# /Engine/Source/ThirdParty/Sleef/README.html.
+#
+# Module-level discipline:
+#   * sim_path = true            -- the Sleef library IS the sim-path
+#                                   math substrate; its own bodies
+#                                   compile under the sim-path
+#                                   determinism envelope so the FMA
+#                                   ban applies inside the library
+#                                   itself as well as in consumers.
+#   * simd_level = SSE42         -- per Contract Section 4.2 the
+#                                   sim-path SIMD ceiling is SSE42;
+#                                   the vendored scalar amalgamation
+#                                   does not use any SSE intrinsics
+#                                   directly (scalar only), but the
+#                                   ceiling is set on the module so a
+#                                   future regression that tries to
+#                                   compile the SIMD kernels gets
+#                                   caught at the SimPath SimdLevel
+#                                   clamp (Section 4.2 N7).
+#   * b_exclude_from_shared_pch  = true -- ThirdParty modules cannot
+#                                   participate in the shared-PCH
+#                                   group (Contract Section 1.5; the
+#                                   XSimPathMathOverrides.h /FI gate
+#                                   defence-in-depth implies this
+#                                   anyway).
+#   * b_warnings_as_errors       = false -- upstream third-party code
+#                                   carries its own warning posture;
+#                                   we do not impose XPact's stricter
+#                                   warning set on vendored sources.
+#
+# Per Contract Section 4 SimPath build config:  when consumed by
+# sim-path TUs, the XBT toolchain emits --ffp-contract=off + -mno-fma +
+# -fno-fast-math + -fno-finite-math-only + (AArch64) -mllvm
+# -enable-fp-contract=false.  These flags apply to the Sleef library's
+# own .c files at compile time per the module's sim_path = true above.
+#
+# =====================================================================
+
+name = "Sleef"
+tier = "Engine"
+module_type = "ThirdParty"
+languages = "Cpp"
+
+# Sim-path: Sleef is the sim-path math substrate.  Setting sim_path =
+# true forces the toolchain to apply the determinism flag set to the
+# Sleef .c files themselves.  This is the defence-in-depth posture per
+# Contract Section 4.2: the FMA ban applies inside the library as well
+# as in its consumers.
+sim_path = true
+
+# SimdLevel.SSE42: the SimPath SIMD ceiling per Contract Section 4.2.
+# The vendored scalar amalgamation never reaches for SSE intrinsics
+# directly (pure scalar bodies), but the ceiling prevents any future
+# regression that would try to opt into the upstream SIMD kernels from
+# slipping through the parser.
+simd_level = "SSE42"
+
+# Public include paths -- consumers (XCore) compile against the
+# vendored Sleef.h.
+public_include_paths = [
+    "include",
+]
+
+# Private include paths -- internal helpers (sleef_internal.h).
+private_include_paths = [
+    "src",
+]
+
+public_dependency_modules = []
+private_dependency_modules = []
+
+# No definitions; the build-config-aware flags (XPACT_SIMPATH,
+# XPACT_SIMPATH_PROVISIONAL) are set by XBT at the target level.
+public_definitions = []
+private_definitions = []
+
+# Exclude from shared PCH per Contract Section 1.5 (sim-path modules
+# cannot share a PCH).  Defence-in-depth; the parser also catches the
+# combination at validate time.
+b_exclude_from_shared_pch = true
+
+# Upstream third-party warning posture; do not impose XPact's stricter
+# warning set on the vendored Sleef sources.
+b_warnings_as_errors = false

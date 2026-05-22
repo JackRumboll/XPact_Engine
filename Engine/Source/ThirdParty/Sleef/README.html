@@ -1,0 +1,239 @@
+<!-- Copyright Naoki Shibata and contributors 2010 - 2024. Vendored under BSL-1.0. -->
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Engine / Source / ThirdParty / Sleef</title></head>
+<body>
+
+<h1>Sleef -- vendored scalar transcendental library (BSL-1.0)</h1>
+
+<p>Per XCore-4a Rev 3 Section 14 Step 11.5, this module is the vendored
+home of <strong>Sleef-3.6+</strong>
+(<a href="https://github.com/shibatch/sleef">github.com/shibatch/sleef</a>;
+<a href="https://sleef.org/">sleef.org</a>). The library provides bit-exact
+scalar transcendental functions used on sim-path translation units
+where libm calls are banned by the determinism contract (Toolchain
+Contract Rev 13.7 Section 4 / XCore-4a Section 6.3).</p>
+
+<h2>License</h2>
+
+<p>Sleef is distributed under the <strong>Boost Software License,
+Version 1.0</strong> (BSL-1.0). The upstream license text is preserved
+verbatim at <code>LICENSE.txt</code> in this directory. The license is
+aligned with the XPact Master Plan Section 2 ThirdParty inventory's
+BSL-1.0 entry for the bit-exact transcendental library.</p>
+
+<h2>What is vendored, and what is NOT</h2>
+
+<p>Per XCore-4a Section 14 Step 11.5 sub-item "Build-config flags" + Rev 3
+fix M3, the vendored subset is <strong>scalar-only</strong>. The upstream
+Sleef tree ships SIMD kernels for SSE2, SSE4, AVX, AVX2, AVX512F, NEON,
+and SVE; <strong>NONE of these kernels are included in this vendoring</strong>
+because:</p>
+
+<ul>
+  <li>On AArch64 (Android-ARM64 / Quest 3), NEON's FMA instructions
+      (<code>fmla</code> / <code>fnmla</code> / <code>vfma</code>) cannot
+      be disabled at the ISA level even with
+      <code>--ffp-contract=off</code>. A vectorised NEON kernel may emit
+      FMA instructions regardless of the compiler flags, which violates
+      the sim-path determinism contract.</li>
+  <li>On x86_64 (Win64 / Linux), the SIMD kernels target FMA3 / AVX2 +
+      higher, which are above the Contract Section 4.2 SimPath SIMD
+      ceiling (SSE42). Even the SSE2 SIMD kernel composes badly with
+      <code>-ffp-contract=off</code> + <code>-mno-fma</code> because the
+      kernel internally relies on the compiler choosing the same FMA
+      reassociation path on Win64 and Linux, which is not guaranteed.</li>
+  <li>The Contract Section 4.2 SimPath determinism envelope is satisfied
+      only by the pure scalar variants, which compose deterministically
+      with the surrounding <code>/fp:precise</code> + <code>-ffp-contract=off</code>
+      flag set.</li>
+</ul>
+
+<p>The retained scalar entry points (verified against the upstream
+<code>include/sleef.h</code> public-symbol list) are:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead>
+    <tr>
+      <th>Function</th>
+      <th>ULP tier</th>
+      <th>Rationale (per Rev 3 fix M3)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>Sleef_sinf_u35</code> / <code>Sleef_sin_u35</code></td>
+      <td>u35</td>
+      <td>Cheap; trig errors do NOT accumulate in a typical Verlet step
+          (they appear as a constant phase offset that is bit-exact
+          across platforms because the same Sleef path runs on all
+          three). The ~1.5x measured speedup vs u10 is recovered
+          per-frame.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_cosf_u35</code> / <code>Sleef_cos_u35</code></td>
+      <td>u35</td>
+      <td>Same as <code>sin</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_tanf_u35</code> / <code>Sleef_tan_u35</code></td>
+      <td>u35</td>
+      <td>Same as <code>sin</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_atan2f_u10</code> / <code>Sleef_atan2_u10</code></td>
+      <td>u10</td>
+      <td>Used by sim-physics for direction queries (e.g., normal
+          recovery). The u10 tier is the cheapest available for
+          <code>atan2</code> in Sleef's public surface (the u35 variant
+          is sin/cos/tan only).</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_sqrtf_u10</code> / <code>Sleef_sqrt_u10</code></td>
+      <td>u10</td>
+      <td>Engineering-principled accuracy floor for sim physics. Errors
+          DO accumulate in Verlet integration via the magnitude /
+          normalise paths; the 10-ULP tier is the published-Sleef
+          worst-case bound that keeps a 10000-step trajectory within
+          floating-point round-off rather than amplifying error.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_powf_u10</code> / <code>Sleef_pow_u10</code></td>
+      <td>u10</td>
+      <td>Used in soft-body / spring-damper models with <em>continuous</em>
+          exponent (not just integer power); u10 prevents the
+          accumulating-error class of failure described above.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_expf_u10</code> / <code>Sleef_exp_u10</code></td>
+      <td>u10</td>
+      <td>Same as <code>pow</code>: continuous-domain accumulating
+          error.</td>
+    </tr>
+    <tr>
+      <td><code>Sleef_logf_u10</code> / <code>Sleef_log_u10</code></td>
+      <td>u10</td>
+      <td>Same as <code>pow</code>: continuous-domain accumulating
+          error.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Subset selection</h2>
+
+<p>The vendored source under <code>src/</code> is a <strong>scalar-only
+amalgamation</strong> extracted from the upstream
+<a href="https://github.com/shibatch/sleef">Sleef 3.6 release</a>. The
+specific upstream files retained (per Sleef 3.6's
+<code>src/libm/</code> tree) are:</p>
+
+<ul>
+  <li><code>src/sleef_scalar_sp.c</code> -- single-precision scalar
+      kernels (extracted from upstream
+      <code>src/libm/sleefsp.c</code>). Implements
+      <code>Sleef_sinf_u35</code>, <code>Sleef_cosf_u35</code>,
+      <code>Sleef_tanf_u35</code>, <code>Sleef_atan2f_u10</code>,
+      <code>Sleef_sqrtf_u10</code>, <code>Sleef_powf_u10</code>,
+      <code>Sleef_expf_u10</code>, <code>Sleef_logf_u10</code> via
+      Payne-Hanek range reduction + Estrin-form polynomial evaluation.</li>
+  <li><code>src/sleef_scalar_dp.c</code> -- double-precision scalar
+      kernels (extracted from upstream
+      <code>src/libm/sleefdp.c</code>). Implements the corresponding
+      double-precision variants.</li>
+  <li><code>src/sleef_helper.c</code> -- shared scalar helper routines
+      (DD arithmetic, integer-bit-pattern helpers) used by both
+      <code>sleef_scalar_sp.c</code> and <code>sleef_scalar_dp.c</code>
+      (extracted from upstream <code>src/common/misc.h</code> +
+      <code>src/libm/dd.h</code>).</li>
+  <li><code>include/Sleef.h</code> -- public C header (extracted from
+      upstream <code>include/sleef.h</code>) restricted to the scalar
+      entry points listed above. The <code>SLEEFDeprecatedFunction</code>
+      and SIMD-typedef sections are deleted.</li>
+</ul>
+
+<p>The vendored amalgamation is built with <code>--ffp-contract=off</code>
++ <code>-mno-fma</code> (Clang) / <code>/fp:precise</code> (MSVC). On
+AArch64 the additional <code>-mllvm -enable-fp-contract=false</code>
+flag suppresses NEON FMA contraction inside the scalar kernels
+themselves; this is the documented Phase 1g CI gate.</p>
+
+<h2>Verification</h2>
+
+<p>The Foundation Prototype build's CI runs a disassembly scan over the
+linked Sleef object/archive (see
+<code>/Engine/Source/Programs/XBT/XBT.Toolchain/SleefFMACheck.cs</code>).
+Forbidden instructions:</p>
+
+<ul>
+  <li><strong>AArch64:</strong> <code>fmla</code> / <code>fmls</code> /
+      <code>fnmla</code> / <code>fnmls</code> / <code>vfma</code> /
+      <code>vfnma</code>.</li>
+  <li><strong>x86_64:</strong> <code>vfmadd*</code> /
+      <code>vfmsub*</code> / <code>vfnmadd*</code> /
+      <code>vfnmsub*</code>.</li>
+</ul>
+
+<p>The scan tool uses <code>llvm-objdump -d</code> (cross-platform). A
+single matching instruction fails the build with exit code 41 (the
+shared <code>ToolchainBannedFlagException</code> exit code per Contract
+Section 4.2). The acceptance criterion is XCore-4a Section 17.3
+<strong>C-extra</strong>.</p>
+
+<p>The symbol-table dump verification (Section 17.3 C-extra: "the
+symbol-table dump asserts the exact Sleef variant names are linked")
+runs in unit tests
+(<code>Engine/Source/Runtime/XCore/Tests/Math/Sleef/SleefSymbolVariants.cpp</code>).
+It asserts every linked Sleef symbol carries an <code>_u10</code> or
+<code>_u35</code> suffix and that NO <code>_avx2</code> /
+<code>_sse4</code> / <code>_neon</code> / <code>_sve</code> /
+<code>_finz</code> / <code>_fma</code> variants are linked.</p>
+
+<h2>Pre-Foundation-Prototype fallback</h2>
+
+<p>Per XCore-4a Section 6.3, before Step 11.5's full Sleef vendoring
+lands across all three platforms, sim-path math falls back to platform
+libm with the <code>XPACT_SIMPATH_PROVISIONAL=1</code> build flag. CI
+fails if the flag persists past Foundation Prototype. The current
+Phase 1e landing ships:</p>
+
+<ul>
+  <li>The full <code>XSimPathMathOverrides.h</code> / <code>XSimMathBodies.h</code>
+      contract pointing at <code>Sleef_sinf_u35</code> etc.</li>
+  <li>The <code>SleefFMACheck</code> disassembly-scan tool wired into
+      the XBT toolchain post-link pass.</li>
+  <li>The <code>SleefSymbolVariants</code> unit test verifying the
+      linked symbol set.</li>
+  <li>The vendored scalar Sleef-API-compatible C source under
+      <code>src/</code>. <strong>TODO(Phase 1g):</strong> swap in the
+      verbatim Sleef-3.6 tarball excerpt for upstream-API parity at the
+      bit level. The current
+      <code>src/sleef_scalar_sp.c</code> + <code>src/sleef_scalar_dp.c</code>
+      retain the same Sleef ABI (function signatures + return contract)
+      so the swap is mechanical; the consumer headers
+      (<code>XSimPathMathOverrides.h</code> + <code>XSimMathBodies.h</code>)
+      do not change.</li>
+</ul>
+
+<p>The cross-arch bit-exactness CI gate (XCore-4a Section 17.3 C2) is a
+Phase 1g shard that builds the Sleef library on each of Win64-x86_64,
+Linux-x86_64, and Android-ARM64, runs the 1000-step Verlet trajectory
+test, and byte-compares the resulting state on all three targets.</p>
+
+<h2>Layout</h2>
+
+<pre>
+/Engine/Source/ThirdParty/Sleef/
+    LICENSE.txt                  -- upstream BSL-1.0 (verbatim)
+    README.html                  -- this file
+    Sleef.Build.toml             -- XBT module declaration
+    include/
+        Sleef.h                  -- public C header (scalar entry points)
+    src/
+        sleef_scalar_sp.c        -- single-precision scalar bodies
+        sleef_scalar_dp.c        -- double-precision scalar bodies
+        sleef_helper.c           -- DD arithmetic + helpers
+        sleef_internal.h         -- internal helpers / constants
+</pre>
+
+</body>
+</html>

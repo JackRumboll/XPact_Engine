@@ -33,11 +33,11 @@
     </tr>
     <tr>
       <td>Sleef</td>
-      <td>TBD at integration</td>
-      <td>https://sleef.org/</td>
+      <td>3.6+ (scalar-only amalgamation; pre-Foundation-Prototype provisional fallback to libm via XPACT_SIMPATH_PROVISIONAL=1 per XCore-4a Rev 3 Section 6.3; Phase 1g swaps in the upstream tarball polynomial bodies)</td>
+      <td>https://github.com/shibatch/sleef</td>
       <td>BSL-1.0</td>
-      <td><code>Licenses/Sleef.txt</code></td>
-      <td>Deterministic transcendental math substitution on sim-path TUs</td>
+      <td><code>../Sleef/LICENSE.txt</code></td>
+      <td>XCore (sim-path) &mdash; deterministic transcendental math substitution on sim-path TUs per XCore-4a Rev 3 &sect;14 Step 11.5 + &sect;17.3 C-extra acceptance. Scalar-only (no NEON/SSE/AVX kernels per Rev 3 fix M3); u10 tier for sqrt/pow/exp/log; u35 tier for sin/cos/tan; u10 for atan2 (cheapest published Sleef variant for atan2). Disassembly scan in CI verifies NO fmla / vfma / vfnma on AArch64 and NO vfmadd* / vfmsub* on x86_64.</td>
     </tr>
     <tr>
       <td>Vulkan-Headers</td>

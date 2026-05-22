@@ -235,8 +235,49 @@
 #                                            "123456789" -> 0xE3069283 +
 #                                            empty input.
 #
-# Subsequent phases (1e: FText, math, CVars, ...) add their TUs under
-# this same module.
+# Phase 1e Subagent B (Step 11.5 Sleef vendoring + sim-path math) adds:
+#
+#   * Tests/Math/Sleef/SleefULP_Sqrt.cpp
+#                                         -- 1000-input sweep across
+#                                            Sleef_sqrtf_u10, verifying
+#                                            max ULP error <= 10 (the
+#                                            u10 tier guarantee). Per
+#                                            XCore-4a Section 17.3
+#                                            C-extra.
+#   * Tests/Math/Sleef/SleefULP_Sin.cpp    -- 1000-input sweep across
+#                                            [-pi, pi] for
+#                                            Sleef_sinf_u35; max ULP
+#                                            error <= 35 (u35 tier).
+#   * Tests/Math/Sleef/CrossArchBitExact.cpp
+#                                         -- 1000-step Verlet trajectory
+#                                            using FVector + Sleef
+#                                            cos/sin/sqrt; single-
+#                                            platform repeatability gate
+#                                            (Phase 1e). Phase 1g CI
+#                                            shards run this test on
+#                                            Win64-x86_64 / Linux-x86_64
+#                                            / Android-ARM64 and byte-
+#                                            compare the final state.
+#                                            Section 17.3 C2 gate.
+#   * Tests/Math/Sleef/NoFMAInstructionsLinked.cpp
+#                                         -- Sleef-call-surface smoke;
+#                                            the load-bearing FMA-
+#                                            absence verification runs
+#                                            in XBT.Toolchain.SleefFMACheck
+#                                            via llvm-objdump -d disassembly
+#                                            grep. Section 17.3 C-extra.
+#   * Tests/Math/Sleef/SleefSymbolVariants.cpp
+#                                         -- Verifies every Sleef _u10
+#                                            / _u35 entry is linked +
+#                                            non-null + distinct; the
+#                                            link-time symbol-table dump
+#                                            with banned-variant ban
+#                                            (_avx2 / _sse4 / _neon /
+#                                            _sve / _finz / _fma) runs
+#                                            in XBT.Toolchain.SleefFMACheck.
+#
+# Subsequent phases (1f-1g: FText, CVars, cross-arch CI shards) add
+# their TUs under this same module.
 #
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's
