@@ -16,11 +16,15 @@
 // allocator's per-block header carries the tag, and GetAllocatedBytes
 // returns the per-tag total without an opt-in mechanism.
 //
-// Cost: +2 bytes per allocation header (Section 4.5 row 1: "+2 bytes
-// per block"). For a 32-byte minimum bin this is a 6% header tax; for
-// any allocation > 256 bytes it is under 1% -- a price the Section
-// 17.1 A1 acceptance ("throughput >= 110% of UE FMallocBinned3") is
-// comfortable with.
+// Cost (Phase 1g Round 2): +0 bytes per block intra-block overhead.
+// The Tag lives in an out-of-band uint16 side-table indexed by block
+// number, stored at the head of each per-bin VM range. The side-
+// table adds ~2 bytes per block in pool metadata but does not eat
+// into the user-visible block size. The PoolIndexFromPtr swap
+// (FMallocBinnedX.cpp + .h) recovers the BinIndex by binary search
+// over the sorted PoolMetadataTable rather than by reading an
+// intra-block header; the user pointer returned by Malloc is the
+// block start itself, with no header offset.
 //
 // The enum is uint16-backed so each tag fits in exactly 2 bytes, with
 // 16 reserved low slots (0x0000-0x000F) for engine-internal tags,

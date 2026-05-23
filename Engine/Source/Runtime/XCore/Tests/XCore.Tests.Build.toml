@@ -463,6 +463,15 @@
 #                                            freeing on multiple bins; per-tag
 #                                            byte count returns to baseline
 #                                            (no leak across thread-exit drain).
+#   * Tests/HAL/FMemory.Tests/UserPointerEqualsBlockStart.cpp
+#                                         -- Phase 1g Round 2 (PoolIndexFromPtr
+#                                            swap): user pointer returned by
+#                                            Malloc is aligned to the bin's
+#                                            full size (no header offset),
+#                                            and Malloc/Free round-trip leaves
+#                                            GetAllocatedBytes(tag) == 0 --
+#                                            the load-bearing invariant for
+#                                            the side-table indexing.
 #   * Tests/Math/SimPathRejects/StdSqrt.cpp,
 #     Tests/HAL/SimPathRejects/PlatformTimeSeconds.cpp,
 #     Tests/HAL/SimPathRejects/CVarNotSimPathSafe.cpp

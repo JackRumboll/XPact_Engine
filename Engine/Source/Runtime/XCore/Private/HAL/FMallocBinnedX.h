@@ -44,12 +44,19 @@
 //     fragmentation).
 //
 // DELIBERATE DIVERGENCES:
-//   * Per-allocation header (4 bytes) carries the FMemTag (2 bytes) +
-//     a 2-byte BinIndex (so Free can find the bin without a global
-//     hashmap lookup). UE carries no per-allocation tag and resolves
-//     bin index via the global VM-range layout
-//     (HAL/MallocBinned3.h:181-184 PoolIndexFromPtr). XPact's header
-//     allows the per-tag accounting to be O(1) at Free time.
+//   * No per-allocation header. Phase 1g Round 2 swapped from an
+//     8-byte intra-block FBlockHeader (Tag + BinIndex + UserSize) to
+//     UE Binned3's PoolIndexFromPtr scheme: each bin's 1 GiB VM
+//     reservation is identified by binary-searching a sorted-by-base
+//     table; the BinIndex is the index of the matching entry, the
+//     tag lives in an out-of-band side-table indexed by block number,
+//     and the user-visible size is the bin size (derived from BinIndex).
+//     UE source: HAL/MallocBinned3.h:181-184 (PoolIndexFromPtr;
+//     constant-time bit shift because UE pools share a single
+//     contiguous base, XPact pools are independently reserved so we
+//     use binary search across 56 entries == 6 compares hot, with a
+//     thread-local most-recently-used cache for the >80% temporal-
+//     locality hit case).
 //   * Single global mutex for large allocations rather than UE's
 //     PoolHashBucket + per-bucket mutex (HAL/MallocBinned3.h:81-83).
 //     The single mutex is acceptable because large allocations are
@@ -68,20 +75,26 @@
 //      (a small lookup table; constant time).
 //   4. Allocator pulls a free block from the calling thread's
 //      FTLSBinCache.FreeListHead[BinIndex]; if non-empty:
-//        a. Pop the head; write the 4-byte header (Tag + BinIndex).
-//        b. Update per-tag bytes counter.
-//        c. Return the user pointer (header + 4).
+//        a. Pop the head; compute BlockIndex from the pool's
+//           UserDataAreaBase and write the FMemTag to the pool's
+//           TagSideTable[BlockIndex] (out-of-band; zero intra-block
+//           overhead).
+//        b. Update per-tag bytes counter by BinSize (the user-visible
+//           capacity; Malloc / Free symmetrically use BinSize so
+//           round-trip cancels exactly).
+//        c. Return the user pointer (== block start; no header offset).
 //   5. If the cache is empty for this bin:
 //        a. Acquire the central pool's per-bin mutex.
 //        b. Pull a bundle of N blocks from the central free list.
 //           (If the central free list is also empty, commit a new
-//            slab of pages within the bin's VM reservation.)
+//            slab of pages within the bin's VM reservation AND the
+//            matching side-table pages indexed by block number.)
 //        c. Release the mutex.
 //        d. Push N-1 blocks into the cache; return one to the caller.
-//   6. Cross-thread Free: the calling thread sees a block whose
-//      header BinIndex maps to a different OwnerThreadId than its
-//      own. The block is routed to the owner's MPSC reclaim queue
-//      (the simple atomic-linked-list in this Phase 1b implementation).
+//   6. Cross-thread Free: GetPoolMetadata(UserPtr) recovers the bin
+//      via binary search; BlockIndex computed via pointer subtraction;
+//      Tag read from TagSideTable[BlockIndex]. The block is routed to
+//      the owner's MPSC reclaim queue per Section 4.2 contract.
 //
 // VM RESERVATION LAYOUT:
 //   Per the spec body, 1 GiB reserved per bin, contiguous, page-
@@ -136,9 +149,9 @@ namespace XCore::HAL
     // -----------------------------------------------------------------
     inline constexpr ::uint32 kBinSizeTable[kBinCount] =
     {
-        // All bin sizes are multiples of 16 so user pointers at
-        // block + kUserOffset (= 16) are always 16-aligned regardless
-        // of which bin's slab the block came from.
+        // All bin sizes are multiples of 16 so user pointers (= block
+        // start under the Phase 1g PoolIndexFromPtr layout) are always
+        // 16-aligned regardless of which bin's slab the block came from.
         //
         // The progression is denser than power-of-two at the small
         // end (32, 48, 64, 80, 96, ...) to minimize internal
@@ -157,8 +170,8 @@ namespace XCore::HAL
     static_assert(kBinSizeTable[kBinCount - 1]  == 16384, "Largest bin = 16 KiB");
 
     // Compile-time check: every bin size must be a multiple of 16 so
-    // user pointers at block + kUserOffset are always 16-aligned. This
-    // is the constraint kUserOffset's documentation names.
+    // user pointers (= block start under PoolIndexFromPtr) are always
+    // 16-aligned for any bin's slab carving.
     namespace Detail
     {
         constexpr bool AllBinsAre16Aligned()
@@ -174,8 +187,8 @@ namespace XCore::HAL
         }
     }
     static_assert(Detail::AllBinsAre16Aligned(),
-                  "Every bin size must be a multiple of 16 so the user pointer at "
-                  "block + kUserOffset (= 16) is 16-aligned across all bins.");
+                  "Every bin size must be a multiple of 16 so user pointers "
+                  "(== block start) are 16-aligned across all bins.");
 
     // -----------------------------------------------------------------
     // kPerBinVMReservation -- bytes reserved per bin (Section 4.1
@@ -201,102 +214,100 @@ namespace XCore::HAL
     inline constexpr ::SIZE_T kLargeAllocThreshold = 16384;
 
     // -----------------------------------------------------------------
-    // FBlockHeader -- the per-allocation header.
+    // FPoolMetadata -- the per-VM-range metadata header.
     //
-    // Data fields (Section 4.1: "Per-allocation header carries the
-    // FMemTag (2 bytes) for GetAllocatedBytes accounting").
+    // Phase 1g Round 2 replaces the 8-byte intra-block FBlockHeader
+    // with an out-of-band "metadata + side-table" layout, mirroring
+    // UE Binned3's PoolIndexFromPtr scheme (HAL/MallocBinned3.h:181-
+    // 184). Each per-bin VM range (1 GiB) is laid out as:
     //
-    // The spec body's literal "2 bytes for FMemTag" is preserved;
-    // Phase 1b additionally carries the user-requested size as the
-    // 4-byte UserSize field so Free can subtract the exact
-    // requested-size delta from per-tag accounting (the Section 4.6
-    // "MallocFreeRoundTrip ends in GetAllocatedBytes(tag)==0" test
-    // requires exact-size accounting). Without UserSize, Free would
-    // have to subtract the bin-rounded size and round-trip leaves
-    // non-zero residue per (Size - (BinSize - kUserOffset)).
+    //     [0..63]                FPoolMetadata header (alignas(64))
+    //     [64..SideTableEnd]     uint16 TagSideTable[N_max]
+    //                            (FMemTag per block; lazily page-
+    //                            committed in lockstep with user-area
+    //                            slab commits)
+    //     [UserDataAreaBase]     page-aligned start of user blocks
+    //     [..PoolBaseAddr + 1 GiB]  remainder of user-data area
     //
-    // Layout (8 bytes):
+    // Per-block overhead drops from 16 bytes (8 header + 8 free-list
+    // padding) to 0 bytes inside the block (the first 8 bytes of a
+    // free block still hold FFreeBlock::Next, but that's the standard
+    // intrusive-list reuse: zero overhead when the block is live).
     //
-    //   [0..1]  FMemTag  Tag       (2 bytes)
-    //   [2..3]  uint16   BinIndex  (2 bytes)  -- 0..kBinCount-1 for
-    //                                            small bins; kBinCount
-    //                                            (= sentinel) for large
-    //                                            allocs.
-    //   [4..7]  uint32   UserSize  (4 bytes)  -- the user's requested
-    //                                            size at Malloc time.
-    //                                            Capped at 4 GiB; the
-    //                                            large-alloc path uses
-    //                                            the sidecar map for
-    //                                            sizes > 4 GiB
-    //                                            (theoretical only).
+    // The metadata struct itself lives at the very start of each
+    // per-bin VM reservation (lazy-committed by the Init / first-
+    // touch path); the global PoolMetadataTable[kBinCount] holds
+    // pointers to each pool's metadata sorted by PoolBaseAddr for
+    // binary-search recovery.
     //
-    // PLACEMENT IN BLOCK (Phase 1b):
+    // Layout (56 bytes used; 8 bytes padding within the alignas(64)):
     //
-    //   Block start (slab-carved, BinSize-aligned, always 16-aligned):
-    //     offsets [0..7]    padding (becomes FFreeBlock::Next when free)
-    //     offsets [8..15]   the 8-byte FBlockHeader
-    //     offsets [16..BinSize-1]   user data (Align <= 16 guaranteed)
+    //   [0..7]    void*    PoolBaseAddr      -- == self; the bin's VM
+    //                                            reservation start
+    //   [8..15]   void*    UserDataAreaBase  -- page-aligned start of
+    //                                            user blocks within
+    //                                            this VM range (= self
+    //                                            + side-table size,
+    //                                            page-rounded up)
+    //   [16..23]  ::SIZE_T BinSize           -- block size for this
+    //                                            pool (constant per
+    //                                            pool; == kBinSize-
+    //                                            Table[BinIndex])
+    //   [24..31]  ::SIZE_T PoolSize          -- VM reservation size
+    //                                            (== kPerBinVM-
+    //                                            Reservation)
+    //   [32..39]  ::SIZE_T MaxBlocks         -- floor(UserDataArea /
+    //                                            BinSize); == capacity
+    //                                            of the side table
+    //   [40..47]  uint16*  TagSideTable      -- side-table base pointer
+    //                                            (= self + 64, page-
+    //                                            aligned committed in
+    //                                            slab-commit lockstep)
+    //   [48..49]  ::uint16 BinIndex          -- 0..kBinCount-1; which
+    //                                            bin this pool serves
+    //   [50..55]  padding
     //
-    //   Free path: UserPtr - sizeof(FBlockHeader) reaches offset 8;
-    //              read header; convert to slab-carved-block pointer
-    //              via (UserPtr - kUserOffset).
-    //
-    // The 16-byte block prefix is unchanged from the 4-byte-header
-    // version; only the header itself widened from 4 to 8 bytes,
-    // shrinking the padding band from 12 to 8 bytes. The user pointer
-    // alignment is still kUserOffset = 16 ⇒ 16-aligned.
-    //
-    // Phase 1c optimisation: switch to UE's PoolIndexFromPtr scheme
-    // where the bin index is recovered from the user pointer's VM-
-    // range location, with the tag + size held in a sidecar table.
-    // This eliminates the 16-byte intra-block overhead.
-    // TODO(Phase 1c): PoolIndexFromPtr-style tag recovery.
-    //
-    // ABI lock: 8 bytes for the header struct.
+    // ABI lock: 64 bytes total (alignas(64), padded to a cache line).
     // -----------------------------------------------------------------
-    struct FBlockHeader
+    struct alignas(64) FPoolMetadata
     {
-        FMemTag  Tag;       // 2 bytes
-        ::uint16 BinIndex;  // 2 bytes; kBinCount sentinel = large alloc
-        ::uint32 UserSize;  // 4 bytes; the user's requested size
+        void*           PoolBaseAddr;
+        void*           UserDataAreaBase;
+        ::SIZE_T        BinSize;
+        ::SIZE_T        PoolSize;
+        ::SIZE_T        MaxBlocks;
+        ::uint16*       TagSideTable;
+        ::uint16        BinIndex;
+        ::uint8         _pad[6];
     };
 
-    static_assert(sizeof(FBlockHeader)  == 8, "FBlockHeader ABI lock: 8 bytes (Tag 2 + BinIndex 2 + UserSize 4)");
-    static_assert(alignof(FBlockHeader) == 4, "FBlockHeader ABI lock: 4-byte alignment");
+    static_assert(sizeof(FPoolMetadata)  == 64, "FPoolMetadata ABI lock: one cache line");
+    static_assert(alignof(FPoolMetadata) == 64, "FPoolMetadata ABI lock: cache-line aligned");
 
     // -----------------------------------------------------------------
-    // kUserOffset -- the fixed offset from block start to user pointer.
+    // kPoolMetadataReservedHeader -- bytes reserved at the start of
+    // each per-bin VM range for the FPoolMetadata struct. The metadata
+    // is page-committed at Init; the side-table that immediately
+    // follows is lazily committed page-by-page in lockstep with user-
+    // area slab commits.
     //
-    // 16 bytes ensures the user pointer is always 16-aligned (since
-    // every kBinSizeTable bin size is a multiple of 8 and slabs start
-    // at page boundaries, every block start is at least 8-aligned;
-    // for bin sizes that are multiples of 16 the block start is 16-
-    // aligned; we choose UserOffset = 16 to guarantee 16-aligned
-    // user pointers regardless of the bin's block-start alignment).
-    //
-    // Bins whose sizes are not multiples of 16 still produce 16-
-    // aligned user pointers: the block start is 8-aligned, the user
-    // offset adds 16 bytes, so user = block + 16 which is 8 + 16 =
-    // 24 mod-16 = 8 — wait, that's NOT 16-aligned.
-    //
-    // The fix: use kBinSizeTable values that are ALL multiples of 16.
-    // The kBinSizeTable in FMallocBinnedX.h is updated to honour this
-    // constraint (the smallest bin = 32; every subsequent bin is a
-    // multiple of 16). The "40", "48"-style 8-aligned bins from UE
-    // are dropped in favour of 16-aligned bins; this trades some
-    // density for layout simplicity.
-    //
-    // The static_assert below pins the constraint.
+    // We reserve sizeof(FPoolMetadata) (= 64) bytes, then the
+    // side-table grows from offset 64 up to a page-aligned ceiling
+    // beyond which the user-data area begins. The side-table sizing
+    // is per-bin: smaller bins have more blocks per GiB so larger
+    // side tables. See ComputeSideTableBytes() in FMallocBinnedX.cpp.
     // -----------------------------------------------------------------
-    inline constexpr ::SIZE_T kUserOffset = 16;
+    inline constexpr ::SIZE_T kPoolMetadataReservedHeader = 64;
 
     // -----------------------------------------------------------------
-    // kLargeAllocBinIndex -- the sentinel BinIndex value used in a
-    // FBlockHeader for a large-alloc block.
+    // kLargeAllocBinIndex -- the sentinel BinIndex value used to
+    // signal "this allocation is on the large-alloc path, not a
+    // small-bin pool". Set to kBinCount (= 56) so it does not collide
+    // with any legitimate small-bin index (0..kBinCount-1).
     //
-    // Set to kBinCount (= 56) so it does not collide with any
-    // legitimate small-bin index (0..kBinCount-1). Free routes the
-    // block to the large-alloc path when it sees this value.
+    // Returned by SizeToBinIndex when the allocation exceeds the
+    // largest small-bin threshold, AND by GetPoolMetadata when the
+    // user pointer falls outside every small-bin VM range.
     // -----------------------------------------------------------------
     inline constexpr ::uint16 kLargeAllocBinIndex = kBinCount;
 
@@ -312,14 +323,29 @@ namespace XCore::HAL
     {
         // The bin's reserved VM range. Base address from
         // FPlatformMemory::ReserveVirtual(kPerBinVMReservation).
-        // Pages are committed on first touch (slab-by-slab below).
+        // The FPoolMetadata header lives at VMBase (committed at Init);
+        // the side-table follows; the user-data area begins at
+        // Metadata->UserDataAreaBase (page-aligned). Pages within the
+        // user-data area are slab-committed on demand; matching
+        // side-table pages are committed in lockstep.
         void* VMBase;
 
-        // High watermark for committed pages within VMBase. Pages
-        // [VMBase, VMBase + CommittedBytes) are CommitVirtual-backed;
-        // pages [VMBase + CommittedBytes, VMBase + kPerBinVMReservation)
-        // are reserved-only.
-        ::SIZE_T CommittedBytes;
+        // The FPoolMetadata header for this pool. Lives at offset 0
+        // within VMBase; cached here so the central-pool slab-commit
+        // path doesn't need to chase through VMBase on every call.
+        FPoolMetadata* Metadata;
+
+        // High watermark for committed user-area bytes (relative to
+        // Metadata->UserDataAreaBase). Pages [UserDataAreaBase,
+        // UserDataAreaBase + UserCommittedBytes) are CommitVirtual-
+        // backed user blocks; pages beyond are reserved-only.
+        ::SIZE_T UserCommittedBytes;
+
+        // High watermark for committed side-table bytes (relative to
+        // VMBase + sizeof(FPoolMetadata)). Page-aligned; grows in
+        // lockstep with UserCommittedBytes (one side-table page per
+        // BinSize * BlocksPerSideTablePage user-area pages).
+        ::SIZE_T SideTableCommittedBytes;
 
         // Free-list head for this bin's central pool. Allocated blocks
         // that were freed back to the central pool live here; the TLS
@@ -447,31 +473,40 @@ namespace XCore::HAL
         [[nodiscard]] static ::uint32 BinIndexToBinSize(::uint16 BinIndex) noexcept;
 
         // ============================================================
-        // PoolIndexFromPtr -- VM-range bin-index recovery (Phase 1g
-        // partial landing of Fix B's MAJOR #1).
+        // GetPoolMetadata / PoolIndexFromPtr -- VM-range bin recovery
+        // (Phase 1g Round 2 Fix B MAJOR #1 full landing).
         // ============================================================
         //
-        // Given a user pointer (or any pointer into a bin's slab),
-        // returns the bin index whose 1 GiB VM reservation contains
-        // it. Returns kLargeAllocBinIndex (= kBinCount) if the pointer
-        // is outside every bin's VM reservation; the caller then
-        // routes to the large-alloc map.
+        // GetPoolMetadata returns the FPoolMetadata header for the bin
+        // whose 1 GiB VM reservation contains the given pointer, or
+        // nullptr if the pointer falls outside every bin's range (the
+        // caller then routes to the large-alloc map).
         //
-        // Phase 1g uses this for defense-in-depth validation against
-        // the FBlockHeader BinIndex (catches header corruption / alien
-        // pointers passed to Free).
+        // Implementation: binary search over the global PoolMetadata-
+        // Table (sorted by PoolBaseAddr ascending; ~64 entries). 6
+        // compares hot. A thread-local most-recently-used cache
+        // (g_TlsLastPoolMetadata in FMallocBinnedX.cpp) short-circuits
+        // the search when consecutive allocations / frees touch the
+        // same pool, which is the >80% temporal-locality case.
         //
-        // TODO(Phase 2): once the spec migrates to header-less blocks
-        // (per the §4 dispatch goal "eliminate the 8-byte FBlockHeader
-        // overhead"), PoolIndexFromPtr replaces the header read on
-        // every Free path. The tag + UserSize fields still need a
-        // home: either a per-page sidecar table (one entry per page,
-        // covering all blocks on that page when they share a tag) or
-        // a hash table keyed by user pointer. The choice depends on
-        // the measured allocation-pattern distribution; Phase 2
-        // benchmarks decide. For Phase 1g we ship the helper +
-        // validation hook so the full swap can land incrementally
-        // without destabilising the current test suite.
+        // Why binary search rather than UE's O(1) bit-shift: UE Binned3
+        // reserves all small pools as one contiguous 64 GiB block (one
+        // ReserveVirtual call), so PoolIndexFromPtr is (ptr - base) >>
+        // poolSizeShift. XPact reserves each bin's 1 GiB independently
+        // (56 ReserveVirtual calls) because the per-bin reservations
+        // can be released independently at shutdown and because the
+        // 64 GiB contiguous reservation can fail on memory-constrained
+        // targets (Android-ARM64 with 39-bit effective VM has 512 GiB
+        // user space; reserving 64 GiB is feasible but the binary
+        // search's 20 ns is well within the §17.1 A1 performance
+        // envelope -- the temporal-locality cache reclaims most of
+        // the gap).
+        [[nodiscard]] static const FPoolMetadata* GetPoolMetadata(const void* UserPtr) noexcept;
+
+        // PoolIndexFromPtr is the bin-index-only variant used by the
+        // FMemory facade's diagnostic surface (DumpUsageReport) and
+        // by tests verifying the swap. Returns kLargeAllocBinIndex
+        // (= kBinCount) for pointers outside every bin's range.
         [[nodiscard]] ::uint16 PoolIndexFromPtr(const void* UserPtr) const noexcept;
 
         // ============================================================
