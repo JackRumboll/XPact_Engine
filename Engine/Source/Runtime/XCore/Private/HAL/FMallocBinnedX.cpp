@@ -67,11 +67,25 @@ namespace XCore::HAL
         // case before falling to binary search.
         //
         // The cache is read/written by exactly one thread; no atomics
-        // needed. The pointer itself targets static-lifetime memory
-        // (FPoolMetadata structs live inside their pool's VM range,
-        // released only at FMallocBinnedX::Shutdown), so dangling-
-        // pointer hazards are bounded by the allocator lifecycle.
+        // needed for the pointer itself.
+        //
+        // Epoch invalidation (Phase 1g Round 3 audit MINOR-1 close-out):
+        // a Shutdown -> Init cycle in a test harness re-creates pool VM
+        // ranges at potentially different addresses; the MRU cache from
+        // before the cycle would dereference into released VM. To close
+        // this, g_PoolEpoch is bumped at every Init/Shutdown, every
+        // FPoolMetadata carries its own Epoch field stamped at Init,
+        // and the MRU check requires both the TLS epoch and the
+        // metadata's epoch to match the current global epoch. The
+        // bumping itself is atomic with release ordering; the MRU
+        // check uses acquire ordering on the global epoch load. The
+        // TLS epoch starts at 0; the global epoch starts at 1 after
+        // the first Init, so a fresh thread sees a non-matching epoch
+        // on its first GetPoolMetadata call and falls through to the
+        // binary-search path (which writes the correct epoch to TLS).
+        XCONSTINIT ::std::atomic<::uint32> g_PoolEpoch{ 0 };
         thread_local FPoolMetadata* g_TlsLastPoolMetadata = nullptr;
+        thread_local ::uint32       g_TlsLastPoolEpoch    = 0;
     } // anonymous
 
     // =====================================================================
@@ -320,8 +334,16 @@ namespace XCore::HAL
         // Fast path: TLS MRU cache. Consecutive allocations / frees in
         // a container loop hit the same pool; >80% of calls under
         // workload short-circuit here.
+        //
+        // Epoch check (audit MINOR-1 close-out): we require both the
+        // TLS-cached epoch AND the metadata's own Epoch field to match
+        // the current global epoch. After a Shutdown/Init cycle the
+        // global epoch has been bumped; any stale TLS pointer fails
+        // the check and falls through to the binary-search slow path,
+        // which writes a fresh (pointer, epoch) pair.
+        const ::uint32 CurrentEpoch = g_PoolEpoch.load(::std::memory_order_acquire);
         FPoolMetadata* MRU = g_TlsLastPoolMetadata;
-        if (MRU != nullptr)
+        if (MRU != nullptr && g_TlsLastPoolEpoch == CurrentEpoch && MRU->Epoch == CurrentEpoch)
         {
             const ::UPTRINT P    = reinterpret_cast<::UPTRINT>(UserPtr);
             const ::UPTRINT Base = reinterpret_cast<::UPTRINT>(MRU->PoolBaseAddr);
@@ -351,6 +373,7 @@ namespace XCore::HAL
                 if (P >= Base && P < (Base + M->PoolSize))
                 {
                     g_TlsLastPoolMetadata = M;
+                    g_TlsLastPoolEpoch    = CurrentEpoch;
                     return M;
                 }
             }
@@ -384,6 +407,7 @@ namespace XCore::HAL
             else
             {
                 g_TlsLastPoolMetadata = M;
+                g_TlsLastPoolEpoch    = CurrentEpoch;
                 return M;
             }
         }
@@ -472,6 +496,16 @@ namespace XCore::HAL
             return;
         }
 
+        // Bump the global pool epoch (audit MINOR-1 close-out). Stamped
+        // into every FPoolMetadata below; the MRU cache in
+        // GetPoolMetadata requires the metadata's Epoch field AND the
+        // TLS-cached epoch to both match this value. After a
+        // Shutdown -> Init cycle the new epoch differs from the old
+        // one stored in any pre-cycle TLS cache, so all stale MRU
+        // pointers correctly miss and fall through to binary search
+        // (which then writes the fresh epoch).
+        const ::uint32 NewEpoch = g_PoolEpoch.fetch_add(1, ::std::memory_order_release) + 1;
+
         // Reserve + setup each per-bin VM range.
         for (::uint32 I = 0; I < kBinCount; ++I)
         {
@@ -522,6 +556,7 @@ namespace XCore::HAL
                                         reinterpret_cast<::uint8*>(Pool.VMBase) + kPoolMetadataReservedHeader);
             Meta->BinIndex         = static_cast<::uint16>(I);
             for (auto& B : Meta->_pad) { B = 0; }
+            Meta->Epoch            = NewEpoch;  // audit MINOR-1 close-out
 
             // The first PageSize bytes of the VM range are now
             // committed. Of those, kPoolMetadataReservedHeader (64)
@@ -582,6 +617,17 @@ namespace XCore::HAL
         // concurrent GetPoolMetadata that races shutdown sees the
         // linear-scan fallback (safer if entries are being nulled).
         g_PoolMetadataTableSorted.store(false, ::std::memory_order_release);
+
+        // Bump the global pool epoch (audit MINOR-1 close-out). Any
+        // surviving TLS MRU cache from this Init session now mismatches
+        // the global epoch and falls through to the binary-search slow
+        // path on the next GetPoolMetadata call -- which will see the
+        // nulled g_PoolMetadataTable entries and return nullptr (large-
+        // alloc / alien-pointer code path), not dereference the
+        // about-to-be-released VM. The fetch_add is release-ordered so
+        // other threads' next acquire-load sees the new epoch
+        // before the ReleaseVirtual calls below land.
+        g_PoolEpoch.fetch_add(1, ::std::memory_order_release);
 
         // Release all per-bin VM reservations.
         for (::uint32 I = 0; I < kBinCount; ++I)

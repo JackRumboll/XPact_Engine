@@ -112,9 +112,14 @@ namespace XCore::HAL
 
     // -----------------------------------------------------------------
     // ABI lock. The 2-byte width is load-bearing for the allocator's
-    // per-block header layout (Section 4.1: "per-allocation header
-    // carries the FMemTag (2 bytes)"); a wider tag would break the
-    // header-tax bound in Section 17.1 A1.
+    // out-of-band TagSideTable element width (Phase 1g Round 2 swapped
+    // the per-allocation FBlockHeader for a per-pool TagSideTable that
+    // stores one uint16 tag per block; see FMallocBinnedX.h:272
+    // FPoolMetadata layout). A wider tag would inflate every pool's
+    // metadata footprint by the same multiplier; a narrower tag would
+    // not fit Plugin_Begin (0x4000) and User_Begin (0x8000). The
+    // Phase 1g Round 3 errata sweep replaced the prior wording that
+    // cited the now-removed FBlockHeader.
     // -----------------------------------------------------------------
     static_assert(sizeof(FMemTag) == 2,
                   "FMemTag ABI lock: must be exactly 2 bytes (uint16 underlying)");

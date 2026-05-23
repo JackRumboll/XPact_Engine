@@ -278,7 +278,12 @@ namespace XCore::HAL
         ::SIZE_T        MaxBlocks;
         ::uint16*       TagSideTable;
         ::uint16        BinIndex;
-        ::uint8         _pad[6];
+        ::uint8         _pad[2];
+        ::uint32        Epoch;          // bumped at Init/Shutdown; thread-local
+                                        // MRU cache must match this value to
+                                        // hit. Closes the Shutdown/Init dangling-
+                                        // pointer hazard flagged by Phase 1g
+                                        // Round 3 audit MINOR-1.
     };
 
     static_assert(sizeof(FPoolMetadata)  == 64, "FPoolMetadata ABI lock: one cache line");
