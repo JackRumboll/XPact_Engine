@@ -979,6 +979,148 @@
 #           is_trivially_copyable + is_trivially_destructible static_asserts).
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.4b (13 reference/container/delegate FProperty
+# subclasses) adds:
+#
+#   Public/Reflection/FSoftObjectPath.h        -- 8-byte placeholder
+#                                                value type for soft
+#                                                asset path slots
+#                                                (FSoftObjectProperty +
+#                                                FSoftClassProperty
+#                                                payload). System 5
+#                                                full impl preserves
+#                                                the 8-byte layout.
+#   Public/Reflection/FWeakObjectPtr.h         -- 8-byte placeholder
+#                                                value type for weak
+#                                                XObject pointer slots
+#                                                (FWeakObjectProperty
+#                                                payload). System 5
+#                                                full impl preserves
+#                                                the 8-byte layout
+#                                                (UE TWeakObjectPtr
+#                                                shape: {int32 Index;
+#                                                int32 SerialNumber}).
+#
+#   Per-subclass headers + cpps (13 reference / container / delegate
+#   FProperty subclasses):
+#
+#     Public/Reflection/FObjectProperty.h          -- 112 bytes; strong
+#                                                XObject* reference;
+#                                                PropertyClass (FClass*;
+#                                                forward decl Phase 4b.5)
+#                                                @ 104.
+#     Public/Reflection/FWeakObjectProperty.h      -- 112 bytes; weak ref
+#                                                via 8-byte FWeakObject
+#                                                Ptr placeholder.
+#     Public/Reflection/FSoftObjectProperty.h      -- 112 bytes (Rev 2
+#                                                MVP add per FIX-3);
+#                                                soft asset ref via
+#                                                FSoftObjectPath value
+#                                                slot + PropertyClass
+#                                                bound.
+#     Public/Reflection/FClassProperty.h           -- 112 bytes; FClass*
+#                                                metaclass slot;
+#                                                MetaClass bound @ 104.
+#     Public/Reflection/FSoftClassProperty.h       -- 112 bytes (Rev 2
+#                                                MVP add per FIX-3);
+#                                                soft class ref.
+#     Public/Reflection/FInterfaceProperty.h       -- 112 bytes; typed
+#                                                interface reference;
+#                                                InterfaceClass
+#                                                (FInterface*; forward
+#                                                decl Phase 4b.5) @ 104.
+#     Public/Reflection/FStructProperty.h          -- 112 bytes; nested
+#                                                struct slot; Struct
+#                                                (FStruct*; forward
+#                                                decl Phase 4b.5) @ 104.
+#                                                ContainsObjectReference
+#                                                dispatches conservative-
+#                                                false pending Phase 4b.5
+#                                                FStruct hookup.
+#     Public/Reflection/FArrayProperty.h           -- 120 bytes; TArray<T>;
+#                                                Inner @ 104, ArrayFlags
+#                                                @ 112, _pad @ 116.
+#     Public/Reflection/FMapProperty.h             -- 128 bytes; TMap<K,V>;
+#                                                KeyProp @ 104, ValueProp
+#                                                @ 112, MapFlags @ 120,
+#                                                _pad @ 124.
+#     Public/Reflection/FSetProperty.h             -- 112 bytes; TSet<T>;
+#                                                ElementProp @ 104.
+#     Public/Reflection/FDelegateProperty.h        -- 112 bytes; single-
+#                                                cast FScriptDelegate
+#                                                (16-byte value slot);
+#                                                SignatureFunction
+#                                                (FFunctionDescriptor*;
+#                                                forward decl Phase 4b.5)
+#                                                @ 104.
+#     Public/Reflection/FMulticastInlineDelegateProperty.h
+#                                                -- 112 bytes (Rev 2
+#                                                MVP add per FIX-3);
+#                                                inline multicast.
+#     Public/Reflection/FMulticastSparseDelegateProperty.h
+#                                                -- 112 bytes (Rev 2
+#                                                MVP add per FIX-3);
+#                                                sparse multicast.
+#
+#     Corresponding Private/Reflection/F<X>Property.cpp -- per-subclass
+#     constinit FFakeVTable + constinit FFieldClass + ConstructFn body.
+#
+#   Modified existing files:
+#
+#     Public/Reflection/EClassCastFlags.h       -- bit assignments
+#                                                for the 13 new
+#                                                subclasses (bits 13,
+#                                                14, 15-18, 20-22,
+#                                                25-26, 27-28) + the
+#                                                kFObjectPropertyBase
+#                                                parent gate bit (35).
+#                                                Reserved-bits comment
+#                                                updated.
+#
+# JUDGEMENT CALL (Phase 4b.4b / kFObjectPropertyBase parent gate bit).
+# XPact's FProperty subclass hierarchy is FLAT per Prime Directive
+# (§5.6 FIX-R2-LOW-7): FObjectProperty, FWeakObjectProperty,
+# FSoftObjectProperty, FClassProperty, FSoftClassProperty all derive
+# directly from FProperty (NOT via UE's intermediate FObjectPropertyBase
+# class). The semantic predicate "is this property an object-reference?"
+# is expressed via a synthetic kFObjectPropertyBase CastFlags bit that
+# every member of the family OR-includes. A single AND test against
+# kFObjectPropertyBase resolves the predicate; no extra class node is
+# required. This is more compact AND faster than UE's hierarchy walk.
+#
+# JUDGEMENT CALL (Phase 4b.4b / FStruct / FArray / FMap / FSet dispatch
+# slots are no-ops at Phase 4b.4b). The FFakeVTable slot signatures
+# (Instance, ElementIndex, OutValue / InValue) do NOT carry the
+# per-instance FProperty* needed to know the nested struct / array
+# inner / map key+value types. At Phase 4b.4b the bytewise dispatch
+# slots for container types are no-ops; ContainsObjectReference
+# returns conservative-true (caller checks Inner / Key / Value /
+# Element for precise answer). Phase 4b.5 will rewire the slots to
+# delegate to FStruct's FCppStructOps or to walk via Inner FProperty
+# typed dispatch. This is the spec-aligned posture per FIX-13 deferral
+# language.
+#
+# JUDGEMENT CALL (Phase 4b.4b / FObject forward decl). The dispatch
+# slot bodies for FObjectProperty / FInterfaceProperty / FDelegateProperty
+# manipulate `FObject*` pointers. FObject (the GC-managed base) lands
+# at XCoreXObject (System 5). Phase 4b.4b forward-declares FObject in
+# the FObjectProperty.h header; the slot bodies operate on pointer-
+# sized chunks without dereferencing FObject. The forward declaration
+# is sufficient for the structural reflection layer.
+#
+# Acceptance gates covered (Phase 4b.4b):
+#   * B1 -- sizeof per §11.2 verified at runtime via
+#           ReferencePropertiesSizeof.cpp.
+#   * B3 -- Per-subclass ABI locks via static_asserts +
+#           ReferencePropertiesSizeof.cpp.
+#   * B7 -- IsA acceleration via CastFlags-AND fast path
+#           (CastFlagsHierarchyExtended.cpp).
+#   * FIX-13 prerequisite -- ContainsObjectReference dispatch returns
+#           correct truth value for GC root reachability
+#           (ContainsObjectReferenceMatrix.cpp).
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

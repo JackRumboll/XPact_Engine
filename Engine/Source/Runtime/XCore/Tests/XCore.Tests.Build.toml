@@ -764,6 +764,96 @@
 # calls __Init() in main).
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.4b (13 reference/container/delegate FProperty
+# subclasses) adds:
+#
+#   * Tests/Reflection/FProperty.Tests/ReferencePropertiesSizeof.cpp
+#                                         -- XCore-4b §11.2 ABI lock
+#                                            runtime check for the 13
+#                                            new subclasses; sizeof +
+#                                            alignof + per-member
+#                                            offset locks. Acceptance
+#                                            gates B1 + B3.
+#   * Tests/Reflection/FProperty.Tests/ObjectPropertyGetSet.cpp
+#                                         -- XCore-4b §5.4 dispatch
+#                                            wrapper correctness for
+#                                            FObjectProperty +
+#                                            FWeakObjectProperty +
+#                                            FSoftObjectProperty +
+#                                            FClassProperty +
+#                                            FSoftClassProperty +
+#                                            FInterfaceProperty.
+#                                            GetValue / SetValue /
+#                                            CopySingleValue /
+#                                            Identical / GetValueType
+#                                            Hash / InitializeValue
+#                                            round-trip per type +
+#                                            kFObjectPropertyBase
+#                                            parent-gate assertion for
+#                                            the object-reference
+#                                            family.
+#   * Tests/Reflection/FProperty.Tests/ArrayPropertyTraversal.cpp
+#                                         -- FArrayProperty Inner
+#                                            accessor round-trip;
+#                                            ContainsObjectReference
+#                                            dispatch slot population;
+#                                            Inner = FIntProperty ->
+#                                            false vs Inner =
+#                                            FObjectProperty -> true
+#                                            (FIX-13 prerequisite).
+#   * Tests/Reflection/FProperty.Tests/MapPropertyKeyValue.cpp
+#                                         -- FMapProperty.KeyProp +
+#                                            ValueProp distinct
+#                                            accessor; per-instance
+#                                            memory layout offsets
+#                                            (104 / 112) verified;
+#                                            ContainsObjectReference
+#                                            dispatch + MapFlags
+#                                            accessor.
+#   * Tests/Reflection/FProperty.Tests/DelegatePropertyCastFlags.cpp
+#                                         -- FDelegateProperty +
+#                                            FMulticastInlineDelegate
+#                                            Property + FMulticastSparse
+#                                            DelegateProperty CastFlag
+#                                            bit assignments (bits
+#                                            22, 27, 28); mutually-
+#                                            distinct bit check;
+#                                            ContainsObjectReference
+#                                            slot populated (delegate
+#                                            Target field IS a GC root);
+#                                            SuperClass chain reaches
+#                                            FProperty.
+#   * Tests/Reflection/FProperty.Tests/CastFlagsHierarchyExtended.cpp
+#                                         -- extends the Phase 4b.4a
+#                                            CastFlagsHierarchy.cpp
+#                                            pattern: per-subclass
+#                                            kFProperty + own-bit
+#                                            verification for all 13
+#                                            new subclasses;
+#                                            kFObjectPropertyBase
+#                                            family-gate-bit expectation
+#                                            (5 members IN family, 8
+#                                            members NOT IN family);
+#                                            cross-hierarchy negatives.
+#                                            Acceptance gates B7 +
+#                                            partial C1.
+#   * Tests/Reflection/FProperty.Tests/ContainsObjectReferenceMatrix.cpp
+#                                         -- comprehensive matrix
+#                                            (FIX-13 GC reachability
+#                                            gate): every FProperty
+#                                            subclass's ContainsObject
+#                                            Reference dispatch returns
+#                                            the documented truth value
+#                                            (primitives = false; strong
+#                                            object refs + delegates =
+#                                            true; weak / soft refs =
+#                                            false; container types =
+#                                            conservative-true except
+#                                            FStructProperty = false
+#                                            pending Phase 4b.5).
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"
