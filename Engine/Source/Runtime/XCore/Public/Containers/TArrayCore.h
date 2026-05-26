@@ -953,7 +953,7 @@ namespace XCore::Detail
                     return I;
                 }
             }
-            return ::XCore::INDEX_NONE;
+            return ::INDEX_NONE;
         }
 
         // -----------------------------------------------------------------
@@ -972,7 +972,7 @@ namespace XCore::Detail
                     return I;
                 }
             }
-            return ::XCore::INDEX_NONE;
+            return ::INDEX_NONE;
         }
 
         // -----------------------------------------------------------------
@@ -1014,7 +1014,7 @@ namespace XCore::Detail
         // -----------------------------------------------------------------
         [[nodiscard]] bool Contains(const T& Value) const noexcept
         {
-            return Find(Value) != ::XCore::INDEX_NONE;
+            return Find(Value) != ::INDEX_NONE;
         }
 
         // -----------------------------------------------------------------
@@ -1119,7 +1119,7 @@ namespace XCore::Detail
         ::int32 RemoveSingle(const T& Value) noexcept(::std::is_nothrow_destructible_v<T>)
         {
             const ::int32 Idx = Find(Value);
-            if (Idx == ::XCore::INDEX_NONE)
+            if (Idx == ::INDEX_NONE)
             {
                 return 0;
             }

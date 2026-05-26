@@ -110,7 +110,7 @@ namespace
         Arr A;
         for (::int32 I = 0; I < 5; ++I) A.Add(I * 10);
         if (A.Find(20) != 2)      { std::fprintf(stderr, "Find(20) != 2\n"); return false; }
-        if (A.Find(999) != ::XCore::INDEX_NONE) { std::fprintf(stderr, "Find(999) != INDEX_NONE\n"); return false; }
+        if (A.Find(999) != ::INDEX_NONE) { std::fprintf(stderr, "Find(999) != INDEX_NONE\n"); return false; }
         if (!A.Contains(30))      { std::fprintf(stderr, "Contains(30) false\n"); return false; }
         if (A.Contains(999))      { std::fprintf(stderr, "Contains(999) true\n"); return false; }
 
@@ -168,7 +168,7 @@ namespace
         if (NumRemoved != 1)      { std::fprintf(stderr, "RemoveSingle: %d (expected 1)\n", NumRemoved); return false; }
         if (A.Num() != 4)         { std::fprintf(stderr, "RemoveSingle: Num != 4 (got %d)\n", A.Num()); return false; }
         // Remaining: [1,3,7,9].
-        if (A.Find(5) != ::XCore::INDEX_NONE) { std::fprintf(stderr, "RemoveSingle: 5 still present\n"); return false; }
+        if (A.Find(5) != ::INDEX_NONE) { std::fprintf(stderr, "RemoveSingle: 5 still present\n"); return false; }
 
         // Removing a non-existent value returns 0.
         const ::int32 NumNot = A.RemoveSingle(999);

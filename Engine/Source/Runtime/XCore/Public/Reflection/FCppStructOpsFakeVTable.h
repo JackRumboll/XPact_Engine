@@ -57,7 +57,8 @@
 //    _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per
 //    FScriptStruct subtype in .rodata"
 //
-// CAPABILITY BITMASK (Rev 3 FIX-R2-MED-1: 24 active + 8 reserved):
+// CAPABILITY BITMASK (Rev 2 FIX-4 / MEDIUM-5: 26 active + 6 reserved;
+// previously 24 active + 8 reserved):
 //
 //   The 32-bit Capabilities mask declares which dispatch slots are
 //   populated AND which capability-only properties hold for the type
@@ -91,7 +92,9 @@
 //     21   HasVisitor                            yes (slot 13)
 //     22   ClearOnFinishDestroy                  no  (capability-only)
 //     23   HasIntrusiveUnsetOptionalState        no  (capability-only; FOptional)
-//     24-31 RESERVED (8 bits for post-MVP additions)
+//     24   IsBlueprintBase                       no  (capability-only; FIX-4)
+//     25   IsNative                              no  (capability-only; FIX-4)
+//     26-31 RESERVED (6 bits for post-MVP additions)
 //
 // SLOT LAYOUT (16 fixed slots; subset of capability bits):
 //
@@ -162,10 +165,11 @@ namespace XCore::Reflect
     // -----------------------------------------------------------------
     // ECppStructOpsCapability -- 32-bit capability bitmask layout.
     //
-    // Per Rev 3 FIX-R2-MED-1: 24 active bits + 8 reserved. Each bit
-    // represents either a populated dispatch slot OR a capability-only
-    // declaration (e.g., IsPlainOldData, HasNoOpConstructor) that
-    // callers consult without dispatching through a slot.
+    // Per Rev 2 FIX-4 / MEDIUM-5: 26 active bits + 6 reserved
+    // (previously 24 active + 8 reserved). Each bit represents either
+    // a populated dispatch slot OR a capability-only declaration (e.g.,
+    // IsPlainOldData, HasNoOpConstructor, IsBlueprintBase, IsNative)
+    // that callers consult without dispatching through a slot.
     //
     // The bit positions are LOCKED in the Stage B addendum and any
     // change requires a Contract Rev 13.9+ bump.
@@ -173,7 +177,8 @@ namespace XCore::Reflect
     // Capability-only bits (no corresponding slot in Slots[]):
     //   HasNoOpConstructor / HasZeroConstructor / HasDestructor /
     //   HasIdentical / IsPlainOldData / IsUECoreType / IsUECoreVariant /
-    //   ClearOnFinishDestroy / HasIntrusiveUnsetOptionalState.
+    //   ClearOnFinishDestroy / HasIntrusiveUnsetOptionalState /
+    //   IsBlueprintBase / IsNative.
     //
     // Slot-bearing bits (Slots[] index recorded in the comment per row):
     //   HasPostScriptConstruct        -> Slot 0
@@ -235,7 +240,39 @@ namespace XCore::Reflect
         ClearOnFinishDestroy               = 1U << 22,
         HasIntrusiveUnsetOptionalState     = 1U << 23,
 
-        // Bits 24-31 reserved for post-MVP additions (8 reserved bits).
+        // -------------------------------------------------------------
+        // Rev 2 FIX-4 / MEDIUM-5: UE-parity capability bits.
+        //
+        // UE's `UScriptStruct::ICppStructOps` interface
+        // (Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h)
+        // exposes IsNative + IsBlueprintBase predicates which drive the
+        // Blueprint compiler's struct-derivation rules (a Blueprint can
+        // only derive from a struct that returns true from
+        // IsBlueprintBase) and the native-vs-Blueprint-generated
+        // discriminator (IsNative).
+        //
+        // Both are checked-only flags (no corresponding function-pointer
+        // slot); the value is set at constinit time per FScriptStruct
+        // subtype by the XHT-emitted .gen.cpp.
+        // -------------------------------------------------------------
+
+        // IsBlueprintBase -- struct is permitted to serve as a Blueprint
+        // derivable base type. UE's `UScriptStruct::ICppStructOps::
+        // IsUStructBlueprintBase` analogue. Default per type: false;
+        // explicit USTRUCT(BlueprintType) sets the bit.
+        IsBlueprintBase                    = 1U << 24,
+
+        // IsNative -- struct is a native C++ type (defined in C++ source
+        // via USTRUCT()), as opposed to a Blueprint-generated struct
+        // (defined in a Blueprint asset's user-defined struct). UE's
+        // `UStruct::IsNative` analogue. Default per type: true for
+        // C++-emitted XHT-generated tables; false for Blueprint-emitted
+        // tables.
+        IsNative                           = 1U << 25,
+
+        // Bits 26-31 reserved for post-MVP additions (6 reserved bits;
+        // previously 8 -- 2 bits consumed for Rev 2 FIX-4 IsBlueprintBase
+        // and IsNative).
     };
 
     // -----------------------------------------------------------------

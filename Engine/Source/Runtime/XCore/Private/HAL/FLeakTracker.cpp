@@ -46,6 +46,7 @@
 #include "HAL/FPlatformMemory.h"
 #include "Private/HAL/FMallocBinnedX.h"
 #include "Private/HAL/StackWalk/IStackWalk.h"
+#include "Containers/FString.h"    // Rev 2 FIX-3: WriteReport now writes to disk
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
@@ -657,26 +658,163 @@ namespace XCore::HAL
     }
 
     // =====================================================================
-    // FLeakTracker::WriteReport
+    // FLeakTracker::WriteReport (Rev 2 FIX-3 / C7)
+    // =====================================================================
+    //
+    // Per Rev 2 FIX-3: write a structured report to the file named by
+    // Path. The prior Phase 1b implementation took the FString Path
+    // argument and silently dropped it on the floor; the user-visible
+    // behaviour was indistinguishable from passing the wrong path.
+    //
+    // FILE FORMAT (line-oriented; UTF-8):
+    //
+    //   FLeakTracker WriteReport
+    //   --------------------------------------------------------------
+    //   Total leaked bytes:        <N>
+    //   Total leaked allocations:  <N>
+    //   Distinct stack buckets:    <N>
+    //   --------------------------------------------------------------
+    //   Top <K> stack buckets by leaked bytes:
+    //
+    //   Bucket #<i>:
+    //     allocations:  <N>
+    //     total bytes:  <N>
+    //     frames:
+    //       [00]  0x<addr>
+    //       [01]  0x<addr>
+    //       ...
+    //
+    // I/O: uses C-stdlib <cstdio> (fopen/fwrite/fclose). A platform-
+    // native FFileHandle HAL is not yet shipped in XCore-4a (Phase 1d
+    // declared file I/O as deferred to XSerialization Layer 9); the
+    // cstdio fallback is the minimum-viable correct path. When
+    // FFileHandle ships, the cstdio call sites here should be swapped
+    // for FFileHandle::Open / Write / Close.
+    //
+    // FAILURE: fopen failure logs a diagnostic to stderr and returns
+    // without writing. The caller's path is reproduced in the stderr
+    // line so the operator can diagnose path issues.
     // =====================================================================
 
-    void FLeakTracker::WriteReport(const ::XCore::FString& /*Path*/)
+    namespace
     {
-        // Phase 1b: FString::operator-as-C-string is not yet available
-        // (FString lands at XCore-4a Step 8, Phase 1c). The writer
-        // currently emits to stderr; the Phase 1c version will accept
-        // the FString path and write to a real file.
-        // TODO(Phase 1c): convert Path to a C-string, open the file
-        // via std::ofstream, write the report.
+        // Number of top-N stack buckets emitted to the report file.
+        // Buckets are sorted by TotalBytes descending; only the top-N
+        // are written so the file stays scannable. Hardcoded at 10
+        // (matches the FIX-3 default; configurable via a CVar in a
+        // future revision if needed).
+        constexpr ::int32 kWriteReportTopBuckets = 10;
+    }
+
+    void FLeakTracker::WriteReport(const ::XCore::FString& Path)
+    {
         FLeakReport Report;
         CaptureReport(Report);
-        ::std::fprintf(stderr,
-                       "[FLeakTracker] WriteReport (stderr fallback, Phase 1b):\n"
-                       "  TotalLeakedBytes      = %llu\n"
-                       "  LeakedAllocationCount = %llu\n",
-                       static_cast<unsigned long long>(Report.TotalLeakedBytes),
-                       static_cast<unsigned long long>(Report.LeakedAllocationCount));
-        ::std::fflush(stderr);
+
+        // Open the file in write+text mode. FString::ToUtf8Cstr returns
+        // a null-terminated UTF-8 buffer; ToUtf8Cstr may allocate a
+        // copy if the storage is not already null-terminated (see
+        // FString.h:497). Caller's Path is preserved for diagnostics.
+        const char* CPath = Path.ToUtf8Cstr();
+        // TODO(FFileHandle when available): swap fopen for FFileHandle.
+        ::std::FILE* File = ::std::fopen(CPath, "w");
+        if (File == nullptr)
+        {
+            ::std::fprintf(stderr,
+                "[FLeakTracker] WriteReport: fopen(\"%s\", \"w\") failed; "
+                "report not written.\n",
+                CPath);
+            ::std::fflush(stderr);
+            return;
+        }
+
+        // Header.
+        ::std::fprintf(File,
+            "FLeakTracker WriteReport\n"
+            "--------------------------------------------------------------\n"
+            "Total leaked bytes:        %llu\n"
+            "Total leaked allocations:  %llu\n"
+            "Distinct stack buckets:    %d\n"
+            "--------------------------------------------------------------\n",
+            static_cast<unsigned long long>(Report.TotalLeakedBytes),
+            static_cast<unsigned long long>(Report.LeakedAllocationCount),
+            Report.Buckets.Num());
+
+        // Sort buckets by TotalBytes descending. Use a stack-allocated
+        // index array so we don't perturb Report.Buckets (which is
+        // owned by the caller). For N buckets the O(N log N) sort is
+        // negligible against the file-I/O.
+        //
+        // Cap at 256 distinct buckets to bound the on-stack array; if
+        // the report has more buckets than that, the top-N selection is
+        // performed against the first 256 (still correct because we
+        // sort then truncate).
+        constexpr ::int32 kMaxBucketsForSort = 256;
+        const ::int32 NumBucketsInReport = Report.Buckets.Num();
+        const ::int32 NumBucketsForSort  =
+            (NumBucketsInReport < kMaxBucketsForSort) ? NumBucketsInReport
+                                                       : kMaxBucketsForSort;
+        ::int32 BucketIdx[kMaxBucketsForSort];
+        for (::int32 I = 0; I < NumBucketsForSort; ++I)
+        {
+            BucketIdx[I] = I;
+        }
+
+        // Insertion sort by TotalBytes desc. Stable on equal keys
+        // (preserves bucket-discovery order). Bounded N ~= 256 keeps
+        // the O(N^2) acceptable.
+        for (::int32 I = 1; I < NumBucketsForSort; ++I)
+        {
+            const ::int32 KeyIdx = BucketIdx[I];
+            const ::SIZE_T KeyBytes = Report.Buckets[KeyIdx].TotalBytes;
+            ::int32 J = I - 1;
+            while (J >= 0 &&
+                   Report.Buckets[BucketIdx[J]].TotalBytes < KeyBytes)
+            {
+                BucketIdx[J + 1] = BucketIdx[J];
+                --J;
+            }
+            BucketIdx[J + 1] = KeyIdx;
+        }
+
+        // Emit the top-N.
+        const ::int32 NumToEmit =
+            (NumBucketsForSort < kWriteReportTopBuckets) ? NumBucketsForSort
+                                                          : kWriteReportTopBuckets;
+        if (NumToEmit > 0)
+        {
+            ::std::fprintf(File, "Top %d stack buckets by leaked bytes:\n\n",
+                          NumToEmit);
+        }
+
+        for (::int32 I = 0; I < NumToEmit; ++I)
+        {
+            const FStackBucket& Bkt = Report.Buckets[BucketIdx[I]];
+            ::std::fprintf(File,
+                "Bucket #%d:\n"
+                "  allocations:  %llu\n"
+                "  total bytes:  %llu\n"
+                "  frames:\n",
+                I,
+                static_cast<unsigned long long>(Bkt.AllocationCount),
+                static_cast<unsigned long long>(Bkt.TotalBytes));
+
+            for (int FI = 0; FI < Bkt.FrameCount; ++FI)
+            {
+                ::std::fprintf(File, "    [%02d]  %p\n", FI, Bkt.Frames[FI]);
+            }
+            ::std::fprintf(File, "\n");
+        }
+
+        if (NumBucketsInReport > kMaxBucketsForSort)
+        {
+            ::std::fprintf(File,
+                "Note: report contained %d distinct buckets; top-N selection "
+                "was performed against the first %d only.\n",
+                NumBucketsInReport, kMaxBucketsForSort);
+        }
+
+        ::std::fclose(File);
     }
 
     // =====================================================================

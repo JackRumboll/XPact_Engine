@@ -104,6 +104,39 @@ namespace XCore::Reflect
     inline constexpr ::uint32 kShardLocalIdMask      = (::uint32(1) << kShardIdShift) - 1;  // 0x00FF_FFFF
     inline constexpr ::uint32 kMaxShardLocalEntries  = ::uint32(1) << kShardIdShift;        // 16 777 216
 
+    // -----------------------------------------------------------------
+    // Saturation warning threshold (Rev 2 FIX-1 / MEDIUM-16).
+    //
+    // Each shard can hold at most kMaxShardLocalEntries entries. When a
+    // shard's NextShardLocalId crosses 80% of the cap (i.e., the shard
+    // has consumed 13 421 772 of its 16 777 216 slots), we emit a one-
+    // shot Dev/Debug warning so the operator is given a chance to react
+    // before reaching the hard XPACT_CHECK abort. The threshold is per-
+    // shard; the warning fires AT MOST ONCE per shard for the process
+    // lifetime (guarded by the per-shard SaturationWarned flag).
+    //
+    // Rationale for 80%: the FName intern-table sees logarithmic growth
+    // in the unique-name population. 80% gives the operator ~3.3 M slots
+    // of headroom (~20% of the cap) to investigate, rotate stale names,
+    // or escalate the shard count before saturation hard-aborts the
+    // process. A higher threshold (e.g., 95%) leaves too little wall-
+    // clock time to react under hot-load conditions.
+    //
+    // The threshold is compile-time constant so the comparison is a
+    // single 32-bit immediate compare; the branch is XPACT_UNLIKELY-
+    // marked in the saturation-check site so the predictor learns the
+    // fast path.
+    // -----------------------------------------------------------------
+    inline constexpr ::uint32 kShardSaturationWarnNumerator   = 4;   // 80% = 4/5
+    inline constexpr ::uint32 kShardSaturationWarnDenominator = 5;
+    inline constexpr ::uint32 kShardSaturationWarnThreshold   =
+        static_cast<::uint32>(static_cast<::uint64>(kMaxShardLocalEntries) *
+                              kShardSaturationWarnNumerator / kShardSaturationWarnDenominator);
+    static_assert(kShardSaturationWarnThreshold == 13'421'772u,
+                  "kShardSaturationWarnThreshold must equal 80% of kMaxShardLocalEntries "
+                  "(13 421 772). The constant is wired into the saturation diagnostic and "
+                  "any divergence would mis-report the threshold the operator was warned at.");
+
     // 64 KB entry-pool block size (§4.7 / FIX-25).
     inline constexpr ::SIZE_T kBlockSize = 64 * 1024;
 
@@ -205,6 +238,17 @@ namespace XCore::Reflect
         // allocated; Tail is where new entries currently land.
         FNamePoolBlock* HeadBlock = nullptr;
         FNamePoolBlock* TailBlock = nullptr;
+
+        // Per-shard one-shot saturation warning flag (Rev 2 FIX-1 /
+        // MEDIUM-16). Flipped from false to true the first time the
+        // shard's NextShardLocalId crosses kShardSaturationWarnThreshold
+        // (i.e., 80% of kMaxShardLocalEntries). Subsequent crossings
+        // are no-ops so the diagnostic does not spam stderr.
+        //
+        // The field is read AND written ONLY under the shard's exclusive
+        // lock (the InsertEntry write path is the only mutator); no
+        // separate atomic is needed.
+        bool SaturationWarned = false;
     };
 
     // -----------------------------------------------------------------
@@ -313,7 +357,75 @@ namespace XCore::Reflect
             return (::uint32(ShardId) << kShardIdShift) | (ShardLocalId & kShardLocalIdMask);
         }
 
+        // -------------------------------------------------------------
+        // GetShardOccupancy -- diagnostic accessor exposing the
+        // shard's current NextShardLocalId (Rev 2 FIX-1 / MEDIUM-16).
+        //
+        // Returns the count of shard-local entries that have been
+        // allocated in the named shard. Exposed for the
+        // ShardSaturationWarning unit test and for the post-mortem
+        // diagnostic surface (operator can dump per-shard occupancy
+        // to confirm balanced distribution).
+        //
+        // Reads NextShardLocalId under the shard's shared lock so the
+        // value is consistent with the slot-table state at the moment
+        // of the read. Concurrent inserts may have advanced
+        // NextShardLocalId before the caller observes the return
+        // value; that's expected.
+        // -------------------------------------------------------------
+        [[nodiscard]] ::uint32 GetShardOccupancy(::uint8 ShardId) noexcept;
+
     private:
+        // -------------------------------------------------------------
+        // FInsertPreAlloc -- Rev 2 FIX-2 / TC3 / B11 alloc-outside-lock
+        // pre-allocation carrier.
+        //
+        // The Intern() write path predicts allocation needs under the
+        // shard's shared lock, releases the shared lock, calls FMemory::
+        // MallocOrAbort for each predicted slot OUTSIDE any FNamePool
+        // shard lock, then acquires the exclusive lock with the pre-
+        // allocated buffers in hand. This guarantees no FMemory call
+        // happens while holding an FNamePool shard lock; the AB-BA
+        // hazard (lock-order ShardLock -> Pool.Mutex inverted relative
+        // to a hypothetical FName-using FMallocBinnedX) is structurally
+        // eliminated.
+        //
+        // FIELDS (each nullable; null indicates "no pre-allocation for
+        // this slot"):
+        //   * Block             -- a 64 KB FNamePoolBlock allocation,
+        //                          ready to be linked into the shard's
+        //                          tail-block list if the tail is full.
+        //   * SlotTableBuf      -- a sized slot-table allocation; the
+        //                          ::SIZE_T SlotTableCapacity field is
+        //                          the byte count.
+        //   * EntryPointerBuf   -- a sized entry-pointer-table
+        //                          allocation; EntryPointerCapacity is
+        //                          the SIZE_T capacity.
+        //
+        // DESTRUCTOR: ReleaseUnused frees any pre-allocation that was
+        // not consumed by the write path (e.g., the race-check found
+        // an existing entry and no insert happened, OR the prediction
+        // overestimated and the lock-protected state did not need
+        // growth). The Intern() caller MUST invoke ReleaseUnused
+        // before exiting; the pre-allocations are NOT RAII-managed
+        // because the consume-vs-release decision must happen under
+        // the lock.
+        // -------------------------------------------------------------
+        struct FInsertPreAlloc
+        {
+            FNamePoolBlock*    Block               = nullptr;
+            FNamePoolSlot*     SlotTableBuf        = nullptr;
+            ::SIZE_T           SlotTableCapacity   = 0;
+            const FNameEntry** EntryPointerBuf     = nullptr;
+            ::SIZE_T           EntryPointerCapacity= 0;
+
+            // ReleaseUnused -- frees every non-null field. Called by
+            // the Intern() caller AFTER the exclusive-lock scope exits;
+            // any field that the write path consumed has been zeroed,
+            // so this safely no-ops on consumed slots.
+            void ReleaseUnused() noexcept;
+        };
+
         // Singleton ctor/dtor. The FNamePool storage lives inside Get()'s
         // function-local static; the static is a private member-context
         // ctor call so it can access the private ctor without friending.
@@ -324,6 +436,27 @@ namespace XCore::Reflect
         FNamePool& operator=(const FNamePool&) = delete;
         FNamePool(FNamePool&&)                 = delete;
         FNamePool& operator=(FNamePool&&)      = delete;
+
+        // -------------------------------------------------------------
+        // PredictInsertPreAlloc -- shared-lock prediction of allocation
+        // needs (Rev 2 FIX-2 / TC3).
+        //
+        // Acquires Shard.Lock in SHARED mode, peeks at TailBlock /
+        // SlotCapacity / SlotCount / EntryCapacity / NextShardLocalId,
+        // and pre-allocates (OUTSIDE the lock once released) whatever
+        // the write path would need given the observed state. The
+        // predictions can become stale if a racing writer mutates the
+        // shard between PredictInsertPreAlloc returning and the
+        // exclusive lock being acquired; the write path handles staleness
+        // by falling back to under-lock allocation (rare) or releasing
+        // unused pre-allocations.
+        //
+        // Caller is responsible for calling ReleaseUnused on the
+        // returned struct.
+        // -------------------------------------------------------------
+        void PredictInsertPreAlloc(FNamePoolShard& Shard,
+                                   ::int32 ByteLen,
+                                   FInsertPreAlloc& Out) noexcept;
 
         // -------------------------------------------------------------
         // Per-shard primitives. All `noexcept` and assume the caller
@@ -345,7 +478,8 @@ namespace XCore::Reflect
                              ::uint8 ShardId,
                              ::uint64 ByteHash,
                              const char* Utf8,
-                             ::int32 ByteLen) noexcept;
+                             ::int32 ByteLen,
+                             FInsertPreAlloc& PreAlloc) noexcept;
 
         // Allocate an FNameEntry record from a shard's block pool.
         // Allocates a fresh 64 KB block if the current tail does not
@@ -353,14 +487,23 @@ namespace XCore::Reflect
         FNameEntry* AllocateEntryInPool(FNamePoolShard& Shard,
                                         ::uint32 EntryId,
                                         const char* Utf8,
-                                        ::int32 ByteLen) noexcept;
+                                        ::int32 ByteLen,
+                                        FInsertPreAlloc& PreAlloc) noexcept;
 
         // Grow the slot table to the next power-of-two capacity and
         // rehash every existing slot.
-        void GrowSlotTable(FNamePoolShard& Shard) noexcept;
+        // Consumes the slot-table pre-allocation from PreAlloc; if
+        // PreAlloc.SlotTableBuf is null OR PreAlloc.SlotTableCapacity
+        // does not match the predicted growth target, allocates fresh
+        // under the lock as a fallback. The shared-lock-then-grow path
+        // makes a stale prediction the rare case.
+        void GrowSlotTable(FNamePoolShard& Shard,
+                           FInsertPreAlloc& PreAlloc) noexcept;
 
-        // Grow the entry-pointer table.
-        void GrowEntryPointers(FNamePoolShard& Shard) noexcept;
+        // Grow the entry-pointer table. Same pre-allocation contract
+        // as GrowSlotTable.
+        void GrowEntryPointers(FNamePoolShard& Shard,
+                               FInsertPreAlloc& PreAlloc) noexcept;
 
     private:
         FNamePoolShard m_shards[kShardCount];

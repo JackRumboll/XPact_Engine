@@ -1,7 +1,8 @@
 // Copyright Simgenics. All Rights Reserved.
 
 // =====================================================================
-// FStatRegistry.Tests/MergeFromAllThreads.cpp -- 8 thread merge.
+// FStatRegistry.Tests/MergeFromAllThreads_ExitOverflowOnly.cpp --
+// 8-thread exit-overflow queue merge test (Rev 2 FIX-7 / AG1).
 // =====================================================================
 //
 // XCore-4a Rev 3, Section 10.7 acceptance row 1:
@@ -9,14 +10,42 @@
 //
 // Scaled down for the unit-test budget: 8 threads * 100K = 800K total.
 //
-// PHASE 1F LIMITATION: the Merge in Phase 1f sweeps only the calling
-// thread's shard at Merge call time + the exit-overflow queue (which
-// captures every joined thread's pre-exit count). The 8-thread sweep
-// works because the spawned threads all exit before the main thread
-// calls Merge; their counts are pulled from the exit-overflow queue.
+// REV 2 FIX-7 / AG1 -- TEST HONESTY-IN-NAMING.
 //
-// Phase 1g wires FThreadRegistry so Merge can also sweep live thread
-// shards (currently the main thread's shard plus the exit queue).
+//   This file was renamed from MergeFromAllThreads.cpp to
+//   MergeFromAllThreads_ExitOverflowOnly.cpp to honestly reflect the
+//   path actually exercised. The previous name implied a full
+//   live-thread sweep + exit-overflow merge, but the test joins every
+//   worker thread BEFORE calling Merge -- which means the merge
+//   exercises ONLY the exit-overflow queue path. The live-thread
+//   sweep (G3 gate) is documented as Phase 1g+ work pending
+//   FThreadRegistry.
+//
+//   WHAT THIS TEST EXERCISES:
+//     * Worker threads INC their per-thread shards while running.
+//     * Worker threads exit; each pushes its remaining count to a
+//       file-static FStatExitOverflowQueue (Treiber stack).
+//     * Main thread calls MergeFromAllThreads, which pops the exit-
+//       overflow queue and folds the accumulated counts into the
+//       global tree.
+//     * Test asserts the post-merge global count == expected delta.
+//
+//   WHAT THIS TEST DOES NOT EXERCISE:
+//     * Live-thread shard sweep during a Merge call (where the worker
+//       threads are STILL RUNNING when Merge fires). That path
+//       requires FThreadRegistry to enumerate live thread shards;
+//       FThreadRegistry is the Phase 1g+ TaskGraph deliverable.
+//
+//   A complementary test exercising the live-thread sweep will land
+//   when FThreadRegistry ships. See
+//   MergeFromAllThreads_LiveThreadSweep.cpp for the placeholder skip-
+//   stub (TODO marker for Phase 1g+ FThreadRegistry).
+//
+// PHASE 1F LIMITATION (preserved here for clarity): the Merge in
+// Phase 1f sweeps only the calling thread's shard at Merge call time
+// + the exit-overflow queue. The 8-thread sweep below works because
+// the spawned threads all exit before the main thread calls Merge;
+// their counts are pulled from the exit-overflow queue.
 //
 // =====================================================================
 

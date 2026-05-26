@@ -1067,6 +1067,72 @@
 # detection coverage, not correctness).
 #
 # =====================================================================
+#
+# XCore implementation Rev 2 fixes (Round 1 remaining items) adds:
+#
+#   * Tests/Containers/FString.Tests/DiscriminatorLayout.cpp
+#                                         -- Rev 2 FIX-5 / MEDIUM-11:
+#                                            runtime check that byte 63 IS
+#                                            the SSO discriminator (high
+#                                            bit), exercising the bit
+#                                            location independently of
+#                                            the bit truth-value coverage
+#                                            already provided by
+#                                            SsoVsHeap.cpp. Verifies
+#                                            sizeof == 64, discriminator
+#                                            high-bit = SSO flag, low-7-
+#                                            bits = SSO byte length;
+#                                            exercises lengths 0 / 5 /
+#                                            47 / 48 / 100 / 200.
+#
+#   * Tests/HAL/FLeakTracker.Tests/WriteReportToFile.cpp
+#                                         -- Rev 2 FIX-3 / C7: produces
+#                                            50 deliberate leaks, calls
+#                                            FLeakTracker::WriteReport(Path)
+#                                            with a temp-file path,
+#                                            verifies the file exists,
+#                                            is non-empty, and contains
+#                                            the required structured
+#                                            markers ("FLeakTracker
+#                                            WriteReport" header, "Total
+#                                            leaked bytes:", at least
+#                                            one "Bucket #" emission).
+#                                            Gated on XPACT_LEAK_
+#                                            TRACKING_ENABLED.
+#
+#   * Tests/Reflection/FName.Tests/ShardDistributionUniformity.cpp
+#                                         -- Rev 2 FIX-6 / MEDIUM-13:
+#                                            5000-name corpus across
+#                                            256 shards; chi-square
+#                                            statistic against uniform
+#                                            distribution; threshold
+#                                            295.0 (df=255, alpha=0.05).
+#                                            Also asserts no shard is
+#                                            zero-populated and no shard
+#                                            exceeds 2x expected.
+#
+#   * Tests/HAL/FStatRegistry.Tests/MergeFromAllThreads_ExitOverflowOnly.cpp
+#                                         -- Rev 2 FIX-7 / AG1
+#                                            (renamed from
+#                                            MergeFromAllThreads.cpp):
+#                                            honest naming for the test
+#                                            that exercises ONLY the
+#                                            exit-overflow queue path;
+#                                            workers exit BEFORE Merge
+#                                            so the live-thread sweep
+#                                            is NOT exercised.
+#
+#   * Tests/HAL/FStatRegistry.Tests/MergeFromAllThreads_LiveThreadSweep.cpp
+#                                         -- Rev 2 FIX-7 / AG1
+#                                            complement: skip-stub
+#                                            for the Phase 1g+
+#                                            FThreadRegistry-dependent
+#                                            live-thread sweep. main()
+#                                            returns 0 with a SKIP
+#                                            diagnostic so the gap is
+#                                            visible in test output.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"
