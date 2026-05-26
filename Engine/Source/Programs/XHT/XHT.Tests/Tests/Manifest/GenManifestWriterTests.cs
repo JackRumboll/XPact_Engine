@@ -51,7 +51,7 @@ public class GenManifestWriterTests : IDisposable
     {
         return new GenManifest(
             XhtSchemaVersion: 1,
-            ContractVersion: "13.2+b04ae3cc84cdd9f3",
+            ContractVersion: "13.8+d9514fb853e7dcc2",
             ModuleName: moduleName,
             GeneratedAtUtcIso: "2026-05-20T12:34:56Z",
             Inputs: inputs ?? ImmutableArray<GenManifestEntry>.Empty,
@@ -82,7 +82,7 @@ public class GenManifestWriterTests : IDisposable
     {
         string rendered = GenManifestWriter.Render(BuildManifest());
         Assert.Contains("XhtSchemaVersion = 1", rendered);
-        Assert.Contains("ContractVersion = 13.2+b04ae3cc84cdd9f3", rendered);
+        Assert.Contains("ContractVersion = 13.8+d9514fb853e7dcc2", rendered);
         Assert.Contains("ModuleName = XScoring", rendered);
         Assert.Contains("ProducedAtUtcDeterministic = 0", rendered);
         Assert.Contains("GeneratedAtUtc = 2026-05-20T12:34:56Z", rendered);
@@ -260,7 +260,7 @@ public class GenManifestWriterTests : IDisposable
     {
         GenManifest m = new(
             XhtSchemaVersion: 2, // unsupported
-            ContractVersion: "13.2+b04ae3cc84cdd9f3",
+            ContractVersion: "13.8+d9514fb853e7dcc2",
             ModuleName: "X",
             GeneratedAtUtcIso: "2026-05-20T12:34:56Z",
             Inputs: ImmutableArray<GenManifestEntry>.Empty,

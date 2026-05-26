@@ -270,4 +270,94 @@ public sealed class SourceEmitterTests : IDisposable
         Assert.Contains("/* .Getter      = */ nullptr", content);
         Assert.Contains("/* .Setter      = */ nullptr", content);
     }
+
+    // --- XCore-4b Phase 4b.7 / Contract Rev 13.8 Stage B addendum pins ---
+
+    [Fact]
+    public void EmittedGenCpp_PinsEveryXCore4bLayoutTag_ViaStaticAssert()
+    {
+        // XCore-4b Rev 4 §11.6 + §9.4: every XHT-emitted .gen.cpp must
+        // carry a CompileTimeStrEq static_assert for each
+        // XPACT_*_LAYOUT_TAG so a patch DLL compiled against a
+        // different ABI fails to link with a clean compile-time error.
+        // The full set lives in AbiLayoutPins.LayoutTags; verify each
+        // macro name appears in the emit.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        foreach ((string macro, string tagContent) in AbiLayoutPins.LayoutTags)
+        {
+            Assert.Contains(macro, content);
+            // The TagContent must appear verbatim as a C-string literal
+            // (with internal characters preserved per EncodeCStringLiteral).
+            // The shortest discriminator we can assert on cheaply is the
+            // type-version prefix at the head of every tag string.
+            string headDiscriminator = tagContent[..System.Math.Min(40, tagContent.Length)];
+            Assert.Contains(headDiscriminator, content);
+        }
+        // The guard ensures legacy .gen.cpp TUs without the runtime
+        // macros still compile cleanly.
+        Assert.Contains("#ifdef XPACT_FNAME_LAYOUT_TAG", content);
+        Assert.Contains("#endif // XPACT_FNAME_LAYOUT_TAG", content);
+    }
+
+    [Fact]
+    public void EmittedGenCpp_PinsEveryXCore4bTypeSize_ViaStaticAssert()
+    {
+        // XCore-4b Rev 4 §11.2 / §11.3 + §9.4: every XHT-emitted .gen.cpp
+        // must carry a sizeof(...) static_assert for each frozen
+        // reflection-runtime type so a runtime header edit that changes
+        // a sizeof without a contract bump fails the compile at every
+        // consumer TU.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        foreach ((string type, int bytes) in AbiLayoutPins.TypeSizes)
+        {
+            // Match the exact emit shape: sizeof(::XCore::Reflect::TypeName) == N
+            string expectedFragment = "sizeof(::XCore::Reflect::"
+                + type
+                + ") == "
+                + bytes.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Contains(expectedFragment, content);
+        }
+        // The guard makes the block opt-in based on the runtime macro
+        // sentinel + the reflection-header presence; verify the guard
+        // shape is preserved.
+        Assert.Contains("#if defined(XPACT_FCLASS_LAYOUT_TAG) && __has_include(\"Reflection/FClass.h\")", content);
+        Assert.Contains("#  include \"Reflection/FName.h\"", content);
+        Assert.Contains("#  include \"Reflection/FClass.h\"", content);
+    }
+
+    [Fact]
+    public void EmittedGenCpp_PinsAreEnumeratedInDeclaredOrder()
+    {
+        // Determinism: the pin block emits LayoutTags in their declared
+        // order, then the TypeSizes block in its declared order. This
+        // is part of the byte-identical-output contract per Section 14.
+        EmitterContext ctx = EmitterTestHarness.MakeContext(_tempDir);
+        SourceEmitter emitter = new(ctx);
+        XhtClass valve = EmitterTestHarness.MakeClass("XValve");
+
+        string content = emitter.Render("Public/XValve.h", new[] { valve });
+
+        // Verify FName tag appears before FProperty tag (both layout
+        // and sizeof entries) in the emit -- catches a regression where
+        // a future refactor sorts or reorders the pin list.
+        int fnameIdx = content.IndexOf("XPACT_FNAME_LAYOUT_TAG", StringComparison.Ordinal);
+        int fpropertyIdx = content.IndexOf("XPACT_FPROPERTY_LAYOUT_TAG", StringComparison.Ordinal);
+        Assert.True(fnameIdx > 0 && fpropertyIdx > 0 && fnameIdx < fpropertyIdx,
+            "XPACT_FNAME_LAYOUT_TAG must precede XPACT_FPROPERTY_LAYOUT_TAG in the emit (declared-order invariant).");
+
+        int fnameSizeIdx = content.IndexOf("sizeof(::XCore::Reflect::FName)", StringComparison.Ordinal);
+        int fclassSizeIdx = content.IndexOf("sizeof(::XCore::Reflect::FClass)", StringComparison.Ordinal);
+        Assert.True(fnameSizeIdx > 0 && fclassSizeIdx > 0 && fnameSizeIdx < fclassSizeIdx,
+            "sizeof(FName) pin must precede sizeof(FClass) pin (declared-order invariant).");
+    }
 }

@@ -323,6 +323,27 @@ public sealed class ContractVersionTests
             w.Write('\n');
         }
 
+        // 9. ABI layout tags, declared order (Rev 13.8 / XCore-4b
+        // Stage B addendum).
+        foreach ((string macro, string content) in ContractSurface.AbiLayoutTags)
+        {
+            w.Write("abitag:");
+            w.Write(macro);
+            w.Write('=');
+            w.Write(content);
+            w.Write('\n');
+        }
+
+        // 10. ABI type sizes, declared order (Rev 13.8).
+        foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
+        {
+            w.Write("abisize:");
+            w.Write(type);
+            w.Write('=');
+            w.Write(bytes);
+            w.Write('\n');
+        }
+
         w.Flush();
         return ms.ToArray();
     }

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Simgenics.XPact.XBT.Core;
@@ -562,5 +563,178 @@ public sealed class ModeSmokeTests : IDisposable
             string rel = Path.GetRelativePath(sourceDir, filePath);
             File.Copy(filePath, Path.Combine(destDir, rel), overwrite: true);
         }
+    }
+
+    // ----- ValidateAbiTagsMode (XCore-4b Phase 4b.7 / Contract Rev 13.8) -----
+
+    /// <summary>
+    /// XCore-4b Phase 4b.7: <see cref="ValidateAbiTagsMode"/> against a
+    /// synthetic runtime-headers tree carrying every contract-frozen
+    /// XPACT_*_LAYOUT_TAG macro at the correct content + a
+    /// static_assert(sizeof(...)) for every contract-frozen type
+    /// returns exit 0.
+    /// </summary>
+    [Fact]
+    public async Task ValidateAbiTagsMode_RuntimeMatchesContract_Returns0()
+    {
+        string engineRoot = Path.Combine(_scratchRoot, "ValidateAbiTags_Ok", "Engine");
+        Directory.CreateDirectory(engineRoot);
+        File.WriteAllText(Path.Combine(engineRoot, "Engine.xengine"), "{}\n");
+
+        string xrt = Path.Combine(engineRoot, "Source", "Runtime", "XCore", "Public");
+        Directory.CreateDirectory(xrt);
+        Directory.CreateDirectory(Path.Combine(xrt, "Reflection"));
+
+        // Emit a synthetic XReflectionRuntime.h carrying every layout
+        // tag macro at the contract-frozen content.
+        StringBuilder xrtH = new();
+        xrtH.AppendLine("// Copyright Simgenics. All Rights Reserved.");
+        xrtH.AppendLine("#pragma once");
+        foreach ((string macro, string content) in ContractSurface.AbiLayoutTags)
+        {
+            xrtH.Append("#define ").Append(macro).Append(" \"").Append(content).AppendLine("\"");
+        }
+        File.WriteAllText(Path.Combine(xrt, "XReflectionRuntime.h"), xrtH.ToString());
+
+        // Emit one synthetic Reflection/F<TypeName>.h per contract-
+        // frozen type with the matching sizeof static_assert.
+        foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
+        {
+            string path = Path.Combine(xrt, "Reflection", type + ".h");
+            string body =
+                "// Copyright Simgenics. All Rights Reserved.\n"
+                + "#pragma once\n"
+                + "namespace XCore::Reflect {\n"
+                + "    struct " + type + " { char _padding[" + bytes + "]; };\n"
+                + "    static_assert(sizeof(" + type + ") == " + bytes + ", \"ABI lock\");\n"
+                + "}\n";
+            File.WriteAllText(path, body);
+        }
+
+        ValidateAbiTagsMode mode = new();
+        int exit = await mode.ExecuteAsync(
+            new[] { $"-EngineRoot={engineRoot}" },
+            CancellationToken.None);
+
+        Assert.Equal(0, exit);
+    }
+
+    /// <summary>
+    /// XCore-4b Phase 4b.7: <see cref="ValidateAbiTagsMode"/> against a
+    /// runtime tree where a layout-tag macro's content has drifted
+    /// from the contract returns exit 50 (<c>AbiTagMismatchExitCode</c>).
+    /// </summary>
+    [Fact]
+    public async Task ValidateAbiTagsMode_LayoutTagContentDrift_Returns50()
+    {
+        string engineRoot = Path.Combine(_scratchRoot, "ValidateAbiTags_Drift", "Engine");
+        Directory.CreateDirectory(engineRoot);
+        File.WriteAllText(Path.Combine(engineRoot, "Engine.xengine"), "{}\n");
+
+        string xrt = Path.Combine(engineRoot, "Source", "Runtime", "XCore", "Public");
+        Directory.CreateDirectory(xrt);
+        Directory.CreateDirectory(Path.Combine(xrt, "Reflection"));
+
+        // Emit XReflectionRuntime.h with one tag's content deliberately
+        // mutated -- "FName-v1" becomes "FName-v0".
+        StringBuilder xrtH = new();
+        xrtH.AppendLine("// Copyright Simgenics. All Rights Reserved.");
+        xrtH.AppendLine("#pragma once");
+        foreach ((string macro, string content) in ContractSurface.AbiLayoutTags)
+        {
+            string mutated = string.Equals(macro, "XPACT_FNAME_LAYOUT_TAG", StringComparison.Ordinal)
+                ? content.Replace("FName-v1", "FName-v0", StringComparison.Ordinal)
+                : content;
+            xrtH.Append("#define ").Append(macro).Append(" \"").Append(mutated).AppendLine("\"");
+        }
+        File.WriteAllText(Path.Combine(xrt, "XReflectionRuntime.h"), xrtH.ToString());
+
+        // Emit valid sizeof static_asserts so the failure is isolated
+        // to the layout-tag drift.
+        foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
+        {
+            string path = Path.Combine(xrt, "Reflection", type + ".h");
+            string body =
+                "// Copyright Simgenics. All Rights Reserved.\n"
+                + "#pragma once\n"
+                + "namespace XCore::Reflect {\n"
+                + "    struct " + type + " { char _padding[" + bytes + "]; };\n"
+                + "    static_assert(sizeof(" + type + ") == " + bytes + ", \"ABI lock\");\n"
+                + "}\n";
+            File.WriteAllText(path, body);
+        }
+
+        ValidateAbiTagsMode mode = new();
+        int exit = await mode.ExecuteAsync(
+            new[] { $"-EngineRoot={engineRoot}" },
+            CancellationToken.None);
+
+        Assert.Equal(ValidateAbiTagsMode.AbiTagMismatchExitCode, exit);
+    }
+
+    /// <summary>
+    /// XCore-4b Phase 4b.7: <see cref="ValidateAbiTagsMode"/> against a
+    /// runtime tree missing one sizeof static_assert returns exit 50.
+    /// </summary>
+    [Fact]
+    public async Task ValidateAbiTagsMode_MissingSizeofAssert_Returns50()
+    {
+        string engineRoot = Path.Combine(_scratchRoot, "ValidateAbiTags_MissingSizeof", "Engine");
+        Directory.CreateDirectory(engineRoot);
+        File.WriteAllText(Path.Combine(engineRoot, "Engine.xengine"), "{}\n");
+
+        string xrt = Path.Combine(engineRoot, "Source", "Runtime", "XCore", "Public");
+        Directory.CreateDirectory(xrt);
+        Directory.CreateDirectory(Path.Combine(xrt, "Reflection"));
+
+        StringBuilder xrtH = new();
+        xrtH.AppendLine("// Copyright Simgenics. All Rights Reserved.");
+        xrtH.AppendLine("#pragma once");
+        foreach ((string macro, string content) in ContractSurface.AbiLayoutTags)
+        {
+            xrtH.Append("#define ").Append(macro).Append(" \"").Append(content).AppendLine("\"");
+        }
+        File.WriteAllText(Path.Combine(xrt, "XReflectionRuntime.h"), xrtH.ToString());
+
+        // Skip emitting the FProperty header so the validator surfaces
+        // a missing-static_assert failure.
+        foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
+        {
+            if (string.Equals(type, "FProperty", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            string path = Path.Combine(xrt, "Reflection", type + ".h");
+            string body =
+                "// Copyright Simgenics. All Rights Reserved.\n"
+                + "#pragma once\n"
+                + "namespace XCore::Reflect {\n"
+                + "    struct " + type + " { char _padding[" + bytes + "]; };\n"
+                + "    static_assert(sizeof(" + type + ") == " + bytes + ", \"ABI lock\");\n"
+                + "}\n";
+            File.WriteAllText(path, body);
+        }
+
+        ValidateAbiTagsMode mode = new();
+        int exit = await mode.ExecuteAsync(
+            new[] { $"-EngineRoot={engineRoot}" },
+            CancellationToken.None);
+
+        Assert.Equal(ValidateAbiTagsMode.AbiTagMismatchExitCode, exit);
+    }
+
+    /// <summary>
+    /// XCore-4b Phase 4b.7: <see cref="ValidateAbiTagsMode"/> rejects
+    /// unknown CLI args with exit 10.
+    /// </summary>
+    [Fact]
+    public async Task ValidateAbiTagsMode_UnknownArg_Returns10()
+    {
+        ValidateAbiTagsMode mode = new();
+        int exit = await mode.ExecuteAsync(
+            new[] { "-Nonsense=Foo" },
+            CancellationToken.None);
+
+        Assert.Equal(10, exit);
     }
 }

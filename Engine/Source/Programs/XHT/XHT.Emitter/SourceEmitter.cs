@@ -156,6 +156,93 @@ public sealed class SourceEmitter
         sb.Append("static_assert(XPACT_PROPERTY_HAS_ACCESSORS == 1, \"XPropertyDescriptor must carry accessor slots (XIL2CPP)\");\n");
         sb.Append('\n');
 
+        // 4b. XCore-4b Stage B addendum ABI layout pins per Contract
+        //     Rev 13.8 + XCore-4b Rev 4 Section 9.4. Two pin families:
+        //
+        //     (a) XPACT_*_LAYOUT_TAG content pins -- compare the
+        //         runtime header's macro expansion against the
+        //         contract-frozen string literal via the same
+        //         CompileTimeStrEq pattern the Stage-A ABI pins use.
+        //
+        //     (b) sizeof(TypeName) byte-total pins -- catch the case
+        //         where a developer edits a reflection-runtime header
+        //         (e.g. adds a member to FProperty.h) without bumping
+        //         the Contract revision. The contract-frozen sizeof
+        //         total in AbiLayoutPins.TypeSizes is the source of
+        //         truth; every consumer TU re-verifies at its own
+        //         compile time.
+        //
+        //     The pins live inside an XCORE_REFLECTION_PINS_OPT_IN
+        //     guard so existing .gen.cpp TUs that pre-date the
+        //     XCore-4b runtime can still compile against the legacy
+        //     headers (where the new macros may not yet be defined).
+        //     Once XCore-4b ships its full surface this guard is
+        //     removed.
+        sb.Append("// XCore-4b Stage B addendum ABI layout pins (Contract Rev 13.8 + spec §9.4).\n");
+        sb.Append("// Every XPACT_*_LAYOUT_TAG macro expansion is compared at compile time\n");
+        sb.Append("// against the contract-frozen literal so a patch DLL that picked up a\n");
+        sb.Append("// different layout fails the compile cleanly.\n");
+        sb.Append("#ifdef XPACT_FNAME_LAYOUT_TAG\n");
+        foreach ((string macro, string content) in AbiLayoutPins.LayoutTags)
+        {
+            sb.Append("static_assert(XPactDetail::CompileTimeStrEq(");
+            sb.Append(macro);
+            sb.Append(", ");
+            sb.Append(EncodeCStringLiteral(content));
+            sb.Append("),\n");
+            sb.Append("    \"ABI lock: ");
+            sb.Append(macro);
+            sb.Append(" mismatch between manifest and runtime per Contract Rev 13.8\");\n");
+        }
+        sb.Append("#endif // XPACT_FNAME_LAYOUT_TAG\n");
+        sb.Append('\n');
+
+        // Per-type sizeof pins (XCore-4b Rev 4 §11.2 / §11.3). The
+        // reflection-runtime headers themselves carry these
+        // static_asserts (see e.g. FProperty.h:740), but emitting them
+        // again per .gen.cpp catches the hot-reload "the runtime
+        // header changed since this DLL was compiled" scenario
+        // (spec §9.4 per-DLL pins).
+        //
+        // We pull the full reflection headers in only when the
+        // XPACT_FCLASS_LAYOUT_TAG sentinel is defined AND the headers
+        // are reachable via the include path -- this keeps the legacy
+        // XCore-Stub TUs (which include XReflectionRuntime.h but not
+        // the full F* family) buildable while letting full-XCore-4b
+        // TUs catch ABI drift.
+        sb.Append("// Per-type sizeof pins per XCore-4b Rev 4 §11.2 + §11.3 (Stage B addendum).\n");
+        sb.Append("// Pulls in the full XCore::Reflect surface when the runtime header\n");
+        sb.Append("// XReflectionRuntime.h declares the XCore-4b addendum macro family.\n");
+        sb.Append("#if defined(XPACT_FCLASS_LAYOUT_TAG) && __has_include(\"Reflection/FClass.h\")\n");
+        sb.Append("#  include \"Reflection/FName.h\"\n");
+        sb.Append("#  include \"Reflection/FField.h\"\n");
+        sb.Append("#  include \"Reflection/FFieldClass.h\"\n");
+        sb.Append("#  include \"Reflection/FFieldVariant.h\"\n");
+        sb.Append("#  include \"Reflection/FProperty.h\"\n");
+        sb.Append("#  include \"Reflection/FFakeVTable.h\"\n");
+        sb.Append("#  include \"Reflection/FStruct.h\"\n");
+        sb.Append("#  include \"Reflection/FScriptStruct.h\"\n");
+        sb.Append("#  include \"Reflection/FCppStructOpsFakeVTable.h\"\n");
+        sb.Append("#  include \"Reflection/FClass.h\"\n");
+        sb.Append("#  include \"Reflection/FRepRecord.h\"\n");
+        sb.Append("#  include \"Reflection/FEnum.h\"\n");
+        sb.Append("#  include \"Reflection/FInterface.h\"\n");
+        sb.Append("#  include \"Reflection/FCustomVersion.h\"\n");
+        foreach ((string type, int bytes) in AbiLayoutPins.TypeSizes)
+        {
+            sb.Append("static_assert(sizeof(::XCore::Reflect::");
+            sb.Append(type);
+            sb.Append(") == ");
+            sb.Append(bytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\n    \"ABI lock: sizeof(");
+            sb.Append(type);
+            sb.Append(") must be ");
+            sb.Append(bytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(" bytes per Contract Rev 13.8 (XCore-4b Stage B addendum)\");\n");
+        }
+        sb.Append("#endif // XPACT_FCLASS_LAYOUT_TAG && __has_include\n");
+        sb.Append('\n');
+
         // 5. Empty-link sentinel function.
         string headerStem = Path.GetFileNameWithoutExtension(normalizedSource);
         sb.Append("void EmptyLinkFunctionForGeneratedCode_");

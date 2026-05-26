@@ -98,6 +98,8 @@ public static class ContractVersion
     ///   <item><c>file_id:{FileIdScheme}</c> + LF.</item>
     ///   <item>For each exit code (sorted by code): <c>exit:{code}={mnemonic}</c> + LF.</item>
     ///   <item>For each action type (preserved order = slot ordinal): <c>action:{name}</c> + LF.</item>
+    ///   <item>For each ABI layout tag (preserved order = declaration ordinal): <c>abitag:{macro}={content}</c> + LF (Rev 13.8 / XCore-4b Stage B addendum).</item>
+    ///   <item>For each ABI type size (preserved order = declaration ordinal): <c>abisize:{type}={bytes}</c> + LF (Rev 13.8 / XCore-4b Stage B addendum).</item>
     /// </list>
     /// </remarks>
     private static IoHash ComputeStructureHash()
@@ -192,6 +194,37 @@ public static class ContractVersion
         {
             writer.Write("action:");
             writer.Write(action);
+            writer.Write('\n');
+        }
+
+        // 9. ABI layout tags -- declared order (Rev 13.8 / XCore-4b
+        // Stage B addendum). Per XCore-4b Section 11.6: any change to
+        // any TagContent (or the macro -> content mapping) must rotate
+        // the structure hash so a downstream consumer notices the
+        // layout change at cache-key reconciliation time, with the
+        // per-TU static_assert pin in the XHT-emitted .gen.cpp /
+        // .gen.h providing the second layer of defense at compile
+        // time.
+        foreach ((string macro, string content) in ContractSurface.AbiLayoutTags)
+        {
+            writer.Write("abitag:");
+            writer.Write(macro);
+            writer.Write('=');
+            writer.Write(content);
+            writer.Write('\n');
+        }
+
+        // 10. ABI type sizes -- declared order (Rev 13.8). Each row
+        // is the contract-frozen byte total of a reflection-runtime
+        // type from XCore-4b Section 11.2 / 11.3 tables. The XBT
+        // validate-abi-tags mode cross-checks XHT-emitted
+        // static_assert(sizeof(...)) pins against these values.
+        foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
+        {
+            writer.Write("abisize:");
+            writer.Write(type);
+            writer.Write('=');
+            writer.Write(bytes);
             writer.Write('\n');
         }
     }

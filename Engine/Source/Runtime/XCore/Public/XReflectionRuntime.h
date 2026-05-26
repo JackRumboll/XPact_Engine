@@ -182,6 +182,108 @@ namespace XPactDetail
 #endif
 
 // =====================================================================
+// XCore-4b Stage B addendum ABI layout tags (Contract Rev 13.8).
+// =====================================================================
+//
+// Per XCore-4b Rev 4 Section 11.6 + Section 9.4: every XHT-emitted
+// .gen.cpp / .gen.h pins these macros via
+// `static_assert(XPactDetail::CompileTimeStrEq(...))` so a patch DLL
+// compiled against a different ABI fails to link with a clean compile-
+// time error before any runtime damage occurs.
+//
+// The macro VALUES are the contract-frozen TagContent strings the C#
+// `ContractSurface.AbiLayoutTags` table mirrors. If the byte layout of
+// any reflection-runtime type changes, BOTH the C# table content AND
+// the macro content here must update, AND the per-version semantic tag
+// embedded in the string ("-vN") must roll forward.
+//
+// IMPORTANT: defined as #define rather than inline constexpr
+// std::string_view because the XPactDetail::CompileTimeStrEq helper
+// works on `const char*` literals (preserves backward compatibility
+// with the Stage-A `XPACT_GC_ROOT_ABI_TAG` / `XPACT_EXCEPTION_ABI_TAG`
+// / `XPACT_MANGLING_SCHEME_TAG` pattern). The hot-reload-safety
+// concern that motivated the inline-constexpr-string_view pattern in
+// XPactMacros.h does not apply here because these tags are consumed
+// EXCLUSIVELY at compile time (the static_asserts fire at TU compile;
+// no string value is ever materialised at runtime).
+// =====================================================================
+
+#ifndef XPACT_FNAME_LAYOUT_TAG
+    #define XPACT_FNAME_LAYOUT_TAG \
+        "FName-v1: 4+4 / Index+SerialNumber / 8-byte total / 4-byte aligned"
+#endif
+
+#ifndef XPACT_FFIELD_LAYOUT_TAG
+    #define XPACT_FFIELD_LAYOUT_TAG \
+        "FField-v1: 32 bytes; ClassPrivate@0, Owner@8, Next@16, NamePrivate@24"
+#endif
+
+#ifndef XPACT_FFIELDCLASS_LAYOUT_TAG
+    #define XPACT_FFIELDCLASS_LAYOUT_TAG \
+        "FFieldClass-v1: 48 bytes; Name@0, Id@8, CastFlags@16, SuperClass@24, Construct@32, FakeVTable@40"
+#endif
+
+#ifndef XPACT_FFIELDVARIANT_LAYOUT_TAG
+    #define XPACT_FFIELDVARIANT_LAYOUT_TAG \
+        "FFieldVariant-v1: 8 bytes; Storage@0 (1-bit LSB tag, 0=FField, 1=FStruct, on 8-byte-aligned pointer)"
+#endif
+
+#ifndef XPACT_FPROPERTY_LAYOUT_TAG
+    #define XPACT_FPROPERTY_LAYOUT_TAG \
+        "FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"
+#endif
+
+#ifndef XPACT_FFAKEVTABLE_LAYOUT_TAG
+    #define XPACT_FFAKEVTABLE_LAYOUT_TAG \
+        "FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 (the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1"
+#endif
+
+#ifndef XPACT_FSTRUCT_LAYOUT_TAG
+    #define XPACT_FSTRUCT_LAYOUT_TAG \
+        "FStruct-v4: 112 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; SerializeStructFn @ 104"
+#endif
+
+#ifndef XPACT_FSCRIPTSTRUCT_LAYOUT_TAG
+    #define XPACT_FSCRIPTSTRUCT_LAYOUT_TAG \
+        "FScriptStruct-v4: 112 FStruct base + 16 ICppStructOps FakeVTable pattern = 128 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)"
+#endif
+
+#ifndef XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG
+    #define XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG \
+        "FCppStructOpsFakeVTable-v1: 8-byte header (32-bit Capabilities + _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per FScriptStruct subtype in .rodata"
+#endif
+
+#ifndef XPACT_FCLASS_LAYOUT_TAG
+    #define XPACT_FCLASS_LAYOUT_TAG \
+        "FClass-v4: 112 FStruct base + 112 FClass-specific = 224 bytes; ClassReps is TArray<FRepRecord> (24 bytes); NetFields is TArray<FField*> (24 bytes); ObjectRefProperties is dense TArray on FStruct (24 bytes); reflects XCore-4a DefaultAllocator carrying 2-byte FMemTag for per-container memory attribution per Phase 4b.5 verification"
+#endif
+
+#ifndef XPACT_FREPRECORD_LAYOUT_TAG
+    #define XPACT_FREPRECORD_LAYOUT_TAG \
+        "FRepRecord-v1: 16 bytes per ClassReps entry; {FProperty* Property; int32 Index} matches UE's Class.h:3984"
+#endif
+
+#ifndef XPACT_FENUM_LAYOUT_TAG
+    #define XPACT_FENUM_LAYOUT_TAG \
+        "FEnum-v4: 72 bytes; Values TArray @ offset 40 = 24 bytes; CppForm @ 64"
+#endif
+
+#ifndef XPACT_FINTERFACE_LAYOUT_TAG
+    #define XPACT_FINTERFACE_LAYOUT_TAG \
+        "FInterface-v4: 64 bytes; InterfaceFunctions TArray @ offset 32 = 24 bytes; InterfaceFlags @ 56"
+#endif
+
+#ifndef XPACT_FCUSTOMVERSION_LAYOUT_TAG
+    #define XPACT_FCUSTOMVERSION_LAYOUT_TAG \
+        "FCustomVersion-v1: Key(FGuid 16) + Version(int32) + FriendlyName(FName)"
+#endif
+
+#ifndef XPACT_REPMETA_LAYOUT_TAG
+    #define XPACT_REPMETA_LAYOUT_TAG \
+        "RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set"
+#endif
+
+// =====================================================================
 // LEGACY SURFACE -- compatibility-shim for XHT-emitted code.
 //
 // The Section-10 emit symbols are flat (no namespace) so XHT-generated

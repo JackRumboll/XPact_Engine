@@ -3,6 +3,7 @@
 using System;
 using System.IO;
 using Simgenics.XPact.XBT.Core;
+using Simgenics.XPact.XBT.Manifest;
 using Simgenics.XPact.XBT.Toolchain;
 using Xunit;
 

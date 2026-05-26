@@ -3,18 +3,24 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 13.7</title>
+<title>XPact Toolchain Contract &mdash; Rev 13.8</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 13.7</h1>
-<p>Status: <strong>Stage A &mdash; Interface freeze</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0.</p>
+<h1>XPact Toolchain Contract &mdash; Rev 13.8</h1>
+<p>Status: <strong>Stage B &mdash; Reflection-type byte-layout freeze (XCore-4b Phase 4b.7 addendum)</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0; XCore-4b Rev 4 Section 11 supplies the Stage B addendum content.</p>
 
 <h3>Revision history (Rev 13 family)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>SemanticVersionTag</th><th>ContractVersion.Current</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>13.8</strong></td>
+      <td><code>13.8</code></td>
+      <td><code>13.8+d9514fb853e7dcc2</code></td>
+      <td>XCore-4b Phase 4b.7 Stage B addendum &mdash; reflection-type byte-layout freeze. The Contract now carries the full <code>XCore-4b Rev 4 &sect;11</code> ABI surface: 15 <code>XPACT_*_LAYOUT_TAG</code> content pins + 14 per-type sizeof pins covering FName, FField, FFieldClass, FFieldVariant, FProperty, FFakeVTable, FStruct, FScriptStruct, FCppStructOpsFakeVTable, FClass, FRepRecord, FEnum, FInterface, FCustomVersion. The new <code>ContractSurface.AbiLayoutTags</code> + <code>ContractSurface.AbiTypeSizes</code> tables join the canonical surface, rotating the structure hash from <code>b04ae3cc84cdd9f3</code> to <code>d9514fb853e7dcc2</code> and bumping <code>SemanticVersionTag</code> from <code>"13.2"</code> to <code>"13.8"</code> (jumping the wording-only interim 13.3-13.7 revisions). XHT-emitted <code>.gen.cpp</code> files now carry per-TU <code>static_assert(XPactDetail::CompileTimeStrEq(XPACT_*_LAYOUT_TAG, ...))</code> + <code>static_assert(sizeof(::XCore::Reflect::TypeName) == N)</code> pin pairs per XCore-4b &sect;9.4, so a patch DLL compiled against a different reflection-runtime ABI fails to link with a clean compile-time error before any runtime damage occurs. XBT gains a <code>validate-abi-tags</code> mode that cross-checks the runtime headers' <code>XPACT_*_LAYOUT_TAG</code> macro contents + <code>static_assert(sizeof(...))</code> claims against the contract; the mode is independent of the XHT-emit pipeline and runs in seconds on a fresh checkout. New section &sect;X (below) enumerates the addendum content for cross-reference.</td>
+    </tr>
     <tr>
       <td><strong>13.7</strong></td>
       <td><code>13.2</code></td>
@@ -65,6 +71,22 @@
     </tr>
   </tbody>
 </table>
+
+<p><strong>Rev 13.8 (XCore-4b Phase 4b.7 Stage B addendum &mdash; reflection-type byte-layout freeze; surface-hash + semantic-tag rotation):</strong></p>
+<ul>
+  <li><strong>Reflection-type byte-layout freeze.</strong> XCore-4b Rev 4 &sect;11 supplies the addendum content: per-type byte totals, per-field byte offsets, and the <code>XPACT_*_LAYOUT_TAG</code> macro family that names each layout under a content-addressed tag string. Rev 13.8 lands the addendum's <strong>ABI surface</strong> on the contract by adding two new tables to <code>ContractSurface.cs</code>:
+    <ul>
+      <li><code>ContractSurface.AbiLayoutTags</code> &mdash; 15 entries, each a (<code>TagMacro</code>, <code>TagContent</code>) pair. The runtime header <code>XReflectionRuntime.h</code> defines each macro to expand to the contract-frozen content string; XHT-emitted <code>.gen.cpp</code> files compare via <code>static_assert(XPactDetail::CompileTimeStrEq(...))</code>. The 15 entries are: <code>XPACT_FNAME_LAYOUT_TAG</code>, <code>XPACT_FFIELD_LAYOUT_TAG</code>, <code>XPACT_FFIELDCLASS_LAYOUT_TAG</code>, <code>XPACT_FFIELDVARIANT_LAYOUT_TAG</code>, <code>XPACT_FPROPERTY_LAYOUT_TAG</code>, <code>XPACT_FFAKEVTABLE_LAYOUT_TAG</code>, <code>XPACT_FSTRUCT_LAYOUT_TAG</code>, <code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</code>, <code>XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG</code>, <code>XPACT_FCLASS_LAYOUT_TAG</code>, <code>XPACT_FREPRECORD_LAYOUT_TAG</code>, <code>XPACT_FENUM_LAYOUT_TAG</code>, <code>XPACT_FINTERFACE_LAYOUT_TAG</code>, <code>XPACT_FCUSTOMVERSION_LAYOUT_TAG</code>, <code>XPACT_REPMETA_LAYOUT_TAG</code>.</li>
+      <li><code>ContractSurface.AbiTypeSizes</code> &mdash; 14 entries, each a (<code>TypeName</code>, <code>ExpectedBytes</code>) pair. The runtime header <code>F&lt;TypeName&gt;.h</code> emits a <code>static_assert(sizeof(::XCore::Reflect::TypeName) == ExpectedBytes, ...)</code> pin; XHT-emitted <code>.gen.cpp</code> files emit the same pin so every consumer TU re-verifies at its own compile time (Live Coding patch DLL scenario). Frozen byte totals: <code>FName=8</code>, <code>FField=32</code>, <code>FFieldClass=48</code>, <code>FFieldVariant=8</code>, <code>FProperty=104</code>, <code>FFakeVTable=128</code>, <code>FStruct=112</code>, <code>FScriptStruct=128</code>, <code>FCppStructOpsFakeVTable=136</code>, <code>FClass=224</code>, <code>FRepRecord=16</code>, <code>FEnum=72</code>, <code>FInterface=64</code>, <code>FCustomVersion=32</code>.</li>
+    </ul>
+  </li>
+  <li><strong>Canonicalization extended.</strong> <code>ContractVersion.WriteCanonicalSurfaceTo</code> grows two new sections (item 9: <code>abitag:&lt;macro&gt;=&lt;content&gt;</code> per layout tag in declared order; item 10: <code>abisize:&lt;type&gt;=&lt;bytes&gt;</code> per type size in declared order). Adding, removing, or reordering any entry rotates <code>ContractVersion.StructureHash</code>; editing any <code>TagContent</code> string of an existing entry also rotates the hash (covering layout changes that retain the macro name but change the underlying byte arrangement).</li>
+  <li><strong>SemanticVersionTag bump 13.2 &rarr; 13.8.</strong> The version jump skips the interim wording-only 13.3 / 13.4 / 13.5 / 13.6 / 13.7 revisions and aligns with the XCore-4b Rev 4 spec's expectation. The composite <code>ContractVersion.Current</code> rotates from <code>"13.2+b04ae3cc84cdd9f3"</code> to <code>"13.8+d9514fb853e7dcc2"</code>.</li>
+  <li><strong>XHT-side updates.</strong> <code>XHT.Emitter.SourceEmitter</code> emits a guarded layout-tag pin block + a guarded sizeof pin block immediately after the existing Stage-A ABI envelope pins (<code>XPACT_GC_ROOT_ABI_TAG</code>, <code>XPACT_EXCEPTION_ABI_TAG</code>, <code>XPACT_MANGLING_SCHEME_TAG</code>). The layout-tag block is wrapped in <code>#ifdef XPACT_FNAME_LAYOUT_TAG</code> so legacy <code>.gen.cpp</code> TUs that pre-date the addendum continue to compile against the legacy runtime. The sizeof block is wrapped in <code>#if defined(XPACT_FCLASS_LAYOUT_TAG) && __has_include("Reflection/FClass.h")</code> and pulls in the 14 reflection headers inline; the <code>__has_include</code> guard makes the pin opt-in for legacy XCore-Stub TUs. <code>XhtVersion.ContractVersion</code> is updated to <code>"13.8+d9514fb853e7dcc2"</code> so the manifest-mismatch detection in <code>XbtManifestReader.ValidateContractVersion</code> rejects pre-Rev-13.8 manifests cleanly.</li>
+  <li><strong>XBT-side updates.</strong> New mode <code>XBT.exe validate-abi-tags</code> walks the engine's runtime headers (<code>XReflectionRuntime.h</code> + <code>Engine/Source/Runtime/XCore/Public/Reflection/*.h</code>) and verifies every <code>XPACT_*_LAYOUT_TAG</code> macro is defined to the contract-frozen content, AND every <code>static_assert(sizeof(...))</code> claim matches the contract-frozen byte total. Optional <code>-GeneratedRoots=&lt;p1&gt;[,&lt;p2&gt;,...]</code> argument extends the sweep to XHT-output trees, confirming the per-TU pin block is emitted. Exit code 50 (<code>ManifestMalformed</code>) on drift, exit 0 on success. Independent of the build pipeline; runs in &lt;0.5s on a fresh checkout.</li>
+  <li><strong>Hot-reload safety property.</strong> Per XCore-4b &sect;9.4: every <code>.gen.cpp</code> file now carries 15 layout-tag pins + 14 sizeof pins for a total of <strong>29 per-TU static_asserts</strong> against the contract-frozen ABI surface. A patch DLL compiled against a runtime header that has drifted from the contract fails the compile cleanly before any runtime damage occurs. This is the load-bearing reason XCore-4b descriptors are virtual-method-free (the FakeVTable pattern + the per-DLL static_assert pins together compose the hot-reload-safety guarantee).</li>
+  <li><strong>Phase 4b.7 deliverables.</strong> Source-of-truth: <code>XBT.Manifest/ContractSurface.cs</code> (AbiLayoutTags + AbiTypeSizes); <code>XHT.Emitter/AbiLayoutPins.cs</code> (mirror table for the XHT-emit path; XHT does not link XBT.Manifest at runtime per the standalone-tool discipline so the duplication is intentional + guarded by the ContractVersion-mismatch detection). Runtime macro definitions: <code>Engine/Source/Runtime/XCore/Public/XReflectionRuntime.h</code> (lines 184-291 in Rev 13.8). New XBT mode: <code>XBT.Entry/Modes/ValidateAbiTagsMode.cs</code>. New XHT emit body: <code>SourceEmitter.Render</code> step 4b (Rev 13.8 pin block).</li>
+</ul>
 
 <p><strong>Rev 13.7 (XHT Rev 6 cross-doc integration pass &mdash; documentation-only update; no surface change):</strong></p>
 <ul>
@@ -2296,7 +2318,88 @@ root_type Manifest;</code></pre>
 
 <hr>
 
-<p><em>End of Toolchain Contract &mdash; Stage A, Rev 13.6 (doc-only over Rev 13.5 base; <code>SemanticVersionTag</code> unchanged at <code>"13.2"</code>; <code>ContractVersion.Current</code> is <code>"13.2+b04ae3cc84cdd9f3"</code>, unchanged across Rev 13.6 because the corrections touch only Contract-described output shapes (Section 7.1 / 10.1 / 10.3) and the per-file PCH-exclusion claim (Section 1.5 / 7.1), all of which are intentionally NOT in <code>ContractSurface</code> &mdash; see Section 10.2 "Notably NOT in the surface" exclusion list). The Stage B addendum at XCore-4b ship (Step 4) will freeze the binary struct layouts called out throughout this document under <code>&lt;!-- STAGE-B: ... --&gt;</code> markers; the Stage B addendum will automatically bump the ContractStructureHash per Section 10.2. The Step 0.5 addendum has been delivered (<a href="XToolchainContractAddendum-Step05.html"><code>XToolchainContractAddendum-Step05.html</code></a>) and is currently at Revision 5, tracking the Rev 13.2 surface + the Rev 13.3 / 13.4 / 13.5 / 13.6 wording-only refinements (Round-6 Phase 1 hardening captured at Revision 4; XHT Rev 3 cross-doc integration aligned at Revision 5). Rev 13.6 (XHT Rev 3 cross-doc integration) corrects the output-shape framing (per-header <code>.gen.cpp</code> + per-module <code>.init.gen.cpp</code> aggregator throughout Sections 7.1 / 10.1 / 10.3) and rescinds the per-file <code>bExcludeFromSharedPCH</code> claim (the flag is per-module only). Rev 13.5 (Round-6 capture) extends the Section 10.3 <code>IExternalAction</code> code listing with <code>DependencyListFile</code>, annotates Section 13.1 code 71's dual meaning (link failure + Windows path-length validation), and refreshes Section 8 cross-references. Earlier Rev 13.4 / 13.3 / 13.2 / 13.1 / 13.0 / 12 / 11 changes carry forward unchanged unless explicitly rescinded above. Stage A surfaces are unchanged in spirit; only the wire form and the descriptor wording have shifted.</em></p>
+<h2 id="sec14">14. XCore-4b Stage B addendum &mdash; reflection-type ABI layout surface (NEW Rev 13.8)</h2>
+
+<p>The Stage B addendum is the single largest surface rotation since Rev 12: it freezes the byte layout of every XCore-4b reflection-runtime type, raising the previously-provisional descriptor records to a contract-locked ABI. Per <code>XCore-4b Rev 4 &sect;11</code> + <code>&sect;9.4</code>: every byte layout below is enforced at <strong>two</strong> compile-time gates &mdash; the runtime header's own <code>static_assert</code> at its declaration site, and a per-TU re-verification in every XHT-emitted <code>.gen.cpp</code> file (the "per-DLL static_assert pin" mechanism that makes hot-reload safe).</p>
+
+<h3>14.1 The 15 layout-tag macros (<code>ContractSurface.AbiLayoutTags</code>)</h3>
+
+<p>Each macro is defined in <code>Engine/Source/Runtime/XCore/Public/XReflectionRuntime.h</code> as <code>#define &lt;MACRO&gt; "&lt;content&gt;"</code>. XHT-emitted <code>.gen.cpp</code> files carry one <code>static_assert(XPactDetail::CompileTimeStrEq(&lt;MACRO&gt;, "&lt;content&gt;"))</code> per row. A macro whose content drifts from the contract fails the per-TU compile loudly.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Macro</th><th>Content (verbatim)</th></tr></thead>
+  <tbody>
+    <tr><td><code>XPACT_FNAME_LAYOUT_TAG</code></td><td>FName-v1: 4+4 / Index+SerialNumber / 8-byte total / 4-byte aligned</td></tr>
+    <tr><td><code>XPACT_FFIELD_LAYOUT_TAG</code></td><td>FField-v1: 32 bytes; ClassPrivate@0, Owner@8, Next@16, NamePrivate@24</td></tr>
+    <tr><td><code>XPACT_FFIELDCLASS_LAYOUT_TAG</code></td><td>FFieldClass-v1: 48 bytes; Name@0, Id@8, CastFlags@16, SuperClass@24, Construct@32, FakeVTable@40</td></tr>
+    <tr><td><code>XPACT_FFIELDVARIANT_LAYOUT_TAG</code></td><td>FFieldVariant-v1: 8 bytes; Storage@0 (1-bit LSB tag, 0=FField, 1=FStruct, on 8-byte-aligned pointer)</td></tr>
+    <tr><td><code>XPACT_FPROPERTY_LAYOUT_TAG</code></td><td>FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)</td></tr>
+    <tr><td><code>XPACT_FFAKEVTABLE_LAYOUT_TAG</code></td><td>FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 (the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1</td></tr>
+    <tr><td><code>XPACT_FSTRUCT_LAYOUT_TAG</code></td><td>FStruct-v4: 112 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; SerializeStructFn @ 104</td></tr>
+    <tr><td><code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</code></td><td>FScriptStruct-v4: 112 FStruct base + 16 ICppStructOps FakeVTable pattern = 128 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)</td></tr>
+    <tr><td><code>XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG</code></td><td>FCppStructOpsFakeVTable-v1: 8-byte header (32-bit Capabilities + _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per FScriptStruct subtype in .rodata</td></tr>
+    <tr><td><code>XPACT_FCLASS_LAYOUT_TAG</code></td><td>FClass-v4: 112 FStruct base + 112 FClass-specific = 224 bytes; ClassReps is TArray&lt;FRepRecord&gt; (24 bytes); NetFields is TArray&lt;FField*&gt; (24 bytes); ObjectRefProperties is dense TArray on FStruct (24 bytes); reflects XCore-4a DefaultAllocator carrying 2-byte FMemTag for per-container memory attribution per Phase 4b.5 verification</td></tr>
+    <tr><td><code>XPACT_FREPRECORD_LAYOUT_TAG</code></td><td>FRepRecord-v1: 16 bytes per ClassReps entry; {FProperty* Property; int32 Index} matches UE's Class.h:3984</td></tr>
+    <tr><td><code>XPACT_FENUM_LAYOUT_TAG</code></td><td>FEnum-v4: 72 bytes; Values TArray @ offset 40 = 24 bytes; CppForm @ 64</td></tr>
+    <tr><td><code>XPACT_FINTERFACE_LAYOUT_TAG</code></td><td>FInterface-v4: 64 bytes; InterfaceFunctions TArray @ offset 32 = 24 bytes; InterfaceFlags @ 56</td></tr>
+    <tr><td><code>XPACT_FCUSTOMVERSION_LAYOUT_TAG</code></td><td>FCustomVersion-v1: Key(FGuid 16) + Version(int32) + FriendlyName(FName)</td></tr>
+    <tr><td><code>XPACT_REPMETA_LAYOUT_TAG</code></td><td>RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set</td></tr>
+  </tbody>
+</table>
+
+<h3>14.2 The 14 sizeof pins (<code>ContractSurface.AbiTypeSizes</code>)</h3>
+
+<p>Each entry asserts the byte total of a reflection-runtime type. The runtime header <code>F&lt;TypeName&gt;.h</code> emits a <code>static_assert(sizeof(::XCore::Reflect::TypeName) == &lt;Bytes&gt;)</code> at its declaration site; XHT-emitted <code>.gen.cpp</code> files re-emit the same assert so every consumer TU re-verifies. The per-TU re-verification catches the case where a developer edits a runtime header (e.g. adds a member to <code>FProperty.h</code>) without recompiling consumer modules &mdash; the patched-DLL load fails cleanly at consumer-side compile rather than at runtime.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Type</th><th>Bytes</th><th>Rationale (cross-reference to XCore-4b Rev 4 &sect;11)</th></tr></thead>
+  <tbody>
+    <tr><td><code>FName</code></td><td>8</td><td>&sect;11.1: 4-byte Index + 4-byte SerialNumber; 4-byte aligned.</td></tr>
+    <tr><td><code>FField</code></td><td>32</td><td>&sect;11.2: ClassPrivate@0, Owner@8, Next@16, NamePrivate@24.</td></tr>
+    <tr><td><code>FFieldClass</code></td><td>48</td><td>&sect;11.2: Name@0, Id@8, CastFlags@16, SuperClass@24, Construct@32, FakeVTable@40 (8-byte FakeVTable pointer added Rev 2 / FIX-2).</td></tr>
+    <tr><td><code>FFieldVariant</code></td><td>8</td><td>&sect;11.2: 1-bit LSB tag (0=FField, 1=FStruct) on 8-byte-aligned pointer (FIX-4 LSB-tag pattern; inverse of UE's semantic).</td></tr>
+    <tr><td><code>FProperty</code></td><td>104</td><td>&sect;11.2: 32 FField base + 72 FProperty body (UE-equivalent rep-meta source + DispatchTable pointer; FakeVTable in .rodata; FIX-1 + FIX-2 + FIX-19 reshape; FProperty itself carries no TArray so the FIX-R3-CRIT-1 cascade does not affect it).</td></tr>
+    <tr><td><code>FFakeVTable</code></td><td>128</td><td>&sect;11.2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each); slot 14 (zero-indexed) is ConvertFromType per FIX-R2-HIGH-1.</td></tr>
+    <tr><td><code>FStruct</code></td><td>112</td><td>&sect;11.3: ObjectRefProperties TArray @ offset 56 = 24 bytes per FIX-R3-CRIT-1 (XCore-4a DefaultAllocator carries 2-byte FMemTag for memory attribution; XPACT_NO_UNIQUE_ADDRESS has no padding hole to fold into; verified at <code>DefaultAllocator.h:178-186</code>).</td></tr>
+    <tr><td><code>FScriptStruct</code></td><td>128</td><td>&sect;11.3: 112 FStruct base + 16 ICppStructOps FakeVTable pattern; per-subtype FCppStructOpsFakeVTable lives in .rodata at 136 bytes (FIX-R2-MAJ-2 + FIX-R3-CRIT-1).</td></tr>
+    <tr><td><code>FCppStructOpsFakeVTable</code></td><td>136</td><td>&sect;11.2: 8-byte header + 16 handler slots (8 bytes each); Capabilities mask covers ~24 active + 8 reserved bits per FIX-R2-MED-1.</td></tr>
+    <tr><td><code>FClass</code></td><td>224</td><td>&sect;11.3: 112 FStruct base + 112 FClass-specific; ClassReps TArray = 24 bytes, NetFields TArray = 24 bytes (both subject to the FIX-R3-CRIT-1 cascade).</td></tr>
+    <tr><td><code>FRepRecord</code></td><td>16</td><td>&sect;11.3: {FProperty* Property (8); int32 Index (4); _pad (4)} per FIX-7; matches UE's <code>Class.h:3984</code> exactly.</td></tr>
+    <tr><td><code>FEnum</code></td><td>72</td><td>&sect;11.3: 32 FField + Values TArray @ 40 (24 bytes per FIX-R3-CRIT-1) + CppForm @ 64.</td></tr>
+    <tr><td><code>FInterface</code></td><td>64</td><td>&sect;11.3: 32 FField + InterfaceFunctions TArray @ 32 (24 bytes per FIX-R3-CRIT-1) + InterfaceFlags @ 56 + _pad @ 60.</td></tr>
+    <tr><td><code>FCustomVersion</code></td><td>32</td><td>&sect;11.5: Key(FGuid 16) + Version(int32 4) + _pad(4) + FriendlyName(FName 8).</td></tr>
+  </tbody>
+</table>
+
+<h3>14.3 Per-DLL static_assert pin discipline (Rev 13.8 hot-reload-safety mechanism)</h3>
+
+<p>Per XCore-4b &sect;9.4 ("Per-DLL static_assert pins"): every XHT-emitted <code>.gen.cpp</code> file carries the full pin set so a downstream consumer DLL compiled against a reflection-runtime header that has since drifted from the contract fails to link cleanly at compile time, before any runtime damage occurs. The pin block has two parts:</p>
+
+<ol>
+  <li><strong>Layout-tag content pins</strong> &mdash; 15 <code>static_assert(XPactDetail::CompileTimeStrEq(XPACT_*_LAYOUT_TAG, "&lt;content&gt;"))</code> calls. A runtime header that redefines <code>XPACT_FPROPERTY_LAYOUT_TAG</code> to a different content string fails the constexpr string-equality check at every consumer TU.</li>
+  <li><strong>sizeof pins</strong> &mdash; 14 <code>static_assert(sizeof(::XCore::Reflect::TypeName) == &lt;N&gt;)</code> calls. A runtime header edit that changes a struct's byte total (e.g. adds a member to <code>FProperty</code>) fails the sizeof check at every consumer TU.</li>
+</ol>
+
+<p>The block is wrapped in <code>#ifdef XPACT_FNAME_LAYOUT_TAG</code> (layout-tag pins) + <code>#if defined(XPACT_FCLASS_LAYOUT_TAG) &amp;&amp; __has_include("Reflection/FClass.h")</code> (sizeof pins) so legacy <code>.gen.cpp</code> TUs that pre-date the addendum continue to compile against the legacy runtime; the guards become no-ops on the new runtime once XHT regenerates against Rev 13.8. The macro <code>XPactDetail::CompileTimeStrEq</code> is a <code>constexpr</code> string-equality helper defined in <code>XReflectionRuntime.h</code> (preserved verbatim from the Stage-A stub for backward compatibility with the existing GC-root / exception / mangling pins).</p>
+
+<h3>14.4 Cross-validation via <code>XBT.exe validate-abi-tags</code></h3>
+
+<p>Rev 13.8 adds a new XBT mode that runs in standalone-tool fashion (no build pipeline dependency): <code>XBT.exe validate-abi-tags [-EngineRoot=&lt;path&gt;] [-RuntimeHeaders=&lt;dir&gt;] [-GeneratedRoots=&lt;p1&gt;[,&lt;p2&gt;,...]]</code>. The mode walks two layers:</p>
+
+<ol>
+  <li><strong>Layer 1 (runtime-header sweep)</strong>: opens <code>Engine/Source/Runtime/XCore/Public/XReflectionRuntime.h</code> and verifies every macro in <code>ContractSurface.AbiLayoutTags</code> is defined to the contract-frozen content. Then walks <code>Engine/Source/Runtime/XCore/Public/Reflection/*.h</code> and verifies every type in <code>ContractSurface.AbiTypeSizes</code> has a <code>static_assert(sizeof(TypeName) == N)</code> line. Backslash-newline continuations in the <code>#define</code> bodies are collapsed for the probe.</li>
+  <li><strong>Layer 2 (optional generated-output sweep)</strong>: when <code>-GeneratedRoots=</code> is passed, walks every <code>.gen.cpp</code> under each root and confirms the per-TU pin block is present via anchor-comment matching. Empty roots are accepted as non-fatal (a fresh checkout that has not yet built has no generated output).</li>
+</ol>
+
+<p>Exit code 50 (<code>ManifestMalformed</code>) on drift, exit 0 on success. Typical wall-clock: &lt;0.5s on a fresh checkout. The mode catches the "developer edits FProperty.h to add a member without bumping the contract" footgun even when no consumer module has been rebuilt.</p>
+
+<h3>14.5 Contract surface ordinal</h3>
+
+<p>Per Section 10.2 (canonical surface byte stream): the two new tables enter the canonicalization at <strong>step 9</strong> (<code>abitag:&lt;macro&gt;=&lt;content&gt;</code> per row, declared order) and <strong>step 10</strong> (<code>abisize:&lt;type&gt;=&lt;bytes&gt;</code> per row, declared order). The declared order IS the slot ordinal: appending a new tag / size bumps the surface hash; reordering an existing entry also bumps the hash; editing a content string or byte total also bumps the hash. The append-only ordinal discipline matches the existing exit-code / action-type append-only contract from earlier Rev 13.x bumps.</p>
+
+<hr>
+
+<p><em>End of Toolchain Contract &mdash; Stage B, Rev 13.8 (XCore-4b Phase 4b.7 addendum landed; <code>SemanticVersionTag</code> bumped from <code>"13.2"</code> to <code>"13.8"</code>; <code>ContractVersion.Current</code> rotated from <code>"13.2+b04ae3cc84cdd9f3"</code> to <code>"13.8+d9514fb853e7dcc2"</code> because the new Section 14 ABI surface (15 layout-tag macros + 14 sizeof pins) added two new sections to the canonical surface byte stream). The Stage B addendum freezes the binary struct layouts of every XCore-4b reflection-runtime type per XCore-4b Rev 4 &sect;11; the <code>&lt;!-- STAGE-B: ... --&gt;</code> markers throughout earlier sections retire as the layouts are now contract-locked. Rev 13.7 (XHT Rev 6 cross-doc integration, doc-only) carried forward unchanged through this bump. The Step 0.5 addendum (<a href="XToolchainContractAddendum-Step05.html"><code>XToolchainContractAddendum-Step05.html</code></a>) remains at Revision 5 (XHT Rev 3 cross-doc integration alignment) and is now superseded for byte-layout matters by Section 14 above; the Step 0.5 doc retains its standalone existence for cross-reference. Rev 13.6 (per-header <code>.gen.cpp</code> + per-module <code>.init.gen.cpp</code> aggregator framing) and Rev 13.5 (Round-6 capture &mdash; <code>DependencyListFile</code> + Section 13.1 code 71 dual meaning) carry forward unchanged. Earlier Rev 13.4 / 13.3 / 13.2 / 13.1 / 13.0 / 12 / 11 changes carry forward unchanged unless explicitly rescinded above. Stage B begins with this rev: the byte layouts that were previously provisional at Stage A are now contract-locked, and a downstream consumer module compiled against a different reflection-runtime ABI fails the build at compile time (per &sect;14.3 per-DLL static_assert pin discipline).</em></p>
 
 </body>
 </html>
