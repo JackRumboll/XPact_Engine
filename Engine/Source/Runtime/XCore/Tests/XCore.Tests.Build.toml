@@ -854,6 +854,86 @@
 #                                            pending Phase 4b.5).
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.5 (descriptor types) adds the FStruct.Tests/ folder:
+#
+#   * Tests/Reflection/FStruct.Tests/SizeofAndAlignof.cpp
+#                                         -- §7 + §11.3 audit-corrected
+#                                            ABI lock for all 5
+#                                            descriptor types +
+#                                            FRepRecord + FEnumValue +
+#                                            FFunctionDescriptor +
+#                                            FCppStructOpsFakeVTable.
+#                                            Phase 4b.5 actual sizes:
+#                                            FStruct=112,
+#                                            FScriptStruct=128,
+#                                            FClass=224, FEnum=72,
+#                                            FInterface=64
+#                                            (audit-corrected from spec
+#                                            Rev 3's 104/120/200/64/56;
+#                                            see SPEC DRIFT NOTICE in
+#                                            FStruct.h for root cause).
+#   * Tests/Reflection/FStruct.Tests/FStructLink.cpp
+#                                         -- §7.1: synthetic 5-property
+#                                            FStruct; Link rebuilds
+#                                            PropertyLink + Destructor
+#                                            Link chains; idempotency.
+#   * Tests/Reflection/FStruct.Tests/FClassIsChildOf.cpp
+#                                         -- §7.3 + §13 gate C1
+#                                            (partial): 3-level FClass
+#                                            hierarchy with CastFlags;
+#                                            IsChildOf fast path +
+#                                            chain walk. Cross-
+#                                            hierarchy negative result.
+#   * Tests/Reflection/FStruct.Tests/FScriptStructDispatch.cpp
+#                                         -- §7.2 + FIX-R2-MAJ-2:
+#                                            FScriptStruct's CppOpsTable
+#                                            dispatch round-trip with
+#                                            mock NetSerialize +
+#                                            GetTypeHash slots.
+#                                            Capability bitmask probing.
+#   * Tests/Reflection/FStruct.Tests/FEnumValues.cpp
+#                                         -- §7.4: FEnum with 5
+#                                            enumerators (non-contiguous
+#                                            bitflag values);
+#                                            FindByName + FindByValue
+#                                            round-trip.
+#   * Tests/Reflection/FStruct.Tests/FInterfaceFunctions.cpp
+#                                         -- §7.5 + §7.5.1: FInterface
+#                                            with 3 functions; Find
+#                                            FunctionByName + Find
+#                                            FunctionByHash; unknown
+#                                            input returns nullptr.
+#   * Tests/Reflection/FStruct.Tests/FRepRecordExpansion.cpp
+#                                         -- FIX-7 + §13 gate C7:
+#                                            XPROPERTY(Replicated)
+#                                            ArrayDim=4 -> 4 ClassReps
+#                                            entries; non-replicated
+#                                            properties absent.
+#                                            FirstOwnedClassRep +
+#                                            ClassRepCount.
+#   * Tests/Reflection/FStruct.Tests/FStructObjectRefDensePopulation.cpp
+#                                         -- FIX-13 + §13 gate C8:
+#                                            FStruct::Link walks
+#                                            ChildProperties; FObject
+#                                            Property + FDelegateProperty
+#                                            get added to
+#                                            ObjectRefProperties;
+#                                            primitives (FInt/FFloat)
+#                                            don't.
+#
+# JUDGEMENT CALL (Phase 4b.5 tests). All tests call
+# `::XCore::HAL::FMemory::__Init()` at the start of main(). Matches
+# the Phase 4b.4a/4b discipline.
+#
+# JUDGEMENT CALL (Phase 4b.5 tests / SPEC DRIFT). The tests pin
+# audit-corrected sizes per FStruct.h SPEC DRIFT NOTICE. Spec values
+# (Rev 3 FIX-R2-CRIT-1's 104/120/200/64/56) are mathematically
+# impossible against the as-shipped XCore-4a TArray = 24 bytes; the
+# audit-corrected values (112/128/224/72/64) are the actually-shipped
+# layouts.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"
