@@ -9,6 +9,12 @@
 // a circular dependency on XCore-4b. The 8-byte handle layout is the
 // load-bearing ABI lock between the two systems.
 //
+// Per XCore-4b Rev 3 §4.1, the COMPLETE FName struct (with the public
+// API: ctors, ToString, comparison, etc.) lives in Reflection/FName.h
+// and supersedes the prior XCore-4a in-place declaration. This test
+// pulls in Reflection/FName.h to verify the layout invariants the
+// XCore-4b implementation must honor.
+//
 // This test asserts:
 //   * sizeof(FName) == 8
 //   * alignof(FName) == 4
@@ -23,6 +29,7 @@
 // =====================================================================
 
 #include "Macros/XCoreFwd.h"
+#include "Reflection/FName.h"
 
 #include <cstddef>     // offsetof
 #include <type_traits>

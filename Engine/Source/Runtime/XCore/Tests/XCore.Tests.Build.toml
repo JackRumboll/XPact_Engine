@@ -486,6 +486,134 @@
 # Subsequent phases (1g+: cross-arch CI shards, FString::Format
 # wiring, perf bar enforcement) add their TUs under this same module.
 #
+# XCore-4b Phase 4b.1 (FName implementation) adds:
+#
+#   * Tests/Reflection/FName.Tests/SizeofABILock.cpp
+#                                         -- XCore-4b §4.1 + §4.2 ABI lock
+#                                            runtime check: sizeof(FName)
+#                                            == 8, alignof == 4, offsetof
+#                                            (Index)/(SerialNumber) == 0/4,
+#                                            sizeof(FNameEntryHeader) == 6
+#                                            (Rev 2 FIX-21), offsetof
+#                                            (FNameEntry, Bytes) == 6,
+#                                            alignof(FNameEntry) == 8.
+#   * Tests/Reflection/FName.Tests/Construction.cpp
+#                                         -- ctor surface: default,
+#                                            const char*, (const char*,
+#                                            int32), FString, NAME_None
+#                                            sentinel, empty/null inputs,
+#                                            1024-byte max-length boundary
+#                                            (§4.2 max-length cap).
+#   * Tests/Reflection/FName.Tests/Equality.cpp
+#                                         -- A2 (same-string-twice ==
+#                                            same Index), A4 (case-sensitive
+#                                            "Actor" != "actor"), comparison
+#                                            operators (Index-then-
+#                                            SerialNumber ordering).
+#   * Tests/Reflection/FName.Tests/NumberedNames.cpp
+#                                         -- A5 (Actor_5 suffix split per
+#                                            §4.4), WithNumber base-Index
+#                                            sharing, leading-zero rejection
+#                                            ("Actor_05"), (Utf8, ByteLen,
+#                                            Suffix) ctor, ToString
+#                                            round-trip for plain and
+#                                            numbered forms.
+#   * Tests/Reflection/FName.Tests/ToStringRoundTrip.cpp
+#                                         -- general ToString round-trip
+#                                            invariant: FName(s).ToString()
+#                                            equals s; ToString +
+#                                            FromString is idempotent.
+#   * Tests/Reflection/FName.Tests/Hash.cpp
+#                                         -- §4.5 GetTypeHash determinism:
+#                                            same FName -> same hash;
+#                                            distinct FNames -> distinct
+#                                            hashes; GetTypeHash(NAME_None)
+#                                            equals FXxh3-64 of all-zero
+#                                            8 bytes.
+#   * Tests/Reflection/FName.Tests/ShardDistribution.cpp
+#                                         -- A1: 256 shards verified;
+#                                            shard selection is byte_hash
+#                                            >> 56; FName.Index >> 24
+#                                            matches the byte-hash shard
+#                                            id (encoding contract); 1024-
+#                                            string fixture populates >= 8
+#                                            shards.
+#   * Tests/Reflection/FName.Tests/HotReloadSurvival.cpp
+#                                         -- A6 placeholder: in-process
+#                                            duplicate-construction
+#                                            preserves Index (the intern-
+#                                            table single-source-of-truth
+#                                            invariant the full DLL-reload
+#                                            test relies on). Full A6
+#                                            (cross-DLL hot-reload) lands
+#                                            at System 5 XLiveCoding
+#                                            harness per dispatch
+#                                            instructions.
+#
+# XCore-4b Phase 4b.2 (FCustomVersion subsystem) adds:
+#
+#   * Tests/Reflection/FCustomVersion.Tests/SizeofAndAlignof.cpp
+#                                         -- XCore-4b Section 8.1 ABI lock
+#                                            (sizeof(FCustomVersion) == 32;
+#                                            sizeof(FGuid) == 16; per-member
+#                                            offset locks).
+#   * Tests/Reflection/FCustomVersion.Tests/ContainerInsertFindRemove.cpp
+#                                         -- XCore-4b Section 8.2 container
+#                                            semantics: Insert / Find /
+#                                            Remove / Contains / Empty +
+#                                            sorted-by-Key invariant.
+#   * Tests/Reflection/FCustomVersion.Tests/ContainerSerializeRoundTrip.cpp
+#                                         -- XCore-4b Section 13 gate D1:
+#                                            round-trip 100 random custom
+#                                            versions; output bytes are
+#                                            byte-exact equal to input
+#                                            bytes (FArchive overload
+#                                            deferred to XSerialization
+#                                            Layer 9; the byte-buffer
+#                                            path is the Phase 4b.2
+#                                            deliverable).
+#   * Tests/Reflection/FCustomVersion.Tests/RegistryRegisterFind.cpp
+#                                         -- XCore-4b Section 13 gate D3:
+#                                            single-threaded registration,
+#                                            update, reject-regression,
+#                                            and unregister paths.
+#   * Tests/Reflection/FCustomVersion.Tests/RegistryConcurrentStress.cpp
+#                                         -- XCore-4b Section 8.3 thread-
+#                                            safety: 10 writers x 1000
+#                                            distinct GUIDs + concurrent
+#                                            readers; FRWLock TSan-clean.
+#   * Tests/Reflection/FCustomVersion.Tests/SchemaHashDeterminism.cpp
+#                                         -- XCore-4b Section 8.4 +
+#                                            Section 13 gate C3 (same-
+#                                            process determinism portion):
+#                                            ComputeSchemaHashImpl is
+#                                            deterministic across repeated
+#                                            calls; truncation matches
+#                                            FBlake3::Compute lower-64.
+#   * Tests/Reflection/FCustomVersion.Tests/XBTTransitiveDirtyPlaceholder.cpp
+#                                         -- gates C5 / C6 / C7 placeholder.
+#                                            The actual gates require XBT
+#                                            transitive-dirty graph (C5),
+#                                            XHT hash-collision finder
+#                                            (C6), and FClass (C7) which
+#                                            ship in Phase 4b.5+ / 4b.7.
+#                                            This file is a scaffold that
+#                                            touches the runtime APIs so
+#                                            a future regression that
+#                                            breaks link compatibility
+#                                            is caught even before the
+#                                            real gates land.
+#
+# JUDGEMENT CALL (Phase 4b.2). Gate D2 ("FCustomVersion mismatch fires
+# a catalog-anchored diagnostic via XLog") requires the XLog catalog
+# subsystem which is not yet defined. The diagnostic-emission code is
+# elided from Phase 4b.2; the registry's monotonic-discipline reject
+# returns ERegisterResult::Rejected which a future XLog integration
+# will route into the catalog. The Phase 4b.2 deliverable is the
+# data-structure half of gate D2 (the reject is observable and the
+# state is correct); the diagnostic-emission half lands when XLog
+# ships.
+#
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's
 #       per-fixture pattern), or

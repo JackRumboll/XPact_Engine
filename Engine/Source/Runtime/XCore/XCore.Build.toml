@@ -504,6 +504,146 @@
 #                link_libs TOML schema lands.
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.1 (FName implementation) adds:
+#
+#   Public/Reflection/FName.h                -- the COMPLETE FName struct
+#                                                (XCore-4a §11.8 forward
+#                                                 declaration is replaced
+#                                                 by the full Rev 3 §4.1
+#                                                 API: ctors, ToString,
+#                                                 WithNumber, comparison,
+#                                                 hash). The 8-byte handle
+#                                                 layout is ABI-locked via
+#                                                 static_asserts at the
+#                                                 declaration site.
+#                                                XCoreFwd.h is shrunk to a
+#                                                forward declaration + the
+#                                                GetTypeHash signature so
+#                                                consumers requiring the
+#                                                full type (sizeof, member
+#                                                access) must include this
+#                                                header explicitly.
+#   Public/Reflection/FNameEntry.h           -- the intern-table record:
+#                                                FNameEntryHeader (6 bytes
+#                                                 per Rev 2 FIX-21) +
+#                                                 flexible-array UTF-8
+#                                                 payload + NUL terminator.
+#                                                 alignof = 8 for fast
+#                                                 block-walk.
+#
+#   Private/Reflection/FNamePool.h           -- 256-shard intern table
+#                                                interface; each shard is
+#                                                FRWLock + open-addressing
+#                                                slot table + 64 KB block
+#                                                pool linked list. PRIVATE
+#                                                header; consumers go
+#                                                through FName's public
+#                                                ctors.
+#   Private/Reflection/FNamePool.cpp         -- shared-read fast path
+#                                                (§4.3) + exclusive-write
+#                                                slow path + lazy NAME_None
+#                                                reservation + entry block
+#                                                bump allocator. Per-shard
+#                                                lock guards slot table
+#                                                mutations and block-list
+#                                                growth.
+#   Private/Reflection/FName.cpp             -- FName public-API bodies:
+#                                                ctors (with §4.4 numbered-
+#                                                 suffix parsing), ToString
+#                                                 + AppendString, GetType
+#                                                 Hash (FXxh3-64 over the
+#                                                 8-byte handle per §4.5).
+#
+# The FNamePool uses FMemTag::Reflection (added to FMemTag.h slot 10
+# within the kMemTagEngineSlotCount reservation block).
+#
+# Acceptance gates covered:
+#   * A1 -- 256 shards verified via ShardDistribution.cpp.
+#   * A2 -- same-string-twice returns same Index (Equality.cpp).
+#   * A4 -- case-sensitive (Equality.cpp).
+#   * A5 -- numbered-name parse + ToString (NumberedNames.cpp).
+#   * A6 -- in-process single-source-of-truth (HotReloadSurvival.cpp;
+#           full DLL-reload deferred to System 5 XLiveCoding harness).
+#
+# Acceptance gate A3 (cross-platform hash determinism via the
+# FNameHashVectors.csv corpus) is wired by the cross-arch CI shard;
+# the per-platform repeatability slice runs at Hash.cpp.
+#
+# =====================================================================
+#
+# XCore-4b Phase 4b.2 (FCustomVersion subsystem) adds:
+#
+#   Public/Reflection/FGuid.h                -- 16-byte GUID struct
+#                                                consumed by FCustomVersion.
+#                                                XCore-4a did not ship FGuid;
+#                                                Phase 4b.2 introduces it as
+#                                                the smallest dependency
+#                                                surface that satisfies
+#                                                Section 8.1's locked layout.
+#   Public/Reflection/FCustomVersion.h       -- 32-byte FCustomVersion
+#                                                struct: Key(FGuid 16) +
+#                                                Version(int32) +
+#                                                _Reserved(uint32) +
+#                                                FriendlyName(FName 8).
+#                                                Per-member offset locks
+#                                                static_asserted (Section
+#                                                8.1).
+#   Public/Reflection/FCustomVersionContainer.h
+#                                            -- sorted-by-Key TArray-backed
+#                                                container with O(log N)
+#                                                Find + range-based for-
+#                                                loop + byte-buffer
+#                                                Read/WriteToBuffer
+#                                                round-trip (Section 8.2).
+#   Public/Reflection/FCustomVersionRegistry.h
+#                                            -- process-singleton registry
+#                                                protected by FRWLock;
+#                                                read-heavy / write-at-
+#                                                module-init contract
+#                                                (Section 8.3). Monotonic-
+#                                                discipline guard rejects
+#                                                Version regressions.
+#   Public/Reflection/SchemaHash.h           -- ComputeSchemaHashImpl
+#                                                wrapper around XCore-4a
+#                                                BLAKE3 + lower-64
+#                                                truncation (Section 8.4).
+#                                                The input-canonicalisation
+#                                                layer (declared shape ->
+#                                                canonical byte stream)
+#                                                lands at Phase 4b.4+ once
+#                                                FProperty subclass schemas
+#                                                exist.
+#
+#   Private/Reflection/FCustomVersion.cpp        -- byte read/write helpers.
+#   Private/Reflection/FCustomVersionContainer.cpp
+#                                                -- sorted-Insert + Find /
+#                                                Remove + buffer round-trip
+#                                                body. Insertion-sort on
+#                                                deserialise to canonicalise
+#                                                external producers that
+#                                                wrote unsorted entries.
+#   Private/Reflection/FCustomVersionRegistry.cpp
+#                                                -- function-local-static
+#                                                singleton + FRWLock-guarded
+#                                                Register / Find / Empty.
+#   Private/Reflection/SchemaHash.cpp            -- ComputeSchemaHashImpl
+#                                                body.
+#
+# JUDGEMENT CALL (Phase 4b.2 / FGuid placement). XCore-4a did NOT ship
+# FGuid (verified by grep across Engine/Source/Runtime/XCore at Phase
+# 4b.2 dispatch time). Per the Prime Directive (do it right the first
+# time), Phase 4b.2 introduces FGuid in the XCore::Reflect namespace
+# co-located with FCustomVersion -- the alternative of using a raw
+# `uint8 Key[16]` for the Key field would be (a) less ergonomic at
+# call sites, (b) less typed (any 16-byte buffer would compile-fit),
+# and (c) require a later refactor when XCore-4a or downstream layers
+# need GUIDs for their own purposes (asset import, network identifiers,
+# etc.). The Reflect-namespace placement matches the spec body wording
+# ("FGuid Key") and keeps the type discoverable from the reflection
+# tier where it is most heavily used.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

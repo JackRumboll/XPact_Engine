@@ -110,35 +110,29 @@ namespace XCore
 // ---------------------------------------------------------------------
 // FName forward declaration (Section 1.2 + 11.8; fix C-1).
 //
-// 8-byte opaque handle. XCore-4a defines ONLY the layout + ABI
-// asserts; interning, hashing, equality, FromString, ToString all
-// live in XCore-4b (Section 4 step 4 of the master plan). Any
-// XCore-4a-only test build that takes the address of GetTypeHash(FName)
-// or calls FromString is a link error -- that is the contract.
+// 8-byte opaque handle. XCore-4a forward-declared the type so containers
+// could compile TMap<FName, V> / TSet<FName> without depending on the
+// XCore-4b interning runtime. XCore-4b ships the COMPLETE struct
+// definition in Reflection/FName.h (per XCore-4b Rev 3 §4.1). Consumers
+// that need the layout (sizeof, offsetof, member access) must include
+// the full header; consumers that only forward-reference FName via
+// template parameters (TMap<FName, V> declarations, function-pointer
+// signatures with FName parameters) can include this XCoreFwd.h only.
 //
 // `Index` is the slot into XCore-4b's interning table; `SerialNumber`
-// distinguishes intern-reuse of the same slot (free-list reclaim).
-// Both are uint32 so the handle is exactly 8 bytes with 4-byte
-// alignment.
+// distinguishes numbered-name suffixes (Actor_1, Actor_2). Both are
+// uint32; total handle is 8 bytes with 4-byte alignment. The ABI lock
+// fires at the full struct's declaration site (Reflection/FName.h).
+//
+// GetTypeHash(FName) is declared here (forward only) so XCore-4a
+// containers can compile a TMap<FName, V> without a circular
+// dependency on the XCore-4b interning runtime. The actual
+// implementation lives in XCore-4b's intern-table runtime.
 // ---------------------------------------------------------------------
 
 namespace XCore::Reflect
 {
-    struct FName
-    {
-        ::uint32 Index;
-        ::uint32 SerialNumber;
-    };
+    struct FName;
 
-    static_assert(sizeof(FName)  == 8, "FName ABI lock: must be 8 bytes");
-    static_assert(alignof(FName) == 4, "FName ABI lock: 4-byte alignment");
-
-    // GetTypeHash(FName) is declared here (forward only) so XCore-4a
-    // containers can compile a TMap<FName, V> without a circular
-    // dependency on the XCore-4b interning runtime. The actual
-    // implementation lives in XCore-4b's interning table. An
-    // XCore-4a-only test build that *uses* TMap<FName, V> via
-    // operator[] / Find / etc. will get a link error here -- which is
-    // the contract; XCore-4a alone cannot resolve an FName key.
     [[nodiscard]] ::uint64 GetTypeHash(FName Name) noexcept;
 }

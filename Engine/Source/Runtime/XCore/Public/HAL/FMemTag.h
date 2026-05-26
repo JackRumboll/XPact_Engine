@@ -103,6 +103,15 @@ namespace XCore::HAL
                              //   through s_XObjectAllocator (Section 4.4)
                              //   and tags its allocations XObject.
 
+        // ---------------- XCore-4b Reflection ----------------
+        // FName intern table, FField/FProperty descriptors, FClass/FStruct
+        // metadata, XReflectionRuntime registry. Per XCore-4b Rev 3 Section 3
+        // ("the FName intern table allocates from a dedicated allocator-
+        // backed shard pool FMemory::Malloc(size, FMemTag::Reflection) using
+        // the XCore-4a Phase-1g allocator at EInitPhase::PreStaticInit").
+        // Reserved slot 10 within the 16-engine-slot space (kMemTagEngineSlotCount).
+        Reflection    = 10,
+
         // ---------------- Plugin slot range (16 KiB) ----------------
         Plugin_Begin  = 0x4000,
 
@@ -160,6 +169,7 @@ namespace XCore::HAL
             case FMemTag::Localization: return "Localization";
             case FMemTag::LeakTracker:  return "LeakTracker";
             case FMemTag::XObject:      return "XObject";
+            case FMemTag::Reflection:   return "Reflection";
             default:
                 // Plugin / User / unknown ranges return a generic label;
                 // the per-tag resolution lives in the (Phase 1c)
