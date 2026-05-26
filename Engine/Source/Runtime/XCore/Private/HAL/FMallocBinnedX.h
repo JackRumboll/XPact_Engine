@@ -5,6 +5,36 @@
 // FMallocBinnedX.h -- XPact's FMallocBinned3-descendant allocator.
 // =====================================================================
 //
+// XINSIGHTS DEFERRAL (Rev 3 Round 2 audit FIX-R2-MED-NEW-6).
+//
+// The allocator exposes per-bin / per-tag / per-pool fragmentation
+// counters intended as XInsights telemetry-callback feeds (Master Plan
+// §2a Engine-telemetry row). At Phase 1g the XInsights subsystem is
+// not yet implemented; the telemetry hookup points are weak-symbol
+// stubs that XInsights replaces at link time once it lands.
+//
+// LOAD-BEARING CONSTRAINT — RECURSION HAZARD.
+// Any future XInsights callback that runs IN the allocator path MUST
+// NOT re-enter FMemory::Malloc / FMemory::Free / FMemory::Realloc. A
+// telemetry callback that allocates its own working buffer would
+// deadlock the per-pool mutex (the callback is invoked WHILE the
+// mutex is held in the cross-thread Free path) or, worse, recurse
+// infinitely (the new allocation runs the same telemetry callback).
+// The documented protocol is "callbacks copy into caller-owned thread-
+// local buffers OR enqueue into a lock-free MPSC drained by an
+// XInsights consumer thread"; the per-pool mutex must NOT be touched
+// from inside a callback.
+//
+// See FMallocBinnedX.cpp:40-78 for the corresponding implementation
+// comment block + the recursion-hazard check inside Free.
+//
+// TODO(Phase 2 / XInsights): replace the weak-symbol stubs with the
+// XInsights direct-feed once the subsystem lands. The Phase-1g
+// telemetry-surface tag tables (kBinSizeTable + per-pool
+// FPoolMetadata) are already shaped for the consumer; the missing
+// piece is only the consumer-side dispatcher.
+// =====================================================================
+//
 // XCore-4a Rev 3, Section 4 (Memory + Allocator), Section 4.5
 // (Divergences from UE), Section 17.1 A1 acceptance (110% UE Binned3
 // throughput).

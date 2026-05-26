@@ -697,6 +697,139 @@ FString FString::Trim() const
 }
 
 // =====================================================================
+// UE-parity surface additions (Rev 3 Round 2 audit FIX-R2-MED-NEW-3).
+//
+// ASCII case conversion + padding + byte reverse + prefix/suffix
+// stripping + Join. Per-method correctness notes inline.
+// =====================================================================
+
+FString FString::ToUpper() const
+{
+    const ::int32 N = LenBytes();
+    if (N == 0) return *this;
+    FString Out(Data(), N);
+    char*   Dst = const_cast<char*>(Out.Data());
+    for (::int32 I = 0; I < N; ++I)
+    {
+        const ::uint8 B = static_cast<::uint8>(Dst[I]);
+        if (B >= 0x61U && B <= 0x7AU)            // 'a'..'z'
+        {
+            Dst[I] = static_cast<char>(B - 32U); // -> 'A'..'Z'
+        }
+        // Bytes >= 0x80 are UTF-8 continuation / lead bytes and pass
+        // through unchanged (locale-independent ASCII-only conversion).
+    }
+    return Out;
+}
+
+FString FString::ToLower() const
+{
+    const ::int32 N = LenBytes();
+    if (N == 0) return *this;
+    FString Out(Data(), N);
+    char*   Dst = const_cast<char*>(Out.Data());
+    for (::int32 I = 0; I < N; ++I)
+    {
+        const ::uint8 B = static_cast<::uint8>(Dst[I]);
+        if (B >= 0x41U && B <= 0x5AU)            // 'A'..'Z'
+        {
+            Dst[I] = static_cast<char>(B + 32U); // -> 'a'..'z'
+        }
+    }
+    return Out;
+}
+
+FString FString::LeftPad(::int32 TargetLength, char PadChar) const
+{
+    const ::int32 N = LenBytes();
+    if (N >= TargetLength || TargetLength <= 0) return *this;
+    // PadChar must be ASCII to avoid producing malformed UTF-8 at the
+    // seam; the high-bit check is a defensive guard (debug-only check;
+    // shipping continues with the byte verbatim).
+    XPACT_CHECK((static_cast<::uint8>(PadChar) & 0x80U) == 0);
+
+    const ::int32 PadCount = TargetLength - N;
+    FString Out;
+    Out.EnsureCapacity(TargetLength);
+    // Write PadCount pad bytes, then the source bytes.
+    for (::int32 I = 0; I < PadCount; ++I)
+    {
+        Out.Append(&PadChar, 1);
+    }
+    Out.Append(*this);
+    return Out;
+}
+
+FString FString::RightPad(::int32 TargetLength, char PadChar) const
+{
+    const ::int32 N = LenBytes();
+    if (N >= TargetLength || TargetLength <= 0) return *this;
+    XPACT_CHECK((static_cast<::uint8>(PadChar) & 0x80U) == 0);
+
+    FString Out(*this);
+    const ::int32 PadCount = TargetLength - N;
+    Out.EnsureCapacity(TargetLength);
+    for (::int32 I = 0; I < PadCount; ++I)
+    {
+        Out.Append(&PadChar, 1);
+    }
+    return Out;
+}
+
+FString FString::Reverse() const
+{
+    const ::int32 N = LenBytes();
+    if (N <= 1) return *this;
+    FString Out;
+    Out.EnsureCapacity(N);
+    // Walk source from tail to head, appending bytes.
+    const char* Src = Data();
+    for (::int32 I = N - 1; I >= 0; --I)
+    {
+        Out.Append(Src + I, 1);
+    }
+    return Out;
+}
+
+FString FString::RemoveFromStart(const FString& Prefix) const
+{
+    if (!StartsWith(Prefix)) return *this;
+    const ::int32 PLen = Prefix.LenBytes();
+    return FString(Data() + PLen, LenBytes() - PLen);
+}
+
+FString FString::RemoveFromEnd(const FString& Suffix) const
+{
+    if (!EndsWith(Suffix)) return *this;
+    const ::int32 SLen = Suffix.LenBytes();
+    return FString(Data(), LenBytes() - SLen);
+}
+
+FString FString::JoinBy(const TArray<FString, DefaultAllocator>& Parts,
+                        const FString& Separator)
+{
+    if (Parts.Num() == 0) return FString{};
+    if (Parts.Num() == 1) return Parts[0];
+
+    // Pre-compute total bytes for one allocation.
+    ::int32 Total = 0;
+    for (::int32 I = 0; I < Parts.Num(); ++I)
+    {
+        Total += Parts[I].LenBytes();
+        if (I + 1 < Parts.Num()) Total += Separator.LenBytes();
+    }
+
+    FString Out;
+    Out.EnsureCapacity(Total);
+    for (::int32 I = 0; I < Parts.Num(); ++I)
+    {
+        if (I > 0) Out.Append(Separator);
+        Out.Append(Parts[I]);
+    }
+    return Out;
+}
+
+// =====================================================================
 // Affix tests.
 // =====================================================================
 

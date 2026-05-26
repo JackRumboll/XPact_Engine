@@ -47,12 +47,14 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "Macros/XCoreFwd.h"   // forward decl for TArray (UE-parity GenerateKeyArray/GenerateValueArray)
 #include "Containers/TPair.h"
 #include "Containers/TSet.h"  // for the SwissTable Detail helpers + GetTypeHash
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
 #include "Hash/FXxh3.h"
 
+#include <algorithm>           // std::sort (Rev 3 FIX-R2-MED-NEW-1 KeySort/ValueSort)
 #include <cstring>
 #include <new>
 #include <utility>
@@ -293,6 +295,172 @@ namespace XCore
         }
 
         // =================================================================
+        // UE-parity surface additions (Rev 3 Round 2 audit FIX-R2-MED-NEW-1).
+        //
+        // The methods below mirror UE's TMap surface (Engine/Source/Runtime
+        // /Core/Public/Containers/Map.h + Map.h.inl) where the prior XPact
+        // TMap was missing the convenience methods. Each has the same
+        // signature semantics as UE's; the implementations are XPact-native
+        // (built on the SwissTable backing rather than UE's TSparseArray).
+        // =================================================================
+
+        // -------------------------------------------------------------
+        // FindOrAdd -- get-or-create.
+        //
+        // Returns a reference to the value associated with Key. If Key
+        // is not present, inserts a default-constructed V and returns
+        // a reference to it. Equivalent to operator[] in semantics but
+        // matches UE's named API for call-site readability.
+        //
+        // Linear search + insert; O(1) amortised under load-factor
+        // bound (see TSet::AddImpl probe-cost analysis at section 5.3
+        // determinism contract).
+        // -------------------------------------------------------------
+        V& FindOrAdd(const K& Key)
+        {
+            if (V* Existing = Find(Key); Existing != nullptr) return *Existing;
+            return AddImpl(Key, V{});
+        }
+
+        V& FindOrAdd(K&& Key)
+        {
+            if (V* Existing = Find(Key); Existing != nullptr) return *Existing;
+            return AddImpl(::std::move(Key), V{});
+        }
+
+        // -------------------------------------------------------------
+        // FindRef -- by-value-or-default lookup.
+        //
+        // Returns the value associated with Key by value, or a default-
+        // constructed V if Key is absent. UE-parity (UE Map.h.inl:661).
+        // Used for null-safe lookups where the caller wants a value
+        // rather than a pointer.
+        // -------------------------------------------------------------
+        [[nodiscard]] V FindRef(const K& Key) const
+        {
+            if (const V* Existing = Find(Key); Existing != nullptr) return *Existing;
+            return V{};
+        }
+
+        // -------------------------------------------------------------
+        // Append -- bulk merge from another TMap.
+        //
+        // Copies (or moves) every entry from Other into *this. If a key
+        // collision occurs, Other's value WINS (overwrite semantics;
+        // matches UE Map.h.inl:1347 Append). The destination's tag is
+        // preserved (Other's tag is NOT inherited).
+        //
+        // Cost: O(N) where N is Other's size.
+        // -------------------------------------------------------------
+        void Append(const TMap& Other)
+        {
+            if (&Other == this) return;
+            for (::SIZE_T I = 0; I < Other.m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(Other.m_ctrl[I]))
+                {
+                    const PairType* P = reinterpret_cast<const PairType*>(Other.m_slots + I * sizeof(PairType));
+                    AddImpl(P->Key, P->Value);
+                }
+            }
+        }
+
+        void Append(TMap&& Other)
+        {
+            if (&Other == this) return;
+            for (::SIZE_T I = 0; I < Other.m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(Other.m_ctrl[I]))
+                {
+                    PairType* P = reinterpret_cast<PairType*>(Other.m_slots + I * sizeof(PairType));
+                    AddImpl(::std::move(P->Key), ::std::move(P->Value));
+                }
+            }
+            // The source map is left in a moved-from state; calling
+            // ClearAndDeallocate makes the post-move state observable
+            // and frees Other's buffer so the caller sees Num() == 0.
+            Other.ClearAndDeallocate();
+        }
+
+        // -------------------------------------------------------------
+        // KeySort / ValueSort -- in-place ordering by predicate.
+        //
+        // SwissTable storage does not preserve insertion order, and the
+        // mirror byte/slot layout does not lend itself to in-place
+        // partial reordering. We collect into a temporary array of
+        // pointers (to avoid copying the PairType), sort the pointer
+        // array by predicate, then rehash from the sorted order so
+        // subsequent iteration visits keys (or values) in sorted order
+        // until the next Add/Remove.
+        //
+        // NOTE: iteration order is otherwise implementation-defined per
+        // §5.3 determinism contract. KeySort/ValueSort give a transient
+        // sorted view; any mutation invalidates it.
+        //
+        // Cost: O(N log N) on the predicate plus a full rehash.
+        //
+        // UE-parity: UE Map.h.inl:1090 (KeySort) / :1110 (ValueSort).
+        // -------------------------------------------------------------
+        template<typename Pred>
+        void KeySort(Pred Predicate)
+        {
+            if (m_size <= 1) return;
+            SortAndRehash([Predicate](const PairType& A, const PairType& B) noexcept {
+                return Predicate(A.Key, B.Key);
+            });
+        }
+
+        template<typename Pred>
+        void ValueSort(Pred Predicate)
+        {
+            if (m_size <= 1) return;
+            SortAndRehash([Predicate](const PairType& A, const PairType& B) noexcept {
+                return Predicate(A.Value, B.Value);
+            });
+        }
+
+        // -------------------------------------------------------------
+        // GenerateKeyArray / GenerateValueArray -- bulk extraction.
+        //
+        // Appends every key (or value) into the output array. The
+        // output array is NOT cleared first -- the caller may pre-
+        // populate it; this matches UE's semantics (UE Map.h.inl:733).
+        //
+        // The template form on the array's allocator lets the caller
+        // pass any TArray<KeyType, AllocatorT> / TArray<ValueType,
+        // AllocatorT> regardless of the destination tag.
+        //
+        // Cost: O(N).
+        // -------------------------------------------------------------
+        template<typename AllocatorT>
+        void GenerateKeyArray(::XCore::TArray<KeyType, AllocatorT>& Out) const
+        {
+            Out.Reserve(Out.Num() + static_cast<::int32>(m_size));
+            for (::SIZE_T I = 0; I < m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(m_ctrl[I]))
+                {
+                    const PairType* P = reinterpret_cast<const PairType*>(m_slots + I * sizeof(PairType));
+                    Out.Add(P->Key);
+                }
+            }
+        }
+
+        template<typename AllocatorT>
+        void GenerateValueArray(::XCore::TArray<ValueType, AllocatorT>& Out) const
+        {
+            Out.Reserve(Out.Num() + static_cast<::int32>(m_size));
+            for (::SIZE_T I = 0; I < m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(m_ctrl[I]))
+                {
+                    const PairType* P = reinterpret_cast<const PairType*>(m_slots + I * sizeof(PairType));
+                    Out.Add(P->Value);
+                }
+            }
+        }
+
+        // =================================================================
         // Removal.
         // =================================================================
 
@@ -300,6 +468,44 @@ namespace XCore
         {
             const ::SIZE_T Idx = FindIndex(Key);
             if (Idx == static_cast<::SIZE_T>(-1)) return false;
+            EraseAt(Idx);
+            return true;
+        }
+
+        // -------------------------------------------------------------
+        // FindAndRemoveChecked -- find by key, remove, return value.
+        //
+        // Aborts via XPACT_CHECK if Key is not present (the "Checked"
+        // suffix in UE parlance). Useful when the caller has invariant
+        // knowledge that Key MUST be in the map.
+        //
+        // UE-parity: UE Map.h.inl:1332.
+        // -------------------------------------------------------------
+        ValueType FindAndRemoveChecked(const K& Key)
+        {
+            const ::SIZE_T Idx = FindIndex(Key);
+            XPACT_CHECK(Idx != static_cast<::SIZE_T>(-1));
+            PairType* P = reinterpret_cast<PairType*>(m_slots + Idx * sizeof(PairType));
+            ValueType Out = ::std::move(P->Value);
+            EraseAt(Idx);
+            return Out;
+        }
+
+        // -------------------------------------------------------------
+        // RemoveAndCopyValue -- find by key, remove, copy out the value.
+        //
+        // Returns true if removed; the value is copy-assigned (move-
+        // assigned) into the out parameter. Returns false (leaving Out
+        // unmodified) if the key is absent.
+        //
+        // UE-parity: UE Map.h.inl:1282.
+        // -------------------------------------------------------------
+        bool RemoveAndCopyValue(const K& Key, ValueType& Out)
+        {
+            const ::SIZE_T Idx = FindIndex(Key);
+            if (Idx == static_cast<::SIZE_T>(-1)) return false;
+            PairType* P = reinterpret_cast<PairType*>(m_slots + Idx * sizeof(PairType));
+            Out = ::std::move(P->Value);
             EraseAt(Idx);
             return true;
         }
@@ -588,6 +794,74 @@ namespace XCore
             m_size       = 0;
             m_capacity   = 0;
             m_growthLeft = 0;
+        }
+
+        // -------------------------------------------------------------
+        // SortAndRehash -- shared helper for KeySort / ValueSort.
+        //
+        // Collects every Full slot's PairType into a tagged temporary
+        // buffer, sorts the buffer by Comp, then rebuilds *this from
+        // the sorted order. The rebuild uses a fresh Rehash so the
+        // SwissTable backing matches the sorted insertion order; until
+        // the next Add/Remove, iteration visits entries in sorted
+        // order.
+        //
+        // Note: this approach trades performance for SwissTable-state
+        // correctness. An in-place stable sort over the slot array
+        // would corrupt the control bytes (slot[I] no longer matches
+        // ctrl[I]'s H2). Rebuilding is the safe path.
+        //
+        // The temporary buffer carries m_tag so the allocation
+        // attribution is consistent with the rest of the TMap.
+        // -------------------------------------------------------------
+        template<typename Comp>
+        void SortAndRehash(Comp Comparator)
+        {
+            const ::SIZE_T N = m_size;
+            if (N <= 1) return;
+
+            // Allocate temp buffer for N PairType move-targets.
+            void* TempPtr = ::XCore::HAL::FMemory::MallocOrAbort(
+                N * sizeof(PairType),
+                alignof(PairType) > 16 ? alignof(PairType) : 16,
+                m_tag);
+            PairType* Temp = static_cast<PairType*>(TempPtr);
+
+            // Move every Full slot into the temp buffer.
+            ::SIZE_T Filled = 0;
+            for (::SIZE_T I = 0; I < m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(m_ctrl[I]))
+                {
+                    PairType* P = reinterpret_cast<PairType*>(m_slots + I * sizeof(PairType));
+                    new (&Temp[Filled]) PairType(::std::move(*P));
+                    P->~PairType();
+                    ++Filled;
+                }
+            }
+            XPACT_CHECK(Filled == N);
+
+            // Sort the temp buffer.
+            ::std::sort(Temp, Temp + N, Comparator);
+
+            // Wipe the SwissTable backing so the next AddImpl sees
+            // a clean state at the original capacity (preserves the
+            // existing allocation; only the control bytes + slot
+            // contents are reset).
+            std::memset(m_ctrl, ::XCore::Detail::kCtrlEmpty,
+                        m_capacity + ::XCore::Detail::kGroupSize);
+            m_ctrl[m_capacity] = ::XCore::Detail::kCtrlSentinel;
+            m_size       = 0;
+            m_growthLeft = ::XCore::Detail::CapacityToGrowAt(m_capacity);
+
+            // Re-insert in sorted order.
+            for (::SIZE_T I = 0; I < N; ++I)
+            {
+                AddImpl(::std::move(Temp[I].Key), ::std::move(Temp[I].Value));
+                Temp[I].~PairType();
+            }
+
+            ::XCore::HAL::FMemory::Free(TempPtr);
         }
 
         ::uint8*               m_ctrl;

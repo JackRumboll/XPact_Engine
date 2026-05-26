@@ -57,8 +57,8 @@
 //    _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per
 //    FScriptStruct subtype in .rodata"
 //
-// CAPABILITY BITMASK (Rev 2 FIX-4 / MEDIUM-5: 26 active + 6 reserved;
-// previously 24 active + 8 reserved):
+// CAPABILITY BITMASK (Rev 3 Round 2 audit FIX-R2-HIGH-NEW-2: 31 active +
+// 1 reserved; previously 26 active + 6 reserved):
 //
 //   The 32-bit Capabilities mask declares which dispatch slots are
 //   populated AND which capability-only properties hold for the type
@@ -66,35 +66,59 @@
 //   handler, e.g. IsPlainOldData). The bit-position layout is locked
 //   in the Stage B addendum:
 //
-//     Bit  Name                                  Slot? (yes/no)
-//     ---  ------------------------------------  --------------
-//     0    HasNoOpConstructor                    no  (capability-only)
-//     1    HasZeroConstructor                    no  (capability-only)
-//     2    HasDestructor                         no  (capability-only)
-//     3    HasPostScriptConstruct                yes (slot 0)
-//     4    HasSerializer                         yes (Layer 9 routes)
-//     5    HasIdentical                          no  (capability-only)
-//     6    HasNetSerializer                      yes (slot 3)
-//     7    HasNetDeltaSerializer                 yes (slot 4)
-//     8    HasAddStructReferencedObjects         yes (slot 1)
-//     9    HasGetTypeHash                        yes (slot 2)
-//     10   HasSerializeFromMismatchedTag         yes (slot 8)
-//     11   HasPostSerialize                      yes (slot 5)
-//     12   HasExportTextItem                     yes (slot 6)
-//     13   HasImportTextItem                     yes (slot 7)
-//     14   HasCopy                               yes (slot 11)
-//     15   HasMoveAssign                         yes (slot 12)
-//     16   IsPlainOldData                        no  (capability-only)
-//     17   IsUECoreType                          no  (capability-only)
-//     18   IsUECoreVariant                       no  (capability-only)
-//     19   HasGetPreloadDependencies             yes (slot 15)
-//     20   HasFindInnerPropertyInstance          yes (slot 14)
-//     21   HasVisitor                            yes (slot 13)
-//     22   ClearOnFinishDestroy                  no  (capability-only)
-//     23   HasIntrusiveUnsetOptionalState        no  (capability-only; FOptional)
-//     24   IsBlueprintBase                       no  (capability-only; FIX-4)
-//     25   IsNative                              no  (capability-only; FIX-4)
-//     26-31 RESERVED (6 bits for post-MVP additions)
+//     Bit  Name                                       Slot? (yes/no)
+//     ---  -----------------------------------------  --------------
+//     0    HasNoOpConstructor                         no  (capability-only)
+//     1    HasZeroConstructor                         no  (capability-only)
+//     2    HasDestructor                              no  (capability-only)
+//     3    HasPostScriptConstruct                     yes (slot 0)
+//     4    HasSerializer                              yes (Layer 9 routes)
+//     5    HasIdentical                               no  (capability-only)
+//     6    HasNetSerializer                           yes (slot 3)
+//     7    HasNetDeltaSerializer                      yes (slot 4)
+//     8    HasAddStructReferencedObjects              yes (slot 1)
+//     9    HasGetTypeHash                             yes (slot 2)
+//     10   HasSerializeFromMismatchedTag              yes (slot 8)
+//     11   HasPostSerialize                           yes (slot 5)
+//     12   HasExportTextItem                          yes (slot 6)
+//     13   HasImportTextItem                          yes (slot 7)
+//     14   HasCopy                                    yes (slot 11)
+//     15   HasMoveAssign                              yes (slot 12)
+//     16   IsPlainOldData                             no  (capability-only)
+//     17   IsUECoreType                               no  (capability-only)
+//     18   IsUECoreVariant                            no  (capability-only)
+//     19   HasGetPreloadDependencies                  yes (slot 15)
+//     20   HasFindInnerPropertyInstance               yes (slot 14)
+//     21   HasVisitor                                 yes (slot 13)
+//     22   ClearOnFinishDestroy                       no  (capability-only)
+//     23   HasIntrusiveUnsetOptionalState             no  (capability-only; FOptional)
+//     24   IsBlueprintBase                            no  (capability-only; XPact addition)
+//     25   IsNative                                   no  (capability-only; XPact addition)
+//     26   HasStructuredSerializer                    yes (slot 9; UE-parity per FIX-R2-HIGH-NEW-2)
+//     27   HasNetSharedSerialization                  no  (capability-only; UE-parity)
+//     28   HasStructuredSerializeFromMismatchedTag    yes (slot 10; UE-parity per FIX-R2-HIGH-NEW-2)
+//     29   IsAbstract                                 no  (capability-only; UE-parity)
+//     30   IsIntrusiveOptionalSafeForGC               no  (capability-only; UE-parity FOptional+GC)
+//     31   RESERVED (1 bit for post-MVP additions)
+//
+//   Round 2 audit note (FIX-R2-HIGH-NEW-2): the prior comment claimed
+//   IsBlueprintBase and IsNative were UE-parity additions; this is
+//   incorrect. UE keeps both in `StructFlags & STRUCT_BlueprintBase`
+//   (per `UScriptStruct::StructFlags`) and `EClassFlags & CLASS_Native`
+//   respectively, not in the `FCapabilities` mask. The XPact bits at
+//   24-25 are deliberate XPACT-NOVEL additions that fold the two flags
+//   into the unified capability mask (one bit-test instead of one
+//   StructFlags-load + one mask-and). The five new bits at 26-30 ARE
+//   UE-parity additions to close gaps the prior revision missed.
+//
+//   ABI bump note: the FCapabilities mask is now 31 active bits with 1
+//   reserved. Future expansion past 32 capabilities requires widening
+//   the underlying type from uint32 to uint64; this is a Phase 2+ ABI
+//   bump (the XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG would change
+//   from v1 to v2). TODO(Phase 2): consider widening to uint64 with a
+//   reserved-bits expansion to 64 to allow ~30 more capability bits
+//   for the post-MVP expansion (e.g., serialisation-format dialect
+//   bits, editor-only handler categories).
 //
 // SLOT LAYOUT (16 fixed slots; subset of capability bits):
 //
@@ -107,8 +131,8 @@
 //   Slot 6  ExportTextItem
 //   Slot 7  ImportTextItem
 //   Slot 8  SerializeFromMismatchedTag (FCustomVersion migration)
-//   Slot 9  StructuredSerialize (RESERVED post-MVP)
-//   Slot 10 StructuredSerializeFromMismatchedTag (RESERVED post-MVP)
+//   Slot 9  StructuredSerialize (UE-parity; slot active per FIX-R2-HIGH-NEW-2)
+//   Slot 10 StructuredSerializeFromMismatchedTag (UE-parity; slot active per FIX-R2-HIGH-NEW-2)
 //   Slot 11 Copy (declared bit; handler reserved)
 //   Slot 12 MoveAssign (declared bit; handler reserved)
 //   Slot 13 Visitor (editor PropertyVisitor; reserved)
@@ -165,11 +189,11 @@ namespace XCore::Reflect
     // -----------------------------------------------------------------
     // ECppStructOpsCapability -- 32-bit capability bitmask layout.
     //
-    // Per Rev 2 FIX-4 / MEDIUM-5: 26 active bits + 6 reserved
-    // (previously 24 active + 8 reserved). Each bit represents either
-    // a populated dispatch slot OR a capability-only declaration (e.g.,
-    // IsPlainOldData, HasNoOpConstructor, IsBlueprintBase, IsNative)
-    // that callers consult without dispatching through a slot.
+    // Per Rev 3 Round 2 audit FIX-R2-HIGH-NEW-2: 31 active bits + 1
+    // reserved (previously 26 active + 6 reserved). Each bit represents
+    // either a populated dispatch slot OR a capability-only declaration
+    // (e.g., IsPlainOldData, HasNoOpConstructor) that callers consult
+    // without dispatching through a slot.
     //
     // The bit positions are LOCKED in the Stage B addendum and any
     // change requires a Contract Rev 13.9+ bump.
@@ -178,25 +202,27 @@ namespace XCore::Reflect
     //   HasNoOpConstructor / HasZeroConstructor / HasDestructor /
     //   HasIdentical / IsPlainOldData / IsUECoreType / IsUECoreVariant /
     //   ClearOnFinishDestroy / HasIntrusiveUnsetOptionalState /
-    //   IsBlueprintBase / IsNative.
+    //   IsBlueprintBase / IsNative / HasNetSharedSerialization /
+    //   IsAbstract / IsIntrusiveOptionalSafeForGC.
     //
     // Slot-bearing bits (Slots[] index recorded in the comment per row):
-    //   HasPostScriptConstruct        -> Slot 0
-    //   HasSerializer                 -> Layer 9 routes (no direct slot;
-    //                                    FStruct::SerializeStructFn handles)
-    //   HasNetSerializer              -> Slot 3
-    //   HasNetDeltaSerializer         -> Slot 4
-    //   HasAddStructReferencedObjects -> Slot 1
-    //   HasGetTypeHash                -> Slot 2
-    //   HasSerializeFromMismatchedTag -> Slot 8
-    //   HasPostSerialize              -> Slot 5
-    //   HasExportTextItem             -> Slot 6
-    //   HasImportTextItem             -> Slot 7
-    //   HasCopy                       -> Slot 11
-    //   HasMoveAssign                 -> Slot 12
-    //   HasGetPreloadDependencies     -> Slot 15
-    //   HasFindInnerPropertyInstance  -> Slot 14
-    //   HasVisitor                    -> Slot 13
+    //   HasPostScriptConstruct                  -> Slot 0
+    //   HasSerializer                           -> Layer 9 routes
+    //   HasNetSerializer                        -> Slot 3
+    //   HasNetDeltaSerializer                   -> Slot 4
+    //   HasAddStructReferencedObjects           -> Slot 1
+    //   HasGetTypeHash                          -> Slot 2
+    //   HasSerializeFromMismatchedTag           -> Slot 8
+    //   HasPostSerialize                        -> Slot 5
+    //   HasExportTextItem                       -> Slot 6
+    //   HasImportTextItem                       -> Slot 7
+    //   HasCopy                                 -> Slot 11
+    //   HasMoveAssign                           -> Slot 12
+    //   HasGetPreloadDependencies               -> Slot 15
+    //   HasFindInnerPropertyInstance            -> Slot 14
+    //   HasVisitor                              -> Slot 13
+    //   HasStructuredSerializer                 -> Slot 9  (Round 2 FIX)
+    //   HasStructuredSerializeFromMismatchedTag -> Slot 10 (Round 2 FIX)
     // -----------------------------------------------------------------
     enum class ECppStructOpsCapability : ::uint32
     {
@@ -241,38 +267,101 @@ namespace XCore::Reflect
         HasIntrusiveUnsetOptionalState     = 1U << 23,
 
         // -------------------------------------------------------------
-        // Rev 2 FIX-4 / MEDIUM-5: UE-parity capability bits.
+        // XPACT-NOVEL additions (bits 24-25; Rev 3 Round 2 audit
+        // correction per FIX-R2-HIGH-NEW-2).
         //
-        // UE's `UScriptStruct::ICppStructOps` interface
-        // (Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h)
-        // exposes IsNative + IsBlueprintBase predicates which drive the
-        // Blueprint compiler's struct-derivation rules (a Blueprint can
-        // only derive from a struct that returns true from
-        // IsBlueprintBase) and the native-vs-Blueprint-generated
-        // discriminator (IsNative).
+        // Per the audit: UE does NOT keep IsBlueprintBase or IsNative
+        // in `FCapabilities`; it stores them in
+        // `UScriptStruct::StructFlags & STRUCT_BlueprintBase` and
+        // `EClassFlags & CLASS_Native` respectively
+        // (Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h).
+        // The prior revision's comment claiming "UE-parity" was
+        // incorrect.
         //
-        // Both are checked-only flags (no corresponding function-pointer
-        // slot); the value is set at constinit time per FScriptStruct
-        // subtype by the XHT-emitted .gen.cpp.
+        // XPact folds both into the unified capability mask as a
+        // deliberate divergence -- a single bit-test (mask & bit) is
+        // simpler than a separate StructFlags-load + mask-and. The
+        // value is set at constinit time per FScriptStruct subtype by
+        // the XHT-emitted .gen.cpp.
         // -------------------------------------------------------------
 
         // IsBlueprintBase -- struct is permitted to serve as a Blueprint
-        // derivable base type. UE's `UScriptStruct::ICppStructOps::
-        // IsUStructBlueprintBase` analogue. Default per type: false;
-        // explicit USTRUCT(BlueprintType) sets the bit.
+        // derivable base type. Drives the Blueprint compiler's struct-
+        // derivation rules (a Blueprint can only derive from a struct
+        // that returns true). Default per type: false; explicit
+        // USTRUCT(BlueprintType) sets the bit.
         IsBlueprintBase                    = 1U << 24,
 
-        // IsNative -- struct is a native C++ type (defined in C++ source
-        // via USTRUCT()), as opposed to a Blueprint-generated struct
-        // (defined in a Blueprint asset's user-defined struct). UE's
-        // `UStruct::IsNative` analogue. Default per type: true for
-        // C++-emitted XHT-generated tables; false for Blueprint-emitted
-        // tables.
+        // IsNative -- struct is a native C++ type (defined in C++
+        // source via USTRUCT()), as opposed to a Blueprint-generated
+        // struct (defined in a Blueprint asset's user-defined struct).
+        // Default per type: true for C++-emitted XHT-generated tables;
+        // false for Blueprint-emitted tables.
         IsNative                           = 1U << 25,
 
-        // Bits 26-31 reserved for post-MVP additions (6 reserved bits;
-        // previously 8 -- 2 bits consumed for Rev 2 FIX-4 IsBlueprintBase
-        // and IsNative).
+        // -------------------------------------------------------------
+        // Rev 3 Round 2 audit FIX-R2-HIGH-NEW-2: 5 missing UE-parity
+        // capability bits.
+        //
+        // The prior revision (Rev 2 FIX-4) added IsBlueprintBase + IsNative
+        // claiming UE-parity, but the audit found those are NOT in UE's
+        // FCapabilities and ALSO that 5 genuine UE-parity bits were
+        // missing entirely. The 5 bits below close that gap. Two of
+        // them (HasStructuredSerializer, HasStructuredSerializeFromMismatchedTag)
+        // are slot-bearing and bind to existing Slots[9] and Slots[10]
+        // (which the prior revision marked "RESERVED post-MVP" but for
+        // which the slot infrastructure was already in place).
+        // -------------------------------------------------------------
+
+        // HasStructuredSerializer -- bind to Slots[9] (StructuredSerialize).
+        // UE-equivalent: `UScriptStruct::ICppStructOps::HasStructuredSerializer`.
+        // Indicates the struct provides a structured-archive serializer
+        // (FStructuredArchive); replaces or supplements the legacy
+        // FArchive serializer (slot 4 'HasSerializer'). Structured
+        // serialization is the path forward for editor-side cooking
+        // determinism.
+        HasStructuredSerializer                  = 1U << 26,
+
+        // HasNetSharedSerialization -- capability-only flag.
+        // UE-equivalent: `UScriptStruct::ICppStructOps::HasNetSharedSerialization`.
+        // Indicates the struct's NetSerialize handler produces output
+        // that is identical for every recipient (no per-receiver
+        // adaptation). Enables replication-system bandwidth optimisation
+        // (serialise once, broadcast). The XNetworking subsystem reads
+        // this bit when batching net updates.
+        HasNetSharedSerialization                = 1U << 27,
+
+        // HasStructuredSerializeFromMismatchedTag -- bind to Slots[10]
+        // (StructuredSerializeFromMismatchedTag).
+        // UE-equivalent: `UScriptStruct::ICppStructOps::HasStructuredSerializeFromMismatchedTag`.
+        // Structured-archive variant of HasSerializeFromMismatchedTag
+        // (slot 8). Used for FCustomVersion-driven migrations when the
+        // archive is structured rather than legacy FArchive.
+        HasStructuredSerializeFromMismatchedTag  = 1U << 28,
+
+        // IsAbstract -- capability-only flag.
+        // UE-equivalent: `UScriptStruct::StructFlags & STRUCT_Abstract`,
+        // folded into the unified capability mask per XPact convention
+        // (same reasoning as IsBlueprintBase / IsNative). Indicates the
+        // struct cannot be instantiated directly; only derived types
+        // may instantiate. The reflection registrar reads this bit to
+        // gate Add-via-FScriptStruct paths.
+        IsAbstract                               = 1U << 29,
+
+        // IsIntrusiveOptionalSafeForGC -- capability-only flag.
+        // UE-equivalent: `UScriptStruct::ICppStructOps::IsIntrusiveOptionalSafeForGC`.
+        // Indicates the struct's intrusive-FOptional unset state
+        // (HasIntrusiveUnsetOptionalState at bit 23) does NOT produce
+        // a value that the GC walker could misinterpret as a live
+        // XObject pointer. Required when an FOptional<T> field carries
+        // an XObject-pointer-bearing T; the unset state must be
+        // GC-safe (typically zero-initialised) or the collector would
+        // chase the stale bytes.
+        IsIntrusiveOptionalSafeForGC             = 1U << 30,
+
+        // Bit 31 reserved for one post-MVP capability addition. After
+        // that point, the uint32-backed mask is exhausted; further
+        // expansion requires widening to uint64 (Phase 2+ ABI bump).
     };
 
     // -----------------------------------------------------------------

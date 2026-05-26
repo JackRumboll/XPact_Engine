@@ -5,6 +5,30 @@
 // XGCDeclarations.h -- XGC ABI declarations (locked decision 7).
 // =====================================================================
 //
+// XINSIGHTS DEFERRAL (Rev 3 Round 2 audit FIX-R2-MED-NEW-6).
+//
+// XCore-4b's eventual collector will expose pause-time histogram +
+// mark-rate + sweep-rate counters as XInsights telemetry feeds
+// (Master Plan §2a Engine-telemetry row). At Phase 1a the XInsights
+// subsystem is not yet implemented; the GC telemetry hookup points
+// will appear as weak-symbol stubs that XInsights replaces at link
+// time once it lands.
+//
+// LOAD-BEARING CONSTRAINT.
+// Any future XInsights callback fired from the GC mark/sweep phases
+// MUST NOT allocate (the collector holds the heap-quiesce lock during
+// mark; a callback that allocates would deadlock or corrupt the
+// in-flight mark). The same recursion-hazard discipline documented at
+// FMallocBinnedX.h applies to the GC pause-time hooks: callbacks
+// snapshot into caller-owned buffers OR enqueue into a lock-free MPSC
+// for consumer-thread drainage.
+//
+// TODO(Phase 2 / XInsights): once XInsights lands, the four GC entry
+// points below will sprout matching `XGC_OnMarkBegin / OnMarkEnd /
+// OnSweepBegin / OnSweepEnd` weak symbols that XInsights resolves.
+// The four ABI symbols below stay unchanged.
+// =====================================================================
+//
 // XCore-4a Rev 3, Section 5.4 + Section 13.1.
 //
 // XCore-4a declares the GC root-registration ABI; the implementation

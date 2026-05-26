@@ -385,9 +385,16 @@ void FNamePool::FInsertPreAlloc::ReleaseUnused() noexcept
 //   2. Outer scope (after the shared lock releases) calls FMemory::
 //      MallocOrAbort with NO shard lock held.
 //
-// This is the load-bearing invariant per Rev 2 FIX-2: every FMemory
-// call here is OUTSIDE any FNamePool shard lock. AB-BA hazard against
-// hypothetical FMalloc-uses-FName lock-order is structurally avoided.
+// This is the load-bearing invariant per Rev 2 FIX-2 (with the Rev 3
+// Round 2 FIX-R2-MIN-9 wording refinement): every FMemory call IN THE
+// STEADY-STATE WRITE PATH is OUTSIDE any FNamePool shard lock. The
+// one-shot `Init()` bootstrap (single-threaded `PostStaticInit` window)
+// is the documented exception, see `Init()` rationale above -- the
+// bootstrap allocates shard-table backing storage under a guard that
+// is structurally serial (no concurrent shard-readers are alive yet),
+// so the strict "no-FMemory-under-shard-lock" rule does not apply.
+// AB-BA hazard against hypothetical FMalloc-uses-FName lock-order is
+// structurally avoided on the steady-state path.
 // ---------------------------------------------------------------------
 void FNamePool::PredictInsertPreAlloc(FNamePoolShard& Shard,
                                       ::int32 ByteLen,

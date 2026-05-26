@@ -128,6 +128,55 @@ int main()
     }
 
     // -----------------------------------------------------------------
+    // Rev 3 FIX-R2-MIN-6: operator< must order by Index FIRST, then
+    // SerialNumber. A bit_cast-based comparison would inadvertently
+    // order by SerialNumber-then-Index on little-endian targets;
+    // the explicit shift-and-or pattern in FName.h avoids that.
+    //
+    // We construct two FNames with differing Indices and HIGH
+    // SerialNumber on the lower Index, LOW SerialNumber on the higher
+    // Index. If the comparison erroneously primaried on SerialNumber
+    // the LOW-Index/HIGH-Serial entry would compare as GREATER, but
+    // the spec demands LESS (since Index is the primary key).
+    // -----------------------------------------------------------------
+    {
+        // Construct FNames with distinct Indices (Alpha and Beta).
+        FName Alpha("Alpha");
+        FName Beta("Beta");
+        if (Alpha.GetIndex() == Beta.GetIndex())
+        {
+            std::fprintf(stderr, "FAIL: Alpha/Beta same Index (cannot test order)\n");
+            return 1;
+        }
+
+        // Determine the lower-Index name; attach HIGH SerialNumber to
+        // it. Attach LOW SerialNumber to the higher-Index name.
+        const bool AlphaIsLower = Alpha.GetIndex() < Beta.GetIndex();
+        FName Lower = AlphaIsLower ? Alpha : Beta;
+        FName Upper = AlphaIsLower ? Beta  : Alpha;
+
+        FName LowerHigh = FName::WithNumber(Lower, 1000000);
+        FName UpperLow  = FName::WithNumber(Upper, 1);
+
+        // SPEC: LowerHigh < UpperLow (Index is primary).
+        if (!(LowerHigh < UpperLow))
+        {
+            std::fprintf(stderr,
+                "FAIL: operator< did not order by Index primarily "
+                "(Lower.Index=%u w/Serial=1000000 vs Upper.Index=%u w/Serial=1)\n",
+                LowerHigh.GetIndex(), UpperLow.GetIndex());
+            return 1;
+        }
+        if (UpperLow < LowerHigh)
+        {
+            std::fprintf(stderr,
+                "FAIL: operator< returned UpperLow < LowerHigh "
+                "(expected the opposite)\n");
+            return 1;
+        }
+    }
+
+    // -----------------------------------------------------------------
     // NAME_None equals default ctor.
     // -----------------------------------------------------------------
     {

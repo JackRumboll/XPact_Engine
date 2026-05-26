@@ -62,6 +62,8 @@
 #include "HAL/TConsoleVariableData.h"
 #include "HAL/TConsoleVariableHandle.h"
 
+#include <atomic>                         // std::atomic for Registered (Rev 3 FIX-R2-MAJ-2)
+
 #if XPACT_HAS_SOURCE_LOCATION
     #include <source_location>
 #endif
@@ -122,7 +124,28 @@ namespace XCore::Misc
         // the drain. Written by the IConsoleManager's drain step;
         // read by FAutoConsoleVariable<T>::GetHandle when the
         // caller queries the handle.
-        IConsoleVariable* Registered = nullptr;
+        //
+        // Rev 3 Round 2 audit FIX-R2-MAJ-2 (hot-reload-plugin-load race):
+        // Plain pointer was unsynchronised with respect to drain-time
+        // writes from the IConsoleManager TU and steady-state reads
+        // from FAutoConsoleVariable<T>::GetHandle in other TUs. On a
+        // hot-reload plugin-load path the second __Initialize call
+        // drains pending nodes while live readers may be racing on
+        // GetHandle; the prior plain-pointer load/store had no
+        // ordering guarantee, opening a window where the reader
+        // could observe a torn or stale value on weakly-ordered
+        // architectures (ARM64).
+        //
+        // The std::atomic<IConsoleVariable*> writes with release
+        // ordering at drain time; readers load with acquire ordering.
+        // On x86_64 both compile to plain mov instructions (the ISA
+        // is already release/acquire-ordered on aligned scalar
+        // accesses); on ARM64 the compiler emits ldar / stlr (the
+        // weakly-ordered targets that require the explicit fence).
+        // Per-call overhead in the steady state is therefore zero on
+        // x86_64 and one fence on ARM64; the correctness gain is
+        // unconditional.
+        ::std::atomic<IConsoleVariable*> Registered{nullptr};
 
 #if XPACT_HAS_SOURCE_LOCATION
         // Captured at FAutoConsoleVariable<T> ctor time (spec section
@@ -210,16 +233,20 @@ namespace XCore::Misc
         //
         // Pre-PostStaticInit calls return nullptr; Debug asserts.
         // Hot-path code MUST use GetHandle().Get() instead.
+        //
+        // Rev 3 FIX-R2-MAJ-2: acquire-load on the atomic Registered
+        // field; pairs with the release-store at the drain site
+        // (IConsoleManager.cpp).
         [[nodiscard]] IConsoleVariable* operator->() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
         // Direct access to the registered CVar; nullptr if drain
-        // hasn't happened yet.
+        // hasn't happened yet. Acquire-load per FIX-R2-MAJ-2.
         [[nodiscard]] IConsoleVariable* Get() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
     private:
@@ -272,14 +299,16 @@ namespace XCore::Misc
 
         [[nodiscard]] TConsoleVariableHandle<float> GetHandle() const noexcept;
 
+        // Rev 3 FIX-R2-MAJ-2: acquire-load on the atomic Registered
+        // field; pairs with the release-store at the drain site.
         [[nodiscard]] IConsoleVariable* operator->() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
         [[nodiscard]] IConsoleVariable* Get() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
     private:
@@ -335,14 +364,16 @@ namespace XCore::Misc
         FAutoConsoleVariable(FAutoConsoleVariable&&)                 = delete;
         FAutoConsoleVariable& operator=(FAutoConsoleVariable&&)      = delete;
 
+        // Rev 3 FIX-R2-MAJ-2: acquire-load on the atomic Registered
+        // field; pairs with the release-store at the drain site.
         [[nodiscard]] IConsoleVariable* operator->() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
         [[nodiscard]] IConsoleVariable* Get() const noexcept
         {
-            return m_node.Registered;
+            return m_node.Registered.load(::std::memory_order_acquire);
         }
 
     private:

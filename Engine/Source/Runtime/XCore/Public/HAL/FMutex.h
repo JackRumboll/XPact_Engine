@@ -91,6 +91,19 @@ public:
     // TryLockFor -- bounded-wait variant (Rev 1 audit HIGH-2
     // close-out).
     //
+    // ##################################################################
+    // # NOT SIM-PATH-SAFE  (Rev 3 Round 2 audit FIX-R2-MIN-3)
+    // #
+    // # Consults the wall-clock timer to bound the wait. Sim-path TUs
+    // # require deterministic-replay-bit-exactness; wall-clock-
+    // # dependent acquire is forbidden in sim-path code.
+    // #
+    // # For a sim-path lock acquire with a logical bound, use the
+    // # `TryLock()` (no-timeout) variant inside a bounded retry loop.
+    // # Renderer / UI / streaming TUs (non-sim-path) MAY use this
+    // # method without restriction.
+    // ##################################################################
+    //
     // Returns true if the mutex was acquired within the timeout, false
     // if the timeout expired without acquiring.
     //

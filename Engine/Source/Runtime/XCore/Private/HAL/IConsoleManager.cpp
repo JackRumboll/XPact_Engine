@@ -227,7 +227,14 @@ namespace XCore::Misc
         // The entry carries both the CVar pointer and the source-
         // location of the original registration (used by the
         // duplicate-registration diagnostic).
-        ::XCore::TMap<::uint64, FRegistryEntry> Map;
+        //
+        // Rev 3 Round 2 audit FIX-R2-MIN-1+2: tagged FMemTag::CVar so
+        // the allocator's per-tag accounting attributes registry
+        // allocations to the CVar subsystem (not the default
+        // Container tag). Initialised via the FMemTag-taking TMap
+        // ctor; m_tag propagates into every subsequent Rehash /
+        // ClearAndDeallocate allocation.
+        ::XCore::TMap<::uint64, FRegistryEntry> Map{::XCore::HAL::FMemTag::CVar};
 
         // Registry-wide RWLock. Shared on Find / ForEach; exclusive
         // on Register*. Per Section 9.2: "Internal RWLock; Find is
@@ -781,7 +788,14 @@ namespace XCore::Misc
             // unbound handle when Registered is nullptr, which is
             // the safe behaviour for the colliding second
             // registration.
-            Node->Registered = Registered;
+            //
+            // Rev 3 Round 2 audit FIX-R2-MAJ-2: release-store on the
+            // atomic Registered field; pairs with the acquire-load
+            // at every GetHandle reader. The release ordering
+            // publishes the Registered pointer with happens-before
+            // relative to any concurrent reader on a hot-reload-
+            // plugin-load drain.
+            Node->Registered.store(Registered, ::std::memory_order_release);
         }
 
         State->DrainCompleted.store(true, ::std::memory_order_release);
@@ -802,24 +816,37 @@ namespace XCore::Misc
 
     TConsoleVariableHandle<::int32> FAutoConsoleVariable<::int32>::GetHandle() const noexcept
     {
-        if (m_node.Registered == nullptr) [[unlikely]]
+        // Rev 3 Round 2 audit FIX-R2-MAJ-2: single acquire-load on the
+        // atomic Registered field. The local copy snapshots the value
+        // so the (Registered != nullptr) check and the subsequent
+        // down-cast use the same observed pointer (a concurrent drain
+        // that re-flips Registered between the two reads on the prior
+        // plain-pointer path could have produced inconsistent reads;
+        // the snapshot eliminates that window).
+        IConsoleVariable* const Registered =
+            m_node.Registered.load(::std::memory_order_acquire);
+        if (Registered == nullptr) [[unlikely]]
         {
             return TConsoleVariableHandle<::int32>();
         }
         // Down-cast to the concrete type to access the value cell.
         // The concrete type is guaranteed because the registration
         // path picks the concrete by ValueType.
-        TConsoleVariableInt32* Concrete = static_cast<TConsoleVariableInt32*>(m_node.Registered);
+        TConsoleVariableInt32* Concrete = static_cast<TConsoleVariableInt32*>(Registered);
         return TConsoleVariableHandle<::int32>(Concrete->__GetValueCellPtr());
     }
 
     TConsoleVariableHandle<float> FAutoConsoleVariable<float>::GetHandle() const noexcept
     {
-        if (m_node.Registered == nullptr) [[unlikely]]
+        // Rev 3 Round 2 audit FIX-R2-MAJ-2: see int32 GetHandle for the
+        // acquire-load + snapshot rationale.
+        IConsoleVariable* const Registered =
+            m_node.Registered.load(::std::memory_order_acquire);
+        if (Registered == nullptr) [[unlikely]]
         {
             return TConsoleVariableHandle<float>();
         }
-        TConsoleVariableFloat* Concrete = static_cast<TConsoleVariableFloat*>(m_node.Registered);
+        TConsoleVariableFloat* Concrete = static_cast<TConsoleVariableFloat*>(Registered);
         return TConsoleVariableHandle<float>(Concrete->__GetValueCellPtr());
     }
 

@@ -89,6 +89,13 @@ namespace XCore::Reflect
 struct FReflectionRegistry
 {
     // ---- Per-kind name->pointer maps (FName-indexed O(1) lookup) ----
+    //
+    // Rev 3 Round 2 audit FIX-R2-MIN-1+2: every container in the
+    // registry is tagged FMemTag::Reflection so the allocator's
+    // per-tag accounting attributes these allocations to the
+    // reflection subsystem rather than the default Container tag.
+    // The TMap / TArray FMemTag-taking ctor supports this since
+    // Phase 1d.
     ::XCore::TMap<FName, const FClass*>        ClassesByName;
     ::XCore::TMap<FName, const FStruct*>       StructsByName;
     ::XCore::TMap<FName, const FScriptStruct*> ScriptStructsByName;
@@ -115,7 +122,30 @@ struct FReflectionRegistry
     // ---- Global lock (single FRWLock for all four maps) ----
     mutable ::XCore::HAL::FRWLock              Lock;
 
-    FReflectionRegistry() noexcept = default;
+    // Rev 3 Round 2 audit FIX-R2-MIN-1+2: thread FMemTag::Reflection
+    // through every container via the explicit-tag ctor. The TMap and
+    // TArray FMemTag-taking ctors propagate the tag through the
+    // allocator at the construction site so all subsequent
+    // allocations are tagged Reflection (not the default Container).
+    // The TArray<>::TArray(FMemTag) is via DefaultAllocator{FMemTag::Reflection}.
+    FReflectionRegistry() noexcept
+        : ClassesByName(::XCore::HAL::FMemTag::Reflection)
+        , StructsByName(::XCore::HAL::FMemTag::Reflection)
+        , ScriptStructsByName(::XCore::HAL::FMemTag::Reflection)
+        , EnumsByName(::XCore::HAL::FMemTag::Reflection)
+        , InterfacesByName(::XCore::HAL::FMemTag::Reflection)
+        , AllClasses(::XCore::DefaultAllocator{::XCore::HAL::FMemTag::Reflection})
+        , AllStructs(::XCore::DefaultAllocator{::XCore::HAL::FMemTag::Reflection})
+        , AllEnums(::XCore::DefaultAllocator{::XCore::HAL::FMemTag::Reflection})
+        , AllInterfaces(::XCore::DefaultAllocator{::XCore::HAL::FMemTag::Reflection})
+        , ClassOwningModule(::XCore::HAL::FMemTag::Reflection)
+        , StructOwningModule(::XCore::HAL::FMemTag::Reflection)
+        , ScriptStructOwningModule(::XCore::HAL::FMemTag::Reflection)
+        , EnumOwningModule(::XCore::HAL::FMemTag::Reflection)
+        , InterfaceOwningModule(::XCore::HAL::FMemTag::Reflection)
+    {
+    }
+
     ~FReflectionRegistry() noexcept = default;
 
     FReflectionRegistry(const FReflectionRegistry&)            = delete;

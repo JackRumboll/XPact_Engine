@@ -128,10 +128,12 @@
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
 #include "Macros/XErrorTypes.h"
+#include "Macros/XCoreFwd.h"     // TArray forward decl (Rev 3 FIX-R2-MED-NEW-2 Array())
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
 #include "Hash/FXxh3.h"
 
+#include <algorithm>    // std::sort (Rev 3 FIX-R2-MED-NEW-2 Sort)
 #include <cstring>      // std::memcpy, std::memset
 #include <functional>   // std::equal_to
 #include <new>          // placement new
@@ -753,6 +755,114 @@ namespace XCore
         [[nodiscard]] TConstIter end() const noexcept   { return m_capacity == 0 ? TConstIter() : TConstIter(m_ctrl + m_capacity, m_slots + m_capacity * sizeof(T)); }
 
         // =================================================================
+        // UE-parity surface additions (Rev 3 Round 2 audit FIX-R2-MED-NEW-2).
+        //
+        // The methods below mirror UE's TSet surface (Engine/Source/Runtime
+        // /Core/Public/Containers/Set.h + friends) for the convenience-API
+        // gap the prior XPact TSet had. Each has the same signature
+        // semantics as UE's; the implementations are XPact-native (built on
+        // the SwissTable backing rather than UE's TSparseArray).
+        //
+        // Set-algebra (Intersect / Union / Difference): NOT shipped here.
+        // Per the Round 2 audit prompt, those operations belong in an
+        // Algo:: namespace rather than as member methods; deferring until
+        // the Algo namespace lands.
+        // =================================================================
+
+        // -------------------------------------------------------------
+        // Append (copy) -- bulk merge from another TSet.
+        //
+        // Adds every element of Other to *this. Duplicates are ignored
+        // (the underlying Add returns false on duplicate). The
+        // destination's tag is preserved (Other's tag is NOT
+        // inherited).
+        //
+        // Cost: O(N) where N is Other's size.
+        // -------------------------------------------------------------
+        void Append(const TSet& Other)
+        {
+            if (&Other == this) return;
+            for (::SIZE_T I = 0; I < Other.m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(Other.m_ctrl[I]))
+                {
+                    const T* SlotPtr = reinterpret_cast<const T*>(Other.m_slots + I * sizeof(T));
+                    AddImpl(*SlotPtr);
+                }
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Append (move) -- bulk merge, consuming source.
+        // -------------------------------------------------------------
+        void Append(TSet&& Other)
+        {
+            if (&Other == this) return;
+            for (::SIZE_T I = 0; I < Other.m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(Other.m_ctrl[I]))
+                {
+                    T* SlotPtr = reinterpret_cast<T*>(Other.m_slots + I * sizeof(T));
+                    AddImpl(::std::move(*SlotPtr));
+                }
+            }
+            // Source is in moved-from state; release storage so callers
+            // see Num() == 0 cleanly.
+            Other.ClearAndDeallocate();
+        }
+
+        // -------------------------------------------------------------
+        // Sort -- in-place element ordering by predicate.
+        //
+        // Same caveat as TMap::KeySort: SwissTable storage does NOT
+        // preserve iteration order generally; Sort gives a transient
+        // sorted iteration order until the next Add/Remove. The
+        // implementation collects elements into a temp buffer, sorts
+        // by predicate, then rebuilds the SwissTable in sorted
+        // insertion order.
+        //
+        // Cost: O(N log N) on the predicate plus a full rebuild.
+        //
+        // UE-parity: UE's TSet::Sort lives on the TSparseArray backing;
+        // XPact's variant is functionally equivalent.
+        // -------------------------------------------------------------
+        template<typename Pred>
+        void Sort(Pred Predicate)
+        {
+            if (m_size <= 1) return;
+            SortAndRehash(Predicate);
+        }
+
+        // -------------------------------------------------------------
+        // Array() -- bulk extraction into a TArray.
+        //
+        // Returns a new TArray containing every element. Iteration
+        // order is implementation-defined per §5.3; callers that need
+        // a specific order should call Sort first.
+        //
+        // The default TArray allocator inherits the engine-wide
+        // DefaultAllocator; this preserves UE-parity with UE's
+        // TSet::Array() returning TArray<ElementType>.
+        //
+        // Cost: O(N) + one TArray allocation.
+        //
+        // UE-parity: UE Set.h (TSet::Array() const).
+        // -------------------------------------------------------------
+        [[nodiscard]] ::XCore::TArray<T> Array() const
+        {
+            ::XCore::TArray<T> Out;
+            Out.Reserve(static_cast<::int32>(m_size));
+            for (::SIZE_T I = 0; I < m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(m_ctrl[I]))
+                {
+                    Out.Add(*reinterpret_cast<const T*>(m_slots + I * sizeof(T)));
+                }
+            }
+            return Out;
+        }
+
+        // =================================================================
         // Diagnostics / test hooks.
         // =================================================================
 
@@ -1107,6 +1217,65 @@ namespace XCore
             m_capacity   = NewCap;
             m_size       = NewSize;
             m_growthLeft = ::XCore::Detail::CapacityToGrowAt(NewCap) - NewSize;
+        }
+
+        // -------------------------------------------------------------
+        // SortAndRehash -- shared helper for Sort (Rev 3 FIX-R2-MED-NEW-2).
+        //
+        // Collects every Full slot's T into a tagged temp buffer, sorts
+        // by Comp, then rebuilds *this from the sorted order via a
+        // fresh AddImpl walk. The SwissTable's iteration order matches
+        // the sorted sequence until the next Add/Remove.
+        //
+        // Rebuild approach (vs. in-place sort) is required because the
+        // SwissTable's control bytes encode H2(hash) of the slot's
+        // value; sorting in place would desynchronise ctrl and slot
+        // arrays. Rebuilding is the safe path.
+        //
+        // The temp buffer carries m_tag for allocation attribution.
+        // -------------------------------------------------------------
+        template<typename Comp>
+        void SortAndRehash(Comp Comparator)
+        {
+            const ::SIZE_T N = m_size;
+            if (N <= 1) return;
+
+            void* TempPtr = ::XCore::HAL::FMemory::MallocOrAbort(
+                N * sizeof(T),
+                alignof(T) > 16 ? alignof(T) : 16,
+                m_tag);
+            T* Temp = static_cast<T*>(TempPtr);
+
+            ::SIZE_T Filled = 0;
+            for (::SIZE_T I = 0; I < m_capacity; ++I)
+            {
+                if (::XCore::Detail::IsFull(m_ctrl[I]))
+                {
+                    T* SlotPtr = reinterpret_cast<T*>(m_slots + I * sizeof(T));
+                    new (&Temp[Filled]) T(::std::move(*SlotPtr));
+                    SlotPtr->~T();
+                    ++Filled;
+                }
+            }
+            XPACT_CHECK(Filled == N);
+
+            ::std::sort(Temp, Temp + N, Comparator);
+
+            // Wipe table back to empty at the existing capacity.
+            std::memset(m_ctrl, ::XCore::Detail::kCtrlEmpty,
+                        m_capacity + ::XCore::Detail::kGroupSize);
+            m_ctrl[m_capacity] = ::XCore::Detail::kCtrlSentinel;
+            m_size       = 0;
+            m_growthLeft = ::XCore::Detail::CapacityToGrowAt(m_capacity);
+
+            // Re-insert in sorted order.
+            for (::SIZE_T I = 0; I < N; ++I)
+            {
+                AddImpl(::std::move(Temp[I]));
+                Temp[I].~T();
+            }
+
+            ::XCore::HAL::FMemory::Free(TempPtr);
         }
 
         // -------------------------------------------------------------

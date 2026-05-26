@@ -310,6 +310,78 @@ public:
     [[nodiscard]] FString TrimEnd()   const;
 
     // -------------------------------------------------------------
+    // UE-parity surface additions (Rev 3 Round 2 audit FIX-R2-MED-NEW-3).
+    //
+    // ASCII-only case conversion and padding helpers. Unicode-aware
+    // case conversion (locale-correct upper / lower / title) is
+    // deferred to the ICU integration layer (post-Phase 1d); these
+    // ASCII variants are locale-independent and sim-path-safe.
+    //
+    // The case-conversion methods are sim-path-safe because they
+    // touch only bytes in 'A'..'Z' / 'a'..'z' and operate by
+    // direct byte arithmetic (no locale-dependent ICU calls). Bytes
+    // outside that range (UTF-8 continuation bytes, other code-
+    // points) pass through unchanged.
+    // -------------------------------------------------------------
+
+    // ToUpper / ToLower -- ASCII case conversion.
+    // UE-equivalent: UnrealString.h.inl:1332 ToUpper() (UE uses
+    // FChar::ToUpper which is locale-aware; XPact's variant is
+    // explicitly ASCII-only per the locked locale-independence
+    // contract). UE-Unicode-correct variants land in a future ICU
+    // integration layer (XLocalization).
+    [[nodiscard]] FString ToUpper() const;
+    [[nodiscard]] FString ToLower() const;
+
+    // LeftPad / RightPad -- pad to a target byte length with PadChar.
+    //
+    // Note: byte length, not codepoint length. Multi-byte UTF-8 input
+    // strings already past TargetLength bytes are returned unchanged.
+    // PadChar MUST be an ASCII byte (high bit clear); a non-ASCII pad
+    // byte would produce malformed UTF-8 at the seam.
+    [[nodiscard]] FString LeftPad (::int32 TargetLength, char PadChar = ' ') const;
+    [[nodiscard]] FString RightPad(::int32 TargetLength, char PadChar = ' ') const;
+
+    // Reverse -- byte-level reversal.
+    //
+    // Reverses the BYTES of the string. For pure-ASCII strings this
+    // is the visually-expected reversal. For UTF-8 strings carrying
+    // multi-byte codepoints, byte-level reversal CORRUPTS the
+    // sequence (e.g., a 3-byte CJK character reverses into 3 invalid
+    // bytes). The codepoint-correct reversal that walks codepoints
+    // forward and emits them in reverse is a future addition; this
+    // ASCII-correct variant matches the byte-level semantics UE's
+    // FString::Reverse provides (UE FString is UCS-2 / UTF-16 internal,
+    // so its reverse is also code-unit-level).
+    [[nodiscard]] FString Reverse() const;
+
+    // RemoveFromStart / RemoveFromEnd -- conditional prefix/suffix removal.
+    //
+    // Returns a new FString with the prefix (suffix) removed if it
+    // matches; returns *this unchanged if it does not. Byte-exact
+    // match per the StartsWith / EndsWith contract.
+    //
+    // The Prefix / Suffix parameter is taken as const FString& rather
+    // than the requested FStringView because XCore-4a does not ship
+    // FStringView (deferred to Phase 1e); the FString form is the
+    // closest semantic equivalent.
+    [[nodiscard]] FString RemoveFromStart(const FString& Prefix) const;
+    [[nodiscard]] FString RemoveFromEnd  (const FString& Suffix) const;
+
+    // JoinBy -- inverse of Split.
+    //
+    // Concatenates every element of Parts with Separator between them.
+    // Empty Parts yields the empty string; single-element Parts yields
+    // the element unchanged. UE-equivalent: FString::Join (UE name).
+    //
+    // The TArray parameter is const& and we DO NOT include TArray.h
+    // here (avoiding the cycle per §5.1 fix C-3); the declaration uses
+    // a forward declaration. Callers must include both FString.h and
+    // TArray.h.
+    [[nodiscard]] static FString JoinBy(const TArray<FString, DefaultAllocator>& Parts,
+                                        const FString& Separator);
+
+    // -------------------------------------------------------------
     // Affix tests (Section 11.1).
     // -------------------------------------------------------------
 

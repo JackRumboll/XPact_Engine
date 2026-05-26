@@ -150,13 +150,21 @@ namespace XCore::Reflect
         // identity (since int32_t == int on the supported targets),
         // beating `int` -> `::uint32` (integral conversion).
         //
-        // Negative values are invalid and produce undefined behaviour
-        // (the FName.Index encoding cannot represent negative ids);
-        // callers using brace-init with `{0, 0}` get a clean
-        // constexpr NAME_None.
+        // Rev 3 Round 2 audit FIX-R2-MIN-11: previously, negative
+        // values silently cast to large unsigned values (UB-like
+        // pollution of the FName.Index encoding which cannot represent
+        // negative ids). The XPACT_CHECK guards convert the UB into
+        // a clean assertion under Debug/Development. The check
+        // compiles out in Shipping; constinit callers like
+        // `FName{0, 0}` are unaffected (Index/SerialNumber both >= 0
+        // satisfy the predicate at compile time).
         constexpr FName(::int32 InIndex, ::int32 InSerialNumber) noexcept
             : Index(static_cast<::uint32>(InIndex))
-            , SerialNumber(static_cast<::uint32>(InSerialNumber)) {}
+            , SerialNumber(static_cast<::uint32>(InSerialNumber))
+        {
+            XPACT_CHECK(InIndex >= 0);
+            XPACT_CHECK(InSerialNumber >= 0);
+        }
 
         // Construct from a NUL-terminated UTF-8 C-string.
         //
@@ -324,13 +332,40 @@ namespace XCore::Reflect
                 != ::std::bit_cast<::std::uint64_t>(Other);
         }
 
+        // Rev 3 Round 2 audit FIX-R2-MIN-6: single 64-bit compare
+        // paralleling the operator== bit_cast pattern (Subagent A
+        // FIX-A6). The spec contract is "Index then SerialNumber"
+        // ordering (§4.5); for a single 64-bit compare to produce that
+        // ordering, Index must occupy the HIGH 32 bits of the composed
+        // uint64.
+        //
+        // Why not std::bit_cast directly. On little-endian targets the
+        // bit_cast<uint64>(FName) places the low-address bytes (Index)
+        // into the LOW 32 bits of the uint64, with SerialNumber in
+        // the high 32 bits. Comparing such uint64s would order by
+        // SerialNumber first -- the opposite of the spec. The
+        // compose-via-shift-and-or pattern below is endianness-
+        // independent: Index is placed in the high 32 bits explicitly,
+        // so the compare matches the spec on every architecture. The
+        // ALU sequence is one shift + one or + one cmp per side --
+        // identical to what a hypothetical (correct) bit_cast variant
+        // would produce after the byte-swap fixup, and one branch
+        // fewer than the prior `if (Index != Other.Index)` form.
+        //
+        // Verification: the test
+        // Tests/Reflection/FName.Tests/Equality.cpp covers the spec
+        // ordering invariant (SerialNumber tie-break under equal
+        // Index) and is extended in Rev 3 to also cover the
+        // Index-differs branch (Index majoring over SerialNumber).
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool operator<(FName Other) const noexcept
         {
-            if (Index != Other.Index)
-            {
-                return Index < Other.Index;
-            }
-            return SerialNumber < Other.SerialNumber;
+            const ::std::uint64_t Lhs =
+                (static_cast<::std::uint64_t>(Index)        << 32) |
+                 static_cast<::std::uint64_t>(SerialNumber);
+            const ::std::uint64_t Rhs =
+                (static_cast<::std::uint64_t>(Other.Index)        << 32) |
+                 static_cast<::std::uint64_t>(Other.SerialNumber);
+            return Lhs < Rhs;
         }
 
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool operator<=(FName Other) const noexcept

@@ -17,6 +17,100 @@
 // shared holders. NOT recursive (shared-then-exclusive from the same
 // thread is UB; recursive shared/exclusive is UB).
 //
+// =====================================================================
+// ENGINE-WIDE LOCK DISCIPLINE (Rev 3 Round 2 audit FIX-R2-X-NEW)
+// =====================================================================
+//
+// XCore has converged on a set of lock-handling invariants that apply
+// to every subsystem using FRWLock / FCriticalSection / FMutex. These
+// rules emerged from Rev 1 TC2 (FCustomVersionRegistry by-value return
+// to avoid holding the lock across the caller) and Rev 2 FIX-2
+// (FNamePool alloc-outside-lock to avoid AB-BA hazards against the
+// allocator's own internal locks). Both addressed the same underlying
+// principle through different fixes; the unified contract below codifies
+// the principle so future subsystems do not re-discover it.
+//
+// PRINCIPLE 1: Locks are held for the shortest time necessary.
+//
+//   Critical sections should contain ONLY the work that the lock
+//   guards. Pre-compute inputs outside the lock; post-process results
+//   outside the lock. The longer a lock is held, the higher the
+//   contention rate on the same primitive and the larger the
+//   probability of priority-inversion / convoying.
+//
+//   A pattern of "acquire-lock, do unrelated CPU-heavy work, release"
+//   is a contract violation. Hoist the CPU-heavy work out.
+//
+// PRINCIPLE 2: Allocations DO NOT happen under exclusive locks.
+//
+//   FMemory::Malloc / TArray::Reserve / TMap::Reserve / FString::
+//   Append are all paths that may transitively acquire the global
+//   allocator's pool-mutex (FMallocBinnedX). Holding a domain-level
+//   exclusive lock while calling into the allocator creates the
+//   classical AB-BA hazard: domain-thread holds DomainLock, calls
+//   alloc, which acquires PoolMutex; concurrent thread holds
+//   PoolMutex (legitimately), reaches into a domain API that needs
+//   DomainLock. Deadlock.
+//
+//   The cure: pre-allocate any required buffers outside the lock,
+//   pass them in, and the lock-holding code only performs pointer
+//   manipulations on the pre-allocated storage. FNamePool's
+//   PredictInsertPreAlloc (see Private/Reflection/FNamePool.cpp:
+//   PredictInsertPreAlloc) is the reference implementation: it
+//   acquires the shared lock to compute "what allocations would be
+//   needed", releases the shared lock, calls FMemory::MallocOrAbort
+//   without any lock held, then acquires the exclusive lock to
+//   integrate the pre-allocated storage. Shipping the contract.
+//
+// PRINCIPLE 3: Returned pointer/reference must outlive the lock-
+//              holding scope OR the function must return by value.
+//
+//   A function that returns a pointer/reference into protected
+//   storage AND drops the lock at return time has handed the caller
+//   a dangling reference -- a concurrent writer can race in and
+//   invalidate the pointee.
+//
+//   Two acceptable patterns close this:
+//
+//     (a) BY-VALUE RETURN (preferred for small structs):
+//         The function copies the protected value into the return
+//         slot while still holding the lock; the caller receives a
+//         disconnected copy. This is the pattern used by
+//         FCustomVersionRegistry::FindVersion (returns FCustomVersion
+//         by value, not const&). The cost is one copy per call;
+//         for FCustomVersion (24 bytes) this is < 1 cache line and
+//         the determinism gain dominates.
+//
+//     (b) PRE-ALLOCATE OUTSIDE, INTEGRATE UNDER LOCK (when alloc
+//         cost dominates):
+//         The caller allocates a destination buffer, passes a
+//         pointer to it into the API, and the API memcpy/copies
+//         into the caller's buffer under the lock. The buffer
+//         outlives the lock-holding scope because the CALLER owns
+//         it. The pattern is used by IConsoleManagerImpl's drain
+//         (the Treiber-stack drain pre-allocates the concrete
+//         TConsoleVariable<T> outside the lock, then inserts into
+//         the registry under the lock).
+//
+// PRINCIPLE 4: Lock OWNERSHIP transfer is explicit.
+//
+//   A scoped-lock (FScopedReadLock / FScopedWriteLock / FScopedLock /
+//   FScopedMutexLock) takes a reference to the lock; ownership lives
+//   in the scope. Returning a scoped-lock from a function or storing
+//   it as a class member is a contract violation -- the lock object's
+//   lifetime would diverge from its referenced lock primitive's
+//   lifetime, and an unbound scoped-lock is a leak. The convention
+//   is "scoped locks are stack-only".
+//
+// VIOLATIONS:
+//
+//   Any subsystem that violates one of the four principles flags
+//   itself as a candidate for an XCore-X spec amendment. Past audit
+//   cycles surface those (Rev 1 TC2, Rev 2 FIX-2); the unified
+//   contract above prevents future subsystems from re-discovering
+//   the same patterns. New subsystem reviews MUST verify the four
+//   principles are honoured before merge.
+//
 // Backing primitive per platform:
 //   * Win64:     Win32 SRWLock (Slim Reader/Writer Lock; natively
 //                supports shared/exclusive via the SRWLOCK API).
@@ -116,6 +210,30 @@ public:
     // -----------------------------------------------------------------
     // TryLockSharedFor / TryLockExclusiveFor -- bounded-wait variants
     // (Rev 1 audit HIGH-2 close-out).
+    //
+    // ##################################################################
+    // # NOT SIM-PATH-SAFE  (Rev 3 Round 2 audit FIX-R2-MIN-3)
+    // #
+    // # These methods consult `FPlatformTime::Seconds()` (the wall-clock
+    // # monotonic timer) to bound the wait. The sim path is deterministic-
+    // # replay-bit-exact (XCore-4a §6 + master plan sim-path discipline);
+    // # any function whose return value depends on wall-clock progress
+    // # is forbidden from sim-path TUs.
+    // #
+    // # For a sim-path lock acquire pattern with a logical bound, use
+    // # `TryLock*()` (without timeout) inside a bounded retry loop whose
+    // # iteration count is the sim-path-safe budget:
+    // #
+    // #     constexpr int32 kMaxRetries = 16;
+    // #     for (int32 I = 0; I < kMaxRetries; ++I)
+    // #     {
+    // #         if (Lock.TryLockShared()) break;
+    // #         // sim-path yield: do unrelated deterministic work
+    // #     }
+    // #
+    // # Renderer / UI / streaming TUs (non-sim-path) MAY use these
+    // # methods; their non-determinism is harmless on those paths.
+    // ##################################################################
     //
     // Returns true if the lock was acquired within the timeout, false
     // if the timeout expired without acquiring.

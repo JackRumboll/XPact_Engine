@@ -365,7 +365,7 @@ class TArray {
     XPACT_NO_UNIQUE_ADDRESS AllocatorT m_alloc;  // 0 bytes when AllocatorT is empty
     // ... GC root span for XObject-aware partial specializations (Section 5.4) ...
 };</code></pre>
-<p>The <code>XPACT_NO_UNIQUE_ADDRESS</code> attribute (Section 13) means that when <code>AllocatorT</code> is a stateless type (e.g., the default allocator-handle that simply routes through <code>FMemory::Malloc</code>), the allocator member occupies zero bytes; the compiler folds it into adjacent padding or omits it entirely. <code>TArray&lt;int&gt;</code> is therefore <code>sizeof(T*) + 2 * sizeof(int32_t) = 16 bytes</code>, not <code>16 + 1 (alloc) + 7 (pad) = 24 bytes</code>. The savings compound: at ~10k <code>TArray</code> instances in a typical scene (a realistic count when every <code>XActor</code>'s component list, every UI panel's child list, every gameplay-data list is a TArray), the EBO saves ~10&ndash;80 KB per scene. See &sect;5.5 for the divergence row.</p>
+<p>The <code>XPACT_NO_UNIQUE_ADDRESS</code> attribute (Section 13) means that when <code>AllocatorT</code> is an empty type, the allocator member occupies zero bytes; the compiler folds it into adjacent padding or omits it entirely. <strong>However, XPact's <code>DefaultAllocator</code> is NOT empty</strong>: it carries a 2-byte <code>FMemTag</code> field (verified at <code>DefaultAllocator.h:178-186</code> with <code>static_assert(sizeof(DefaultAllocator) == 2)</code>). Per-container memory attribution is a load-bearing Phase 4b.5 requirement and the tag cannot be removed. The compiler therefore allocates 2 bytes for the allocator member; padding rounds the struct up to the next 8-byte boundary (the pointer's natural alignment), yielding <code>sizeof(TArray&lt;int, DefaultAllocator&gt;) == 24 bytes</code> (8-byte data pointer + 4-byte size + 4-byte capacity + 2-byte allocator + 6-byte tail padding). <code>XPACT_NO_UNIQUE_ADDRESS</code> cannot fold an <code>FMemTag</code>-carrying allocator, because the attribute is a hint applicable to objects of size zero only; a 2-byte object cannot overlap with same-byte fields. The XCore-4a TArray sizeof is therefore <strong>24 bytes</strong>, not 16; the prior "16 bytes via EBO" wording assumed an empty allocator and is corrected here per Round 2 audit MAJOR-1. The cascade ripples through XCore-4b's FStruct/FClass/FEnum/FInterface layouts (per XCore-4b Rev 4 &sect;5.3 + &sect;11.6 layout tags); <code>XPACT_NO_UNIQUE_ADDRESS</code> still appears in the conceptual layout because future allocator implementations on debug-only / non-tagged builds could be empty and benefit; for the production tagged allocator the attribute is a no-op. See &sect;5.5 for the (revised) divergence row.</p>
 
 <p><strong>Internal primitive (fix C-3).</strong> FString is implemented on top of a private templated primitive <code>XCore::Internal::TArrayCore&lt;char&gt;</code> &mdash; an allocator-backed contiguous byte buffer with SSO and no GC-span integration. <code>TArrayCore</code> is internal-only (not in <code>XCore/Public/</code>) and not user-facing. The public <code>TArray.h</code> header has no <code>FString</code> include: its diagnostic paths (bounds-error messages, leak-tracker captions, etc.) take <code>const char*</code> exclusively. The <code>TArray&lt;T&gt;::IndexOf(const FString&amp;)</code> overload that callers reasonably expect for arrays of strings is forward-declared in <code>FString.h</code> (step 8 of the dependency graph) as a free function template, NOT in <code>TArray.h</code> (step 7). This breaks the apparent FString &harr; TArray cycle at the header level.</p>
 
@@ -474,7 +474,7 @@ slot = newValue;                  // memory_order_relaxed equivalent</code></pre
 <tr><td>Memcpy on resize regardless of T.</td><td><code>Containers/Array.h</code></td><td>Memcpy only when <code>TIsTriviallyRelocatable&lt;T&gt;</code>; else move + destroy.</td><td>UE's pattern silently corrupts self-referential types (e.g., a struct holding a pointer back to itself).</td></tr>
 <tr><td>TMap supports multiple collision modes; uses <code>TSparseArray</code>-backed slots with stable element addresses.</td><td><code>Containers/Map.h</code> + <code>Containers/SparseArray.h</code></td><td>SwissTable-style: open-addressing + SIMD probe groups + control bytes + scalar XXH3 (zero seed). Flat storage; <strong>element addresses NOT stable across <code>Add</code></strong> (fix B-M2).</td><td>Determinism + cache-friendly lookup. Address-stability divergence from UE is documented and intentional; the trade is faster lookups in exchange for caller-side <code>unique_ptr</code>-in-value when stability is required.</td></tr>
 <tr><td>Legacy <code>TQueue</code> with three EQueueMode variants ships alongside <code>TSpscQueue</code> and <code>TMpscQueue</code> despite being deprecation-flagged.</td><td><code>Containers/Queue.h:10</code> ("WARNING: This queue is planned for deprecation in favor of TSpscQueue or TMpscQueue.")</td><td>Ship only <code>TSpscQueue</code> + <code>TMpscQueue</code>. Locked decision 6.</td><td>Prime Directive: do not ship deprecated-from-day-one types.</td></tr>
-<tr><td>UE <code>TArray</code>'s allocator member is a regular field; no <code>[[no_unique_address]]</code> because UE predates C++20.</td><td><code>Containers/Array.h</code> + <code>Containers/ContainerAllocationPolicies.h</code></td><td>XPact's <code>TArray&lt;T, EmptyAllocator&gt;</code> uses <code>XPACT_NO_UNIQUE_ADDRESS</code> on the allocator member &mdash; the same size as the data fields alone, saving 1&ndash;8 bytes per instance when the allocator is stateless. At ~10k <code>TArray</code> instances in a typical scene (component lists, UI children, gameplay-data lists), this is ~10&ndash;80 KB saved per scene (fix Rev 3 m6).</td><td>Modern C++20 EBO attribute; UE's pre-C++20 layout cannot adopt without an ABI break. XPact starts greenfield with the attribute, so the saving is structural, not retrofit-able.</td></tr>
+<tr><td>UE <code>TArray</code>'s allocator member is a regular field; no <code>[[no_unique_address]]</code> because UE predates C++20.</td><td><code>Containers/Array.h</code> + <code>Containers/ContainerAllocationPolicies.h</code></td><td>XPact's <code>TArray&lt;T, AllocatorT&gt;</code> uses <code>XPACT_NO_UNIQUE_ADDRESS</code> on the allocator member as a forward-compatible hint &mdash; the attribute folds the allocator to zero bytes when <code>AllocatorT</code> is empty. <strong>Round 2 audit MAJOR-1 correction:</strong> XPact's production <code>DefaultAllocator</code> is NOT empty (2-byte <code>FMemTag</code> per <code>DefaultAllocator.h:178-186</code>) so the attribute is a no-op for the production path; <code>sizeof(TArray&lt;int, DefaultAllocator&gt;) == 24 bytes</code>, not 16. The EBO would only save bytes on a hypothetical future debug-only build that drops the per-allocation tag. The cascade impact (FStruct/FClass/FEnum/FInterface layouts on XCore-4b) is documented at XCore-4b Rev 4 &sect;5.3 + &sect;11.6 layout tags.</td><td>Modern C++20 EBO attribute is retained as a forward-compatibility hint, but the production trade-off prioritises per-container memory attribution (load-bearing for Phase 4b.5 telemetry) over the EBO byte saving. UE's pre-C++20 layout cannot adopt EBO without an ABI break; XPact starts greenfield with the attribute on the conceptual surface, accepting that the production allocator's <code>FMemTag</code> defeats it.</td></tr>
 </tbody>
 </table>
 
@@ -2152,6 +2152,42 @@ namespace XCore::HAL {
 </tr>
 </tbody>
 </table>
+
+<hr>
+
+<h2 id="sec18_5">18.5 Deferred subsystems (Rev 3 Round 2 audit FIX-R2-MED-NEW-4/5/6)</h2>
+
+<p>XCore-4a is the foundation layer; several adjacent UE subsystems are deliberately deferred to higher-layer modules so the foundation stays minimal and the layering is enforceable. The deferrals are documented here so callers do not search the XCore-4a surface for a missing subsystem.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+<thead><tr><th>Deferred surface</th><th>UE source</th><th>XPact target layer</th><th>Phase 1 substitute</th></tr></thead>
+<tbody>
+
+<tr>
+<td><strong>FRunnable / FRunnableThread / FThread family</strong></td>
+<td><code>Engine/Source/Runtime/Core/Public/HAL/Runnable.h</code>, <code>RunnableThread.h</code>, <code>HAL/Thread.h</code></td>
+<td><strong>XTaskGraph (Layer 2)</strong> or a follow-up XCore-4c phase &mdash; whichever lands the higher-level threading abstractions first.</td>
+<td>XCore-4a's HAL ships the primitives (<code>FAtomicInt32/64</code>, <code>FMutex</code>, <code>FCriticalSection</code>, <code>FRWLock</code>, <code>FConditionVariable</code>, <code>TBoundedMpscQueue</code>); callers needing a long-running worker thread compose those primitives directly until XTaskGraph lands. The deferral is by design (Prime Directive: ship a focused HAL, defer higher-level scheduling).</td>
+</tr>
+
+<tr>
+<td><strong>FOutputDevice / structured logging surface</strong></td>
+<td><code>Engine/Source/Runtime/Core/Public/Misc/OutputDevice.h</code>, <code>OutputDeviceConsole.h</code>, <code>UE_LOG</code> family</td>
+<td><strong>XLog (Phase 2)</strong> per Master Plan &sect;3 L1.</td>
+<td>XCore-4a's HAL uses <code>std::fprintf(stderr, ...)</code> for diagnostics in the absence of XLog. This is the documented Phase 1 baseline; failure modes (allocator OOM, lock-discipline violations, leak-tracker output) print to stderr directly. The plain-C path is chosen deliberately to avoid bootstrap-cycle hazards (XLog cannot be a dependency of the allocator that XLog itself uses). Phase 2 swaps stderr for the XLog structured surface without changing the call sites.</td>
+</tr>
+
+<tr>
+<td><strong>XInsights telemetry hookups (allocator fragmentation gauge, GC pause-time histogram)</strong></td>
+<td>UE's <code>Insights</code> / <code>TraceLog</code> family (<code>Engine/Source/Runtime/TraceLog/</code>).</td>
+<td><strong>XInsights (Master Plan &sect;2a Engine-telemetry row)</strong>.</td>
+<td>XCore-4a's allocator (<code>FMallocBinnedX</code>) and the GC declarations (<code>XGCDeclarations</code>) include comment blocks marking the XInsights hookup points; the telemetry callbacks are weak-symbol stubs that XInsights replaces at link time. The recursion hazard documented in <code>FMallocBinnedX.h</code> &sect;B9 / <code>FMallocBinnedX.cpp:40-78</code> (telemetry callbacks must not re-enter the allocator) is the load-bearing constraint that locks the deferral.</td>
+</tr>
+
+</tbody>
+</table>
+
+<p>None of the three deferrals masks a correctness gap (Prime Directive &sect; "When Phase 2 Deferral Is Legitimate"). The dependencies (XTaskGraph, XLog, XInsights) genuinely do not exist yet; the opt-out paths (compose primitives, use stderr, use weak-symbol stubs) are correct in the absence of those subsystems; and the deferral is documented at the same revision as the surfaces being deferred from. New code introduced after Phase 1 that needs FRunnable / FOutputDevice / XInsights must land the dependency or pick a documented alternative; "FRunnable doesn't exist yet" is NOT a reason to ship a stub.</p>
 
 <hr>
 
