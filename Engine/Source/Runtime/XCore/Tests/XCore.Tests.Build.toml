@@ -934,6 +934,139 @@
 # layouts.
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.6 (XReflectionRuntime registry) adds:
+#
+#   * Tests/Reflection/XReflectionRuntime.Tests/SingletonAccess.cpp
+#                                         -- XReflectionRuntime is a
+#                                            class with all-static
+#                                            methods; non-instantiable
+#                                            (deleted ctor) +
+#                                            non-copyable +
+#                                            non-movable; non-polymorphic
+#                                            (no virtuals; gate F3).
+#                                            EmptyForTesting +
+#                                            GetXCount round-trip on an
+#                                            empty registry; repeated
+#                                            Get*Count calls return
+#                                            consistent values.
+#   * Tests/Reflection/XReflectionRuntime.Tests/RegisterFindRoundTrip.cpp
+#                                         -- gate E1 (basic; the 500+
+#                                            scale gate lives in CI):
+#                                            Register* + Find* round-
+#                                            trip for all five kinds
+#                                            (FClass, FStruct,
+#                                            FScriptStruct, FEnum,
+#                                            FInterface). Verifies
+#                                            FScriptStruct registration
+#                                            populates BOTH the
+#                                            ScriptStructsByName map
+#                                            AND the StructsByName map.
+#   * Tests/Reflection/XReflectionRuntime.Tests/CollisionDetection.cpp
+#                                         -- §10.1 collision contract:
+#                                            two distinct pointers
+#                                            registered under the same
+#                                            FName -> second call
+#                                            returns false; existing
+#                                            registration wins on Find.
+#                                            Same-pointer idempotent
+#                                            re-register returns true.
+#                                            nullptr / NAME_None
+#                                            descriptor rejections.
+#                                            Full matrix across all
+#                                            five kinds.
+#   * Tests/Reflection/XReflectionRuntime.Tests/NotFoundReturnsNullptr.cpp
+#                                         -- defensive nullptr return
+#                                            on absent name / NAME_None
+#                                            / wrong-kind FName /
+#                                            empty registry. Per-kind
+#                                            isolation: registering as
+#                                            FClass does not pollute
+#                                            FStruct / FEnum / etc.
+#                                            Get*OwningModule on absent
+#                                            name returns NAME_None.
+#   * Tests/Reflection/XReflectionRuntime.Tests/ConcurrentReadStress.cpp
+#                                         -- gate E3 (scaled): 10
+#                                            reader threads x 1000
+#                                            FindClass calls concurrent
+#                                            with 1 writer thread doing
+#                                            100 RegisterClass. Verifies
+#                                            no torn reads (returned
+#                                            FClass*->GetFName matches
+#                                            the expected FName) and
+#                                            no writer collisions.
+#                                            The full 16-thread variant
+#                                            ships at Phase 4b.7+ CI.
+#   * Tests/Reflection/XReflectionRuntime.Tests/HotReloadModuleUnload.cpp
+#                                         -- module-load / module-unload
+#                                            contract (dispatch task):
+#                                            register 5 classes from
+#                                            ModuleA; OnModuleUnload(
+#                                            ModuleA) purges all 5;
+#                                            registrations BEFORE
+#                                            OnModuleLoad carry NAME_
+#                                            None OwningModule and
+#                                            survive unload; ModuleB
+#                                            unload is no-op for
+#                                            ModuleA entries; full
+#                                            kind matrix (FClass /
+#                                            FStruct / FScriptStruct /
+#                                            FEnum / FInterface).
+#                                            OnModuleLoad(NAME_None)
+#                                            rejected.
+#   * Tests/Reflection/XReflectionRuntime.Tests/IterationApi.cpp
+#                                         -- gate E4: IterateAllClasses /
+#                                            Structs / Enums / Interfaces
+#                                            visit every registered
+#                                            descriptor exactly once;
+#                                            iteration order matches
+#                                            registration order; empty-
+#                                            registry case (visitor not
+#                                            called); heap-fallback path
+#                                            (40 classes; > 32 stack
+#                                            cap).
+#   * Tests/Reflection/XReflectionRuntime.Tests/CountApi.cpp
+#                                         -- Get*Count round-trip:
+#                                            counts increment + decrement
+#                                            across Register* +
+#                                            Unregister* sequences.
+#                                            FScriptStruct registrations
+#                                            bump BOTH ScriptStructCount
+#                                            and StructCount.
+#                                            Unregister of absent name /
+#                                            NAME_None is a no-op.
+#   * Tests/Reflection/XReflectionRuntime.Tests/ABILock.cpp
+#                                         -- §11 ABI-lock check for the
+#                                            registry (the registry
+#                                            itself has no byte-layout
+#                                            contract; the test pins
+#                                            non-polymorphism + non-
+#                                            constructible + sizeof==1
+#                                            empty-class baseline +
+#                                            function-pointer-signature
+#                                            stability for every Find* /
+#                                            Register* / Unregister* /
+#                                            OnModule* / Get*Count
+#                                            method).
+#
+# JUDGEMENT CALL (Phase 4b.6 tests). Every test calls
+# `::XCore::HAL::FMemory::__Init()` at the start of main() (allocator
+# live before any FName / TMap / TArray construction). Every test
+# calls `XReflectionRuntime::EmptyForTesting()` at the start of main()
+# to start from a clean registry; the singleton accumulates across
+# test runs, so explicit reset is mandatory.
+#
+# JUDGEMENT CALL (Phase 4b.6 tests / ConcurrentReadStress scale).
+# Spec gate E3 names "1k concurrent FindClass calls + 100 RegisterType
+# calls across 16 threads"; Phase 4b.6 ships 10-reader * 1000-find +
+# 1-writer * 100-register. The 16-thread + 1000 find variant ships
+# at Phase 4b.7+ CI alongside the full-scale 500-class gate E1
+# fixture. The current test is sufficient to surface a TSan race
+# under repeated invocation (the registry's exclusive-lock path is
+# fully exercised; the difference between 10 and 16 reader threads is
+# detection coverage, not correctness).
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

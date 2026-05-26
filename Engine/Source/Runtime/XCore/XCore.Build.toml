@@ -1362,6 +1362,150 @@
 #           primitives don't (FStructObjectRefDensePopulation.cpp).
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.6 (XReflectionRuntime registry) adds:
+#
+#   Public/XReflectionRuntime.h              -- REPLACEMENT of the
+#                                                Phase 4b.0 Stage-A stub.
+#                                                Ships BOTH surfaces:
+#                                                  (1) Legacy global-
+#                                                      scope XReflectionRuntime
+#                                                      class + opaque tag
+#                                                      types (XClass /
+#                                                      XStruct / XEnum /
+#                                                      XInterface /
+#                                                      XDelegateFunction)
+#                                                      + descriptor records
+#                                                      preserved verbatim
+#                                                      for XHT-emit
+#                                                      compatibility
+#                                                      (Stage-A). Bodies
+#                                                      now deferred
+#                                                      no-ops pending XHT
+#                                                      regeneration
+#                                                      against the
+#                                                      namespaced surface
+#                                                      (Phase 4b.7+).
+#                                                  (2) The new namespaced
+#                                                      XCore::Reflect::
+#                                                      XReflectionRuntime
+#                                                      class per spec
+#                                                      §10.1: static Find*
+#                                                      / Register* /
+#                                                      Unregister* /
+#                                                      OnModuleLoad /
+#                                                      OnModuleUnload /
+#                                                      Iterate* /
+#                                                      Get*Count surfaces.
+#
+#                                                The legacy XPactDetail::
+#                                                CompileTimeStrEq /
+#                                                XCONSTINIT /
+#                                                XPACT_*_ABI_TAG defines
+#                                                + XPACT_PROPERTY_HAS_
+#                                                ACCESSORS are PRESERVED
+#                                                from Stage-A so XHT-
+#                                                emitted .gen.cpp +
+#                                                .init.gen.cpp continue
+#                                                to compile cleanly
+#                                                without regeneration.
+#
+#   Private/XReflectionRuntime.cpp           -- Phase 4b.6 implementation
+#                                                body. Internal storage
+#                                                is a function-local-
+#                                                static FReflectionRegistry
+#                                                with five TMap<FName,
+#                                                const F*> instances
+#                                                (Classes, Structs,
+#                                                ScriptStructs, Enums,
+#                                                Interfaces) + four
+#                                                TArray<const F*>
+#                                                iteration buffers
+#                                                (AllClasses, AllStructs,
+#                                                AllEnums, AllInterfaces)
+#                                                + five TMap<FName, FName>
+#                                                OwningModule parallel
+#                                                maps + one FRWLock for
+#                                                the whole struct.
+#                                                Reads acquire shared;
+#                                                writes acquire exclusive.
+#                                                The OwningModule is
+#                                                tracked OUT-OF-BAND (not
+#                                                as a per-descriptor field)
+#                                                to preserve the §11 ABI
+#                                                lock on FStruct / FClass
+#                                                / FEnum / FInterface.
+#
+#                                                The thread-local
+#                                                "current module" slot is
+#                                                a native thread_local
+#                                                FName; OnModuleLoad
+#                                                writes it, Register*
+#                                                reads it.
+#
+# JUDGEMENT CALL (Phase 4b.6 / OwningModule out-of-band).
+#
+# The dispatch task asked: "Module ownership tracking: each registered
+# descriptor carries the FName of the module that registered it (added
+# to FStruct/FClass/etc. as `OwningModule` FName? Or maintained
+# externally in a parallel hash map?)". Per the Stage B addendum
+# (Contract Rev 13.8) the FStruct / FClass / FEnum / FInterface byte
+# layouts are FROZEN. Adding an `OwningModule` field would ABI-break
+# every downstream consumer of those layouts. The principled choice
+# (Prime Directive: "do it right the first time") is to track
+# OwningModule out-of-band via a parallel TMap<FName, FName>; the
+# additional memory cost (16 bytes per descriptor) is acceptable for
+# the ~5000-typical-descriptor population, and preserves the locked
+# ABI surface.
+#
+# JUDGEMENT CALL (Phase 4b.6 / FName-keyed parallel maps vs pointer-keyed).
+#
+# The OwningModule parallel map could be keyed by descriptor pointer
+# (TMap<const FX*, FName>) or by descriptor FName (TMap<FName, FName>).
+# We chose FName-keyed because:
+#   (a) UnregisterX takes an FName (the descriptor pointer may already
+#       have been destroyed by the caller); a pointer-keyed map would
+#       require an extra Find-by-pointer scan.
+#   (b) FName -> FName has trivial hash/compare (uint64 of the FName
+#       handle); pointer keys have the same cost (uint64 of pointer)
+#       but with worse cache locality at the call site (the caller
+#       typically already has the FName).
+#   (c) OnModuleUnload iterates the parallel map for matching values;
+#       O(N) over the registered count regardless of keying.
+#
+# Trade-off: an FName collision in the OwningModule map would lose the
+# OwningModule information for one of the descriptors. Since the
+# primary maps (ClassesByName etc.) ALSO key on FName and reject
+# duplicates at Register-time, an FName-collision can never reach the
+# OwningModule map; the keying is equivalent in correctness.
+#
+# JUDGEMENT CALL (Phase 4b.6 / FScriptStruct double-registration).
+#
+# An FScriptStruct IS a FStruct via inheritance. The spec §10.2
+# declares a single TMap<FName, const FStruct*> (StructsByName); the
+# dispatch task asks for FindScriptStruct as a separate query API.
+# Phase 4b.6 ships TWO maps: ScriptStructsByName (storing FScriptStruct*)
+# AND StructsByName (storing FStruct* of the FScriptStruct's base).
+# RegisterScriptStruct populates BOTH; UnregisterScriptStruct purges
+# BOTH; UnregisterStruct on an FScriptStruct's FName also purges the
+# ScriptStructsByName slot symmetrically. The 8-byte additional storage
+# per FScriptStruct registration is a one-time cost; the alternative
+# (running a dynamic_cast on FindScriptStruct) is slower per call.
+#
+# JUDGEMENT CALL (Phase 4b.6 / no TFunctionRef).
+#
+# The spec §10.1 declares Iterate* methods taking TFunctionRef<...>.
+# XCore-4a has not shipped TFunctionRef. The dispatch task instructed
+# "Iteration API for tooling: template<typename Visitor>". Phase 4b.6
+# implements the templated form: each Iterate* is a static template
+# method whose body monomorphises the visitor at each call site. The
+# header-inline templated body delegates to a private Get*Snapshot
+# helper (defined in .cpp) that takes a stack-allocated pointer-array
+# + capacity. Combined with the heap-fallback path, this gives the
+# spec-mandated iteration API without forcing TFunctionRef to ship
+# in Phase 4b.6.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
