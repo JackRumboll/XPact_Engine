@@ -614,6 +614,57 @@
 # state is correct); the diagnostic-emission half lands when XLog
 # ships.
 #
+# XCore-4b Phase 4b.3 (FField + FFieldClass + FFieldVariant) adds:
+#
+#   * Tests/Reflection/FField.Tests/SizeofAndAlignof.cpp
+#                                         -- XCore-4b Section 5.1 / 5.2 +
+#                                            Section 11.2 layout table:
+#                                            sizeof(FField)==32,
+#                                            sizeof(FFieldClass)==48,
+#                                            sizeof(FFieldVariant)==8;
+#                                            per-member offset locks +
+#                                            POD-ness traits.
+#   * Tests/Reflection/FField.Tests/FFieldVariantLSBTag.cpp
+#                                         -- XCore-4b Section 5.1 FIX-4:
+#                                            FFieldVariant LSB-tag round-
+#                                            trip (FField pointer LSB=0
+#                                            field-tag; FStruct pointer
+#                                            LSB=1 struct-tag); cross-
+#                                            construct comparison +
+#                                            kind-tag-as-identity property.
+#   * Tests/Reflection/FField.Tests/FFieldVariantNullPointer.cpp
+#                                         -- XCore-4b Section 5.1: default
+#                                            ctor / nullptr ctor / explicit
+#                                            FField* nullptr produce Storage
+#                                            == 0; explicit FStruct* nullptr
+#                                            produces Storage == 0x1 (LSB
+#                                            tag set); equality across the
+#                                            four null forms.
+#   * Tests/Reflection/FField.Tests/FFieldConstruction.cpp
+#                                         -- XCore-4b Section 5.1: default
+#                                            FField + explicit-ctor FField +
+#                                            accessors + SetNext mutator;
+#                                            kFieldStaticClass shape via
+#                                            GetFieldStaticClass(); FField::
+#                                            ConstructField placement-new.
+#   * Tests/Reflection/FField.Tests/FFieldCastAcceleration.cpp
+#                                         -- XCore-4b Section 5.1 / 5.2:
+#                                            three-class hierarchy walk
+#                                            via FFieldClass::IsChildOf
+#                                            + FField::IsA; cross-hierarchy
+#                                            negative result; HasAnyCast
+#                                            Flags / HasAllCastFlags
+#                                            bitwise predicates.
+#
+# JUDGEMENT CALL (Phase 4b.3). The IsA fast-path via CastFlags AND
+# (one bitwise instruction per call) requires the per-FProperty-subclass
+# cast bits per spec §5.5; those bits are assigned in Phase 4b.4 when
+# the FProperty subclass family lands. Phase 4b.3 ships the structurally
+# correct slow-path (SuperClass-chain walk). The acceptance gate C1
+# (IsA depth <=3 typical, <=10 max, <=10ns Win64) is exercised at
+# Phase 4b.4 once the full hierarchy is in place; Phase 4b.3 verifies
+# the walk itself is correct on a synthetic three-class chain.
+#
 # Each test file is a standalone `int main()` so XBT can either:
 #   (a) compile each .cpp as its own .exe (matching XBT.Tests's
 #       per-fixture pattern), or

@@ -644,6 +644,101 @@
 # tier where it is most heavily used.
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.3 (FField + FFieldClass + FFieldVariant) adds:
+#
+#   Public/Reflection/FFieldVariant.h        -- 8-byte LSB-tagged union
+#                                                pointer (XCore-4b §5.1
+#                                                FIX-4): LSB=0 -> FField*,
+#                                                LSB=1 -> FStruct*. The
+#                                                XPact LSB-tag semantic is
+#                                                inverted relative to UE
+#                                                (UE: LSB=1 -> UObject;
+#                                                XPact: LSB=1 -> FStruct);
+#                                                this is deliberate per Rev
+#                                                3 FIX-R2-LOW-6. FStruct
+#                                                is forward-declared (full
+#                                                definition lands at Phase
+#                                                4b.5).
+#   Public/Reflection/EClassCastFlags.h      -- uint64-backed strongly-
+#                                                typed enum for the
+#                                                FFieldClass IsA-acceleration
+#                                                bitmask (XCore-4b §5.2 +
+#                                                §5.5). Phase 4b.3 ships
+#                                                the kNone sentinel only;
+#                                                Phase 4b.4 assigns the
+#                                                28 FProperty subclass
+#                                                bits per §5.5 table.
+#                                                Bitwise operators (|, &,
+#                                                ^, ~, |=, &=, ^=) +
+#                                                HasAnyCastFlags / HasAll
+#                                                CastFlags helpers.
+#   Public/Reflection/FFieldClass.h          -- 48-byte FField subclass
+#                                                descriptor (XCore-4b §5.2):
+#                                                Name@0 (FName) + Id@8
+#                                                (uint64) + CastFlags@16 +
+#                                                SuperClass@24 + Construct
+#                                                Fn@32 + FakeVTable@40.
+#                                                alignas(16); zero virtual
+#                                                methods (hot-reload safety).
+#                                                Per-member offset locks
+#                                                static_asserted (§11.2).
+#                                                FFakeVTable forward-
+#                                                declared (full definition
+#                                                lands at Phase 4b.4).
+#   Public/Reflection/FField.h               -- 32-byte FField base
+#                                                (XCore-4b §5.1):
+#                                                ClassPrivate@0 +
+#                                                Owner@8 (FFieldVariant) +
+#                                                Next@16 + NamePrivate@24
+#                                                (FName). alignas(8); the
+#                                                LSB-tag invariant requires
+#                                                alignof >= 2. IsA() +
+#                                                Cast<T> + ExactCast<T> via
+#                                                FFieldClass::IsChildOf
+#                                                SuperClass-chain walk
+#                                                (Phase 4b.3 ships the
+#                                                slow-path walk; Phase 4b.4
+#                                                adds the CastFlags-AND
+#                                                fast path).
+#
+#   Private/Reflection/FField.cpp            -- kFieldStaticClass (the base
+#                                                "Field" FFieldClass) +
+#                                                FField::ConstructField
+#                                                placement-new. The
+#                                                kFieldStaticClass is
+#                                                constinit-emitted with
+#                                                Name=NAME_None;
+#                                                GetFieldStaticClass()
+#                                                lazy-initialises Name to
+#                                                FName("Field") on first
+#                                                call via the C++ runtime's
+#                                                static-init lock.
+#
+# JUDGEMENT CALL (Phase 4b.3 / lazy-init kFieldStaticClass.Name).
+# FName(const char*) is not constexpr (it touches the FNamePool intern
+# table at runtime), so the kFieldStaticClass Name slot cannot be
+# populated at constinit time. The alternative -- dropping constinit
+# entirely and constructing kFieldStaticClass via a function-local
+# static -- would defeat the §5.2 design intent that XHT-emitted
+# `.gen.cpp` populates FFieldClass instances at constinit. The lazy-
+# init posture (constinit with NAME_None; first-access bumps to
+# FName("Field")) preserves the constinit shape and incurs O(1) overhead
+# on first access only.
+#
+# A future Phase 4b.6 (XReflectionRuntime registry) will replace this
+# lazy-init with an eager pass at EInitPhase::PostStaticInit that walks
+# every constinit FFieldClass and populates the Name slot. Until then,
+# the GetFieldStaticClass() accessor is the supported entry point.
+#
+# Acceptance gates covered:
+#   * B1 -- FField static_assert sizeof == 32 (SizeofAndAlignof.cpp).
+#   * Partial C1 -- IsA hierarchy walk correctness (FFieldCastAcceleration.cpp);
+#                   the depth-bound performance gate lands at Phase 4b.4.
+#   * F3 -- No descriptor type contains a virtual method (verified by
+#           is_trivially_copyable + is_trivially_destructible asserts).
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
