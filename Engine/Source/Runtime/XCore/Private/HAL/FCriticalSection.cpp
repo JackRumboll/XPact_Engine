@@ -26,6 +26,8 @@
 #include "Macros/XCoreDefines.h"
 #include "Macros/XPactMacros.h"
 #include "Macros/XAssertionMacros.h"
+#include "HAL/FPlatformTime.h"
+#include "HAL/FTimespan.h"
 
 #if XPACT_PLATFORM_WIN64
     // Windows.h defines a forest of macros that conflict with C++
@@ -41,6 +43,8 @@
     #include <Windows.h>
 #else
     #include <pthread.h>
+    #include <time.h>
+    #include <errno.h>
 #endif
 
 #include <new>
@@ -113,6 +117,84 @@ void FCriticalSection::Unlock() noexcept
     ::LeaveCriticalSection(HandleOf(m_storage));
 }
 
+// ---------------------------------------------------------------------
+// Win64 timed-lock helper (Rev 1 audit HIGH-2 close-out).
+//
+// CRITICAL_SECTION has no native timed-acquire API
+// (TryEnterCriticalSection is non-blocking only). We emulate by
+// polling TryEnterCriticalSection in a graded-backoff loop bounded
+// by FPlatformTime::Seconds() + Timeout. Recursive semantics are
+// preserved naturally: TryEnterCriticalSection on a thread that
+// already holds the section returns immediately with the recursion
+// counter incremented, so the very first TryLock in the spin loop
+// succeeds without consuming any timeout.
+//
+// Same graded-backoff tiers as FRWLock/FMutex; see FRWLock.cpp's
+// comment block for rationale.
+// ---------------------------------------------------------------------
+namespace
+{
+    constexpr int kSpinIterationsCS  = 64;
+    constexpr int kYieldIterationsCS = 32;
+
+    [[nodiscard]] bool WaitDeadlineExpiredCS(double DeadlineSeconds) noexcept
+    {
+        return ::XCore::HAL::FPlatformTime::Seconds() >= DeadlineSeconds;
+    }
+}
+
+bool FCriticalSection::TryLockFor(FTimespan Timeout) noexcept
+{
+    if (TryLock())
+    {
+        return true;
+    }
+
+    if (Timeout.TotalMicroseconds() <= 0)
+    {
+        return false;
+    }
+
+    const double TimeoutSeconds = static_cast<double>(Timeout.TotalMicroseconds()) * 1e-6;
+    const double Deadline       = ::XCore::HAL::FPlatformTime::Seconds() + TimeoutSeconds;
+
+    for (int i = 0; i < kSpinIterationsCS; ++i)
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::YieldProcessor();
+        if (WaitDeadlineExpiredCS(Deadline))
+        {
+            return false;
+        }
+    }
+
+    for (int i = 0; i < kYieldIterationsCS; ++i)
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::Sleep(0);
+        if (WaitDeadlineExpiredCS(Deadline))
+        {
+            return false;
+        }
+    }
+
+    while (!WaitDeadlineExpiredCS(Deadline))
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::Sleep(1);
+    }
+    return TryLock();
+}
+
 #else  // POSIX (Linux + Android)
 
 // ---------------------------------------------------------------------
@@ -174,6 +256,40 @@ bool FCriticalSection::TryLock() noexcept
 void FCriticalSection::Unlock() noexcept
 {
     pthread_mutex_unlock(HandleOf(m_storage));
+}
+
+// ---------------------------------------------------------------------
+// POSIX timed-lock helper (Rev 1 audit HIGH-2 close-out).
+//
+// pthread_mutex_timedlock takes an absolute-deadline timespec
+// (CLOCK_REALTIME). Recursive semantics are preserved by the
+// PTHREAD_MUTEX_RECURSIVE attribute.
+// ---------------------------------------------------------------------
+bool FCriticalSection::TryLockFor(FTimespan Timeout) noexcept
+{
+    if (Timeout.TotalMicroseconds() <= 0)
+    {
+        return TryLock();
+    }
+
+    struct timespec Deadline;
+    clock_gettime(CLOCK_REALTIME, &Deadline);
+
+    const ::int64 TotalMicros = Timeout.TotalMicroseconds();
+    const ::int64 WholeSecs   = TotalMicros / 1000000;
+    const ::int64 SubMicros   = TotalMicros - (WholeSecs * 1000000);
+    const ::int64 SubNanos    = SubMicros * 1000;
+
+    Deadline.tv_sec  += static_cast<time_t>(WholeSecs);
+    Deadline.tv_nsec += static_cast<long>(SubNanos);
+    if (Deadline.tv_nsec >= 1000000000L)
+    {
+        Deadline.tv_sec  += 1;
+        Deadline.tv_nsec -= 1000000000L;
+    }
+
+    const int Result = pthread_mutex_timedlock(HandleOf(m_storage), &Deadline);
+    return Result == 0;
 }
 
 #endif  // XPACT_PLATFORM_WIN64

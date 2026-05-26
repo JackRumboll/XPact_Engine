@@ -250,7 +250,7 @@ namespace XCore::Reflect
         // construction; mirrors UE's UStruct::PostConstructLink).
         FProperty*         PostConstructLink;  // 48  +8
 
-        // ---- GC scan acceleration (offset 56; 16 bytes) ----
+        // ---- GC scan acceleration (offset 56; 24 bytes on MSVC) ----
         //
         // Per FIX-13: dense TArray<FProperty*> populated at FClass::
         // Link by walking the property list and probing each
@@ -263,8 +263,61 @@ namespace XCore::Reflect
         // descriptor stored elsewhere (in the FStruct's own
         // ChildProperties chain, or in a parent struct's chain when
         // an inherited XObject reference is exposed via FClass).
+        //
+        // ================================================================
+        // UE DIVERGENCE (XCore-4b Subagent A FIX-A8 -- deliberate)
+        // ================================================================
+        //
+        //   UE pattern: UE's UStruct maintains GC reachability via a
+        //   per-class LinkObjectProperty intrusive linked-list chain
+        //   (see UnrealEngine source UnrealType.h: UObjectProperty
+        //   maintains a `FProperty* PropertyLinkNext`-style sibling
+        //   pointer `LinkObjectProperty`; FRefCollector walks the
+        //   chain pointer-by-pointer at every GC scan iteration).
+        //
+        //   The UE design has two structural footguns:
+        //
+        //     1. Cache locality: each FProperty descriptor sits at a
+        //        random heap address (or in .rodata for hot-reload-
+        //        safe statically-emitted descriptors), so the
+        //        LinkObjectProperty walk is a cold-cache pointer
+        //        chase. Quest 3 (Cortex-A78 family, modest L2) takes
+        //        a substantial latency hit on this pattern; UE's
+        //        ~100k XObject scan dominates frame budget on mobile.
+        //
+        //     2. Linked-list correctness under concurrent registration:
+        //        UE's hot-reload paths can re-link the chain while
+        //        GC is mid-walk. UE handles this via a coarse global
+        //        GC-quiescent gate; XPact's hot-reload path is finer-
+        //        grained and the linked-list invariant is harder to
+        //        keep.
+        //
+        //   XPact divergence: dense TArray<FProperty*> populated ONCE
+        //   at FClass::Link time (by walking the FProperty Children
+        //   chain and filtering on `CastFlags & kFObjectPropertyBase`,
+        //   plus expanding any FArrayProperty/FMapProperty/FSetProperty
+        //   /FStructProperty whose Inner-type contributes object refs).
+        //   The dense array is:
+        //
+        //     * Prefetch-friendly: contiguous 8-byte slots, one cache
+        //       line fits 8 pointers; GC scan walks linearly.
+        //     * Atomically swapped on hot-reload re-link (FClass owns
+        //       the swap; GC reads a snapshot under the registry's
+        //       FRWLock shared-read).
+        //     * Cheap to populate: walked once at FClass::Link, then
+        //       static for the FClass's lifetime modulo hot-reload.
+        //
+        //   The trade is one 24-byte TArray (vs UE's 8-byte per-FStruct
+        //   linked-list head); the GC throughput gain dominates the
+        //   16-byte storage cost on every realistic FClass.
+        //
+        //   See `engineering_principles.md` Quality Standard section:
+        //   "Don't blindly mirror UE patterns. Question every UE-
+        //   inherited decision. If a UE pattern carries a known
+        //   footgun or limitation, design around it."
+        // ================================================================
 
-        ::XCore::TArray<FProperty*> ObjectRefProperties;  // 56 +16
+        ::XCore::TArray<FProperty*> ObjectRefProperties;  // 56 +24 (MSVC; spec said 16)
 
         // ---- Schema versioning (offsets 72-87; per FIX-10) ----
 

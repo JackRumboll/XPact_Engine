@@ -49,6 +49,7 @@
 // =====================================================================
 
 #include "Macros/XCoreTypes.h"
+#include "HAL/FTimespan.h"
 
 #include <cstddef>
 
@@ -85,6 +86,31 @@ public:
     // POSIX: pthread_mutex_trylock returning 0.
     // -----------------------------------------------------------------
     [[nodiscard]] bool TryLock() noexcept;
+
+    // -----------------------------------------------------------------
+    // TryLockFor -- bounded-wait variant (Rev 1 audit HIGH-2
+    // close-out).
+    //
+    // Returns true if the mutex was acquired within the timeout, false
+    // if the timeout expired without acquiring.
+    //
+    // Per-platform behaviour:
+    //
+    //   * POSIX: native pthread_mutex_timedlock with
+    //            absolute-deadline CLOCK_REALTIME timespec. Precise to
+    //            OS scheduler granularity (~1 ms or better).
+    //
+    //   * Win64: SRWLock does NOT support timed acquire natively. The
+    //            implementation degrades to a TryAcquireSRWLockExclusive
+    //            + spin-yield loop bounded by FPlatformTime::Seconds()
+    //            with graded Sleep(0)/Sleep(1) backoff. Wait
+    //            granularity is ~1 ms on Win64; sub-ms timeouts behave
+    //            as non-blocking TryLock attempts in tight succession.
+    //
+    // Timeout semantics: a Timeout with TotalMicroseconds() <= 0 is a
+    // non-blocking TryLock (no spin; one TryLock attempt).
+    // -----------------------------------------------------------------
+    [[nodiscard]] bool TryLockFor(FTimespan Timeout) noexcept;
 
     // -----------------------------------------------------------------
     // Unlock -- release the mutex.

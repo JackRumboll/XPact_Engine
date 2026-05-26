@@ -74,7 +74,9 @@
 #include "Macros/XPactMacros.h"
 #include "Macros/XCoreFwd.h"               // Forward decl + GetTypeHash signature
 
+#include <bit>                              // std::bit_cast (FIX-A6 fast-equal)
 #include <cstddef>                          // offsetof
+#include <cstdint>                          // std::uint64_t (FIX-A6 fast-equal)
 #include <type_traits>                      // is_trivially_copyable etc.
 
 // Forward-declare FString (full include avoided to keep this header lean;
@@ -296,14 +298,30 @@ namespace XCore::Reflect
         // ordering over the intern-table-allocated indices.
         // -------------------------------------------------------------
 
+        // XCore-4b Subagent A FIX-A6: single 64-bit-load equality.
+        //
+        // The two-field compare (`Index == Other.Index && SerialNumber
+        // == Other.SerialNumber`) is structurally identical to a single
+        // 8-byte compare (FName is 8 bytes; standard-layout; trivially-
+        // copyable per the static_asserts below). The bit_cast form
+        // expresses the intent so the compiler reliably emits ONE
+        // 64-bit cmp instead of two 32-bit cmps + a boolean AND. UE
+        // does the same at NameTypes.h (FName::CompareIndexes uint64
+        // load pattern).
+        //
+        // bit_cast is constexpr-safe (C++20 [bit.cast]/2: trivially-
+        // copyable + same-sizeof source + destination) so operator==
+        // remains usable in constant-evaluated contexts.
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool operator==(FName Other) const noexcept
         {
-            return Index == Other.Index && SerialNumber == Other.SerialNumber;
+            return ::std::bit_cast<::std::uint64_t>(*this)
+                == ::std::bit_cast<::std::uint64_t>(Other);
         }
 
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool operator!=(FName Other) const noexcept
         {
-            return !(*this == Other);
+            return ::std::bit_cast<::std::uint64_t>(*this)
+                != ::std::bit_cast<::std::uint64_t>(Other);
         }
 
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool operator<(FName Other) const noexcept

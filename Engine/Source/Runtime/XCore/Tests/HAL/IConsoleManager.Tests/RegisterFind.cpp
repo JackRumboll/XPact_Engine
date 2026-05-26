@@ -12,9 +12,11 @@
 //
 // =====================================================================
 
+#include "HAL/FMemory.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/IConsoleVariable.h"
 #include "HAL/ECVarFlags.h"
+#include "HAL/XInitPhase.h"
 #include "Macros/XCoreTypes.h"
 
 #include <cstdio>
@@ -28,6 +30,16 @@ namespace
 
     int RunRegisterFind()
     {
+        // FMemory backs the IConsoleManager singleton's state allocation
+        // (Rev 1 audit MS2 close-out) and per-CVar storage. __Init must
+        // run before any Register* call.
+        ::XCore::HAL::FMemory::__Init();
+
+        // Registry surface methods (Register*, Find) require
+        // EngineInitPhase() >= PostStaticInit per Rev 1 audit MAJOR-2
+        // close-out (fix M-9 ladder consistency).
+        ::XCore::HAL::__AdvanceInitPhase(::XCore::HAL::EInitPhase::PostStaticInit);
+
         auto& Manager = ::XCore::Misc::IConsoleManager::Get();
 
         // Register 1000 int CVars with synthetic names. The names are

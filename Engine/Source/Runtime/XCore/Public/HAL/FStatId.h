@@ -25,7 +25,15 @@
 //      static_assert(sizeof(FStatId) == 24, "FStatId ABI lock");"
 //
 // FStatId is a value type carrying:
-//   * A compile-time XXH3 hash of the stat's textual name + group.
+//   * A compile-time FNV-1a-64 hash (Phase 1g errata; constexpr XXH3
+//     deferred to Phase 2 when XXH3 gains constexpr support per
+//     C++ ISO P-XXXX) of the stat's textual name + group. See
+//     FStatTLS.h for the constexpr StatHashNameGroup implementation
+//     and the Phase 1g judgement-call wording explaining the
+//     temporary divergence from the spec's XXH3 placeholder. Both
+//     the compile-time XSTAT_DECL and the runtime FStatTLS path
+//     use the SAME FNV-1a-64 function so the produced FStatId.Hash
+//     bytes match.
 //   * A rodata pointer to the name string literal.
 //   * A rodata pointer to the group string literal.
 //
@@ -36,8 +44,13 @@
 // CONSTRUCTION: the XSTAT_DECL macro builds an FStatId at namespace
 // scope via inline constexpr. The Name and Group fields are
 // string-literal pointers; the Hash field is computed at compile time
-// via FXxh3::Hash64 over the concatenated name + group bytes (the
+// via XCore::Stat::StatHashNameGroup (constexpr FNV-1a-64 per Phase
+// 1g errata) over the concatenated name + group bytes (the
 // concatenation is the build-time deduplication discriminator).
+// Phase 2 may swap FNV-1a-64 for constexpr XXH3 simultaneously at
+// both the compile-time XSTAT_DECL site and the runtime FStatTLS
+// path; both paths must continue to produce the same Hash for the
+// same (Name, Group) tuple.
 //
 // THREADING: FStatId values are read-only after construction (literal
 // rodata). Concurrent reads are safe; there are no writes after
@@ -63,7 +76,10 @@ namespace XCore::Stat
     // -----------------------------------------------------------------
     struct FStatId
     {
-        ::uint64    Hash;     // XXH3(name + group, len, seed=0); compile-time
+        ::uint64    Hash;     // StatHashNameGroup(name, group) -- compile-time
+                              // FNV-1a-64 per Phase 1g errata (constexpr XXH3
+                              // deferred to Phase 2). The same function backs
+                              // the runtime FStatTLS path.
         const char* Name;     // rodata pointer to the name literal
         const char* Group;    // rodata pointer to the group literal
     };

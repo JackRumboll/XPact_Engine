@@ -33,6 +33,8 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "HAL/FMemory.h"
+#include "HAL/FMemTag.h"
 
 #include <atomic>
 #include <new>
@@ -170,22 +172,36 @@ private:
         alignas(T) ::std::byte ValueStorage[sizeof(T)];
     };
 
-    // ---- node alloc / dealloc -- TODO(Phase 1d): per-instance freelist
+    // ---- node alloc / dealloc.
+    //
+    // Rev 1 audit MS4 close-out: route node allocation through
+    // FMemory::MallocOrAbort with FMemTag::Threading instead of raw
+    // operator new (spec section 4.1 always-on attribution). The previous
+    // raw-new path bypassed FMallocBinnedX entirely and left node
+    // allocations untagged.
+    //
+    // TODO(Phase 1d+): per-instance freelist (a Treiber stack of
+    // recently-freed nodes) for hot node-alloc paths so steady-state
+    // Enqueue/Dequeue does not touch the global allocator. The
+    // FMemory routing established here is the COVER fix for Rev 1;
+    // the freelist optimization layers on top in a later phase
+    // without changing the attribution.
     [[nodiscard]] FNode* AllocateNode() noexcept
     {
-        // Phase 1c: direct heap allocation via operator new. The
-        // node is small (16-32 bytes typically); future revisions
-        // route through FMemory::MallocOrAbort with a Threading tag.
-        //
-        // TODO(Phase 1d): swap to a per-instance freelist (a
-        // Treiber stack of recently-freed nodes) so steady-state
-        // Enqueue/Dequeue does not touch the global allocator.
-        return new FNode;
+        void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+            sizeof(FNode),
+            alignof(FNode),
+            ::XCore::HAL::FMemTag::Threading);
+        return ::new (Storage) FNode;
     }
 
     void DeallocateNode(FNode* Node) noexcept
     {
-        delete Node;
+        if (Node != nullptr)
+        {
+            Node->~FNode();
+            ::XCore::HAL::FMemory::Free(static_cast<void*>(Node));
+        }
     }
 
     // Cache-line padding to prevent false sharing between the

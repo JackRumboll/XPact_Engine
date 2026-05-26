@@ -13,6 +13,7 @@
 // =====================================================================
 
 #include "HAL/FEvent.h"
+#include "HAL/FMemory.h"
 
 #include <atomic>
 #include <chrono>
@@ -27,6 +28,11 @@ namespace
 
 int main()
 {
+    // Rev 1 audit MS3 close-out: FEvent::Create* now routes through
+    // FMemory + FMemTag::Threading. __Init must run before any
+    // Create* call.
+    ::XCore::HAL::FMemory::__Init();
+
     ::XCore::HAL::FEventPtr E(::XCore::HAL::FEvent::CreateManualReset());
     if (!E)
     {

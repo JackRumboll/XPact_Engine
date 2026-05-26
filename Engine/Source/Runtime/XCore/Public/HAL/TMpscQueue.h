@@ -47,6 +47,8 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "HAL/FMemory.h"
+#include "HAL/FMemTag.h"
 
 #include <atomic>
 #include <new>
@@ -196,15 +198,32 @@ private:
         alignas(T) ::std::byte ValueStorage[sizeof(T)];
     };
 
+    // Rev 1 audit MS4 close-out: route node allocation through
+    // FMemory::MallocOrAbort with FMemTag::Threading instead of raw
+    // operator new (spec section 4.1 always-on attribution).
+    //
+    // TODO(Phase 1d+): per-instance freelist for hot node-alloc
+    // paths (a Treiber stack of recently-freed nodes) so steady-
+    // state Enqueue/Dequeue does not touch the global allocator.
+    // The FMemory routing established here is the COVER fix for
+    // Rev 1; the freelist layers on top in a later phase without
+    // changing the attribution.
     [[nodiscard]] FNode* AllocateNode() noexcept
     {
-        // TODO(Phase 1d): per-instance freelist + FMemory routing.
-        return new FNode;
+        void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+            sizeof(FNode),
+            alignof(FNode),
+            ::XCore::HAL::FMemTag::Threading);
+        return ::new (Storage) FNode;
     }
 
     void DeallocateNode(FNode* Node) noexcept
     {
-        delete Node;
+        if (Node != nullptr)
+        {
+            Node->~FNode();
+            ::XCore::HAL::FMemory::Free(static_cast<void*>(Node));
+        }
     }
 
     // Cache-line-padded head + tail so the producer's Head writes

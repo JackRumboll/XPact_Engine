@@ -97,8 +97,9 @@
 #include "Macros/XResult.h"           // Result<T, E>, Unexpected
 #include "Containers/DefaultAllocator.h"
 
+#include <algorithm>                  // std::sort / std::stable_sort / std::push_heap / std::pop_heap (Rev 1 audit HIGH-3)
 #include <cstring>                    // std::memcpy, std::memmove
-#include <functional>                 // std::reference_wrapper (for At's Result)
+#include <functional>                 // std::reference_wrapper (for At's Result), std::less
 #include <new>                        // placement new
 #include <type_traits>                // std::is_trivially_*_v
 #include <utility>                    // std::move, std::forward
@@ -640,6 +641,531 @@ namespace XCore::Detail
                 m_data[LastIndex].~T();
             }
             --m_num;
+        }
+
+        // =================================================================
+        // Phase 1d / Rev 1 audit HIGH-3 API surface expansion.
+        // =================================================================
+        //
+        // The following methods bring TArrayCore in line with UE's
+        // TArray surface (Runtime/Core/Public/Containers/Array.h) for
+        // System 5+ readiness:
+        //
+        //   * Empty(NewSlack)     -- clear + reserve.
+        //   * Pop(bAllowShrink)   -- remove + return last element.
+        //   * Last(IdxFromEnd)    -- access last-N element by ref.
+        //   * Top()               -- alias for Last(0); stack-style.
+        //   * Append(...)         -- range append (3 overloads).
+        //   * Insert(Value, Idx)  -- insert at position.
+        //   * Find(Value)         -- linear search; returns index.
+        //   * IndexOfByPredicate  -- predicate search; returns index.
+        //   * Contains(Value)     -- alias for Find(x) != INDEX_NONE.
+        //   * Swap(IdxA, IdxB)    -- swap two elements.
+        //   * Sort() / Sort(P)    -- in-place sort.
+        //   * StableSort(P)       -- in-place stable sort.
+        //   * RemoveAll(P)        -- remove all matching predicate.
+        //   * RemoveSingle(V)     -- remove first match by value.
+        //   * HeapPush / HeapPop  -- binary-heap operations.
+        //
+        // Each method follows the same conventions as the existing
+        // surface (XPACT_CHECK in Debug; trivially-relocatable
+        // memmove fast path where possible; no Result<> at the
+        // raw-index surface -- callers wanting bounds-checked access
+        // use At()).
+        // =================================================================
+
+        // -----------------------------------------------------------------
+        // Empty -- destroy all elements, optionally reserving NewSlack.
+        //
+        // Differs from Reset in semantics-only: Empty's documented
+        // semantic is "clear and prepare for fresh population at
+        // approximately NewSlack capacity"; Reset is "clear and keep
+        // existing buffer if it fits". For all-zero NewSlack the two
+        // behave identically; for NewSlack > current Max, Empty grows.
+        // -----------------------------------------------------------------
+        void Empty(::int32 NewSlack = 0)
+        {
+            XPACT_CHECK(NewSlack >= 0);
+            DestroyElementsOnly();
+            m_num = 0;
+
+            if (NewSlack == 0)
+            {
+                if (m_data != nullptr)
+                {
+                    m_alloc.Deallocate(m_data);
+                    m_data = nullptr;
+                    m_max  = 0;
+                }
+            }
+            else if (NewSlack > m_max)
+            {
+                // Grow up to NewSlack.
+                ReserveAtLeast(NewSlack);
+            }
+            else if (NewSlack < m_max)
+            {
+                // Shrink to NewSlack: drop the larger buffer.
+                if (m_data != nullptr)
+                {
+                    m_alloc.Deallocate(m_data);
+                    m_data = nullptr;
+                    m_max  = 0;
+                }
+                ReserveAtLeast(NewSlack);
+            }
+            // else NewSlack == m_max: keep existing buffer.
+        }
+
+        // -----------------------------------------------------------------
+        // Pop -- remove and return the last element.
+        //
+        // Returns the value of the removed element (move-out).
+        // Pre-condition: m_num > 0.
+        //
+        // bAllowShrinking is reserved for compat with UE's signature;
+        // the current implementation does NOT shrink the buffer
+        // because the underlying allocator's bin-rounding makes
+        // shrink-after-Pop a perf trap. A future Phase 1d may honour
+        // the hint via Reset.
+        // -----------------------------------------------------------------
+        T Pop(bool /*bAllowShrinking*/ = true) noexcept(::std::is_nothrow_move_constructible_v<T> &&
+                                                        ::std::is_nothrow_destructible_v<T>)
+        {
+            XPACT_CHECK(m_num > 0);
+            const ::int32 LastIndex = m_num - 1;
+            T Result(::std::move(m_data[LastIndex]));
+            m_data[LastIndex].~T();
+            --m_num;
+            return Result;
+        }
+
+        // -----------------------------------------------------------------
+        // Last -- access the IndexFromEnd-th-from-last element by ref.
+        //
+        // IndexFromEnd == 0 returns the last element; 1 returns the
+        // second-to-last; etc.
+        // -----------------------------------------------------------------
+        [[nodiscard]] XPACT_FORCEINLINE T& Last(::int32 IndexFromEnd = 0) noexcept
+        {
+            XPACT_CHECK(IndexFromEnd >= 0);
+            XPACT_CHECK(IndexFromEnd < m_num);
+            return m_data[m_num - 1 - IndexFromEnd];
+        }
+
+        [[nodiscard]] XPACT_FORCEINLINE const T& Last(::int32 IndexFromEnd = 0) const noexcept
+        {
+            XPACT_CHECK(IndexFromEnd >= 0);
+            XPACT_CHECK(IndexFromEnd < m_num);
+            return m_data[m_num - 1 - IndexFromEnd];
+        }
+
+        // -----------------------------------------------------------------
+        // Top -- alias for Last(0); stack-style nomenclature.
+        // -----------------------------------------------------------------
+        [[nodiscard]] XPACT_FORCEINLINE T& Top() noexcept
+        {
+            return Last(0);
+        }
+
+        [[nodiscard]] XPACT_FORCEINLINE const T& Top() const noexcept
+        {
+            return Last(0);
+        }
+
+        // -----------------------------------------------------------------
+        // Append (const TArrayCore&) -- copy-append another array's
+        // elements to the tail of this one.
+        //
+        // Returns the index of the first appended element.
+        // -----------------------------------------------------------------
+        ::int32 Append(const TArrayCore& Other)
+        {
+            if (Other.m_num <= 0)
+            {
+                return m_num;
+            }
+            const ::int32 StartIndex = m_num;
+            const ::int32 NewNum     = m_num + Other.m_num;
+            if (NewNum > m_max)
+            {
+                ReserveAtLeast(NewNum);
+            }
+            CopyConstructRange(m_data + m_num, Other.m_data, Other.m_num);
+            m_num = NewNum;
+            return StartIndex;
+        }
+
+        // -----------------------------------------------------------------
+        // Append (TArrayCore&&) -- move-append.
+        //
+        // Other is left empty after the call (its elements moved out).
+        // Returns the index of the first appended element.
+        // -----------------------------------------------------------------
+        ::int32 Append(TArrayCore&& Other)
+        {
+            if (Other.m_num <= 0)
+            {
+                return m_num;
+            }
+            const ::int32 StartIndex = m_num;
+            const ::int32 NewNum     = m_num + Other.m_num;
+            if (NewNum > m_max)
+            {
+                ReserveAtLeast(NewNum);
+            }
+            // Move-construct each element.
+            for (::int32 I = 0; I < Other.m_num; ++I)
+            {
+                ::new (static_cast<void*>(m_data + m_num + I)) T(::std::move(Other.m_data[I]));
+                Other.m_data[I].~T();
+            }
+            m_num = NewNum;
+            // Mark Other as empty; its destructor will release the
+            // (now-empty) buffer.
+            Other.m_num = 0;
+            return StartIndex;
+        }
+
+        // -----------------------------------------------------------------
+        // Append (const T*, int32 Count) -- raw-range copy-append.
+        //
+        // Returns the index of the first appended element. Count == 0
+        // is a no-op (returns current m_num).
+        // -----------------------------------------------------------------
+        ::int32 Append(const T* Source, ::int32 Count)
+        {
+            XPACT_CHECK(Count >= 0);
+            if (Count <= 0)
+            {
+                return m_num;
+            }
+            XPACT_CHECK(Source != nullptr);
+            const ::int32 StartIndex = m_num;
+            const ::int32 NewNum     = m_num + Count;
+            if (NewNum > m_max)
+            {
+                ReserveAtLeast(NewNum);
+            }
+            CopyConstructRange(m_data + m_num, Source, Count);
+            m_num = NewNum;
+            return StartIndex;
+        }
+
+        // -----------------------------------------------------------------
+        // Insert (const T&, int32 Index) -- copy-insert at position.
+        //
+        // 0 <= Index <= m_num. Insertion at Index == m_num is
+        // equivalent to Add. Elements at positions Index..m_num-1
+        // shift right by one to make room.
+        // Returns the inserted element's index (== Index).
+        // -----------------------------------------------------------------
+        ::int32 Insert(const T& Value, ::int32 Index)
+        {
+            XPACT_CHECK(Index >= 0);
+            XPACT_CHECK(Index <= m_num);
+
+            if (m_num >= m_max)
+            {
+                GrowByOne();
+            }
+
+            // Shift elements [Index, m_num) right by one slot. The
+            // tail slot at m_data[m_num] is raw uninitialised storage.
+            const ::int32 NumToShift = m_num - Index;
+            if (NumToShift > 0)
+            {
+                if constexpr (TIsTriviallyRelocatable<T>::Value)
+                {
+                    ::std::memmove(
+                        static_cast<void*>(m_data + Index + 1),
+                        static_cast<const void*>(m_data + Index),
+                        static_cast<::SIZE_T>(NumToShift) * sizeof(T));
+                }
+                else
+                {
+                    // Move from the back forward to avoid clobbering.
+                    // The last slot (m_data + m_num) is raw; move-construct
+                    // there from m_data[m_num - 1], then move-assign down.
+                    ::new (static_cast<void*>(m_data + m_num)) T(::std::move(m_data[m_num - 1]));
+                    for (::int32 I = m_num - 1; I > Index; --I)
+                    {
+                        m_data[I] = ::std::move(m_data[I - 1]);
+                    }
+                    m_data[Index].~T();
+                }
+            }
+            ::new (static_cast<void*>(m_data + Index)) T(Value);
+            ++m_num;
+            return Index;
+        }
+
+        // -----------------------------------------------------------------
+        // Insert (T&&, int32 Index) -- move-insert at position.
+        // -----------------------------------------------------------------
+        ::int32 Insert(T&& Value, ::int32 Index)
+        {
+            XPACT_CHECK(Index >= 0);
+            XPACT_CHECK(Index <= m_num);
+
+            if (m_num >= m_max)
+            {
+                GrowByOne();
+            }
+
+            const ::int32 NumToShift = m_num - Index;
+            if (NumToShift > 0)
+            {
+                if constexpr (TIsTriviallyRelocatable<T>::Value)
+                {
+                    ::std::memmove(
+                        static_cast<void*>(m_data + Index + 1),
+                        static_cast<const void*>(m_data + Index),
+                        static_cast<::SIZE_T>(NumToShift) * sizeof(T));
+                }
+                else
+                {
+                    ::new (static_cast<void*>(m_data + m_num)) T(::std::move(m_data[m_num - 1]));
+                    for (::int32 I = m_num - 1; I > Index; --I)
+                    {
+                        m_data[I] = ::std::move(m_data[I - 1]);
+                    }
+                    m_data[Index].~T();
+                }
+            }
+            ::new (static_cast<void*>(m_data + Index)) T(::std::move(Value));
+            ++m_num;
+            return Index;
+        }
+
+        // -----------------------------------------------------------------
+        // Find -- linear search for the first element equal to Value.
+        //
+        // Returns the index of the first match, or INDEX_NONE if not
+        // found. Uses operator== on T.
+        // -----------------------------------------------------------------
+        [[nodiscard]] ::int32 Find(const T& Value) const noexcept
+        {
+            for (::int32 I = 0; I < m_num; ++I)
+            {
+                if (m_data[I] == Value)
+                {
+                    return I;
+                }
+            }
+            return ::XCore::INDEX_NONE;
+        }
+
+        // -----------------------------------------------------------------
+        // IndexOfByPredicate -- linear search by predicate.
+        //
+        // Returns the index of the first element for which Pred(elem)
+        // returns true, or INDEX_NONE if none match.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        [[nodiscard]] ::int32 IndexOfByPredicate(Predicate Pred) const
+        {
+            for (::int32 I = 0; I < m_num; ++I)
+            {
+                if (Pred(m_data[I]))
+                {
+                    return I;
+                }
+            }
+            return ::XCore::INDEX_NONE;
+        }
+
+        // -----------------------------------------------------------------
+        // FindByPredicate -- linear search by predicate; returns pointer.
+        //
+        // Returns a pointer to the first matching element, or nullptr
+        // if none match. Mirrors UE's TArray::FindByPredicate.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        [[nodiscard]] T* FindByPredicate(Predicate Pred)
+        {
+            for (::int32 I = 0; I < m_num; ++I)
+            {
+                if (Pred(m_data[I]))
+                {
+                    return m_data + I;
+                }
+            }
+            return nullptr;
+        }
+
+        template<typename Predicate>
+        [[nodiscard]] const T* FindByPredicate(Predicate Pred) const
+        {
+            for (::int32 I = 0; I < m_num; ++I)
+            {
+                if (Pred(m_data[I]))
+                {
+                    return m_data + I;
+                }
+            }
+            return nullptr;
+        }
+
+        // -----------------------------------------------------------------
+        // Contains -- linear search by value; bool.
+        //
+        // Convenience alias for Find(Value) != INDEX_NONE.
+        // -----------------------------------------------------------------
+        [[nodiscard]] bool Contains(const T& Value) const noexcept
+        {
+            return Find(Value) != ::XCore::INDEX_NONE;
+        }
+
+        // -----------------------------------------------------------------
+        // Swap -- swap two elements by index (in-place).
+        //
+        // Both indices must be valid; same-index is a no-op.
+        // -----------------------------------------------------------------
+        void Swap(::int32 IndexA, ::int32 IndexB) noexcept(::std::is_nothrow_swappable_v<T>)
+        {
+            XPACT_CHECK(IsValidIndex(IndexA));
+            XPACT_CHECK(IsValidIndex(IndexB));
+            if (IndexA != IndexB)
+            {
+                using ::std::swap;
+                swap(m_data[IndexA], m_data[IndexB]);
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Sort -- in-place sort using a user-supplied predicate.
+        //
+        // The predicate must define a strict-weak ordering: a Pred(a, b)
+        // returning true iff a < b (operator<-like).
+        //
+        // Sort is NOT guaranteed stable; use StableSort if equal
+        // elements must preserve insertion order.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        void Sort(Predicate Pred)
+        {
+            ::std::sort(m_data, m_data + m_num, Pred);
+        }
+
+        // -----------------------------------------------------------------
+        // Sort -- in-place sort using operator<.
+        // -----------------------------------------------------------------
+        void Sort()
+        {
+            ::std::sort(m_data, m_data + m_num, ::std::less<T>());
+        }
+
+        // -----------------------------------------------------------------
+        // StableSort -- in-place stable sort with user predicate.
+        //
+        // Equal elements retain their relative insertion order.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        void StableSort(Predicate Pred)
+        {
+            ::std::stable_sort(m_data, m_data + m_num, Pred);
+        }
+
+        // -----------------------------------------------------------------
+        // StableSort -- in-place stable sort with operator<.
+        // -----------------------------------------------------------------
+        void StableSort()
+        {
+            ::std::stable_sort(m_data, m_data + m_num, ::std::less<T>());
+        }
+
+        // -----------------------------------------------------------------
+        // RemoveAll -- remove every element matching predicate.
+        //
+        // Returns the number of elements removed. Order of remaining
+        // elements is preserved (the implementation uses an
+        // erase-remove-like compaction pattern with explicit
+        // destruction of removed elements).
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        ::int32 RemoveAll(Predicate Pred)
+        {
+            ::int32 WriteIdx = 0;
+            for (::int32 ReadIdx = 0; ReadIdx < m_num; ++ReadIdx)
+            {
+                if (Pred(m_data[ReadIdx]))
+                {
+                    // Element matches; destroy and skip.
+                    m_data[ReadIdx].~T();
+                }
+                else
+                {
+                    if (WriteIdx != ReadIdx)
+                    {
+                        // Move the kept element into the WriteIdx slot.
+                        ::new (static_cast<void*>(m_data + WriteIdx)) T(::std::move(m_data[ReadIdx]));
+                        m_data[ReadIdx].~T();
+                    }
+                    ++WriteIdx;
+                }
+            }
+            const ::int32 Removed = m_num - WriteIdx;
+            m_num = WriteIdx;
+            return Removed;
+        }
+
+        // -----------------------------------------------------------------
+        // RemoveSingle -- remove the first element equal to Value.
+        //
+        // Returns 1 if an element was removed, 0 otherwise. Uses
+        // operator== on T.
+        // -----------------------------------------------------------------
+        ::int32 RemoveSingle(const T& Value) noexcept(::std::is_nothrow_destructible_v<T>)
+        {
+            const ::int32 Idx = Find(Value);
+            if (Idx == ::XCore::INDEX_NONE)
+            {
+                return 0;
+            }
+            RemoveAt(Idx);
+            return 1;
+        }
+
+        // -----------------------------------------------------------------
+        // HeapPush -- insert into a binary-heap-ordered array.
+        //
+        // The array is assumed to satisfy the heap property under Pred
+        // BEFORE the call. After the call the heap property is
+        // restored with Value as a participant.
+        //
+        // Pred is the strict-weak-ordering comparator (a < b returns
+        // true iff a < b). std::push_heap builds a max-heap by
+        // Pred; the top is the GREATEST element.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        ::int32 HeapPush(T&& Value, Predicate Pred)
+        {
+            const ::int32 Idx = Emplace(::std::move(Value));
+            ::std::push_heap(m_data, m_data + m_num, Pred);
+            return Idx;
+        }
+
+        template<typename Predicate>
+        ::int32 HeapPush(const T& Value, Predicate Pred)
+        {
+            const ::int32 Idx = Add(Value);
+            ::std::push_heap(m_data, m_data + m_num, Pred);
+            return Idx;
+        }
+
+        // -----------------------------------------------------------------
+        // HeapPop -- pop the top (greatest by Pred) element from the heap.
+        //
+        // Returns the popped element. Pre-condition: m_num > 0.
+        // -----------------------------------------------------------------
+        template<typename Predicate>
+        T HeapPop(Predicate Pred) noexcept(::std::is_nothrow_move_constructible_v<T> &&
+                                            ::std::is_nothrow_destructible_v<T>)
+        {
+            XPACT_CHECK(m_num > 0);
+            ::std::pop_heap(m_data, m_data + m_num, Pred);
+            return Pop(true);
         }
 
         // =================================================================

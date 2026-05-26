@@ -90,6 +90,12 @@
 #include <cstddef>
 #include <cstdint>
 
+// FIX-A3: heap-fallback in the templated Iterate* bodies routes
+// through FMemory / FMemTag::Reflection (Prime Directive: no raw
+// new[]/delete[] in engine code; memory must be tag-accountable).
+#include "HAL/FMemory.h"
+#include "HAL/FMemTag.h"
+
 // ---------------------------------------------------------------------
 // xpact_compile_time_streq: constexpr string-literal equality used by
 // XHT-emitted static_asserts that pin the GC root / exception ABI /
@@ -228,9 +234,14 @@ namespace XPactDetail
         "FFieldVariant-v1: 8 bytes; Storage@0 (1-bit LSB tag, 0=FField, 1=FStruct, on 8-byte-aligned pointer)"
 #endif
 
+// XCore-4b Subagent A FIX-A7: tag wording corrected to reflect actual
+// field decomposition. Prior "96 base + 8 DispatchTable" misframed the
+// 96 bytes as "base" when the accurate split is FField base (32) +
+// FProperty body (64). The total remains 104 bytes; static_assert(
+// sizeof(FProperty) == 104) is unchanged.
 #ifndef XPACT_FPROPERTY_LAYOUT_TAG
     #define XPACT_FPROPERTY_LAYOUT_TAG \
-        "FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"
+        "FProperty-v2: FField (32) + FProperty body (64) + DispatchTable pointer (8) = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"
 #endif
 
 #ifndef XPACT_FFAKEVTABLE_LAYOUT_TAG
@@ -740,6 +751,12 @@ namespace XCore::Reflect
     // in any reasonable stack frame, and the vast majority of editor /
     // test iterations touch <32 types. Heap fallback is reserved for
     // large-project iteration paths.
+    //
+    // XCore-4b Subagent A FIX-A3: heap-fallback routes through
+    // ::XCore::HAL::FMemory::MallocOrAbort / FMemory::Free with
+    // FMemTag::Reflection attribution (Prime Directive: no raw
+    // new[]/delete[] in engine code; memory must be accountable to
+    // the per-tag tracking and leak-tracker subsystem).
     // -----------------------------------------------------------------
 
     template <typename FnT>
@@ -756,16 +773,18 @@ namespace XCore::Reflect
             }
             return;
         }
-        // Heap fallback. Use operator new[]/delete[] directly; we don't
-        // tag the allocation through FMemTag here because the snapshot
-        // buffer is process-lifetime-short and bounded.
-        const FClass** HeapBuffer = new const FClass*[static_cast<::std::size_t>(Count)];
+        // Heap fallback (FIX-A3): FMemory tag-attributed allocation.
+        const FClass** HeapBuffer = static_cast<const FClass**>(
+            ::XCore::HAL::FMemory::MallocOrAbort(
+                static_cast<::SIZE_T>(Count) * sizeof(const FClass*),
+                alignof(const FClass*),
+                ::XCore::HAL::FMemTag::Reflection));
         const ::int32 Actual = GetClassSnapshot(HeapBuffer, Count);
         for (::int32 I = 0; I < Actual; ++I)
         {
             Visitor(HeapBuffer[I]);
         }
-        delete[] HeapBuffer;
+        ::XCore::HAL::FMemory::Free(HeapBuffer);
     }
 
     template <typename FnT>
@@ -782,13 +801,17 @@ namespace XCore::Reflect
             }
             return;
         }
-        const FStruct** HeapBuffer = new const FStruct*[static_cast<::std::size_t>(Count)];
+        const FStruct** HeapBuffer = static_cast<const FStruct**>(
+            ::XCore::HAL::FMemory::MallocOrAbort(
+                static_cast<::SIZE_T>(Count) * sizeof(const FStruct*),
+                alignof(const FStruct*),
+                ::XCore::HAL::FMemTag::Reflection));
         const ::int32 Actual = GetStructSnapshot(HeapBuffer, Count);
         for (::int32 I = 0; I < Actual; ++I)
         {
             Visitor(HeapBuffer[I]);
         }
-        delete[] HeapBuffer;
+        ::XCore::HAL::FMemory::Free(HeapBuffer);
     }
 
     template <typename FnT>
@@ -805,13 +828,17 @@ namespace XCore::Reflect
             }
             return;
         }
-        const FEnum** HeapBuffer = new const FEnum*[static_cast<::std::size_t>(Count)];
+        const FEnum** HeapBuffer = static_cast<const FEnum**>(
+            ::XCore::HAL::FMemory::MallocOrAbort(
+                static_cast<::SIZE_T>(Count) * sizeof(const FEnum*),
+                alignof(const FEnum*),
+                ::XCore::HAL::FMemTag::Reflection));
         const ::int32 Actual = GetEnumSnapshot(HeapBuffer, Count);
         for (::int32 I = 0; I < Actual; ++I)
         {
             Visitor(HeapBuffer[I]);
         }
-        delete[] HeapBuffer;
+        ::XCore::HAL::FMemory::Free(HeapBuffer);
     }
 
     template <typename FnT>
@@ -828,13 +855,17 @@ namespace XCore::Reflect
             }
             return;
         }
-        const FInterface** HeapBuffer = new const FInterface*[static_cast<::std::size_t>(Count)];
+        const FInterface** HeapBuffer = static_cast<const FInterface**>(
+            ::XCore::HAL::FMemory::MallocOrAbort(
+                static_cast<::SIZE_T>(Count) * sizeof(const FInterface*),
+                alignof(const FInterface*),
+                ::XCore::HAL::FMemTag::Reflection));
         const ::int32 Actual = GetInterfaceSnapshot(HeapBuffer, Count);
         for (::int32 I = 0; I < Actual; ++I)
         {
             Visitor(HeapBuffer[I]);
         }
-        delete[] HeapBuffer;
+        ::XCore::HAL::FMemory::Free(HeapBuffer);
     }
 
 } // namespace XCore::Reflect

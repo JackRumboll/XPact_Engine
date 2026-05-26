@@ -18,6 +18,7 @@
 // =====================================================================
 
 #include "HAL/TMpscQueue.h"
+#include "HAL/FMemory.h"
 
 #include <atomic>
 #include <iostream>
@@ -41,6 +42,11 @@ namespace
 
 int main()
 {
+    // Rev 1 audit MS4 close-out: TMpscQueue node alloc now routes
+    // through FMemory + FMemTag::Threading. __Init must run before
+    // any queue Enqueue.
+    ::XCore::HAL::FMemory::__Init();
+
     ::XCore::HAL::TMpscQueue<FItem> Queue;
 
     // Producers.

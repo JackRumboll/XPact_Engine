@@ -40,6 +40,17 @@
 //   in pointer-keyed maps. Content-hash keying makes the collision
 //   an explicit registration failure at the second Register call.
 //
+//   PER SPEC SECTION 9.5 (Rev 1 audit close-out): the collision is
+//   reported at the second Register call as a Dev diagnostic naming
+//   BOTH source-locations (the existing registration and the new
+//   colliding registration), and Register* RETURNS nullptr. The
+//   previous behaviour of returning the pre-existing pointer (silent
+//   idempotent dedup) was REMOVED -- spec section 9.5 wording "collision
+//   is explicit at registration, not silent shadowing" is the
+//   contract. Callers' XPACT_CHECK(cvar != nullptr) fires on the
+//   collision, which surfaces the bug at the call site rather than
+//   masking it with a wrong-value pointer.
+//
 // BUILD-TIME DOUBLE-REGISTRATION ERROR (fix M-7):
 //   XBT pre-scans the codebase for FAutoConsoleVariable<T>
 //   constructions and emits a build error if two distinct
@@ -57,9 +68,14 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"      // XPACT_HAS_SOURCE_LOCATION
 #include "HAL/IConsoleVariable.h"
 #include "HAL/ECVarFlags.h"
 #include "HAL/ECVarSetByPriority.h"
+
+#if XPACT_HAS_SOURCE_LOCATION
+    #include <source_location>
+#endif
 
 namespace XCore::Misc
 {
@@ -114,18 +130,60 @@ namespace XCore::Misc
         // internally; user code passes the const char* and the
         // implementation hashes it.
         //
-        // Duplicate Name: if a CVar with the same name already
-        // exists, Register* returns the existing IConsoleVariable*
-        // (idempotent registration). This is the deliberate fallback
-        // for plugins registering against an engine CVar that may
-        // already have been registered by another plugin in the same
-        // process; the XBT build-time check (fix M-7; Phase 1g) is
-        // the strict-failure surface.
+        // Duplicate Name (spec section 9.5 fix C-6; Rev 1 audit close-out):
+        // if a CVar with the same name already exists, Register*
+        // emits a Dev diagnostic naming BOTH source-locations (the
+        // existing registration and the new colliding registration)
+        // and returns nullptr. Callers' XPACT_CHECK(cvar != nullptr)
+        // then fires at the second registration site. The previous
+        // silent-idempotent-return-existing behaviour was REMOVED
+        // per spec wording "collision is explicit at registration,
+        // not silent shadowing". The build-time XBT check (fix M-7;
+        // Phase 1g) is the strict-failure surface; the runtime path
+        // here is the load-bearing defense for plugin-tier dynamic
+        // registrations that escape the build-time scan.
         //
-        // Returns the IConsoleVariable*; never nullptr after a
-        // successful registration. The pointer is engine-lifetime
-        // valid.
+        // Phase guard (spec section 9.5; Rev 1 audit MAJOR-2 close-out): the
+        // registry surface methods (Register*, Find) assert in
+        // Debug / warn in Dev that EngineInitPhase() >=
+        // PostStaticInit. The Treiber-stack push from a constinit
+        // FAutoConsoleVariable's ctor at PreStaticInit is NOT a
+        // registry-surface call -- it queues the registration
+        // metadata; the actual Register call happens at __Initialize
+        // (PostStaticInit drain).
+        //
+        // SourceLocation: defaulted to std::source_location::current().
+        // The captured location is used in the collision diagnostic.
+        // For FAutoConsoleVariable-mediated registrations the drain
+        // step passes the ctor-captured SrcLoc through.
+        //
+        // Returns the IConsoleVariable* on success; nullptr on a
+        // duplicate-name collision (see Duplicate Name above).
         // -------------------------------------------------------------
+#if XPACT_HAS_SOURCE_LOCATION
+        [[nodiscard]] IConsoleVariable* RegisterInt(
+            const char* Name,
+            ::int32 Default,
+            const char* Help,
+            ECVarFlags Flags = ECVarFlags::Default,
+            ::std::source_location SrcLoc = ::std::source_location::current()) noexcept;
+
+        [[nodiscard]] IConsoleVariable* RegisterFloat(
+            const char* Name,
+            float Default,
+            const char* Help,
+            ECVarFlags Flags = ECVarFlags::Default,
+            ::std::source_location SrcLoc = ::std::source_location::current()) noexcept;
+
+        [[nodiscard]] IConsoleVariable* RegisterString(
+            const char* Name,
+            const char* Default,
+            const char* Help,
+            ECVarFlags Flags = ECVarFlags::Default,
+            ::std::source_location SrcLoc = ::std::source_location::current()) noexcept;
+#else
+        // Pre-C++20 fallback: no source-location capture. The
+        // collision diagnostic degrades to a name-only message.
         [[nodiscard]] IConsoleVariable* RegisterInt(
             const char* Name,
             ::int32 Default,
@@ -143,6 +201,7 @@ namespace XCore::Misc
             const char* Default,
             const char* Help,
             ECVarFlags Flags = ECVarFlags::Default) noexcept;
+#endif
 
         // -------------------------------------------------------------
         // Find -- diagnostic-only lookup.

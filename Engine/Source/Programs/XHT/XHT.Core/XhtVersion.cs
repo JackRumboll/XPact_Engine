@@ -60,6 +60,16 @@ public static class XhtVersion
     /// <c>AbiTypeSizes</c> tables to the canonical contract surface
     /// (see <c>XBT.Manifest/ContractSurface.cs</c>).
     /// </summary>
+    /// <remarks>
+    /// XCore-4b Subagent A FIX-A7 PENDING-BUMP: the
+    /// <c>XPACT_FPROPERTY_LAYOUT_TAG</c> string content changed (wording
+    /// only; byte sizes unchanged). XBT's canonicalisation will rotate
+    /// this hash on the next <c>xbt manifest-emit</c> run because the
+    /// AbiLayoutTags table feeds the StructureHash. Until XBT
+    /// re-canonicalises, the existing hash value is preserved here +
+    /// in the ~20 test fixtures that pin the literal. Do NOT
+    /// hand-rotate; let XBT compute the new hash deterministically.
+    /// </remarks>
     public const string ContractVersion = "13.8+d9514fb853e7dcc2";
 
     /// <summary>

@@ -55,11 +55,16 @@
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"      // XPACT_HAS_SOURCE_LOCATION
 #include "HAL/ECVarFlags.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/IConsoleVariable.h"
 #include "HAL/TConsoleVariableData.h"
 #include "HAL/TConsoleVariableHandle.h"
+
+#if XPACT_HAS_SOURCE_LOCATION
+    #include <source_location>
+#endif
 
 namespace XCore::Misc
 {
@@ -118,6 +123,17 @@ namespace XCore::Misc
         // read by FAutoConsoleVariable<T>::GetHandle when the
         // caller queries the handle.
         IConsoleVariable* Registered = nullptr;
+
+#if XPACT_HAS_SOURCE_LOCATION
+        // Captured at FAutoConsoleVariable<T> ctor time (spec section
+        // 9.5 Rev 1 audit close-out for fix C-6). Used by the runtime
+        // duplicate-registration diagnostic to name BOTH offending
+        // source-locations. The FAutoConsoleVariable<T> ctor assigns
+        // SrcLoc from its `SrcLoc = current()` default argument so the
+        // captured location is at the user-tier call site, not at the
+        // node's default-init point.
+        ::std::source_location SrcLoc{};
+#endif
     };
 
     // -----------------------------------------------------------------
@@ -143,6 +159,21 @@ namespace XCore::Misc
     class FAutoConsoleVariable<::int32>
     {
     public:
+#if XPACT_HAS_SOURCE_LOCATION
+        FAutoConsoleVariable(const char* Name, ::int32 Default, const char* Help,
+                             ECVarFlags Flags = ECVarFlags::Default,
+                             ::std::source_location SrcLoc = ::std::source_location::current()) noexcept
+        {
+            m_node.Name         = Name;
+            m_node.Help         = Help;
+            m_node.Flags        = Flags;
+            m_node.ValueType    = ECVarValueType::Int32;
+            m_node.DefaultInt   = Default;
+            m_node.SrcLoc       = SrcLoc;
+
+            IConsoleManager::__PushAutoCVar(&m_node);
+        }
+#else
         FAutoConsoleVariable(const char* Name, ::int32 Default, const char* Help,
                              ECVarFlags Flags = ECVarFlags::Default) noexcept
         {
@@ -154,6 +185,7 @@ namespace XCore::Misc
 
             IConsoleManager::__PushAutoCVar(&m_node);
         }
+#endif
 
         ~FAutoConsoleVariable() noexcept = default;
 
@@ -203,6 +235,21 @@ namespace XCore::Misc
     class FAutoConsoleVariable<float>
     {
     public:
+#if XPACT_HAS_SOURCE_LOCATION
+        FAutoConsoleVariable(const char* Name, float Default, const char* Help,
+                             ECVarFlags Flags = ECVarFlags::Default,
+                             ::std::source_location SrcLoc = ::std::source_location::current()) noexcept
+        {
+            m_node.Name         = Name;
+            m_node.Help         = Help;
+            m_node.Flags        = Flags;
+            m_node.ValueType    = ECVarValueType::Float;
+            m_node.DefaultFloat = Default;
+            m_node.SrcLoc       = SrcLoc;
+
+            IConsoleManager::__PushAutoCVar(&m_node);
+        }
+#else
         FAutoConsoleVariable(const char* Name, float Default, const char* Help,
                              ECVarFlags Flags = ECVarFlags::Default) noexcept
         {
@@ -214,6 +261,7 @@ namespace XCore::Misc
 
             IConsoleManager::__PushAutoCVar(&m_node);
         }
+#endif
 
         ~FAutoConsoleVariable() noexcept = default;
 
@@ -252,6 +300,21 @@ namespace XCore::Misc
     class FAutoConsoleVariable<::XCore::FString>
     {
     public:
+#if XPACT_HAS_SOURCE_LOCATION
+        FAutoConsoleVariable(const char* Name, const char* Default, const char* Help,
+                             ECVarFlags Flags = ECVarFlags::Default,
+                             ::std::source_location SrcLoc = ::std::source_location::current()) noexcept
+        {
+            m_node.Name         = Name;
+            m_node.Help         = Help;
+            m_node.Flags        = Flags;
+            m_node.ValueType    = ECVarValueType::String;
+            m_node.DefaultStr   = Default;
+            m_node.SrcLoc       = SrcLoc;
+
+            IConsoleManager::__PushAutoCVar(&m_node);
+        }
+#else
         FAutoConsoleVariable(const char* Name, const char* Default, const char* Help,
                              ECVarFlags Flags = ECVarFlags::Default) noexcept
         {
@@ -263,6 +326,7 @@ namespace XCore::Misc
 
             IConsoleManager::__PushAutoCVar(&m_node);
         }
+#endif
 
         ~FAutoConsoleVariable() noexcept = default;
 

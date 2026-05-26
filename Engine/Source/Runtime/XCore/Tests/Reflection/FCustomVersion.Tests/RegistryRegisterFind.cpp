@@ -23,8 +23,11 @@
 //   * Register the same GUID with a LOWER Version -> Rejected; state
 //     unchanged.
 //   * Register the zero GUID -> InvalidKey; state unchanged.
-//   * GetRegisteredVersion returns nullptr for absent Keys.
 //   * GetRegisteredVersionCopy round-trips the entry.
+//   * TryGetRegisteredVersion returns false for absent Keys (FIX-A5;
+//     the prior pointer-returning GetRegisteredVersion(FGuid) was
+//     removed because it leaked a dangling pointer past the
+//     shared-read-lock release).
 //   * Unregister removes the entry.
 //   * GetAllRegistered returns a snapshot copy.
 //
@@ -86,20 +89,26 @@ int main()
     Check(Registry.Size() == 1, "Registry size after first registration != 1");
     Check(Registry.Contains(Key1), "Contains(Key1) returned false");
 
-    // GetRegisteredVersion returns the entry.
+    // GetRegisteredVersionCopy round-trips the entry. (FIX-A5: the
+    // prior pointer-returning GetRegisteredVersion was removed; both
+    // by-value APIs -- Copy + TryGet -- are exercised here.)
     {
-        // NOTE: we capture the value (not pointer) because the pointer
-        // returned by GetRegisteredVersion is valid only inside the
-        // call scope (the read lock is released on return). Holding
-        // the pointer beyond that is racy in a multi-thread scenario;
-        // single-threaded test code is safe but we use the Copy
-        // variant to validate that path too.
         bool bFound = false;
         const FCustomVersion Copy = Registry.GetRegisteredVersionCopy(Key1, bFound);
         Check(bFound, "GetRegisteredVersionCopy on registered key did not set OutFound=true");
         Check(Copy.Key == Key1, "Copy.Key != Key1");
         Check(Copy.Version == 5, "Copy.Version != 5");
         Check(Copy.FriendlyName == Name1, "Copy.FriendlyName != Name1");
+
+        // TryGetRegisteredVersion: equivalent semantics via the
+        // bool-return / OutParam variant (FIX-A5).
+        FCustomVersion TryOut{};
+        const bool bFoundTry = Registry.TryGetRegisteredVersion(Key1, TryOut);
+        Check(bFoundTry, "TryGetRegisteredVersion on registered key did not return true");
+        Check(TryOut.Key == Key1, "TryGetRegisteredVersion: TryOut.Key != Key1");
+        Check(TryOut.Version == 5, "TryGetRegisteredVersion: TryOut.Version != 5");
+        Check(TryOut.FriendlyName == Name1,
+              "TryGetRegisteredVersion: TryOut.FriendlyName != Name1");
     }
 
     // Same-version re-registration is Updated (overwrite path).
@@ -145,11 +154,15 @@ int main()
         Check(Registry.Size() == 2, "Registry size != 2 after two registrations");
     }
 
-    // GetRegisteredVersion for absent key returns nullptr.
+    // TryGetRegisteredVersion / GetRegisteredVersionCopy for absent key.
+    // FIX-A5: prior `GetRegisteredVersion(FGuid)` (pointer return) was
+    // removed because the shared-read lock was released on return,
+    // exposing a dangling pointer to concurrent TArray relocations.
     {
-        const FCustomVersion* Absent =
-            Registry.GetRegisteredVersion(FGuid{0xDEAD, 0xBEEF, 0, 0});
-        Check(Absent == nullptr, "GetRegisteredVersion on absent key did not return nullptr");
+        FCustomVersion AbsentOut{};
+        const bool bFoundTry =
+            Registry.TryGetRegisteredVersion(FGuid{0xDEAD, 0xBEEF, 0, 0}, AbsentOut);
+        Check(!bFoundTry, "TryGetRegisteredVersion on absent key did not return false");
 
         bool bFound = true;
         const FCustomVersion Copy =

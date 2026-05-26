@@ -72,14 +72,12 @@ bool FCustomVersionRegistry::UnregisterCustomVersion(FGuid Key) noexcept
     return Container.Remove(Key);
 }
 
-const FCustomVersion* FCustomVersionRegistry::GetRegisteredVersion(FGuid Key) const noexcept
-{
-    // Shared lock for the read. The returned pointer is valid only
-    // until the next exclusive lock acquires (i.e., the caller's stack
-    // frame). The header documents this.
-    ::XCore::HAL::FScopedReadLock ReadLock(Lock);
-    return Container.Find(Key);
-}
+// FIX-A5: prior `GetRegisteredVersion(FGuid)` (pointer return) REMOVED.
+// The shared-read lock was released at return; concurrent writers could
+// relocate the underlying TArray buffer and invalidate the pointer.
+// Replaced by the by-value `GetRegisteredVersionCopy` (kept for
+// backward compatibility) and `TryGetRegisteredVersion` (XCore Try*
+// convention).
 
 FCustomVersion FCustomVersionRegistry::GetRegisteredVersionCopy(FGuid Key, bool& OutFound) const noexcept
 {
@@ -91,6 +89,17 @@ FCustomVersion FCustomVersionRegistry::GetRegisteredVersionCopy(FGuid Key, bool&
     }
     OutFound = false;
     return FCustomVersion{};
+}
+
+bool FCustomVersionRegistry::TryGetRegisteredVersion(FGuid Key, FCustomVersion& OutVersion) const noexcept
+{
+    ::XCore::HAL::FScopedReadLock ReadLock(Lock);
+    if (const FCustomVersion* Entry = Container.Find(Key))
+    {
+        OutVersion = *Entry;
+        return true;
+    }
+    return false;
 }
 
 bool FCustomVersionRegistry::Contains(FGuid Key) const noexcept

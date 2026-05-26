@@ -33,6 +33,50 @@
 #include <mutex>             // still required: constinit FPoolTable mutex (FMallocBinnedX.h:370-383) needs std::mutex's constexpr ctor; FMutex's ctor is non-constexpr
 #include <unordered_map>     // large-alloc map (Phase 1b)
 
+// =====================================================================
+// Allocator telemetry counters (Rev 1 audit MEDIUM-15 deferral note).
+// =====================================================================
+//
+// The Rev 1 audit MEDIUM-15 finding asks for XSTAT_INC counters in
+// FMallocBinnedX::{Malloc, Free, MallocLarge, FreeLarge, HandleOOM,
+// PullBundleFromCentral, FlushBundleToCentral, DrainCrossThreadReclaim}.
+//
+// IMPLEMENTATION DEFERRED: on Win64/Android the per-thread
+// FStatShard is lazy-allocated through FMemory::MallocOrAbort by
+// TModuleSafeThreadLocal::Get(). Calling XSTAT_INC from inside
+// FMallocBinnedX::Malloc therefore creates a re-entrant
+// FMemory::Malloc -> XSTAT_INC -> FStatTLS::Inc -> GetShard ->
+// FMemory::MallocOrAbort recursion before the per-thread shard is
+// installed. The recursion terminates only after the shard alloc
+// succeeds, which can't happen because each recursive call is
+// looking at the same un-initialised TLS slot.
+//
+// The correct fix requires one of:
+//   (a) Pre-initialise the FStatShard for the calling thread inside
+//       FMemory::__Init (and on every thread-create hook) so the
+//       lazy-alloc never fires inside the allocator's hot path.
+//   (b) Add a thread-local re-entrancy guard inside FStatTLS::Inc/Add
+//       that bypasses the lazy alloc and routes to a pre-allocated
+//       always-present overflow slot.
+//   (c) Switch the FStatShard storage to a constinit-zero static
+//       array on Win64/Android (mirroring the Linux native
+//       thread_local path).
+//
+// Option (c) is the most principled but requires reworking
+// TModuleSafeThreadLocal's hot-reload contract. Option (a) is the
+// smallest change that closes the recursion; it is best-landed
+// alongside a TaskGraph thread-create hook so every spawned thread
+// is covered (not just the calling thread at __Init time). The Rev
+// 1 audit close-out for this counter family will ship in a
+// follow-up diff alongside that hook.
+//
+// In the meantime: per-tag byte accounting via FMemory::
+// GetAllocatedBytes(Tag) is still functional (it's a non-XSTAT
+// atomic counter inside FMallocBinnedX itself, not a TLS-shard
+// path) and provides the load-bearing observability for
+// allocator behaviour.
+// =====================================================================
+
 namespace XCore::HAL
 {
     // =====================================================================
@@ -767,6 +811,7 @@ namespace XCore::HAL
 
     void FMallocBinnedX::DrainCrossThreadReclaim(::uint32 BinIndex) noexcept
     {
+
         FPoolTable& Pool = m_pools[BinIndex];
 
         // Step 1: drain the bounded MPSC queue (Phase 1c fast path).

@@ -26,6 +26,8 @@
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"
 #include "Macros/XPactMacros.h"
+#include "HAL/FPlatformTime.h"
+#include "HAL/FTimespan.h"
 
 #if XPACT_PLATFORM_WIN64
     #ifndef WIN32_LEAN_AND_MEAN
@@ -37,6 +39,8 @@
     #include <Windows.h>
 #else
     #include <pthread.h>
+    #include <time.h>
+    #include <errno.h>
 #endif
 
 #include <new>
@@ -96,6 +100,76 @@ void FMutex::Unlock() noexcept
     ::ReleaseSRWLockExclusive(HandleOf(m_storage));
 }
 
+// ---------------------------------------------------------------------
+// Win64 timed-lock helper (Rev 1 audit HIGH-2 close-out).
+//
+// SRWLock has no native timed-acquire API. Same emulation pattern as
+// FRWLock/FCriticalSection: TryAcquire + graded-backoff spin bounded
+// by FPlatformTime::Seconds() + Timeout.
+// ---------------------------------------------------------------------
+namespace
+{
+    constexpr int kSpinIterationsFM  = 64;
+    constexpr int kYieldIterationsFM = 32;
+
+    [[nodiscard]] bool WaitDeadlineExpiredFM(double DeadlineSeconds) noexcept
+    {
+        return ::XCore::HAL::FPlatformTime::Seconds() >= DeadlineSeconds;
+    }
+}
+
+bool FMutex::TryLockFor(FTimespan Timeout) noexcept
+{
+    if (TryLock())
+    {
+        return true;
+    }
+
+    if (Timeout.TotalMicroseconds() <= 0)
+    {
+        return false;
+    }
+
+    const double TimeoutSeconds = static_cast<double>(Timeout.TotalMicroseconds()) * 1e-6;
+    const double Deadline       = ::XCore::HAL::FPlatformTime::Seconds() + TimeoutSeconds;
+
+    for (int i = 0; i < kSpinIterationsFM; ++i)
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::YieldProcessor();
+        if (WaitDeadlineExpiredFM(Deadline))
+        {
+            return false;
+        }
+    }
+
+    for (int i = 0; i < kYieldIterationsFM; ++i)
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::Sleep(0);
+        if (WaitDeadlineExpiredFM(Deadline))
+        {
+            return false;
+        }
+    }
+
+    while (!WaitDeadlineExpiredFM(Deadline))
+    {
+        if (TryLock())
+        {
+            return true;
+        }
+        ::Sleep(1);
+    }
+    return TryLock();
+}
+
 #else  // POSIX
 
 // ---------------------------------------------------------------------
@@ -153,6 +227,39 @@ bool FMutex::TryLock() noexcept
 void FMutex::Unlock() noexcept
 {
     pthread_mutex_unlock(HandleOf(m_storage));
+}
+
+// ---------------------------------------------------------------------
+// POSIX timed-lock helper (Rev 1 audit HIGH-2 close-out).
+//
+// pthread_mutex_timedlock with absolute-deadline timespec
+// (CLOCK_REALTIME).
+// ---------------------------------------------------------------------
+bool FMutex::TryLockFor(FTimespan Timeout) noexcept
+{
+    if (Timeout.TotalMicroseconds() <= 0)
+    {
+        return TryLock();
+    }
+
+    struct timespec Deadline;
+    clock_gettime(CLOCK_REALTIME, &Deadline);
+
+    const ::int64 TotalMicros = Timeout.TotalMicroseconds();
+    const ::int64 WholeSecs   = TotalMicros / 1000000;
+    const ::int64 SubMicros   = TotalMicros - (WholeSecs * 1000000);
+    const ::int64 SubNanos    = SubMicros * 1000;
+
+    Deadline.tv_sec  += static_cast<time_t>(WholeSecs);
+    Deadline.tv_nsec += static_cast<long>(SubNanos);
+    if (Deadline.tv_nsec >= 1000000000L)
+    {
+        Deadline.tv_sec  += 1;
+        Deadline.tv_nsec -= 1000000000L;
+    }
+
+    const int Result = pthread_mutex_timedlock(HandleOf(m_storage), &Deadline);
+    return Result == 0;
 }
 
 #endif  // XPACT_PLATFORM_WIN64

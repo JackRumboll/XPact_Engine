@@ -52,7 +52,10 @@
 #include "Containers/TArray.h"
 #include "Containers/TMap.h"
 #include "HAL/FRWLock.h"
+#include "HAL/TModuleSafeThreadLocal.h"   // FIX-A4: XPACT_TLS_MODULE_SAFE backing
 #include "Macros/XCoreTypes.h"
+#include "Macros/XPactMacros.h"   // XPACT_CHECK + XPACT_DEBUG/DEVELOPMENT gates +
+                                  // XPACT_PLATFORM_* + XPACT_TLS_MODULE_SAFE
 
 #include "Reflection/FClass.h"
 #include "Reflection/FEnum.h"
@@ -62,6 +65,7 @@
 #include "Reflection/FStruct.h"
 
 #include <cstddef>
+#include <cstdio>     // std::fprintf / std::fflush for FIX-A2 Dev diagnostic
 
 namespace XCore::Reflect
 {
@@ -136,22 +140,60 @@ namespace
     }
 
     // -----------------------------------------------------------------
-    // Thread-local current-module slot.
+    // Thread-local current-module slot (FIX-A4).
     //
     // Set by OnModuleLoad; consulted by Register* to stamp each
     // registration's OwningModule; cleared by OnModuleUnload.
     //
-    // FName default-constructs to NAME_None (Index=0, SerialNumber=0)
-    // via its constexpr default ctor, so the thread_local can use
-    // a constexpr-initialised default.
+    // FName default-constructs to NAME_None (Index=0, SerialNumber=0).
     //
-    // Storage is the compiler's native thread_local. The slot is
-    // process-local + thread-local: a thread that does not call
-    // OnModuleLoad sees NAME_None throughout (registration's
-    // OwningModule will be NAME_None, which is the documented
-    // "engine-core pre-registration" sentinel).
+    // Storage:
+    //   * Win64 / Android: TModuleSafeThreadLocal<FName>. The OS-managed
+    //     slot survives downstream DLL reload; per-thread FName storage
+    //     is heap-allocated on first Get(). Required because the
+    //     reflection-runtime registry is process-singleton inside XCore
+    //     and may be consulted by patched downstream DLLs whose own
+    //     thread_local storage went stale across the reload.
+    //   * Linux: native thread_local (no hot-reload in MVP).
+    //
+    // Per spec fix B-C1: hot-reloadable DLL targets MUST route TLS
+    // through XPACT_TLS_MODULE_SAFE to avoid the "patched module's
+    // thread_local points at unmapped code" footgun.
     // -----------------------------------------------------------------
-    thread_local FName tls_CurrentModule = FName{};
+    XPACT_TLS_MODULE_SAFE(FName, g_tls_CurrentModule);
+
+    // -----------------------------------------------------------------
+    // Accessor helpers that abstract over XPACT_TLS_MODULE_SAFE's two
+    // expansions (TModuleSafeThreadLocal<FName> on Win64/Android,
+    // plain thread_local FName on Linux). The helpers are XPACT_FORCEINLINE
+    // so call sites stay at the cost of the native-thread_local path on
+    // Linux and one indirection on Win64/Android.
+    //
+    // The Win64/Android path lazy-allocates the per-thread FName on
+    // first Get(); the value is set to NAME_None by FName's default ctor.
+    // -----------------------------------------------------------------
+    XPACT_FORCEINLINE FName GetCurrentModule_TLS() noexcept
+    {
+#if XPACT_PLATFORM_WIN64 || XPACT_PLATFORM_ANDROID
+        FName* Ptr = g_tls_CurrentModule.Get();
+        return Ptr != nullptr ? *Ptr : FName{};
+#else
+        return g_tls_CurrentModule;
+#endif
+    }
+
+    XPACT_FORCEINLINE void SetCurrentModule_TLS(FName NewValue) noexcept
+    {
+#if XPACT_PLATFORM_WIN64 || XPACT_PLATFORM_ANDROID
+        FName* Ptr = g_tls_CurrentModule.Get();
+        if (Ptr != nullptr)
+        {
+            *Ptr = NewValue;
+        }
+#else
+        g_tls_CurrentModule = NewValue;
+#endif
+    }
 } // anonymous namespace
 
 // =====================================================================
@@ -273,7 +315,7 @@ bool XReflectionRuntime::RegisterClass(const FClass* Class) noexcept
 
     Reg.ClassesByName.Add(Name, Class);
     Reg.AllClasses.Add(Class);
-    Reg.ClassOwningModule.Add(Name, tls_CurrentModule);
+    Reg.ClassOwningModule.Add(Name, GetCurrentModule_TLS());
     return true;
 }
 
@@ -299,7 +341,7 @@ bool XReflectionRuntime::RegisterStruct(const FStruct* Struct) noexcept
 
     Reg.StructsByName.Add(Name, Struct);
     Reg.AllStructs.Add(Struct);
-    Reg.StructOwningModule.Add(Name, tls_CurrentModule);
+    Reg.StructOwningModule.Add(Name, GetCurrentModule_TLS());
     return true;
 }
 
@@ -339,8 +381,8 @@ bool XReflectionRuntime::RegisterScriptStruct(const FScriptStruct* ScriptStruct)
     Reg.ScriptStructsByName.Add(Name, ScriptStruct);
     Reg.StructsByName.Add(Name, static_cast<const FStruct*>(ScriptStruct));
     Reg.AllStructs.Add(static_cast<const FStruct*>(ScriptStruct));
-    Reg.ScriptStructOwningModule.Add(Name, tls_CurrentModule);
-    Reg.StructOwningModule.Add(Name, tls_CurrentModule);
+    Reg.ScriptStructOwningModule.Add(Name, GetCurrentModule_TLS());
+    Reg.StructOwningModule.Add(Name, GetCurrentModule_TLS());
     return true;
 }
 
@@ -367,7 +409,7 @@ bool XReflectionRuntime::RegisterEnum(const FEnum* Enum) noexcept
 
     Reg.EnumsByName.Add(Name, Enum);
     Reg.AllEnums.Add(Enum);
-    Reg.EnumOwningModule.Add(Name, tls_CurrentModule);
+    Reg.EnumOwningModule.Add(Name, GetCurrentModule_TLS());
     return true;
 }
 
@@ -393,7 +435,7 @@ bool XReflectionRuntime::RegisterInterface(const FInterface* Interface) noexcept
 
     Reg.InterfacesByName.Add(Name, Interface);
     Reg.AllInterfaces.Add(Interface);
-    Reg.InterfaceOwningModule.Add(Name, tls_CurrentModule);
+    Reg.InterfaceOwningModule.Add(Name, GetCurrentModule_TLS());
     return true;
 }
 
@@ -542,7 +584,7 @@ void XReflectionRuntime::OnModuleLoad(FName ModuleName) noexcept
     }
     // Set the thread-local current-module slot. Subsequent Register*
     // calls on this thread stamp the registration with this FName.
-    tls_CurrentModule = ModuleName;
+    SetCurrentModule_TLS(ModuleName);
 }
 
 void XReflectionRuntime::OnModuleUnload(FName ModuleName) noexcept
@@ -683,15 +725,15 @@ void XReflectionRuntime::OnModuleUnload(FName ModuleName) noexcept
     // Clear the thread-local current-module slot if it matches the
     // unloading module (defensive; the OnModuleLoad/OnModuleUnload
     // bracket should always be properly nested on the same thread).
-    if (tls_CurrentModule == ModuleName)
+    if (GetCurrentModule_TLS() == ModuleName)
     {
-        tls_CurrentModule = FName{};
+        SetCurrentModule_TLS(FName{});
     }
 }
 
 FName XReflectionRuntime::GetCurrentModuleName() noexcept
 {
-    return tls_CurrentModule;
+    return GetCurrentModule_TLS();
 }
 
 // =====================================================================
@@ -903,7 +945,7 @@ void XReflectionRuntime::EmptyForTesting() noexcept
     // slots are not reachable from here, but tests run their fixtures
     // single-threaded so this is sufficient for the test reset
     // contract.
-    tls_CurrentModule = FName{};
+    SetCurrentModule_TLS(FName{});
 }
 
 } // namespace XCore::Reflect
@@ -911,72 +953,143 @@ void XReflectionRuntime::EmptyForTesting() noexcept
 // =====================================================================
 // LEGACY-SURFACE shims (global scope).
 //
-// The Stage-A stub's class-method bodies. Phase 4b.6 implements them
-// as deferred-no-ops (the legacy XClassDescriptor records do not carry
-// enough information to build a full FClass / FStruct / FEnum /
-// FInterface).
+// XCore-4b Subagent A FIX-A2 -- "honest failure" posture.
 //
-// The legacy surface is opaque-pointer-typed at the API; the
-// implementation does NOT bridge legacy XClass* to namespaced FClass*.
-// Production registration flows are expected to switch to the
-// namespaced surface in Phase 4b.7+ (XHT regeneration).
+// PRIOR POSTURE (pre-FIX-A2): every method silently returned nullptr
+// (Get*FromConstInit) or silently did nothing (RegisterType). XHT
+// emit currently targets this surface, so emitted .gen.cpp produces
+// ZERO registered types -- a Prime Directive "silent corruption"
+// class of failure.
 //
-// The legacy RegisterType overloads accept the calls and route to a
-// diagnostic-only path: if the legacy pointer is nullptr (the Stage-A
-// Get*FromConstInit pathway), the call is a successful no-op; a
-// non-nullptr legacy pointer is treated as a structural error (the
-// caller obtained the pointer from outside the supported Stage-A
-// path) and is silently ignored.
+// FIX-A2 POSTURE: every method emits a Dev/Debug-only fprintf
+// diagnostic naming the call site + the descriptor pointer, then
+// XPACT_CHECK(false) fires in Debug so the caller crashes loudly.
+// In Shipping XPACT_CHECK compiles out; the diagnostic remains
+// (XPACT_DEBUG || XPACT_DEVELOPMENT gated), so a release build with
+// stale XHT emit logs the failure to stderr instead of silently
+// succeeding.
+//
+// The legacy descriptors (XClassDescriptor / XStructDescriptor /
+// XEnumDescriptor / XInterfaceDescriptor / XDelegateFunctionDescriptor)
+// do not carry an FProperty list, per-property Offset/ElementSize, a
+// FFakeVTable dispatch pointer, or a SchemaHash. Bridging them to
+// namespaced FClass/FStruct/etc would require fabricating these
+// fields; the spec mandates XHT regeneration against the namespaced
+// surface (Phase 4b.7+).
+//
+// Until XHT regeneration ships, legacy callers see:
+//   * Debug:    XPACT_CHECK(false) -> CheckFailed abort, with the
+//               legacy-surface diagnostic on stderr.
+//   * Dev:      stderr diagnostic + XPACT_CHECK(false) -> CheckFailed.
+//   * Shipping: stderr diagnostic only (XPACT_CHECK is ((void)0));
+//               method returns nullptr / RegisterType is no-op.
+//               Caller will likely crash later when consuming the
+//               nullptr; the diagnostic identifies the root cause.
 // =====================================================================
 
-const XClass* XReflectionRuntime::GetXClassFromConstInit(const XClassDescriptor* /*desc*/)
+namespace
 {
-    // Stage-A compatibility: nullptr indicates "construct an XClass
-    // from the legacy descriptor is not supported in Phase 4b.6".
-    // Phase 4b.7+ XHT regeneration produces FClassDescriptor records
-    // and bypasses this shim entirely.
+    // Single-source-of-truth diagnostic emitter for the legacy surface.
+    // Compiled out in Shipping.
+    void LegacyShimDiagnostic(const char* MethodName, const void* DescPtr) noexcept
+    {
+#if XPACT_DEBUG || XPACT_DEVELOPMENT
+        std::fprintf(stderr,
+            "[XReflectionRuntime] LEGACY-SURFACE call: %s(desc=%p) is not "
+            "implementable; legacy descriptors lack FProperty list / "
+            "FFakeVTable / SchemaHash needed to construct a namespaced "
+            "FClass/FStruct/FEnum/FInterface. Regenerate XHT emit against "
+            "the namespaced surface (XCore-4b Subagent A FIX-A2; Phase 4b.7+).\n",
+            MethodName, DescPtr);
+        std::fflush(stderr);
+#else
+        (void)MethodName;
+        (void)DescPtr;
+#endif
+    }
+} // anonymous namespace
+
+const XClass* XReflectionRuntime::GetXClassFromConstInit(const XClassDescriptor* desc)
+{
+    LegacyShimDiagnostic("GetXClassFromConstInit", desc);
+    XPACT_CHECK(!"XReflectionRuntime::GetXClassFromConstInit (legacy surface) "
+                 "called; regenerate XHT emit against the namespaced "
+                 "XCore::Reflect::XReflectionRuntime::RegisterClass surface "
+                 "(XCore-4b Subagent A FIX-A2).");
     return nullptr;
 }
 
-const XStruct* XReflectionRuntime::GetXStructFromConstInit(const XStructDescriptor* /*desc*/)
+const XStruct* XReflectionRuntime::GetXStructFromConstInit(const XStructDescriptor* desc)
 {
+    LegacyShimDiagnostic("GetXStructFromConstInit", desc);
+    XPACT_CHECK(!"XReflectionRuntime::GetXStructFromConstInit (legacy surface) "
+                 "called; regenerate XHT emit against the namespaced "
+                 "XCore::Reflect::XReflectionRuntime::RegisterStruct surface.");
     return nullptr;
 }
 
-const XEnum* XReflectionRuntime::GetXEnumFromConstInit(const XEnumDescriptor* /*desc*/)
+const XEnum* XReflectionRuntime::GetXEnumFromConstInit(const XEnumDescriptor* desc)
 {
+    LegacyShimDiagnostic("GetXEnumFromConstInit", desc);
+    XPACT_CHECK(!"XReflectionRuntime::GetXEnumFromConstInit (legacy surface) "
+                 "called; regenerate XHT emit against the namespaced "
+                 "XCore::Reflect::XReflectionRuntime::RegisterEnum surface.");
     return nullptr;
 }
 
-const XInterface* XReflectionRuntime::GetXInterfaceFromConstInit(const XInterfaceDescriptor* /*desc*/)
+const XInterface* XReflectionRuntime::GetXInterfaceFromConstInit(const XInterfaceDescriptor* desc)
 {
+    LegacyShimDiagnostic("GetXInterfaceFromConstInit", desc);
+    XPACT_CHECK(!"XReflectionRuntime::GetXInterfaceFromConstInit (legacy surface) "
+                 "called; regenerate XHT emit against the namespaced "
+                 "XCore::Reflect::XReflectionRuntime::RegisterInterface surface.");
     return nullptr;
 }
 
-const XDelegateFunction* XReflectionRuntime::GetXDelegateFunctionFromConstInit(const XDelegateFunctionDescriptor* /*desc*/)
+const XDelegateFunction* XReflectionRuntime::GetXDelegateFunctionFromConstInit(const XDelegateFunctionDescriptor* desc)
 {
+    LegacyShimDiagnostic("GetXDelegateFunctionFromConstInit", desc);
+    XPACT_CHECK(!"XReflectionRuntime::GetXDelegateFunctionFromConstInit (legacy "
+                 "surface) called; namespaced XDelegateFunction descriptor not yet "
+                 "modelled. Track XHT regeneration in Phase 4b.7+.");
     return nullptr;
 }
 
-void XReflectionRuntime::RegisterType(const XClass* /*xclass*/)
+void XReflectionRuntime::RegisterType(const XClass* xclass)
 {
-    // No-op: the legacy XClass* is opaque and carries no FClass
-    // identity. Phase 4b.7+ XHT regeneration uses the namespaced
-    // RegisterClass API directly.
+    LegacyShimDiagnostic("RegisterType(XClass*)", xclass);
+    XPACT_CHECK(!"XReflectionRuntime::RegisterType(XClass*) (legacy surface) called; "
+                 "regenerate XHT emit against XCore::Reflect::XReflectionRuntime::"
+                 "RegisterClass (XCore-4b Subagent A FIX-A2).");
 }
 
-void XReflectionRuntime::RegisterType(const XStruct* /*xstruct*/)
+void XReflectionRuntime::RegisterType(const XStruct* xstruct)
 {
+    LegacyShimDiagnostic("RegisterType(XStruct*)", xstruct);
+    XPACT_CHECK(!"XReflectionRuntime::RegisterType(XStruct*) (legacy surface) called; "
+                 "regenerate XHT emit against XCore::Reflect::XReflectionRuntime::"
+                 "RegisterStruct.");
 }
 
-void XReflectionRuntime::RegisterType(const XEnum* /*xenum*/)
+void XReflectionRuntime::RegisterType(const XEnum* xenum)
 {
+    LegacyShimDiagnostic("RegisterType(XEnum*)", xenum);
+    XPACT_CHECK(!"XReflectionRuntime::RegisterType(XEnum*) (legacy surface) called; "
+                 "regenerate XHT emit against XCore::Reflect::XReflectionRuntime::"
+                 "RegisterEnum.");
 }
 
-void XReflectionRuntime::RegisterType(const XInterface* /*xinterface*/)
+void XReflectionRuntime::RegisterType(const XInterface* xinterface)
 {
+    LegacyShimDiagnostic("RegisterType(XInterface*)", xinterface);
+    XPACT_CHECK(!"XReflectionRuntime::RegisterType(XInterface*) (legacy surface) called; "
+                 "regenerate XHT emit against XCore::Reflect::XReflectionRuntime::"
+                 "RegisterInterface.");
 }
 
-void XReflectionRuntime::RegisterType(const XDelegateFunction* /*xdelegate*/)
+void XReflectionRuntime::RegisterType(const XDelegateFunction* xdelegate)
 {
+    LegacyShimDiagnostic("RegisterType(XDelegateFunction*)", xdelegate);
+    XPACT_CHECK(!"XReflectionRuntime::RegisterType(XDelegateFunction*) (legacy surface) "
+                 "called; namespaced XDelegateFunction registration not yet modelled.");
 }

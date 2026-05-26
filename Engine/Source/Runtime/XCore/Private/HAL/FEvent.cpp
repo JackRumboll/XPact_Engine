@@ -5,7 +5,10 @@
 // =====================================================================
 //
 // XCore-4a Rev 3, Section 8.1 (Threading Primitives) + Section 8.6
-// row 2.
+// row 2 + Rev 1 audit MS3 close-out (raw new/delete in
+// Create/Destroy routed through FMemory + FMemTag::Threading per
+// Prime Directive / spec section 4.1: "every allocation carries a 2-byte
+// tag; the allocator's per-block header carries the tag").
 //
 // Implements the FEvent wrapper declared in Public/HAL/FEvent.h.
 // FEvent supports auto-reset and manual-reset modes; the factory
@@ -16,6 +19,15 @@
 //   * Win64:    CreateEventW + SetEvent + ResetEvent + WaitForSingleObject.
 //   * POSIX:    pthread mutex + condvar + bool flag + reset mode.
 //
+// FEvent INSTANCE ALLOCATION (Rev 1 audit MS3 close-out):
+//
+// The factory methods (Create*) and Destroy route the FEvent
+// instance allocation through FMemory::MallocOrAbort + placement-
+// new + explicit destructor + FMemory::Free with the
+// FMemTag::Threading attribution tag. The previous raw
+// operator-new path bypassed FMallocBinnedX entirely, defeating
+// the spec section 4.1 always-on attribution contract.
+//
 // =====================================================================
 
 #include "HAL/FEvent.h"
@@ -24,6 +36,8 @@
 #include "Macros/XCoreDefines.h"
 #include "Macros/XPactMacros.h"
 #include "Macros/XAssertionMacros.h"
+#include "HAL/FMemory.h"
+#include "HAL/FMemTag.h"
 
 #if XPACT_PLATFORM_WIN64
     #ifndef WIN32_LEAN_AND_MEAN
@@ -90,16 +104,22 @@ FEvent::~FEvent() noexcept
 
 FEvent* FEvent::CreateAutoReset() noexcept
 {
-    // operator new -- Phase 1c uses the global heap. TODO(Phase 1d):
-    // route through FMemory::MallocOrAbort with FMemTag::Threading
-    // for leak-tracker attribution.
-    FEvent* E = new FEvent;
+    // Rev 1 audit MS3 close-out: route through FMemory::MallocOrAbort
+    // with FMemTag::Threading instead of raw operator new (spec section 4.1
+    // always-on attribution; previous raw-new path bypassed
+    // FMallocBinnedX and the per-tag accounting).
+    void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+        sizeof(FEvent),
+        alignof(FEvent),
+        ::XCore::HAL::FMemTag::Threading);
+    FEvent* E = ::new (Storage) FEvent;
     FWinEventStorage* S = StorageOf(E->m_storage);
     S->Handle       = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
     S->bManualReset = false;
     if (S->Handle == nullptr)
     {
-        delete E;
+        E->~FEvent();
+        ::XCore::HAL::FMemory::Free(Storage);
         return nullptr;
     }
     return E;
@@ -107,13 +127,19 @@ FEvent* FEvent::CreateAutoReset() noexcept
 
 FEvent* FEvent::CreateManualReset() noexcept
 {
-    FEvent* E = new FEvent;
+    // Rev 1 audit MS3 close-out: see CreateAutoReset.
+    void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+        sizeof(FEvent),
+        alignof(FEvent),
+        ::XCore::HAL::FMemTag::Threading);
+    FEvent* E = ::new (Storage) FEvent;
     FWinEventStorage* S = StorageOf(E->m_storage);
     S->Handle       = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     S->bManualReset = true;
     if (S->Handle == nullptr)
     {
-        delete E;
+        E->~FEvent();
+        ::XCore::HAL::FMemory::Free(Storage);
         return nullptr;
     }
     return E;
@@ -123,7 +149,10 @@ void FEvent::Destroy(FEvent* Event) noexcept
 {
     if (Event != nullptr)
     {
-        delete Event;
+        // Rev 1 audit MS3 close-out: explicit destructor + FMemory::Free
+        // matched to the placement-new + MallocOrAbort in Create*.
+        Event->~FEvent();
+        ::XCore::HAL::FMemory::Free(static_cast<void*>(Event));
     }
 }
 
@@ -219,14 +248,26 @@ FEvent::~FEvent() noexcept
 
 FEvent* FEvent::CreateAutoReset() noexcept
 {
-    FEvent* E = new FEvent;
+    // Rev 1 audit MS3 close-out: route through FMemory::MallocOrAbort
+    // with FMemTag::Threading instead of raw operator new (spec section 4.1
+    // always-on attribution).
+    void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+        sizeof(FEvent),
+        alignof(FEvent),
+        ::XCore::HAL::FMemTag::Threading);
+    FEvent* E = ::new (Storage) FEvent;
     StorageOf(E->m_storage)->bManualReset = false;
     return E;
 }
 
 FEvent* FEvent::CreateManualReset() noexcept
 {
-    FEvent* E = new FEvent;
+    // Rev 1 audit MS3 close-out: see CreateAutoReset.
+    void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
+        sizeof(FEvent),
+        alignof(FEvent),
+        ::XCore::HAL::FMemTag::Threading);
+    FEvent* E = ::new (Storage) FEvent;
     StorageOf(E->m_storage)->bManualReset = true;
     return E;
 }
@@ -235,7 +276,9 @@ void FEvent::Destroy(FEvent* Event) noexcept
 {
     if (Event != nullptr)
     {
-        delete Event;
+        // Rev 1 audit MS3 close-out: explicit destructor + FMemory::Free.
+        Event->~FEvent();
+        ::XCore::HAL::FMemory::Free(static_cast<void*>(Event));
     }
 }
 

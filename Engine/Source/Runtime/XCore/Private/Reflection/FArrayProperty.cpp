@@ -5,39 +5,35 @@
 // TArray<T> property.
 // =====================================================================
 //
-// FArrayProperty's value slot holds a TArray<T> by-value (16 bytes
-// per XCore-4a Rev 3 EBO TArray header layout).
+// FArrayProperty's value slot holds a TArray<T> by-value. TArray header
+// is 24 bytes on MSVC (XCore-4a Phase 4b.5 verified: 8 m_data + 4 m_num
+// + 4 m_capacity + 2 FMemTag + 6 pad).
 //
-// SLOT BEHAVIOUR:
+// CAPABILITY TRUTH-TABLE DISCIPLINE (XCore-4b Subagent A FIX-A1):
 //
-//   * GetValue / SetValue                -- 16-byte memcpy of the TArray
-//                                          header. Doesn't deep-copy the
-//                                          element storage; the caller
-//                                          gets a shallow-equivalent
-//                                          handle (Phase 4b.5 will refine
-//                                          to deep-copy via Inner).
-//   * CopySingleValue                    -- 16-byte memcpy.
-//   * CopyCompleteValue                  -- N * 16-byte memcpy.
-//   * InitializeValue                    -- zero 16 bytes per element
-//                                          (the TArray's "empty" sentinel).
-//   * DestroyValue                       -- no-op at Phase 4b.4b (Phase
-//                                          4b.5 will release element
-//                                          storage via Inner->Destroy
-//                                          loop).
-//   * Identical                          -- no-op compare returning false
-//                                          at Phase 4b.4b (Phase 4b.5
-//                                          element-wise compare via Inner).
-//   * GetValueTypeHash                   -- returns 0 at Phase 4b.4b.
-//   * ContainsObjectReference            -- DELEGATES TO Inner. THIS IS
-//                                          THE LOAD-BEARING SLOT: it is
-//                                          what FStruct::ObjectRefProperties
-//                                          population (FIX-13) walks at
-//                                          FClass::Link time.
-//   * ExportText / ImportText            -- nullptr at Phase 4b.4b.
-//   * SerializeItem / NetSerializeItem   -- nullptr.
-//   * AppendToSchemaHash / ConvertFromType -- nullptr.
+//   Prior Phase 4b.4b shape claimed every slot was supported in
+//   `kArrayCapabilities`, but the slot bodies performed shallow
+//   TArray-header memcpy WITHOUT deep-copying element storage. The
+//   shallow copy produces two TArray handles aliasing the same heap
+//   buffer -- destruction via one frees the buffer the other still
+//   references. This is the Prime Directive's "no silent corruption"
+//   class of bug.
 //
-// NOTE: TArray storage size is 16 bytes (XCore-4a §5.1 fix B-M2 EBO).
+//   FIX: every value-operation slot has its `kArrayCapabilities` bit
+//   CLEARED at Phase 4b.4b. The shallow-memcpy implementations are
+//   replaced with XPACT_CHECK(false) bodies so direct dispatch crashes
+//   loudly with a documented diagnostic. Well-behaved callers (probing
+//   HasSlot) see false and the FProperty wrapper returns safe
+//   sentinels.
+//
+//   ContainsObjectReference IS structurally important and remains SET:
+//   FStruct::ObjectRefProperties population (FIX-13) at FClass::Link
+//   time walks this slot. The slot returns conservative TRUE; the
+//   typed walker checks Inner->ContainsObjectReference for the
+//   precise GC answer.
+//
+//   Phase 4b.5 will rewire dispatch to perform proper deep-copy via
+//   the Inner FProperty's slot table.
 //
 // =====================================================================
 
@@ -49,6 +45,8 @@
 #include "Reflection/FName.h"
 #include "Reflection/FProperty.h"
 
+#include "Macros/XPactMacros.h"   // XPACT_CHECK
+
 #include <cstring>
 #include <new>
 
@@ -57,111 +55,103 @@ namespace XCore::Reflect
 
 namespace
 {
-    // TArray<T> header size per XCore-4a Rev 3: 16 bytes (Data + Num +
-    // Max via EBO with the allocator).
-    constexpr ::size_t kTArrayHeaderSize = 16;
+    // -----------------------------------------------------------------
+    // Unimplemented-slot bodies (FIX-A1). Capability bits CLEARED in
+    // `kArrayCapabilities` below; well-behaved callers skip via HasSlot
+    // and the FProperty wrapper returns safe sentinels.
+    //
+    // TODO(Phase 4b.5): rewire to perform deep-copy / element-wise
+    // operations via Inner->GetValue / Inner->SetValue / etc.
+    // -----------------------------------------------------------------
 
-    void GetValueSlot(const void* Instance, ::int32 ElementIndex, void* OutValue) noexcept
+    void GetValueSlot(const void* /*Instance*/, ::int32 /*ElementIndex*/, void* /*OutValue*/) noexcept
     {
-        const ::uint8* Src =
-            static_cast<const ::uint8*>(Instance) + ElementIndex * kTArrayHeaderSize;
-        ::std::memcpy(OutValue, Src, kTArrayHeaderSize);
+        XPACT_CHECK(!"FArrayProperty::GetValue dispatch slot not yet implemented; "
+                     "the prior shallow-memcpy implementation aliases element storage "
+                     "(double-free risk). Phase 4b.5 will deep-copy via Inner. "
+                     "Capability bit cleared in kArrayCapabilities; HasSlot() returns false.");
     }
 
-    void SetValueSlot(void* Instance, ::int32 ElementIndex, const void* InValue) noexcept
+    void SetValueSlot(void* /*Instance*/, ::int32 /*ElementIndex*/, const void* /*InValue*/) noexcept
     {
-        ::uint8* Dest =
-            static_cast<::uint8*>(Instance) + ElementIndex * kTArrayHeaderSize;
-        ::std::memcpy(Dest, InValue, kTArrayHeaderSize);
+        XPACT_CHECK(!"FArrayProperty::SetValue dispatch slot not yet implemented; "
+                     "shallow-memcpy aliases element storage. Phase 4b.5 deep-copies. "
+                     "Capability bit cleared in kArrayCapabilities.");
     }
 
-    void CopySingleValueSlot(void* Dest, const void* Src) noexcept
+    void CopySingleValueSlot(void* /*Dest*/, const void* /*Src*/) noexcept
     {
-        ::std::memcpy(Dest, Src, kTArrayHeaderSize);
+        XPACT_CHECK(!"FArrayProperty::CopySingleValue dispatch slot not yet implemented; "
+                     "shallow-memcpy aliases element storage. Phase 4b.5 deep-copies. "
+                     "Capability bit cleared in kArrayCapabilities.");
     }
 
-    void CopyCompleteValueSlot(void* Dest, const void* Src, ::int32 Count) noexcept
+    void CopyCompleteValueSlot(void* /*Dest*/, const void* /*Src*/, ::int32 /*Count*/) noexcept
     {
-        ::std::memcpy(Dest, Src, kTArrayHeaderSize * static_cast<::size_t>(Count));
+        XPACT_CHECK(!"FArrayProperty::CopyCompleteValue dispatch slot not yet implemented; "
+                     "shallow-memcpy aliases element storage. Phase 4b.5 deep-copies. "
+                     "Capability bit cleared in kArrayCapabilities.");
     }
 
-    void InitializeValueSlot(void* Dest, ::int32 Count) noexcept
+    void InitializeValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Zero the TArray header bytes (the "empty array" sentinel:
-        // Data=nullptr, Num=0, Max=0).
-        ::std::memset(Dest, 0, kTArrayHeaderSize * static_cast<::size_t>(Count));
+        XPACT_CHECK(!"FArrayProperty::InitializeValue dispatch slot not yet implemented; "
+                     "header-zero-fill is correct for empty TArray sentinel but the "
+                     "underlying TArray ctor (FMemTag attribution etc.) is bypassed. "
+                     "Phase 4b.5 will invoke TArray's typed default-ctor. "
+                     "Capability bit cleared in kArrayCapabilities.");
     }
 
     void DestroyValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op. The TArray header's heap pointer (if
-        // any) is leaked under this slot at Phase 4b.4b. Phase 4b.5
-        // will iterate elements via Inner->DestroyValue then free
-        // the header's heap.
+        XPACT_CHECK(!"FArrayProperty::DestroyValue dispatch slot not yet implemented; "
+                     "the prior no-op leaks the TArray's heap buffer. Phase 4b.5 will "
+                     "iterate elements via Inner->DestroyValue then free the header heap. "
+                     "Capability bit cleared in kArrayCapabilities.");
     }
 
     bool IdenticalSlot(const void* /*A*/, const void* /*B*/, ::uint32 /*PortFlags*/) noexcept
     {
-        // Phase 4b.4b: structurally returns false; Phase 4b.5 will
-        // element-wise compare via Inner->Identical.
+        XPACT_CHECK(!"FArrayProperty::Identical dispatch slot not yet implemented; "
+                     "prior unconditional-false is incorrect for two equal TArrays. "
+                     "Phase 4b.5 will element-wise compare via Inner->Identical. "
+                     "Capability bit cleared in kArrayCapabilities.");
         return false;
     }
 
     ::uint64 GetValueTypeHashSlot(const void* /*PropertyValue*/) noexcept
     {
-        // Phase 4b.4b: TArrays are NOT keys in TMap; the wrapper returns
-        // 0 (the "not hashable" sentinel) for unpopulated slots, but
-        // the slot IS populated here -- returning 0 forces the caller
-        // to not use TArray as a hash key at Phase 4b.4b. Phase 4b.5
-        // will element-wise hash via Inner->GetValueTypeHash.
+        XPACT_CHECK(!"FArrayProperty::GetValueTypeHash dispatch slot not yet implemented; "
+                     "Phase 4b.5 will element-wise hash via Inner->GetValueTypeHash. "
+                     "Capability bit cleared in kArrayCapabilities.");
         return 0;
     }
 
     // -----------------------------------------------------------------
-    // ContainsObjectReferenceSlot -- LOAD-BEARING; delegates to Inner.
+    // ContainsObjectReferenceSlot -- LOAD-BEARING; capability bit kept set.
     //
-    // This is the slot that FStruct::ObjectRefProperties population
-    // (FIX-13) walks at FClass::Link time. If Inner->ContainsObjectRef
-    // is true (e.g., TArray<XObject*>), then GC must scan each element
-    // for reachability roots.
-    //
-    // The slot dispatch shape is signature-only (no per-instance
-    // FArrayProperty*); we cannot access Inner from inside the slot
-    // generically.
-    //
-    // RESOLUTION (Phase 4b.4b): the slot returns true unconditionally
-    // here, which is the CONSERVATIVE answer ("treat every TArray as
-    // potentially-containing object references"). The FStruct walker
-    // will then perform a finer-grained check via the FArrayProperty
-    // accessor (Inner->ContainsObjectReference). The slot's true
-    // return is the safe upper bound; the typed walker is the precise
-    // arbiter.
-    //
-    // Phase 4b.5 may refine this with an FFakeVTable extension that
-    // passes the FProperty* to slots needing per-instance context;
-    // until then the conservative answer is correct (it never causes
-    // missed GC roots; it may cause one extra typed call per
-    // FArrayProperty per scan).
+    // FStruct::ObjectRefProperties population (FIX-13) at FClass::Link
+    // time consults this slot. Returns conservative TRUE: TArray slots
+    // may contain object references via Inner. The typed walker then
+    // checks Inner->ContainsObjectReference for the precise answer.
+    // The slot's TRUE return is the safe upper bound; never causes
+    // missed GC roots.
     // -----------------------------------------------------------------
     bool ContainsObjectReferenceSlot(
         ::XCore::TArray<const FStructProperty*>& /*EncounteredStructProps*/) noexcept
     {
-        // Conservative: TArray slots may contain object references;
-        // the typed walker will check Inner->ContainsObjectReference
-        // to confirm.
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // kArrayCapabilities -- TRUTH TABLE per FIX-A1.
+    //
+    // SET: ContainsObjectReference (returns conservative TRUE).
+    // CLEARED: all value-op slots (Phase 4b.5 deferred for Inner-based
+    //          deep-copy / element-wise dispatch).
+    // -----------------------------------------------------------------
     constexpr ::uint32 kArrayCapabilities =
-          CapabilityBit(ESlot::GetValue)
-        | CapabilityBit(ESlot::SetValue)
-        | CapabilityBit(ESlot::CopySingleValue)
-        | CapabilityBit(ESlot::CopyCompleteValue)
-        | CapabilityBit(ESlot::InitializeValue)
-        | CapabilityBit(ESlot::DestroyValue)
-        | CapabilityBit(ESlot::Identical)
-        | CapabilityBit(ESlot::ContainsObjectReference)
-        | CapabilityBit(ESlot::GetValueTypeHash);
+          CapabilityBit(ESlot::ContainsObjectReference);
 
 } // anonymous
 
@@ -201,8 +191,11 @@ FArrayProperty::FArrayProperty(FFieldVariant InOwner, FName InName,
     , ArrayFlags(0)
     , _padArrayPayload(0)
 {
-    // ElementSize is the size of one TArray<T> header (16 bytes).
-    ElementSize = static_cast<::int32>(kTArrayHeaderSize);
+    // ElementSize is the size of one TArray<T> header. Phase 4b.5
+    // verified TArray = 24 bytes on MSVC due to XCore-4a's
+    // DefaultAllocator carrying a 2-byte FMemTag for memory attribution
+    // (no padding hole to fold into via XPACT_NO_UNIQUE_ADDRESS).
+    ElementSize = 24;
 }
 
 void FArrayProperty::ConstructFn(FFieldVariant Owner, FName Name, void* OutStorage) noexcept

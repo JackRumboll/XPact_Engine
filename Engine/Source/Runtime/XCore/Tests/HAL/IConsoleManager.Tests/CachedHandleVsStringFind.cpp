@@ -26,11 +26,13 @@
 // =====================================================================
 
 #include "HAL/FAutoConsoleVariable.h"
+#include "HAL/FMemory.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/IConsoleVariable.h"
 #include "HAL/TConsoleVariableHandle.h"
 #include "HAL/ECVarFlags.h"
 #include "HAL/ECVarSetByPriority.h"
+#include "HAL/XInitPhase.h"
 
 #include <iostream>
 
@@ -38,6 +40,14 @@ namespace
 {
     int RunCachedHandle()
     {
+        // FMemory backs the registry's storage.
+        ::XCore::HAL::FMemory::__Init();
+
+        // Registry surface methods (Register*, Find) require
+        // EngineInitPhase() >= PostStaticInit per Rev 1 audit MAJOR-2
+        // close-out (fix M-9 ladder consistency).
+        ::XCore::HAL::__AdvanceInitPhase(::XCore::HAL::EInitPhase::PostStaticInit);
+
         auto& Manager = ::XCore::Misc::IConsoleManager::Get();
         ::XCore::Misc::IConsoleVariable* CVar = Manager.RegisterInt(
             "r.CachedHandle.Test", 0, "cached handle correctness",

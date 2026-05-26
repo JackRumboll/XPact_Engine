@@ -119,20 +119,7 @@ namespace XCore::Reflect
         bool UnregisterCustomVersion(FGuid Key) noexcept;
 
         // -------------------------------------------------------------
-        // GetRegisteredVersion -- return a pointer to the entry with
-        // `Key`, or nullptr if not present.
-        //
-        // The returned pointer is valid only WITHIN the calling scope
-        // (the caller holds the FRWLock implicitly for the duration of
-        // the call). Storing the pointer for later use is unsafe;
-        // copy the FCustomVersion if you need it long-term.
-        //
-        // Thread-safe: acquires the registry's FRWLock in shared mode.
-        // -------------------------------------------------------------
-        [[nodiscard]] const FCustomVersion* GetRegisteredVersion(FGuid Key) const noexcept;
-
-        // -------------------------------------------------------------
-        // GetRegisteredVersionCopy -- safer long-term variant.
+        // GetRegisteredVersionCopy -- by-value lookup (the safe API).
         //
         // Returns a copy of the entry if present (and OutFound=true);
         // returns a zero-initialised FCustomVersion (and OutFound=false)
@@ -140,8 +127,34 @@ namespace XCore::Reflect
         // because FCustomVersion is a POD.
         //
         // Thread-safe: acquires the registry's FRWLock in shared mode.
+        //
+        // XCore-4b Subagent A FIX-A5 NOTE: the prior pointer-returning
+        // `GetRegisteredVersion(FGuid)` was REMOVED. That signature
+        // released the shared-read lock at return and exposed a dangling
+        // pointer if a concurrent writer's RegisterCustomVersion call
+        // relocated the FCustomVersionContainer's TArray buffer (e.g.,
+        // grow-to-capacity reallocation). The output-param + by-value
+        // contract here is the lock-safe replacement; the copy cost is
+        // 32 bytes (FCustomVersion = FGuid 16 + int32 + FName 8 + pad 4)
+        // which is well within the by-value-return budget for ABI
+        // surfaces of this size.
         // -------------------------------------------------------------
         [[nodiscard]] FCustomVersion GetRegisteredVersionCopy(FGuid Key, bool& OutFound) const noexcept;
+
+        // -------------------------------------------------------------
+        // TryGetRegisteredVersion -- alternative output-param spelling.
+        //
+        // Equivalent to GetRegisteredVersionCopy but with the bool
+        // return-flag rather than the OutFound parameter. Provided per
+        // XCore conventions favouring "Try*" + bool return for lookup
+        // APIs where the result is naturally absent (FNamePool-style).
+        //
+        // Returns true and writes OutVersion on hit; returns false and
+        // leaves OutVersion unmodified on miss.
+        //
+        // Thread-safe: acquires the registry's FRWLock in shared mode.
+        // -------------------------------------------------------------
+        [[nodiscard]] bool TryGetRegisteredVersion(FGuid Key, FCustomVersion& OutVersion) const noexcept;
 
         // -------------------------------------------------------------
         // Contains -- true iff an entry with `Key` is registered.

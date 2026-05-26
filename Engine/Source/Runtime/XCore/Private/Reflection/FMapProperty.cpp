@@ -8,14 +8,31 @@
 // FMapProperty's value slot holds a TMap<K, V> by-value. The dispatch
 // slots operate on TMap header bytes (XCore-4a SwissTable backing).
 //
+// CAPABILITY TRUTH-TABLE DISCIPLINE (XCore-4b Subagent A FIX-A1):
+//
+//   Prior Phase 4b.4b shape claimed every slot was supported in
+//   `kMapCapabilities` while the slot bodies were silently no-ops --
+//   a Prime Directive violation ("stub-with-fake-success"). Callers
+//   probing HasSlot(ESlot::GetValue) saw true, dispatched, and got
+//   nothing back.
+//
+//   FIX: the value-operation slots that genuinely don't implement
+//   their operation at Phase 4b.4b have their `kMapCapabilities` bit
+//   CLEARED. Well-behaved callers (probing HasSlot before dispatch)
+//   now skip the slot via the FFakeVTable wrapper's nullptr-return
+//   on HasSlot=false. Ill-behaved callers that bypass HasSlot and
+//   dispatch directly hit XPACT_CHECK(false) in the slot body and
+//   crash loudly with a documented diagnostic.
+//
+//   ContainsObjectReference IS implemented (returns TRUE
+//   conservatively); its bit remains set. The typed walker checks
+//   KeyProp/ValueProp for the precise GC scan answer; the slot's
+//   conservative true is the safe upper bound.
+//
 // All entry-walking slots (Identical, GetValueTypeHash, full Copy)
 // require iterating entries via KeyProp + ValueProp; those slots are
-// no-ops at Phase 4b.4b and re-wired at Phase 4b.5 when TMap iteration
-// + per-instance dispatch context are available.
-//
-// ContainsObjectReference returns TRUE conservatively (the typed walker
-// will check KeyProp + ValueProp ContainsObjectReference for the
-// precise answer).
+// Phase 4b.5 work when TMap iteration + per-instance dispatch context
+// are available.
 //
 // =====================================================================
 
@@ -27,6 +44,8 @@
 #include "Reflection/FName.h"
 #include "Reflection/FProperty.h"
 
+#include "Macros/XPactMacros.h"   // XPACT_CHECK
+
 #include <cstring>
 #include <new>
 
@@ -35,78 +54,107 @@ namespace XCore::Reflect
 
 namespace
 {
-    // TMap<K, V> header size per XCore-4a §5.1 SwissTable backing.
-    // The actual TMap layout is approximately 24-32 bytes depending on
-    // alignment + EBO; for Phase 4b.4b we treat it as opaque and the
-    // ElementSize is left at 0 (FClass::Link populates from TMap's
-    // sizeof at Phase 4b.5).
+    // -----------------------------------------------------------------
+    // Unimplemented-slot bodies. The corresponding capability bit is
+    // CLEARED in `kMapCapabilities` below; well-behaved callers skip
+    // via HasSlot() and never reach these bodies. Direct dispatch
+    // (bypassing HasSlot) hits XPACT_CHECK(false) with a documented
+    // diagnostic string -- the call is a contract violation.
     //
-    // For the bytewise dispatch slots, we use a placeholder size of
-    // 32 bytes (the upper bound of TMap header). The slots are NEVER
-    // legitimately invoked at Phase 4b.4b (no FClass::Link path
-    // populates ElementSize correctly until Phase 4b.5).
+    // The diagnostic strings are baked into the failed-expression text
+    // so XPACT_CHECK's stringizing produces the message at crash time.
+    // -----------------------------------------------------------------
 
     void GetValueSlot(const void* /*Instance*/, ::int32 /*ElementIndex*/, void* /*OutValue*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::GetValue dispatch slot not yet implemented; "
+                     "Phase 4b.5/XCoreXObject will land typed container traversal. "
+                     "Capability bit cleared in kMapCapabilities; HasSlot() returns false.");
     }
 
     void SetValueSlot(void* /*Instance*/, ::int32 /*ElementIndex*/, const void* /*InValue*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::SetValue dispatch slot not yet implemented; "
+                     "Phase 4b.5/XCoreXObject will land typed container traversal. "
+                     "Capability bit cleared in kMapCapabilities; HasSlot() returns false.");
     }
 
     void CopySingleValueSlot(void* /*Dest*/, const void* /*Src*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::CopySingleValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will deep-copy via KeyProp/ValueProp iteration. "
+                     "Capability bit cleared in kMapCapabilities.");
     }
 
     void CopyCompleteValueSlot(void* /*Dest*/, const void* /*Src*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::CopyCompleteValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will deep-copy via KeyProp/ValueProp iteration. "
+                     "Capability bit cleared in kMapCapabilities.");
     }
 
     void InitializeValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::InitializeValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will zero-init the TMap header. "
+                     "Capability bit cleared in kMapCapabilities.");
     }
 
     void DestroyValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FMapProperty::DestroyValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will release TMap heap storage via KeyProp/ValueProp. "
+                     "Capability bit cleared in kMapCapabilities.");
     }
 
     bool IdenticalSlot(const void* /*A*/, const void* /*B*/, ::uint32 /*PortFlags*/) noexcept
     {
-        // Phase 4b.4b: returns "not identical".
+        XPACT_CHECK(!"FMapProperty::Identical dispatch slot not yet implemented; "
+                     "Phase 4b.5 will entry-wise compare via KeyProp/ValueProp. "
+                     "Capability bit cleared in kMapCapabilities.");
         return false;
     }
 
     ::uint64 GetValueTypeHashSlot(const void* /*PropertyValue*/) noexcept
     {
-        // Phase 4b.4b: TMaps are NOT keys in other maps (returns 0).
+        XPACT_CHECK(!"FMapProperty::GetValueTypeHash dispatch slot not yet implemented; "
+                     "TMap is not a hashable key type. "
+                     "Capability bit cleared in kMapCapabilities.");
         return 0;
     }
 
+    // -----------------------------------------------------------------
+    // ContainsObjectReferenceSlot -- LOAD-BEARING; capability bit kept set.
+    //
+    // Conservative TRUE: TMap slots may contain object references via
+    // either KeyProp or ValueProp. The typed walker probes both for the
+    // precise answer at FClass::Link time (FStruct::ObjectRefProperties
+    // population per FIX-13). The slot's conservative TRUE is the safe
+    // upper bound; never causes missed GC roots.
+    // -----------------------------------------------------------------
     bool ContainsObjectReferenceSlot(
         ::XCore::TArray<const FStructProperty*>& /*EncounteredStructProps*/) noexcept
     {
-        // Conservative: TMap slots may contain object references via
-        // either KeyProp or ValueProp; the typed walker will check
-        // both for the precise answer.
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // kMapCapabilities -- TRUTH TABLE per FIX-A1.
+    //
+    // Bit set => slot IS implemented and returns correct results.
+    // Bit cleared => slot is unsupported at Phase 4b.4b; the slot
+    // pointer remains populated but the body is XPACT_CHECK(false).
+    // Well-behaved callers probe HasSlot() and skip dispatch entirely.
+    //
+    // Currently SET (slot works):
+    //   * ContainsObjectReference (returns conservative TRUE).
+    //
+    // Currently CLEARED (Phase 4b.5 / XCoreXObject deferred):
+    //   * GetValue, SetValue, CopySingleValue, CopyCompleteValue,
+    //     InitializeValue, DestroyValue, Identical, GetValueTypeHash.
+    // -----------------------------------------------------------------
     constexpr ::uint32 kMapCapabilities =
-          CapabilityBit(ESlot::GetValue)
-        | CapabilityBit(ESlot::SetValue)
-        | CapabilityBit(ESlot::CopySingleValue)
-        | CapabilityBit(ESlot::CopyCompleteValue)
-        | CapabilityBit(ESlot::InitializeValue)
-        | CapabilityBit(ESlot::DestroyValue)
-        | CapabilityBit(ESlot::Identical)
-        | CapabilityBit(ESlot::ContainsObjectReference)
-        | CapabilityBit(ESlot::GetValueTypeHash);
+          CapabilityBit(ESlot::ContainsObjectReference);
 
 } // anonymous
 

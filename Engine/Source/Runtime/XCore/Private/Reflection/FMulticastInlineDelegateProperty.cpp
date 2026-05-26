@@ -12,8 +12,15 @@
 // opaque -- the runtime size is implementation-specific; full
 // dispatch lands at Phase 4b.5.
 //
-// ContainsObjectReference returns TRUE (subscriber Targets are GC
-// roots).
+// CAPABILITY TRUTH-TABLE DISCIPLINE (XCore-4b Subagent A FIX-A1):
+//
+//   Prior Phase 4b.4b shape claimed every slot was supported while
+//   the slot bodies were silently no-ops. FIX: the value-operation
+//   slots have their `kMulticastInlineCapabilities` bit CLEARED.
+//   Direct dispatch (bypassing HasSlot) hits XPACT_CHECK(false).
+//
+//   ContainsObjectReference IS implemented (returns TRUE; subscriber
+//   Targets are GC roots). Its bit remains set.
 //
 // =====================================================================
 
@@ -25,6 +32,8 @@
 #include "Reflection/FName.h"
 #include "Reflection/FProperty.h"
 
+#include "Macros/XPactMacros.h"   // XPACT_CHECK
+
 #include <new>
 
 namespace XCore::Reflect
@@ -32,65 +41,94 @@ namespace XCore::Reflect
 
 namespace
 {
-    // FMulticastInlineDelegate runtime size is implementation-specific
-    // and isn't fixed at Phase 4b.4b. The slot bodies are no-ops; the
-    // load-bearing slot is ContainsObjectReference.
+    // -----------------------------------------------------------------
+    // Unimplemented-slot bodies (FIX-A1). Capability bits CLEARED in
+    // `kMulticastInlineCapabilities` below.
     //
     // TODO(Phase 4b.5): wire the slots to typed dispatch via
     // FMulticastInlineDelegate's value-type operations once the type
     // ships.
+    // -----------------------------------------------------------------
 
     void GetValueSlot(const void* /*Instance*/, ::int32 /*ElementIndex*/, void* /*OutValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::GetValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will land typed delegate traversal. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     void SetValueSlot(void* /*Instance*/, ::int32 /*ElementIndex*/, const void* /*InValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::SetValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will land typed delegate traversal. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     void CopySingleValueSlot(void* /*Dest*/, const void* /*Src*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::CopySingleValue dispatch slot not "
+                     "yet implemented; Phase 4b.5 will deep-copy subscriber list. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     void CopyCompleteValueSlot(void* /*Dest*/, const void* /*Src*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::CopyCompleteValue dispatch slot "
+                     "not yet implemented; Phase 4b.5 will deep-copy subscriber list. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     void InitializeValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::InitializeValue dispatch slot not "
+                     "yet implemented; Phase 4b.5 will zero-init the delegate header. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     void DestroyValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::DestroyValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will release subscriber list storage. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
     }
 
     bool IdenticalSlot(const void* /*A*/, const void* /*B*/, ::uint32 /*PortFlags*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::Identical dispatch slot not yet "
+                     "implemented; Phase 4b.5 will subscriber-wise compare. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
         return false;
     }
 
     ::uint64 GetValueTypeHashSlot(const void* /*PropertyValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastInlineDelegateProperty::GetValueTypeHash dispatch slot "
+                     "not yet implemented; multicast delegates are not hashable keys. "
+                     "Capability bit cleared in kMulticastInlineCapabilities.");
         return 0;
     }
 
+    // -----------------------------------------------------------------
+    // ContainsObjectReferenceSlot -- LOAD-BEARING; capability bit kept set.
+    //
+    // Subscriber list contains FObject* Target references; the slot
+    // returns TRUE so FStruct::ObjectRefProperties population (FIX-13)
+    // includes this property at FClass::Link time.
+    // -----------------------------------------------------------------
     bool ContainsObjectReferenceSlot(
         ::XCore::TArray<const FStructProperty*>& /*EncounteredStructProps*/) noexcept
     {
-        // Subscriber list contains FObject* Target references.
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // kMulticastInlineCapabilities -- TRUTH TABLE per FIX-A1.
+    //
+    // SET: ContainsObjectReference (returns TRUE).
+    // CLEARED: all value-op slots (Phase 4b.5 deferred).
+    // -----------------------------------------------------------------
     constexpr ::uint32 kMulticastInlineCapabilities =
-          CapabilityBit(ESlot::GetValue)
-        | CapabilityBit(ESlot::SetValue)
-        | CapabilityBit(ESlot::CopySingleValue)
-        | CapabilityBit(ESlot::CopyCompleteValue)
-        | CapabilityBit(ESlot::InitializeValue)
-        | CapabilityBit(ESlot::DestroyValue)
-        | CapabilityBit(ESlot::Identical)
-        | CapabilityBit(ESlot::ContainsObjectReference)
-        | CapabilityBit(ESlot::GetValueTypeHash);
+          CapabilityBit(ESlot::ContainsObjectReference);
 
 } // anonymous
 

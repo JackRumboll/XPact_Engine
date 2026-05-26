@@ -45,6 +45,7 @@
 // =====================================================================
 
 #include "Macros/XCoreTypes.h"
+#include "HAL/FTimespan.h"
 
 #include <cstddef>
 
@@ -111,6 +112,44 @@ public:
     // POSIX: pthread_rwlock_trywrlock returning 0.
     // -----------------------------------------------------------------
     [[nodiscard]] bool TryLockExclusive() noexcept;
+
+    // -----------------------------------------------------------------
+    // TryLockSharedFor / TryLockExclusiveFor -- bounded-wait variants
+    // (Rev 1 audit HIGH-2 close-out).
+    //
+    // Returns true if the lock was acquired within the timeout, false
+    // if the timeout expired without acquiring.
+    //
+    // Required by renderer->sim-thread bounded-wait patterns where
+    // the caller cannot block indefinitely (e.g., a renderer's
+    // mid-frame sample of a sim-side data structure must time out
+    // if the sim thread is slow, rather than stall the frame).
+    //
+    // Per-platform behaviour:
+    //
+    //   * POSIX: native pthread_rwlock_timedrdlock /
+    //            pthread_rwlock_timedwrlock with absolute-deadline
+    //            CLOCK_REALTIME timespec; precise to the OS scheduler's
+    //            granularity (typically 1 ms or better).
+    //
+    //   * Win64: SRWLock does NOT support timed acquire natively. The
+    //            implementation degrades to a TryLock + spin-yield loop
+    //            bounded by FPlatformTime::Seconds(). The yield is
+    //            graded: Sleep(0) (yield to ready-state threads on the
+    //            same core) for the first ~1 ms of wait; Sleep(1)
+    //            beyond that. The wait granularity is therefore
+    //            ~1 ms on Win64; sub-millisecond timeouts behave as
+    //            non-blocking TryLock attempts in tight succession.
+    //            This is suboptimal vs a native primitive but ships
+    //            the contract (the alternative -- replacing SRWLock
+    //            with a custom userspace primitive built on
+    //            WaitOnAddress -- is Phase 2+ scope).
+    //
+    // Timeout semantics: a Timeout with TotalMicroseconds() <= 0 is
+    // treated as a non-blocking TryLock (no spin; one TryLock attempt).
+    // -----------------------------------------------------------------
+    [[nodiscard]] bool TryLockSharedFor(FTimespan Timeout) noexcept;
+    [[nodiscard]] bool TryLockExclusiveFor(FTimespan Timeout) noexcept;
 
 private:
     // Opaque storage sized to the max of Win64 SRWLOCK (8 bytes) and

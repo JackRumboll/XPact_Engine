@@ -15,6 +15,7 @@
 // =====================================================================
 
 #include "HAL/TSpscQueue.h"
+#include "HAL/FMemory.h"
 
 #include <atomic>
 #include <iostream>
@@ -27,6 +28,11 @@ namespace
 
 int main()
 {
+    // Rev 1 audit MS4 close-out: TSpscQueue node alloc now routes
+    // through FMemory + FMemTag::Threading. __Init must run before
+    // any queue Enqueue.
+    ::XCore::HAL::FMemory::__Init();
+
     ::XCore::HAL::TSpscQueue<int> Queue;
     std::atomic<int> Errors(0);
 

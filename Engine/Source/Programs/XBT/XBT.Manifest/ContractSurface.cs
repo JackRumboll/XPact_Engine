@@ -334,8 +334,14 @@ public static class ContractSurface
             "FFieldVariant-v1: 8 bytes; Storage@0 (1-bit LSB tag, 0=FField, 1=FStruct, on 8-byte-aligned pointer)"
         ),
         (
+            // XCore-4b Subagent A FIX-A7: tag wording corrected to reflect
+            // actual field decomposition (FField 32 + FProperty body 64 +
+            // DispatchTable 8 = 104). Prior "96 base + 8 DispatchTable"
+            // misframed the 96 as monolithic "base". Three sources
+            // (XReflectionRuntime.h, this file, AbiLayoutPins.cs) MUST
+            // stay byte-identical.
             "XPACT_FPROPERTY_LAYOUT_TAG",
-            "FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"
+            "FProperty-v2: FField (32) + FProperty body (64) + DispatchTable pointer (8) = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"
         ),
         (
             "XPACT_FFAKEVTABLE_LAYOUT_TAG",

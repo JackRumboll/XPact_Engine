@@ -6,7 +6,11 @@
 //
 // XCore-4a Rev 3, Section 9.1 (Public API) + Section 9.2 (Threading
 // contract) + Section 9.5 (Lifetime / static-init ordering; fix C-6
-// content-hash keying; fix M-7 double-registration error).
+// content-hash keying; fix M-7 double-registration error) +
+// Rev 1 audit close-out (CRITICAL-3 + AUDIT-AG2: removed silent
+// idempotent dedup; collision now produces a Dev diagnostic naming
+// BOTH source-locations and returns nullptr per spec section 9.5 wording
+// "collision is explicit at registration, not silent shadowing").
 //
 // IMPLEMENTATION:
 //
@@ -38,6 +42,50 @@
 //   that use different const char* values pointing at byte-identical
 //   strings hash to the same key.
 //
+// DUPLICATE-REGISTRATION POLICY (Rev 1 audit CRITICAL-3 / AG2 close-out):
+//
+//   The previous implementation silently returned the pre-existing
+//   pointer on duplicate-name registration ("idempotent dedup"). That
+//   behaviour was the very UE-style silent shadowing that spec fix
+//   C-6 was created to eliminate. Per spec section 9.5: "Content-hash
+//   keying makes the collision an explicit registration failure
+//   that the engine reports at the call site."
+//
+//   The corrected behaviour:
+//     1. Compute the content-hash key (XXH3 of the name bytes).
+//     2. Acquire the registry lock exclusively.
+//     3. Look up the key. If found, emit a Dev diagnostic naming
+//        BOTH source-locations (existing + new) via LogAndAbort-
+//        adjacent path (currently a stderr emission; the structured
+//        log channel lands in a later phase), and return nullptr.
+//     4. Otherwise insert and return the new pointer.
+//
+//   Callers' XPACT_CHECK(cvar != nullptr) fires on collision,
+//   surfacing the bug at the call site rather than masking it
+//   behind a value that maps to a different default.
+//
+// REGISTRY PHASE GUARD (Rev 1 audit MAJOR-2 close-out / fix M-9):
+//
+//   The registry-surface methods (Register*, Find) assert that
+//   EngineInitPhase() >= PostStaticInit. This matches the
+//   TConsoleVariableImpl Get*/Set* phase guard (Phase 1g fix M-9)
+//   and the spec section 9.5 ordering guarantee. The Treiber-stack push
+//   from a constinit FAutoConsoleVariable's ctor at PreStaticInit
+//   is NOT a registry-surface call -- it only queues registration
+//   metadata; the actual Register* call happens inside __Initialize
+//   at PostStaticInit drain time (which itself runs at exactly
+//   PostStaticInit, so the guard is satisfied).
+//
+// ALLOC-OUTSIDE-LOCK (Rev 1 audit TC4 close-out):
+//
+//   FMemory::MallocOrAbort for CVar storage is invoked BEFORE the
+//   registry lock is acquired (the AB-BA hazard between Pool.Mutex
+//   and State->Lock is closed). The pre-allocated storage may be
+//   abandoned (placement-new constructed object destroyed + freed)
+//   if the under-lock duplicate check fires; this is the safe
+//   pattern when MallocOrAbort aborts on OOM (no nullptr return
+//   to back out of).
+//
 // =====================================================================
 
 #include "HAL/IConsoleManager.h"
@@ -52,10 +100,16 @@
 #include "HAL/XInitPhase.h"
 #include "Hash/FXxh3.h"
 #include "Macros/XPactMacros.h"
+#include "Macros/XAssertionMacros.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <new>
+
+#if XPACT_HAS_SOURCE_LOCATION
+    #include <source_location>
+#endif
 
 namespace XCore::Misc
 {
@@ -146,10 +200,34 @@ namespace XCore::Misc
     // and held by a function-local static; the storage is engine-
     // lifetime.
     // -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // FRegistryEntry -- the per-CVar registry record (Rev 1 audit
+    // CRITICAL-3 close-out).
+    //
+    // The map's value type carries both the CVar pointer AND the
+    // source-location of the original registration. The location is
+    // used by the duplicate-registration diagnostic to name the
+    // pre-existing call site.
+    //
+    // SrcLoc is conditionally present (gated on
+    // XPACT_HAS_SOURCE_LOCATION) so older toolchains still build;
+    // the diagnostic degrades to a name-only message in that case.
+    // -----------------------------------------------------------------
+    struct FRegistryEntry
+    {
+        IConsoleVariable* CVar = nullptr;
+#if XPACT_HAS_SOURCE_LOCATION
+        ::std::source_location SrcLoc{};
+#endif
+    };
+
     struct FConsoleManagerState
     {
-        // Content-hash-keyed map: XXH3(name_bytes, len, 0) -> CVar*.
-        ::XCore::TMap<::uint64, IConsoleVariable*> Map;
+        // Content-hash-keyed map: XXH3(name_bytes, len, 0) -> FRegistryEntry.
+        // The entry carries both the CVar pointer and the source-
+        // location of the original registration (used by the
+        // duplicate-registration diagnostic).
+        ::XCore::TMap<::uint64, FRegistryEntry> Map;
 
         // Registry-wide RWLock. Shared on Find / ForEach; exclusive
         // on Register*. Per Section 9.2: "Internal RWLock; Find is
@@ -183,16 +261,31 @@ namespace XCore::Misc
     // Inner singleton type. The public IConsoleManager has protected
     // ctor/dtor; the inner type derives so we can instantiate it.
     //
-    // The state struct is held by reference (raw new); the
-    // FConsoleManagerState's storage outlives the IConsoleManagerImpl
-    // by design -- both have engine lifetime.
+    // The state struct is held by reference (FMemory-allocated; the
+    // Rev 1 audit MS2 close-out replaced raw operator new with
+    // FMemory::MallocOrAbort + placement-new so the allocation is
+    // attributed to FMemTag::CVar). The FConsoleManagerState's
+    // storage outlives the IConsoleManagerImpl by design -- both
+    // have engine lifetime.
     class IConsoleManagerImpl final : public IConsoleManager
     {
     public:
+        // Rev 1 audit MS2 close-out: route state allocation through
+        // FMemory::MallocOrAbort with FMemTag::CVar instead of raw
+        // operator new. The placement-new constructs the state in
+        // the FMemory-owned storage; the dtor explicitly destroys
+        // the state and frees via FMemory::Free.
         IConsoleManagerImpl() noexcept
             : IConsoleManager()
-            , m_state(new (::std::nothrow) FConsoleManagerState())
+            , m_state(static_cast<FConsoleManagerState*>(
+                ::XCore::HAL::FMemory::MallocOrAbort(
+                    sizeof(FConsoleManagerState),
+                    alignof(FConsoleManagerState),
+                    ::XCore::HAL::FMemTag::CVar)))
         {
+            // Placement-new construct the state at the
+            // FMemory-allocated storage.
+            ::new (static_cast<void*>(m_state)) FConsoleManagerState();
         }
 
         ~IConsoleManagerImpl() noexcept
@@ -207,8 +300,16 @@ namespace XCore::Misc
             // The state struct is freed because it holds the TMap
             // which has destructive resources (allocator-owned
             // buffer); the deletion is well-ordered (engine-internal
-            // singleton, single delete site).
-            delete m_state;
+            // singleton, single delete site). Rev 1 audit MS2: the
+            // tear-down explicitly destroys the placement-newd state
+            // then frees via FMemory::Free (matched to the ctor's
+            // MallocOrAbort).
+            if (m_state != nullptr)
+            {
+                m_state->~FConsoleManagerState();
+                ::XCore::HAL::FMemory::Free(m_state);
+                m_state = nullptr;
+            }
         }
 
         FConsoleManagerState* GetState() noexcept
@@ -260,27 +361,130 @@ namespace XCore::Misc
     }
 
     // -----------------------------------------------------------------
+    // EmitDuplicateRegistrationDiagnostic -- the Dev-only diagnostic
+    // for the duplicate-name collision (Rev 1 audit CRITICAL-3
+    // close-out for fix C-6).
+    //
+    // The diagnostic names BOTH source-locations (the existing
+    // registration and the new colliding one) so a developer can
+    // immediately identify the conflict. The format is
+    // forensic-grep-stable:
+    //
+    //   "[XPACT CVAR COLLISION] duplicate CVar name '<Name>'
+    //    new={file}:{line} ({function})
+    //    existing={file}:{line} ({function})\n"
+    //
+    // Routed via stderr (and OutputDebugStringA on Win64) so the
+    // diagnostic surfaces in both attached-debugger and console
+    // contexts. The structured-log channel (XLog) is a later-phase
+    // upgrade; for Rev 1 the stderr emission is the contract.
+    //
+    // Shipping configuration: the function still emits to stderr
+    // (the runtime collision IS a bug; we want it visible even in
+    // Shipping). The build-time XBT scan (fix M-7) is the primary
+    // gate; the runtime diagnostic is the back-stop.
+    // -----------------------------------------------------------------
+    namespace
+    {
+        // Forward declare OutputDebugStringA at file scope to avoid
+        // pulling in <Windows.h> (its half-million lines of macro
+        // pollution would conflict with engine identifiers; we only
+        // need this one symbol).
+#if defined(_WIN64) || defined(_WIN32)
+        extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
+#endif
+
+#if XPACT_HAS_SOURCE_LOCATION
+        void EmitDuplicateRegistrationDiagnostic(const char* Name,
+                                                 const ::std::source_location& NewLoc,
+                                                 const ::std::source_location& ExistingLoc) noexcept
+        {
+            char Buf[1536];
+            ::std::snprintf(Buf, sizeof(Buf),
+                "[XPACT CVAR COLLISION] duplicate CVar name '%s'\n"
+                "    new={file=%s, line=%u, function=%s}\n"
+                "    existing={file=%s, line=%u, function=%s}\n"
+                "    (spec section 9.5 fix C-6: collision is explicit at "
+                "registration; Register* returns nullptr)\n",
+                Name != nullptr ? Name : "(null)",
+                NewLoc.file_name() != nullptr ? NewLoc.file_name() : "(no file)",
+                static_cast<unsigned>(NewLoc.line()),
+                NewLoc.function_name() != nullptr ? NewLoc.function_name() : "(no fn)",
+                ExistingLoc.file_name() != nullptr ? ExistingLoc.file_name() : "(no file)",
+                static_cast<unsigned>(ExistingLoc.line()),
+                ExistingLoc.function_name() != nullptr ? ExistingLoc.function_name() : "(no fn)");
+#if defined(_WIN64) || defined(_WIN32)
+            // Diagnostic surfaces in attached-debugger output AND
+            // stderr so test harnesses capturing either see the
+            // message.
+            ::OutputDebugStringA(Buf);
+#endif
+            ::std::fputs(Buf, stderr);
+            ::std::fflush(stderr);
+        }
+#else
+        void EmitDuplicateRegistrationDiagnostic(const char* Name) noexcept
+        {
+            char Buf[256];
+            ::std::snprintf(Buf, sizeof(Buf),
+                "[XPACT CVAR COLLISION] duplicate CVar name '%s' "
+                "(source-location capture disabled on this toolchain; "
+                "spec section 9.5 fix C-6: Register* returns nullptr)\n",
+                Name != nullptr ? Name : "(null)");
+            ::std::fputs(Buf, stderr);
+            ::std::fflush(stderr);
+        }
+#endif
+    } // anonymous
+
+    // -----------------------------------------------------------------
     // RegisterInt / RegisterFloat / RegisterString.
     //
-    // All three follow the same shape:
-    //   1. Hash the name.
-    //   2. Acquire the exclusive lock.
-    //   3. Check for a duplicate registration; return existing if so.
-    //   4. Allocate the concrete TConsoleVariable<T> on FMemory.
-    //   5. Insert into the map; release the lock.
-    //   6. Return the new pointer.
+    // All three follow the same shape (Rev 1 audit close-out for
+    // CRITICAL-3 / MAJOR-2 / TC4):
+    //   1. Phase guard: EngineInitPhase() >= PostStaticInit (B5).
+    //   2. Hash the name.
+    //   3. PRE-ALLOCATE the concrete TConsoleVariable<T> on FMemory
+    //      BEFORE acquiring the lock (TC4 / B11: closes the AB-BA
+    //      hazard between Pool.Mutex inside FMemory and State->Lock).
+    //   4. Placement-new construct the CVar in the pre-allocated
+    //      storage.
+    //   5. Acquire the exclusive lock.
+    //   6. Check for duplicate. If found: release lock, destruct +
+    //      free the pre-allocated CVar, emit Dev diagnostic naming
+    //      BOTH source-locations, return nullptr (B1 / C-6).
+    //   7. Insert into the map.
+    //   8. Return the new pointer.
     //
-    // Duplicate detection: a pre-existing entry under the same hash
-    // returns the existing pointer (idempotent registration). XBT's
-    // build-time scan (fix M-7; Phase 1g) is the strict-failure
-    // surface; the runtime path here is defense-in-depth.
+    // Duplicate behaviour (B1 / spec section 9.5 fix C-6): the previous
+    // silent-idempotent-return-existing behaviour was REMOVED. The
+    // collision is now an explicit registration failure (nullptr
+    // return) with a Dev diagnostic that the caller's
+    // XPACT_CHECK(cvar != nullptr) catches.
     // -----------------------------------------------------------------
 
+#if XPACT_HAS_SOURCE_LOCATION
+    IConsoleVariable* IConsoleManager::RegisterInt(const char* Name,
+                                                   ::int32 Default,
+                                                   const char* Help,
+                                                   ECVarFlags Flags,
+                                                   ::std::source_location SrcLoc) noexcept
+#else
     IConsoleVariable* IConsoleManager::RegisterInt(const char* Name,
                                                    ::int32 Default,
                                                    const char* Help,
                                                    ECVarFlags Flags) noexcept
+#endif
     {
+        // Phase guard (Rev 1 audit MAJOR-2 / fix M-9 ladder consistency).
+        // The Register* methods are the registry surface; they may be
+        // called only at PostStaticInit or later. Treiber-stack
+        // pushes from constinit FAutoConsoleVariable ctors run at
+        // PreStaticInit but do NOT reach this surface -- they queue
+        // metadata only; the actual Register* call happens inside
+        // __Initialize at PostStaticInit drain.
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
+
         if (Name == nullptr) [[unlikely]]
         {
             return nullptr;
@@ -289,23 +493,16 @@ namespace XCore::Misc
         const ::uint64 Key = HashName(Name);
         FConsoleManagerState* State = GetSingletonImpl().GetState();
 
-        ::XCore::HAL::FScopedWriteLock L(State->Lock);
-
-        if (IConsoleVariable** Existing = State->Map.Find(Key))
-        {
-            // Idempotent: the second registration sees the first one.
-            // The XBT build-time check (Phase 1g) catches the case
-            // where the duplicate is unintentional.
-            return *Existing;
-        }
-
-        // Allocate via FMemory with the Container tag (CVars are
-        // engine-lifetime; the Container tag is the principled choice
-        // for the registry's internal storage).
+        // ALLOC OUTSIDE LOCK (Rev 1 audit TC4 close-out): allocate
+        // the CVar storage and construct the object BEFORE acquiring
+        // State->Lock. FMemory::MallocOrAbort may internally take
+        // Pool.Mutex; doing so while holding State->Lock would
+        // create an AB-BA lock-order hazard against any other site
+        // that takes Pool.Mutex then State->Lock.
         void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
             sizeof(TConsoleVariableInt32),
             alignof(TConsoleVariableInt32),
-            ::XCore::HAL::FMemTag::Container);
+            ::XCore::HAL::FMemTag::CVar);
 
         TConsoleVariableInt32* CVar = new (Storage) TConsoleVariableInt32(
             ::XCore::FString(Name),
@@ -313,15 +510,55 @@ namespace XCore::Misc
             ::XCore::FString(Help != nullptr ? Help : ""),
             Flags);
 
-        State->Map.Add(Key, static_cast<IConsoleVariable*>(CVar));
+        {
+            ::XCore::HAL::FScopedWriteLock L(State->Lock);
+
+            if (FRegistryEntry* Existing = State->Map.Find(Key))
+            {
+                // Duplicate-name collision (Rev 1 audit CRITICAL-3 / C-6):
+                // emit diagnostic naming both source-locations, abandon
+                // the pre-allocated CVar, return nullptr. The pre-
+                // allocation is the cost of the alloc-outside-lock
+                // pattern; the alternative (lookup-then-alloc-under-
+                // lock) recreates the AB-BA hazard.
+#if XPACT_HAS_SOURCE_LOCATION
+                EmitDuplicateRegistrationDiagnostic(Name, SrcLoc, Existing->SrcLoc);
+#else
+                EmitDuplicateRegistrationDiagnostic(Name);
+#endif
+                // Drop the lock before freeing (the dtor + Free should
+                // not run under the registry lock).
+                CVar->~TConsoleVariableInt32();
+                ::XCore::HAL::FMemory::Free(Storage);
+                return nullptr;
+            }
+
+            FRegistryEntry Entry;
+            Entry.CVar = static_cast<IConsoleVariable*>(CVar);
+#if XPACT_HAS_SOURCE_LOCATION
+            Entry.SrcLoc = SrcLoc;
+#endif
+            State->Map.Add(Key, Entry);
+        }
+
         return CVar;
     }
 
+#if XPACT_HAS_SOURCE_LOCATION
+    IConsoleVariable* IConsoleManager::RegisterFloat(const char* Name,
+                                                     float Default,
+                                                     const char* Help,
+                                                     ECVarFlags Flags,
+                                                     ::std::source_location SrcLoc) noexcept
+#else
     IConsoleVariable* IConsoleManager::RegisterFloat(const char* Name,
                                                      float Default,
                                                      const char* Help,
                                                      ECVarFlags Flags) noexcept
+#endif
     {
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
+
         if (Name == nullptr) [[unlikely]]
         {
             return nullptr;
@@ -330,17 +567,10 @@ namespace XCore::Misc
         const ::uint64 Key = HashName(Name);
         FConsoleManagerState* State = GetSingletonImpl().GetState();
 
-        ::XCore::HAL::FScopedWriteLock L(State->Lock);
-
-        if (IConsoleVariable** Existing = State->Map.Find(Key))
-        {
-            return *Existing;
-        }
-
         void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
             sizeof(TConsoleVariableFloat),
             alignof(TConsoleVariableFloat),
-            ::XCore::HAL::FMemTag::Container);
+            ::XCore::HAL::FMemTag::CVar);
 
         TConsoleVariableFloat* CVar = new (Storage) TConsoleVariableFloat(
             ::XCore::FString(Name),
@@ -348,15 +578,47 @@ namespace XCore::Misc
             ::XCore::FString(Help != nullptr ? Help : ""),
             Flags);
 
-        State->Map.Add(Key, static_cast<IConsoleVariable*>(CVar));
+        {
+            ::XCore::HAL::FScopedWriteLock L(State->Lock);
+
+            if (FRegistryEntry* Existing = State->Map.Find(Key))
+            {
+#if XPACT_HAS_SOURCE_LOCATION
+                EmitDuplicateRegistrationDiagnostic(Name, SrcLoc, Existing->SrcLoc);
+#else
+                EmitDuplicateRegistrationDiagnostic(Name);
+#endif
+                CVar->~TConsoleVariableFloat();
+                ::XCore::HAL::FMemory::Free(Storage);
+                return nullptr;
+            }
+
+            FRegistryEntry Entry;
+            Entry.CVar = static_cast<IConsoleVariable*>(CVar);
+#if XPACT_HAS_SOURCE_LOCATION
+            Entry.SrcLoc = SrcLoc;
+#endif
+            State->Map.Add(Key, Entry);
+        }
+
         return CVar;
     }
 
+#if XPACT_HAS_SOURCE_LOCATION
+    IConsoleVariable* IConsoleManager::RegisterString(const char* Name,
+                                                      const char* Default,
+                                                      const char* Help,
+                                                      ECVarFlags Flags,
+                                                      ::std::source_location SrcLoc) noexcept
+#else
     IConsoleVariable* IConsoleManager::RegisterString(const char* Name,
                                                       const char* Default,
                                                       const char* Help,
                                                       ECVarFlags Flags) noexcept
+#endif
     {
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
+
         if (Name == nullptr) [[unlikely]]
         {
             return nullptr;
@@ -365,17 +627,10 @@ namespace XCore::Misc
         const ::uint64 Key = HashName(Name);
         FConsoleManagerState* State = GetSingletonImpl().GetState();
 
-        ::XCore::HAL::FScopedWriteLock L(State->Lock);
-
-        if (IConsoleVariable** Existing = State->Map.Find(Key))
-        {
-            return *Existing;
-        }
-
         void* Storage = ::XCore::HAL::FMemory::MallocOrAbort(
             sizeof(TConsoleVariableString),
             alignof(TConsoleVariableString),
-            ::XCore::HAL::FMemTag::Container);
+            ::XCore::HAL::FMemTag::CVar);
 
         TConsoleVariableString* CVar = new (Storage) TConsoleVariableString(
             ::XCore::FString(Name),
@@ -383,7 +638,29 @@ namespace XCore::Misc
             ::XCore::FString(Help != nullptr ? Help : ""),
             Flags);
 
-        State->Map.Add(Key, static_cast<IConsoleVariable*>(CVar));
+        {
+            ::XCore::HAL::FScopedWriteLock L(State->Lock);
+
+            if (FRegistryEntry* Existing = State->Map.Find(Key))
+            {
+#if XPACT_HAS_SOURCE_LOCATION
+                EmitDuplicateRegistrationDiagnostic(Name, SrcLoc, Existing->SrcLoc);
+#else
+                EmitDuplicateRegistrationDiagnostic(Name);
+#endif
+                CVar->~TConsoleVariableString();
+                ::XCore::HAL::FMemory::Free(Storage);
+                return nullptr;
+            }
+
+            FRegistryEntry Entry;
+            Entry.CVar = static_cast<IConsoleVariable*>(CVar);
+#if XPACT_HAS_SOURCE_LOCATION
+            Entry.SrcLoc = SrcLoc;
+#endif
+            State->Map.Add(Key, Entry);
+        }
+
         return CVar;
     }
 
@@ -394,9 +671,15 @@ namespace XCore::Misc
     // acquire fence" applies to TConsoleVariableHandle. The Find
     // surface here is the diagnostic-only path; taking the shared
     // lock is correct.
+    //
+    // Phase guard (Rev 1 audit MAJOR-2 / fix M-9 ladder consistency):
+    // Find is part of the registry surface and requires
+    // PostStaticInit or later.
     // -----------------------------------------------------------------
     IConsoleVariable* IConsoleManager::Find(const char* Name) noexcept
     {
+        XPACT_CHECK(::XCore::HAL::EngineInitPhase() >= ::XCore::HAL::EInitPhase::PostStaticInit);
+
         if (Name == nullptr) [[unlikely]]
         {
             return nullptr;
@@ -407,9 +690,9 @@ namespace XCore::Misc
 
         ::XCore::HAL::FScopedReadLock L(State->Lock);
 
-        if (IConsoleVariable** Existing = State->Map.Find(Key))
+        if (FRegistryEntry* Existing = State->Map.Find(Key))
         {
-            return *Existing;
+            return Existing->CVar;
         }
         return nullptr;
     }
@@ -433,7 +716,7 @@ namespace XCore::Misc
 
         for (auto& Pair : State->Map)
         {
-            Visitor(Pair.Value, UserData);
+            Visitor(Pair.Value.CVar, UserData);
         }
     }
 
@@ -456,6 +739,13 @@ namespace XCore::Misc
         // Idempotency: if a prior __Initialize already ran, we still
         // drain any new nodes (plugin load pushes new ones), but we
         // don't reset the DrainCompleted flag.
+        //
+        // Rev 1 audit CRITICAL-3 close-out: each Register* call
+        // receives the Treiber-stack node's captured SrcLoc (set at
+        // FAutoConsoleVariable<T> ctor time) so the duplicate-
+        // collision diagnostic can name the original registration's
+        // call site rather than reporting the drain loop as the
+        // origin.
         FAutoConsoleVariableNode* Node = nullptr;
         while ((Node = __PopAutoCVar()) != nullptr)
         {
@@ -463,15 +753,34 @@ namespace XCore::Misc
             switch (Node->ValueType)
             {
             case ECVarValueType::Int32:
+#if XPACT_HAS_SOURCE_LOCATION
+                Registered = Impl.RegisterInt(Node->Name, Node->DefaultInt, Node->Help, Node->Flags, Node->SrcLoc);
+#else
                 Registered = Impl.RegisterInt(Node->Name, Node->DefaultInt, Node->Help, Node->Flags);
+#endif
                 break;
             case ECVarValueType::Float:
+#if XPACT_HAS_SOURCE_LOCATION
+                Registered = Impl.RegisterFloat(Node->Name, Node->DefaultFloat, Node->Help, Node->Flags, Node->SrcLoc);
+#else
                 Registered = Impl.RegisterFloat(Node->Name, Node->DefaultFloat, Node->Help, Node->Flags);
+#endif
                 break;
             case ECVarValueType::String:
+#if XPACT_HAS_SOURCE_LOCATION
+                Registered = Impl.RegisterString(Node->Name, Node->DefaultStr, Node->Help, Node->Flags, Node->SrcLoc);
+#else
                 Registered = Impl.RegisterString(Node->Name, Node->DefaultStr, Node->Help, Node->Flags);
+#endif
                 break;
             }
+            // Note: Registered may be nullptr if the node collided
+            // with a previously-drained node of the same name (the
+            // collision diagnostic has already been emitted by
+            // Register*). The downstream GetHandle path returns an
+            // unbound handle when Registered is nullptr, which is
+            // the safe behaviour for the colliding second
+            // registration.
             Node->Registered = Registered;
         }
 

@@ -12,40 +12,37 @@
 // Struct->Size at FClass::Link time when FStruct is available; Phase
 // 4b.5 codegen owns this).
 //
-// SLOT BEHAVIOUR:
+// CAPABILITY TRUTH-TABLE DISCIPLINE (XCore-4b Subagent A FIX-A1):
 //
-//   * GetValue / SetValue                -- memcpy ElementSize bytes.
-//   * CopySingleValue / CopyCompleteValue -- memcpy N * ElementSize.
-//   * InitializeValue                    -- zero-fill (the nested struct's
-//                                          dtor-equivalent default-init;
-//                                          Phase 4b.5 will delegate to
-//                                          FStruct's FCppStructOps).
-//   * DestroyValue                       -- no-op at Phase 4b.4b (delegates
-//                                          to FStruct dtor at Phase 4b.5).
-//   * Identical                          -- bytewise compare (Phase 4b.5
-//                                          will delegate to FStruct's
-//                                          Identical handler when set).
-//   * GetValueTypeHash                   -- FXxh3 over the bytes.
-//   * ContainsObjectReference            -- delegates to the wrapped
-//                                          FStruct (FIX-13). At Phase
-//                                          4b.4b (FStruct forward-declared
-//                                          only), returns false as a
-//                                          structurally-safe placeholder;
-//                                          the slot is re-wired at Phase
-//                                          4b.5 when FStruct::Contains
-//                                          ObjectRefs ships.
-//   * ExportText / ImportText            -- nullptr at Phase 4b.4b.
-//   * SerializeItem / NetSerializeItem   -- nullptr.
-//   * AppendToSchemaHash / ConvertFromType -- nullptr.
+//   Prior Phase 4b.4b shape claimed every slot was supported while
+//   the slot bodies were silently no-ops. The dispatch shape doesn't
+//   carry per-instance FStruct context (the FFakeVTable signature is
+//   per-class, not per-instance), so the slots cannot access the
+//   nested Struct's FCppStructOps handlers at Phase 4b.4b.
+//
+//   FIX: every slot has its `kStructCapabilities` bit CLEARED at Phase
+//   4b.4b. Well-behaved callers (probing HasSlot) skip dispatch
+//   entirely; the FProperty wrapper returns the safe sentinel (false
+//   for Identical/ContainsObjectReference; 0 for GetValueTypeHash;
+//   no-op for GetValue/SetValue/Copy/Init/Destroy via the wrapper's
+//   nullptr-fn guards).
+//
+//   Direct dispatch hits XPACT_CHECK(false) and crashes with the
+//   Phase 4b.5 / XCoreXObject-deferred diagnostic. This is correct:
+//   the slots are not yet usable, and a caller bypassing HasSlot is
+//   a contract violation.
+//
+//   ContainsObjectReference is structurally important: at Phase 4b.5,
+//   it will be rewired to consult Struct->ObjectRefProperties (FIX-13).
+//   Until then it returns false (the safe sentinel) via the wrapper's
+//   HasSlot=false fall-through, matching the
+//   ContainsObjectReferenceMatrix test expectation.
 //
 // NOTE: The slot bodies CANNOT access the per-instance Struct pointer
 // directly -- the FFakeVTable dispatch shape is (Container, ElementIndex,
-// OutValue / InValue) with no FProperty* parameter. The bytewise
-// dispatch operates on the value slot's bytes; the per-instance
-// ElementSize is the source of truth for how many bytes per element.
-// For Phase 4b.4b we use a sentinel-safe path: if ElementSize == 0
-// (FStruct not yet linked), the slot is a no-op. Phase 4b.5 will set
-// ElementSize correctly during FClass::Link.
+// OutValue / InValue) with no FProperty* parameter. For Phase 4b.5 we
+// will extend the FFakeVTable model (or use a side table) to carry the
+// per-instance Struct context through dispatch.
 //
 // =====================================================================
 
@@ -58,6 +55,8 @@
 #include "Reflection/FName.h"
 #include "Reflection/FProperty.h"
 
+#include "Macros/XPactMacros.h"   // XPACT_CHECK
+
 #include <cstring>
 #include <new>
 
@@ -67,119 +66,113 @@ namespace XCore::Reflect
 namespace
 {
     // -----------------------------------------------------------------
-    // FStructProperty dispatch slots: the slot signature does NOT
-    // carry the per-instance struct size; the slots cannot know it
-    // generically. The Phase 4b.4b approach: the slots operate on the
-    // value pointer assuming the CALLER has correctly bounded the
-    // copy/compare to the property's ElementSize (which the FProperty
-    // dispatch wrapper has access to via `this->ElementSize`).
+    // Unimplemented-slot bodies (FIX-A1). Capability bits ALL CLEARED
+    // in `kStructCapabilities` below; well-behaved callers see the
+    // wrapper return sentinel values (false / 0 / no-op).
     //
-    // Since the FFakeVTable slot signature is (Instance, ElementIndex,
-    // OutValue), we cannot directly read ElementSize from inside the
-    // slot. The slots therefore COPY the value verbatim from the source
-    // address into the destination -- the caller's buffer sizing is
-    // their responsibility (and the FProperty wrapper passes correctly-
-    // sized buffers per ElementSize).
-    //
-    // For Phase 4b.4b, the slot bodies use sizeof(void*) (8 bytes) as
-    // a placeholder -- this is structurally incorrect for arbitrary
-    // nested structs (they may be larger than 8 bytes), but the slot is
-    // never legitimately invoked at Phase 4b.4b because FStruct is not
-    // yet shipped (no FClass::Link path populates Struct/ElementSize).
-    //
-    // TODO(Phase 4b.5): refine the FStructProperty dispatch slots to
-    // consult the per-instance ElementSize via a closure-style
-    // indirection (e.g., the FFakeVTable extends to take an FProperty*
-    // for dispatch slots that need per-instance state). Until then the
-    // slot body is a no-op pattern matching the §5.5 wording "deferred
-    // to Phase 4b.5".
+    // TODO(Phase 4b.5): rewire dispatch to consult per-instance Struct
+    // via FCppStructOps or an extended FFakeVTable model that carries
+    // FStructProperty* through dispatch.
     // -----------------------------------------------------------------
 
     void GetValueSlot(const void* /*Instance*/, ::int32 /*ElementIndex*/, void* /*OutValue*/) noexcept
     {
-        // Phase 4b.4b: no-op. Phase 4b.5 will delegate to FStruct's
-        // FCppStructOps Copy handler.
+        XPACT_CHECK(!"FStructProperty::GetValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to nested Struct's FCppStructOps Copy. "
+                     "Capability bit cleared in kStructCapabilities; HasSlot() returns false.");
     }
 
     void SetValueSlot(void* /*Instance*/, ::int32 /*ElementIndex*/, const void* /*InValue*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FStructProperty::SetValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to nested Struct's FCppStructOps Copy. "
+                     "Capability bit cleared in kStructCapabilities.");
     }
 
     void CopySingleValueSlot(void* /*Dest*/, const void* /*Src*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FStructProperty::CopySingleValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps Copy handler. "
+                     "Capability bit cleared in kStructCapabilities.");
     }
 
     void CopyCompleteValueSlot(void* /*Dest*/, const void* /*Src*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op.
+        XPACT_CHECK(!"FStructProperty::CopyCompleteValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps Copy handler. "
+                     "Capability bit cleared in kStructCapabilities.");
     }
 
     void InitializeValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op. Phase 4b.5 will delegate to FStruct's
-        // FCppStructOps Construct handler.
+        XPACT_CHECK(!"FStructProperty::InitializeValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps Construct handler. "
+                     "Capability bit cleared in kStructCapabilities.");
     }
 
     void DestroyValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
-        // Phase 4b.4b: no-op. Phase 4b.5 will delegate to FStruct's
-        // FCppStructOps Destruct handler.
+        XPACT_CHECK(!"FStructProperty::DestroyValue dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps Destruct handler. "
+                     "Capability bit cleared in kStructCapabilities.");
     }
 
     bool IdenticalSlot(const void* /*A*/, const void* /*B*/, ::uint32 /*PortFlags*/) noexcept
     {
-        // Phase 4b.4b: returns "not identical" as the safe default --
-        // unknown size means we cannot byte-compare. Phase 4b.5 will
-        // delegate to FStruct's FCppStructOps Identical handler.
+        XPACT_CHECK(!"FStructProperty::Identical dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps Identical handler. "
+                     "Capability bit cleared in kStructCapabilities.");
         return false;
     }
 
     ::uint64 GetValueTypeHashSlot(const void* /*PropertyValue*/) noexcept
     {
-        // Phase 4b.4b: returns 0 (the "not hashable" sentinel; matches
-        // FProperty wrapper's no-slot-populated fallback). Phase 4b.5
-        // will delegate to FStruct's FCppStructOps GetTypeHash handler.
+        XPACT_CHECK(!"FStructProperty::GetValueTypeHash dispatch slot not yet implemented; "
+                     "Phase 4b.5 will delegate to FCppStructOps GetTypeHash handler. "
+                     "Capability bit cleared in kStructCapabilities.");
         return 0;
     }
 
     // -----------------------------------------------------------------
-    // ContainsObjectReferenceSlot -- delegates to wrapped FStruct.
+    // ContainsObjectReferenceSlot -- capability bit CLEARED at Phase 4b.4b.
     //
-    // Phase 4b.4b returns false (the safe default; ConservatIVE: a
-    // struct with object refs returns false here, which means GC may
-    // miss roots inside nested structs. This is acceptable at Phase
-    // 4b.4b because no live XObject reflection exists; ALL paths
-    // produce zero object references in practice).
+    // The slot CANNOT access the per-instance FStructProperty (and thus
+    // the wrapped FStruct's ObjectRefProperties) under the signature-
+    // only dispatch shape. At Phase 4b.5, dispatch will be rewired to
+    // consult Struct->ObjectRefProperties (FIX-13) via either an
+    // extended FFakeVTable model or a side-table walk at FClass::Link
+    // time.
     //
-    // Phase 4b.5 will rewire this slot to consult the per-instance
-    // FStruct's ObjectRefProperties cache (FIX-13). The EncounteredStruct
-    // Props argument is preserved for that rewire.
+    // Until then, the wrapper's HasSlot=false path returns false (safe
+    // sentinel). This matches ContainsObjectReferenceMatrix test
+    // expectation for FStructProperty.
+    //
+    // SAFETY: a struct containing object references that never appears
+    // in FStruct::ObjectRefProperties WOULD cause missed GC roots. At
+    // Phase 4b.4b no live XObject reflection exists, so no roots are
+    // missed in practice; Phase 4b.5 wires the correct propagation
+    // BEFORE the GC scan goes live.
     // -----------------------------------------------------------------
     bool ContainsObjectReferenceSlot(
         ::XCore::TArray<const FStructProperty*>& /*EncounteredStructProps*/) noexcept
     {
-        // TODO(Phase 4b.5): delegate to Struct->ContainsObjectReferences
-        // (FIX-13). The slot signature does NOT have access to the
-        // per-instance FStructProperty* (the dispatch shape is the
-        // signature-only model). The Phase 4b.5 rewire will introduce
-        // an indirection that passes the FStructProperty* through to
-        // the slot, OR use the ObjectRefProperties cache populated at
-        // FClass::Link time and consulted via a side table.
+        XPACT_CHECK(!"FStructProperty::ContainsObjectReference dispatch slot not yet "
+                     "implemented; Phase 4b.5 will delegate to Struct->ObjectRefProperties. "
+                     "Capability bit cleared in kStructCapabilities.");
         return false;
     }
 
-    constexpr ::uint32 kStructCapabilities =
-          CapabilityBit(ESlot::GetValue)
-        | CapabilityBit(ESlot::SetValue)
-        | CapabilityBit(ESlot::CopySingleValue)
-        | CapabilityBit(ESlot::CopyCompleteValue)
-        | CapabilityBit(ESlot::InitializeValue)
-        | CapabilityBit(ESlot::DestroyValue)
-        | CapabilityBit(ESlot::Identical)
-        | CapabilityBit(ESlot::ContainsObjectReference)
-        | CapabilityBit(ESlot::GetValueTypeHash);
+    // -----------------------------------------------------------------
+    // kStructCapabilities -- TRUTH TABLE per FIX-A1.
+    //
+    // ALL bits CLEARED at Phase 4b.4b: every slot requires per-instance
+    // Struct context the FFakeVTable dispatch shape doesn't carry.
+    // Wrappers return safe sentinels (false / 0 / no-op).
+    //
+    // Phase 4b.5 will populate capability bits AFTER rewiring dispatch
+    // to consult the per-instance FCppStructOps + ObjectRefProperties.
+    // -----------------------------------------------------------------
+    constexpr ::uint32 kStructCapabilities = 0U;
 
 } // anonymous
 

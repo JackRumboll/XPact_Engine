@@ -9,9 +9,15 @@
 // FMulticastSparseDelegateProperty's value slot holds an
 // FMulticastSparseDelegate by-value (sparse subscriber map).
 //
-// ContainsObjectReference returns TRUE (when the sparse map has
-// entries, subscriber Targets are GC roots; conservative under
-// reflection-time analysis).
+// CAPABILITY TRUTH-TABLE DISCIPLINE (XCore-4b Subagent A FIX-A1):
+//
+//   Prior Phase 4b.4b shape claimed every slot was supported while
+//   the slot bodies were silently no-ops. FIX: the value-operation
+//   slots have their `kMulticastSparseCapabilities` bit CLEARED.
+//   Direct dispatch (bypassing HasSlot) hits XPACT_CHECK(false).
+//
+//   ContainsObjectReference IS implemented (returns TRUE; subscriber
+//   Targets are GC roots). Its bit remains set.
 //
 // =====================================================================
 
@@ -23,6 +29,8 @@
 #include "Reflection/FName.h"
 #include "Reflection/FProperty.h"
 
+#include "Macros/XPactMacros.h"   // XPACT_CHECK
+
 #include <new>
 
 namespace XCore::Reflect
@@ -30,59 +38,89 @@ namespace XCore::Reflect
 
 namespace
 {
-    // Slot bodies: no-ops at Phase 4b.4b; Phase 4b.5 wires typed
+    // -----------------------------------------------------------------
+    // Unimplemented-slot bodies (FIX-A1). Phase 4b.5 wires typed
     // dispatch via FMulticastSparseDelegate's operations.
+    // -----------------------------------------------------------------
 
     void GetValueSlot(const void* /*Instance*/, ::int32 /*ElementIndex*/, void* /*OutValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::GetValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will land typed delegate traversal. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     void SetValueSlot(void* /*Instance*/, ::int32 /*ElementIndex*/, const void* /*InValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::SetValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will land typed delegate traversal. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     void CopySingleValueSlot(void* /*Dest*/, const void* /*Src*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::CopySingleValue dispatch slot not "
+                     "yet implemented; Phase 4b.5 will deep-copy sparse subscriber map. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     void CopyCompleteValueSlot(void* /*Dest*/, const void* /*Src*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::CopyCompleteValue dispatch slot "
+                     "not yet implemented; Phase 4b.5 will deep-copy sparse subscriber map. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     void InitializeValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::InitializeValue dispatch slot not "
+                     "yet implemented; Phase 4b.5 will zero-init the delegate header. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     void DestroyValueSlot(void* /*Dest*/, ::int32 /*Count*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::DestroyValue dispatch slot not yet "
+                     "implemented; Phase 4b.5 will release sparse map storage. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
     }
 
     bool IdenticalSlot(const void* /*A*/, const void* /*B*/, ::uint32 /*PortFlags*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::Identical dispatch slot not yet "
+                     "implemented; Phase 4b.5 will subscriber-wise compare. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
         return false;
     }
 
     ::uint64 GetValueTypeHashSlot(const void* /*PropertyValue*/) noexcept
     {
+        XPACT_CHECK(!"FMulticastSparseDelegateProperty::GetValueTypeHash dispatch slot "
+                     "not yet implemented; multicast delegates are not hashable keys. "
+                     "Capability bit cleared in kMulticastSparseCapabilities.");
         return 0;
     }
 
+    // -----------------------------------------------------------------
+    // ContainsObjectReferenceSlot -- LOAD-BEARING; capability bit kept set.
+    //
+    // Subscriber map values contain FObject* Target references when
+    // populated; the slot returns TRUE conservatively.
+    // -----------------------------------------------------------------
     bool ContainsObjectReferenceSlot(
         ::XCore::TArray<const FStructProperty*>& /*EncounteredStructProps*/) noexcept
     {
         return true;
     }
 
+    // -----------------------------------------------------------------
+    // kMulticastSparseCapabilities -- TRUTH TABLE per FIX-A1.
+    //
+    // SET: ContainsObjectReference (returns TRUE).
+    // CLEARED: all value-op slots (Phase 4b.5 deferred).
+    // -----------------------------------------------------------------
     constexpr ::uint32 kMulticastSparseCapabilities =
-          CapabilityBit(ESlot::GetValue)
-        | CapabilityBit(ESlot::SetValue)
-        | CapabilityBit(ESlot::CopySingleValue)
-        | CapabilityBit(ESlot::CopyCompleteValue)
-        | CapabilityBit(ESlot::InitializeValue)
-        | CapabilityBit(ESlot::DestroyValue)
-        | CapabilityBit(ESlot::Identical)
-        | CapabilityBit(ESlot::ContainsObjectReference)
-        | CapabilityBit(ESlot::GetValueTypeHash);
+          CapabilityBit(ESlot::ContainsObjectReference);
 
 } // anonymous
 
