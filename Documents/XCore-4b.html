@@ -3,11 +3,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Engine &mdash; XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) &mdash; Rev 3</title>
+<title>XPact Engine &mdash; XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) &mdash; Rev 4</title>
 </head>
 <body>
 
-<h1>XPact Engine &mdash; XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) &mdash; Rev 3</h1>
+<h1>XPact Engine &mdash; XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) &mdash; Rev 4</h1>
 
 <p><strong>System:</strong> XCore (sub-system 4b &mdash; reflection types, with UE-equivalent replication-metadata source for XNetworking's <code>FReplicationStateDescriptorRegistry</code>) &nbsp;|&nbsp;
 <strong>Layer:</strong> 1 (Core Runtime) &nbsp;|&nbsp;
@@ -15,11 +15,11 @@
 <strong>Language:</strong> C++20 &nbsp;|&nbsp;
 <strong>Owner:</strong> Simgenics &nbsp;|&nbsp;
 <strong>Plan date:</strong> 2026-05-26 &nbsp;|&nbsp;
-<strong>Revision:</strong> 3 (Round-2 audit fixes &mdash; 24 findings: 1 CRITICAL [TArray sizeof cascade &mdash; TArray = 16 bytes per XCore-4a Rev 3 EBO, not 24] + 3 MAJOR [FakeVTable header arithmetic 120 bytes not 128; FScriptStruct ICppStructOps adopts same FakeVTable pattern; Master Plan Rev 15 amendment integrated] + 1 HIGH [ConvertFromType slot added &rarr; 15 slots, 128-byte FakeVTable; fixed-table dispatch deliberate-divergence rationale documented] + 4 MEDIUM + 8 LOW. Cumulative Rev 1&rarr;3: 52 fixes. Round 3 convergence verification expected.) &nbsp;|&nbsp;
-<strong>Status:</strong> awaiting design-review approval (Round 3 audit expected to converge) &nbsp;|&nbsp;
+<strong>Revision:</strong> 4 (Round-4 amendment &mdash; TArray sizeof cascade corrected per Phase 4b.5 implementation discovery: XCore-4a's DefaultAllocator carries 2-byte FMemTag for memory attribution; XPACT_NO_UNIQUE_ADDRESS doesn't fold; actual TArray=24 bytes not 16. Cascade: FStruct 104&rarr;112, FScriptStruct 120&rarr;128, FClass 200&rarr;224, FEnum 64&rarr;72, FInterface 56&rarr;64. The 8-byte/TArray cost is acceptable for XCore-4a's per-container memory-attribution feature. All ABI tags bumped to v4.) &nbsp;|&nbsp;
+<strong>Status:</strong> awaiting design-review approval (Round 4 amendment; sizes now match Phase 4b.5 verified implementation) &nbsp;|&nbsp;
 <strong>Plan reference:</strong> Master Plan Rev 15 (post-Iris-architectural-correction + XCore-4b FakeVTable amendment at line 173), Section 4 Step 4 &nbsp;|&nbsp;
 <strong>Contract reference:</strong> <code>XToolchainContract.html</code> Rev 13.7 (Stage A); the Stage B addendum at Contract Rev 13.8 ships with this spec &nbsp;|&nbsp;
-<strong>XCore-4a reference:</strong> <code>XCore-4a.html</code> Rev 3 (TArray = 16 bytes per &sect;5.1 line 365-368 EBO discipline)</p>
+<strong>XCore-4a reference:</strong> <code>XCore-4a.html</code> Rev 3 + <code>DefaultAllocator.h</code> lines 175-189 (verified at Phase 4b.5 implementation: <code>sizeof(DefaultAllocator) == 2</code> due to FMemTag per-container memory attribution; TArray actual sizeof = 24 bytes)</p>
 
 <p><strong>Prime Directive citation (per <code>engineering_principles.md</code>):</strong> &ldquo;Use the thing that is correct not the thing that is easier to implement.&rdquo; Rev 2's adoption of the TStructOpsFakeVTable pattern (FIX-2) is the correct shape, not the inherited UE virtual-dispatch shape; the spec rejects UE's per-FProperty inlined-dispatch-slots approach (40 bytes per instance) in favour of a shared <code>.rodata</code>-resident FakeVTable per subclass (8-byte pointer per instance + 128 bytes per subclass shared with 15 dispatch slots). The reconciliation of replication-metadata scope with Master Plan Rev 15 (FIX-1) follows the same principle: XCore-4b reflects the UE-equivalent pre-Iris set on FProperty (<code>RepIndex</code>, <code>ELifetimeCondition</code>, <code>RepNotifyFunc</code>) and positions itself as the <em>source</em> consumed by XNetworking's <code>FReplicationStateDescriptorRegistry</code>, rather than inflating FProperty with XPact-only additions that don't exist in UE. Rev 3 keeps the <strong>fixed 14+1=15-slot dispatch table</strong> (rather than UE's variable-length form) as a deliberate Prime-Directive divergence; rationale documented in &sect;5.4.1.</p>
 
@@ -146,7 +146,7 @@
 <p>XCore-4b's Rev 2 layout changes cascade into adjacent systems. The impact is enumerated here so the implementation phase knows what to coordinate.</p>
 
 <ul>
-  <li><strong>XHT (emit format)</strong>: Stage B addendum (Contract Rev 13.8) lands with FProperty layout = 96 base + 8 DispatchTable pointer = <strong>104 bytes</strong> per instance (down from Rev 1's 136 via FIX-2 FakeVTable adoption). Plus per-FProperty-subclass FFakeVTable in <code>.rodata</code> (Rev 3: 8-byte header + 15 dispatch slots = 128 bytes per subclass &times; 28 subclasses = 3584 bytes &asymp; 3.5 KB total module footprint). XHT's <code>.gen.cpp</code> emitter populates each FProperty instance with a constinit pointer to the subclass's shared FakeVTable.</li>
+  <li><strong>XHT (emit format)</strong>: Stage B addendum (Contract Rev 13.8) lands with FProperty layout = 96 base + 8 DispatchTable pointer = <strong>104 bytes</strong> per instance (down from Rev 1's 136 via FIX-2 FakeVTable adoption). FProperty itself is unaffected by the Rev 4 TArray cascade (FProperty contains no TArray members). Plus per-FProperty-subclass FFakeVTable in <code>.rodata</code> (Rev 3: 8-byte header + 15 dispatch slots = 128 bytes per subclass &times; 28 subclasses = 3584 bytes &asymp; 3.5 KB total module footprint). XHT's <code>.gen.cpp</code> emitter populates each FProperty instance with a constinit pointer to the subclass's shared FakeVTable.</li>
   <li><strong>XCoreXObject (System 5)</strong>: consumes <code>FStruct::ObjectRefProperties</code> as a dense <code>TArray&lt;FProperty*&gt;</code> (FIX-13) populated at FClass::Link time; the GC scan walks this contiguous array (no linked-list pointer-chasing) to meet Foundation Prototype criterion (b) &lt;50ms full-heap-scan on Quest 3. FXObjectKey (<code>{uint32 Index; uint32 SerialNumber}</code>) is the XCoreXObject deliverable, not XCore-4b's.</li>
   <li><strong>XNetworking (System 13)</strong>: consumes FProperty's UE-equivalent replication metadata (RepIndex + ELifetimeCondition + RepNotifyFunc) via reflection to build <code>FReplicationStateDescriptor</code> instances inside its process-singleton <code>FReplicationStateDescriptorRegistry</code> (keyed by FFieldVariant). XCore-4b is the SOURCE; XNetworking is the descriptor host. Net-object-groups live in a separate <code>FNetObjectGroups</code> registry inside XNetworking.</li>
   <li><strong>XSerialization (System 9)</strong>: consumes FCustomVersion + per-type SchemaHash + the expanded <code>CppStructOps</code> capability bits (HasSerializer, HasNetSerializer, HasNetDeltaSerializer, HasGetTypeHash, HasSerializeFromMismatchedTag, HasPostSerialize, HasExportTextItem, HasImportTextItem, HasAddStructReferencedObjects &mdash; FIX-5) when round-tripping FScriptStructs through FArchive.</li>
@@ -442,7 +442,17 @@ static_assert(alignof(FFieldClass) == 16, "FFieldClass alignment lock");</code><
 
 <p>The CastFlags bitmask follows UE's pattern (<code>Field.h:79</code> EClassCastFlags) but XPact reserves each FProperty subclass's bit explicitly in the Stage B addendum. Lookup-by-IsA is therefore O(1) via bitwise-and on the CastFlags field.</p>
 
-<h3>5.3 FProperty base (Rev 2 reshaped per FIX-1 + FIX-2 + FIX-19)</h3>
+<h3>5.3 FProperty base (Rev 2 reshaped per FIX-1 + FIX-2 + FIX-19; Rev 4 confirms FProperty base unaffected by TArray cascade)</h3>
+
+<p><strong>Rev 4 amendment (Round 4 of XCore-4b audit cycle)</strong>: Rev 3 FIX-R2-CRIT-1 cited <code>sizeof(TArray&lt;T&gt;) == 16 bytes</code> based on a reading of XCore-4a's spec wording ("0 bytes when AllocatorT is empty"). Phase 4b.5 implementation verified by direct sizeof on MSVC 19.44 that XCore-4a's actual <code>DefaultAllocator</code> carries a 2-byte FMemTag for per-container memory attribution (per XCore-4a's <code>DefaultAllocator.h:178-186</code> static_assert: <code>sizeof(DefaultAllocator) == 2</code>). XPACT_NO_UNIQUE_ADDRESS has no padding hole to fold into. Actual TArray sizeof is <strong>24 bytes</strong> (<code>T* m_data @ 0</code> (8) + <code>int32 m_num @ 8</code> (4) + <code>int32 m_capacity @ 12</code> (4) + <code>DefaultAllocator m_alloc @ 16</code> (2) + pad @ 18 (6) = 24). All descriptor sizes cascade: FStruct 104&rarr;112, FScriptStruct 120&rarr;128, FClass 200&rarr;224, FEnum 64&rarr;72, FInterface 56&rarr;64. <strong>FProperty itself is unchanged at 104 bytes</strong> &mdash; FProperty contains no TArray members; the cascade only affects descriptors that contain TArray fields.</p>
+
+<p>Per Prime Directive (<code>engineering_principles.md</code>: "Use the thing that is correct not the thing that is easier to implement"), two responses were considered:</p>
+<ul>
+  <li><strong>Option A: Refactor XCore-4a to make DefaultAllocator truly stateless.</strong> Move FMemTag attribution to per-allocation callsite. Pros: 16-byte TArray as Rev 3 intended; ~8 bytes saved per TArray instance. Cons: substantial XCore-4a churn (~10k LoC touched; all containers + tests re-verified); API friction (FMemTag becomes an explicit parameter at every allocation callsite); loses the leak-tracker integration shape.</li>
+  <li><strong>Option B (Rev 4 adopts): Acknowledge XCore-4a's design choice and ship accurate sizes.</strong> Pros: matches actual implementation; preserves XCore-4a's leak-tracker + memory-budget attribution feature; no XCore-4a churn. Cons: ~8 bytes per TArray vs theoretical optimum.</li>
+</ul>
+
+<p><strong>Rev 4 adopts Option B</strong>. The FMemTag-per-allocator design is a load-bearing XCore-4a feature consumed by Phase 1b leak detection + Master Plan &sect;2b memory budget telemetry. The 8-byte cost is acceptable for the attribution capability. The Prime Directive instructs "do it right the first time, not the easy way" &mdash; in this case, the right thing is to honour XCore-4a's deliberate design decision (per-container memory attribution) rather than to retrofit XCore-4a for a minor reflection-runtime footprint win.</p>
 
 <p>FProperty extends FField with the type-shape + the <strong>UE-equivalent pre-Iris replication-metadata source set</strong> (FIX-1) + a single <strong>FakeVTable</strong> dispatch-table pointer (FIX-2). Rev 1's per-FProperty inlined PushModelBits/DeltaHintFlags/NetIndex are DROPPED &mdash; <code>CPF_PushModel</code> and <code>CPF_DeltaCompressed</code> are bits in EPropertyFlags (FIX-20), and NetIndex is derivable from the ClassReps index (FIX-19). Rev 1's per-FProperty 40-byte inlined function-pointer table is collapsed to an 8-byte <code>DispatchTable</code> pointer at a per-subclass FFakeVTable in <code>.rodata</code> (FIX-2; UE's <code>TStructOpsFakeVTable</code> pattern, <code>Class.h:1737-1768</code>). The byte layout is the heart of the Stage B addendum; downstream XHT-emitted <code>.gen.cpp</code> initialises FProperty subclasses via constinit and depends on the byte layout being stable.</p>
 
@@ -847,11 +857,16 @@ static_assert(sizeof(FRepRecord) == 16, "FRepRecord ABI lock: 16 bytes per Class
 
 <p>FStruct is the common base for FClass, FScriptStruct, and (UE-side) UFunction. UE's <code>UStruct</code> (<code>Class.h:495</code>) extends <code>UField</code> (which extends UObject); XPact's FStruct is itself a top-level type (no XObject inheritance because XCore-4b ships before XObject) and is the runtime descriptor for any "thing with a property list."</p>
 
-<pre><code>// Rev 3: TArray sizeof = 16 bytes per XCore-4a Rev 3 EBO discipline (T* + int32 + int32 +
-// XPACT_NO_UNIQUE_ADDRESS stateless allocator = 8 + 4 + 4 + 0 = 16 bytes). Stateless allocator
-// folds into adjacent padding via XPACT_NO_UNIQUE_ADDRESS attribute. See XCore-4a &sect;5.1
-// line 365-368. Rev 2 erroneously cited 24 bytes (Subagent A R2 CRITICAL-1; verified against
-// XCore-4a Rev 3 source).
+<pre><code>// Rev 4: TArray sizeof = 24 bytes per Phase 4b.5 implementation verification.
+// XCore-4a's DefaultAllocator carries a 2-byte FMemTag for per-container memory
+// attribution (DefaultAllocator.h:178-186 static_assert sizeof == 2).
+// XPACT_NO_UNIQUE_ADDRESS has no padding hole to fold into, so TArray layout is:
+// T* m_data @ 0 (8) + int32 m_num @ 8 (4) + int32 m_capacity @ 12 (4) +
+// DefaultAllocator m_alloc @ 16 (2) + pad @ 18 (6) = 24 bytes.
+// Rev 3 erroneously cited 16 bytes (theoretical EBO with truly-stateless allocator);
+// Rev 4 corrects per Phase 4b.5 verified discovery. The FMemTag-per-allocator design
+// is a load-bearing XCore-4a feature for leak detection + memory budget telemetry;
+// the 8-byte/TArray cost is accepted per Prime Directive Option B.
 struct alignas(8) FStruct {
     // === Identity ===
     FName              NamePrivate;         //  0  +8   struct name (e.g. "AXActor", "FVector")
@@ -877,27 +892,27 @@ struct alignas(8) FStruct {
     // RefLink which pointer-chases on Quest 3 ARM64 cache; XPact's dense array is
     // contiguous, prefetch-friendly, and meets Foundation Prototype criterion (b)
     // &lt;50ms full-heap-scan on Quest 3 for 100k XObjects.
-    TArray&lt;FProperty*&gt; ObjectRefProperties; // 56 +16   (TArray = 16 bytes per XCore-4a Rev 3 EBO; Rev 3 FIX-R2-CRIT-1 corrected from Rev 2's 24)
+    TArray&lt;FProperty*&gt; ObjectRefProperties; // 56 +24   (TArray = 24 bytes per Rev 4 FIX-R3-CRIT-1; FMemTag-carrying DefaultAllocator)
 
     // === Schema versioning (per Master Plan Reflection schema versioning row) ===
-    uint64_t           SchemaHash;          // 72  +8   BLAKE3-truncated hash over declared shape (FIX-10) computed at XHT emit time
-    int32_t            SchemaVersion;       // 80  +4   monotonic per-type version int (bumped manually when XPROPERTY layout changes)
-    uint32_t           _padSchema;          // 84  +4   pad
+    uint64_t           SchemaHash;          // 80  +8   BLAKE3-truncated hash over declared shape (FIX-10) computed at XHT emit time
+    int32_t            SchemaVersion;       // 88  +4   monotonic per-type version int (bumped manually when XPROPERTY layout changes)
+    uint32_t           _padSchema;          // 92  +4   pad
 
     // === Unversioned-schema cache (lazy populated; CoreUObject's UStruct.UnversionedGameSchema mirror) ===
-    mutable std::atomic&lt;const FUnversionedStructSchema*&gt; UnversionedSchema;  // 88  +8
+    mutable std::atomic&lt;const FUnversionedStructSchema*&gt; UnversionedSchema;  // 96  +8
 
     // === Function-pointer slots (no virtual methods; hot-reload safety) ===
-    void               (*SerializeStructFn)(FArchive&amp; Ar, void* Instance);    // 96  +8
+    void               (*SerializeStructFn)(FArchive&amp; Ar, void* Instance);    // 104 +8
     // FStruct dispatch table continues with InitializeStruct / DestroyStruct / etc. (see &sect;7.4)
 };
 
-static_assert(sizeof(FStruct)  == 104, "FStruct ABI lock (Rev 3: re-derived with TArray = 16 bytes per XCore-4a Rev 3 EBO; Rev 2's 112 was based on incorrect TArray = 24 cite)");
+static_assert(sizeof(FStruct)  == 112, "FStruct ABI lock (Rev 4 FIX-R3-CRIT-1: re-derived with TArray = 24 bytes per Phase 4b.5 verified DefaultAllocator FMemTag carry; Rev 3's 104 was based on theoretical EBO that XPACT_NO_UNIQUE_ADDRESS cannot achieve when allocator is non-empty)");
 static_assert(alignof(FStruct) ==  8, "FStruct alignment lock");</code></pre>
 
 <p><strong>RefLink rework rationale (FIX-13)</strong>: Rev 1 used UE's intrusive-linked-list RefLink (a chain of FProperty pointers via per-FProperty <code>NextRef</code> field) for GC reference traversal. Linked-list pointer-chasing on the Quest 3 ARM64 cache is slow &mdash; Master Plan &sect;11 Step 5.5 criterion (b) demands &lt;50ms full-heap-scan over 100k XObjects with 5-10 ObjectRef properties each. The Rev 2 dense <code>TArray&lt;FProperty*&gt; ObjectRefProperties</code> populated at FClass::Link time is contiguous, prefetch-friendly, and L2-cache-friendly.</p>
 
-<p><strong>TArray header dependency (FIX-15; Rev 3 corrected per FIX-R2-CRIT-1)</strong>: FStruct's byte layout depends on XCore-4a's TArray sizeof = <strong>16 bytes</strong> per XCore-4a Rev 3 &sect;5.1 lines 365-368 (T* + int32 + int32 + XPACT_NO_UNIQUE_ADDRESS stateless allocator with EBO folding the allocator into adjacent padding). Verified at XCore-4a Rev 3 source. Rev 2 erroneously cited 24 bytes (which would be the layout without EBO); Subagent A's Round 2 audit CRITICAL-1 caught the discrepancy. Any change to TArray sizeof in a future XCore-4a revision (or any switch to a stateful allocator that defeats EBO) forces XCore-4b ABI bump + a new Stage B addendum revision. The Stage B addendum's <code>XPACT_FCLASS_LAYOUT_TAG</code> covers this implicitly (FStruct is FClass's base); a future TArray sizeof change requires re-deriving all FStruct/FClass byte offsets. <strong>Cascade impact (Rev 3 audit)</strong>: every TArray field in FStruct, FClass, FScriptStruct, FEnum, FInterface re-computed in Rev 3; every <code>static_assert(sizeof(...) == N)</code> updated; every byte-offset citation in &sect;11 Stage B addendum recomputed.</p>
+<p><strong>TArray header dependency (FIX-15; Rev 4 corrected per FIX-R3-CRIT-1)</strong>: FStruct's byte layout depends on XCore-4a's TArray sizeof = <strong>24 bytes</strong> per Phase 4b.5 implementation verification. XCore-4a's <code>DefaultAllocator</code> is NOT stateless: it carries a 2-byte <code>FMemTag m_tag</code> field (verified at XCore-4a <code>DefaultAllocator.h:178-186</code> with <code>static_assert(sizeof(DefaultAllocator) == 2)</code>) for per-container memory attribution. The FMemTag attribution lets the leak tracker + memory-budget telemetry trace allocations to specific containers ("XActor's component list", "FString buffer", etc.) &mdash; a deliberate XCore-4a design feature consumed by Phase 1b leak detection + Master Plan &sect;2b memory budget telemetry. Because <code>DefaultAllocator</code> is non-empty, <code>XPACT_NO_UNIQUE_ADDRESS</code> has no padding hole to fold into; the TArray layout is: <code>T* m_data @ 0</code> (8) + <code>int32 m_num @ 8</code> (4) + <code>int32 m_capacity @ 12</code> (4) + <code>DefaultAllocator m_alloc @ 16</code> (2) + pad @ 18 (6) = <strong>24 bytes total</strong>. Rev 3 erroneously cited 16 bytes based on a misreading of XCore-4a's spec wording (which described the theoretical EBO that would apply if the allocator were truly empty); Phase 4b.5 commit <code>d4062e8</code> verified by direct sizeof on MSVC 19.44 that the actual TArray is 24 bytes. Any future XCore-4a refactor that makes DefaultAllocator truly empty (Option A discussed in &sect;5.3) would shrink TArray to 16 bytes and force an XCore-4b ABI bump + a new Stage B addendum revision. The Stage B addendum's <code>XPACT_FCLASS_LAYOUT_TAG</code> covers this implicitly (FStruct is FClass's base); a future TArray sizeof change requires re-deriving all FStruct/FClass byte offsets. <strong>Cascade impact (Rev 4 audit)</strong>: every TArray field in FStruct, FClass, FScriptStruct, FEnum, FInterface re-computed in Rev 4; every <code>static_assert(sizeof(...) == N)</code> updated; every byte-offset citation in &sect;11 Stage B addendum recomputed.</p>
 
 <p><strong>Cross-reference fix (FIX-27)</strong>: Rev 1 &sect;3 step 6 mentioned a <code>ScriptAndPropertyObjectReferences</code> field that wasn't shown in the code block. Rev 2 resolves: that field name was Rev 1 placeholder for what is now the dense <code>ObjectRefProperties</code> TArray. The naming is harmonized to <code>ObjectRefProperties</code> everywhere.</p>
 
@@ -969,9 +984,9 @@ struct alignas(8) FScriptStruct : FStruct {
     const FCppStructOpsFakeVTable*            CppOpsTable;      //  8  +8   per-subtype handler table in .rodata
 };
 
-static_assert(sizeof(FScriptStruct) == 104 + 16,
-    "FScriptStruct ABI lock (Rev 3: FStruct 104 base + 16 ICppStructOps FakeVTable pattern = 120 bytes; "
-    "Rev 2 was impossibly 112 + 144 = 256 per FIX-R2-MAJ-2 audit)");</code></pre>
+static_assert(sizeof(FScriptStruct) == 112 + 16,
+    "FScriptStruct ABI lock (Rev 4: FStruct 112 base + 16 ICppStructOps FakeVTable pattern = 128 bytes; "
+    "Rev 3 declared 120 = 104+16 based on the incorrect TArray=16 assumption; Rev 4 FIX-R3-CRIT-1 cascade)");</code></pre>
 
 <p>The capability bitmask (<code>Capabilities</code>) lets callers test whether a handler is populated without null-deref; a bit set implies the corresponding handler is callable via <code>CppOpsTable-&gt;Slots[ECppOpSlot::X]</code>. XHT emits the capability bitmask at compile time by inspecting the struct's C++ traits (<code>std::is_trivially_destructible_v</code>, presence of <code>NetSerialize</code> member function, etc.) and emits the corresponding constinit <code>FCppStructOpsFakeVTable</code> in <code>.rodata</code> alongside the FScriptStruct descriptor.</p>
 
@@ -983,8 +998,9 @@ static_assert(sizeof(FScriptStruct) == 104 + 16,
 
 <p>FClass extends FStruct and is the runtime descriptor for XObject-derived classes. UE's <code>UClass</code> (<code>Class.h:3893</code>) extends UStruct and carries ~80 fields; XPact's FClass extends FStruct and consolidates to the load-bearing subset.</p>
 
-<pre><code>// Rev 3: ClassReps and NetFields are TArray = 16 bytes each per XCore-4a Rev 3 EBO (not 24).
-// All FClass-specific field offsets below are relative to the END of FStruct base (offset 104 in Rev 3).
+<pre><code>// Rev 4: ClassReps and NetFields are TArray = 24 bytes each per Phase 4b.5 verified
+// FMemTag-carrying DefaultAllocator (FIX-R3-CRIT-1). All FClass-specific field offsets below
+// are relative to the END of FStruct base (offset 112 in Rev 4 vs Rev 3's 104).
 struct alignas(8) FClass : FStruct {
     // === Class construction ===
     void               (*ClassConstructorFn)(void* InstancePtr, FFieldVariant Owner);  //  0  +8 (offset from FStruct end)
@@ -1006,20 +1022,20 @@ struct alignas(8) FClass : FStruct {
 
     // === ClassReps (Rev 2 reshape per FIX-7: TArray&lt;FRepRecord&gt;, not TArray&lt;FProperty*&gt;) ===
     // FRepRecord = {FProperty* Property; int32 Index} supporting XPROPERTY(Replicated) ArrayDim &gt; 1.
-    TArray&lt;FRepRecord&gt;  ClassReps;                                                      // 56 +16   contiguous array, indexed by RepIndex (Rev 3 FIX-R2-CRIT-1: TArray = 16 bytes)
+    TArray&lt;FRepRecord&gt;  ClassReps;                                                      // 56 +24   contiguous array, indexed by RepIndex (Rev 4 FIX-R3-CRIT-1: TArray = 24 bytes)
 
     // === NetFields (UFunction-equivalent for network-callable functions) ===
-    TArray&lt;FField*&gt;     NetFields;                                                       // 72 +16   (Rev 3 FIX-R2-CRIT-1: TArray = 16 bytes)
+    TArray&lt;FField*&gt;     NetFields;                                                       // 80 +24   (Rev 4 FIX-R3-CRIT-1: TArray = 24 bytes)
 
     // === Class config name (Engine.ini, Game.ini, etc.) ===
-    FName              ClassConfigName;                                                  // 88  +8
+    FName              ClassConfigName;                                                  // 104 +8
 };
 
-static_assert(sizeof(FClass) == 104 + 96,
-    "FClass ABI lock (Rev 3 FIX-R2-CRIT-1: FStruct 104 base + 96 FClass-specific = 200 bytes; "
-    "Rev 2 erroneously declared 112+112=224 based on TArray=24-byte miscite)");</code></pre>
+static_assert(sizeof(FClass) == 112 + 112,
+    "FClass ABI lock (Rev 4 FIX-R3-CRIT-1: FStruct 112 base + 112 FClass-specific = 224 bytes; "
+    "Rev 3 declared 200 = 104+96 based on the incorrect TArray=16 assumption; cascade corrected)");</code></pre>
 
-<p>The static_assert pin (104 + 96 = <strong>200 bytes</strong> total) is part of the Stage B addendum. Rev 3 corrected the TArray sizeof cascade per FIX-R2-CRIT-1: FStruct base is 104 (was Rev 2's 112), each FClass TArray field is 16 (was Rev 2's 24), so FClass-specific is 96 (was 112). Rev 2's 224-byte declaration was based on the incorrect TArray = 24 cite; XCore-4a Rev 3 ships TArray at 16 bytes via EBO.</p>
+<p>The static_assert pin (112 + 112 = <strong>224 bytes</strong> total) is part of the Stage B addendum. Rev 4 corrected the TArray sizeof cascade per FIX-R3-CRIT-1: FStruct base is 112 (was Rev 3's 104), each FClass TArray field is 24 (was Rev 3's 16), so FClass-specific is 112 (was Rev 3's 96). The +24 delta (200&rarr;224) comes from: +8 from FStruct base growth + 2&times;(+8) for the two TArrays. Rev 4's sizes match the Phase 4b.5 verified implementation; XCore-4a's <code>DefaultAllocator</code> carries a 2-byte FMemTag for memory attribution, defeating EBO.</p>
 
 <p><strong>XHT pre-emission of ClassReps (Rev 3 FIX-R2-LOW-8)</strong>: <code>ClassReps</code> is pre-emitted as <strong>constinit</strong> by XHT (one entry per replicated XPROPERTY + ArrayDim&gt;1 expansion per FIX-7). <code>FClass::Link</code> verifies the constinit data matches the runtime FProperty chain; mismatch is an XHT-emit bug and fails the build via diagnostic <code>XCore4b004 &mdash; ClassReps constinit drift on class {C}: emitter expected {N} entries, runtime FProperty chain produces {M}</code>. This matches Contract Rev 13.7 &sect;7.1 constinit posture: descriptors are constinit-initialized; runtime Link operations validate but do not allocate the array.</p>
 
@@ -1029,12 +1045,12 @@ static_assert(sizeof(FClass) == 104 + 96,
 
 <p>FEnum is the runtime descriptor for reflected enums. UE's <code>UEnum</code> (<code>Class.h:2877</code>) is XPact's reference.</p>
 
-<pre><code>// Rev 3: TArray = 16 bytes per XCore-4a Rev 3 EBO (FIX-R2-CRIT-1).
+<pre><code>// Rev 4: TArray = 24 bytes per Phase 4b.5 verified FMemTag-carrying DefaultAllocator (FIX-R3-CRIT-1).
 struct alignas(8) FEnum : FField {
     EEnumFlags         EnumFlags;          // 32  +4   ENUM_Flags (bitflag enum), ENUM_NewType, etc.
     uint32_t           _pad;               // 36  +4
-    TArray&lt;FEnumValue&gt;  Values;             // 40 +16   values list (Name + numeric value); TArray = 16 bytes
-    FName              CppForm;             // 56  +8   "Regular", "Namespaced", "EnumClass"
+    TArray&lt;FEnumValue&gt;  Values;             // 40 +24   values list (Name + numeric value); TArray = 24 bytes
+    FName              CppForm;             // 64  +8   "Regular", "Namespaced", "EnumClass"
 };
 
 struct FEnumValue {
@@ -1042,18 +1058,18 @@ struct FEnumValue {
     int64_t  Value;      //  8  +8   numeric value
 };
 
-static_assert(sizeof(FEnum)      == 64, "FEnum ABI lock (Rev 3 FIX-R2-CRIT-1: TArray = 16 bytes; Rev 2 declared 72 based on TArray = 24 miscite)");
+static_assert(sizeof(FEnum)      == 72, "FEnum ABI lock (Rev 4 FIX-R3-CRIT-1: TArray = 24 bytes per Phase 4b.5 verification; Rev 3 declared 64 based on incorrect TArray = 16 assumption)");
 static_assert(sizeof(FEnumValue) == 16, "FEnumValue ABI lock");</code></pre>
 
 <h3>7.5 FInterface</h3>
 
 <p>FInterface is the runtime descriptor for reflected interfaces (XPact's XInterface, the C++ side; the C# side uses <code>interface</code> attribute keyword). UE has both <code>UInterface</code> and <code>IInterface</code> with a complex dispatch story; XPact collapses to a single FInterface descriptor + the function-pointer dispatch lives directly on the descriptor.</p>
 
-<pre><code>// Rev 3: TArray = 16 bytes per XCore-4a Rev 3 EBO (FIX-R2-CRIT-1).
+<pre><code>// Rev 4: TArray = 24 bytes per Phase 4b.5 verified FMemTag-carrying DefaultAllocator (FIX-R3-CRIT-1).
 struct alignas(8) FInterface : FField {
-    TArray&lt;FFunctionDescriptor&gt;  InterfaceFunctions;   // 32 +16   per-function dispatch metadata; TArray = 16 bytes
-    EInterfaceFlags              InterfaceFlags;       // 48  +4
-    uint32_t                      _pad;                // 52  +4
+    TArray&lt;FFunctionDescriptor&gt;  InterfaceFunctions;   // 32 +24   per-function dispatch metadata; TArray = 24 bytes
+    EInterfaceFlags              InterfaceFlags;       // 56  +4
+    uint32_t                      _pad;                // 60  +4
 };
 
 struct FFunctionDescriptor {
@@ -1061,7 +1077,7 @@ struct FFunctionDescriptor {
     uint64_t SignatureHash;  // BLAKE3-truncated hash of the function signature for dispatch verification
 };
 
-static_assert(sizeof(FInterface)         == 56, "FInterface ABI lock (Rev 3 FIX-R2-CRIT-1: TArray = 16 bytes; Rev 2 declared 64 based on TArray = 24 miscite)");
+static_assert(sizeof(FInterface)         == 64, "FInterface ABI lock (Rev 4 FIX-R3-CRIT-1: TArray = 24 bytes per Phase 4b.5 verification; Rev 3 declared 56 based on incorrect TArray = 16 assumption)");
 static_assert(sizeof(FFunctionDescriptor) == 16, "FFunctionDescriptor ABI lock");</code></pre>
 
 <p>The UE divergence here is intentional. UE's <code>UInterface</code> + <code>IInterface</code> + <code>UNativeInterfaceCastable</code> trio (see <code>Class.h:3893</code> area + ObjectMacros.h) carries significant cognitive load because the C++ interface dispatch is decoupled from the reflection-side metadata. XPact's single FInterface descriptor with a function-pointer dispatch table directly on it means the C# side ("Foo : IBar") and the C++ side ("class Foo : public IBar") both register the same FInterface descriptor.</p>
@@ -1201,7 +1217,7 @@ XCore4b003 &mdash; schema-hash truncation collision: types {X} and {Y} produce i
 
 <h3>9.4 Per-DLL static_assert pins</h3>
 
-<p>Per the Stage B addendum, every XHT-emitted <code>.gen.cpp</code> carries static_asserts pinning the ABI tags (XPACT_FNAME_LAYOUT_TAG, XPACT_FPROPERTY_LAYOUT_TAG v2, XPACT_FSTRUCT_LAYOUT_TAG v3, XPACT_FCLASS_LAYOUT_TAG v3, XPACT_FSCRIPTSTRUCT_LAYOUT_TAG v3, XPACT_FENUM_LAYOUT_TAG v3, XPACT_FINTERFACE_LAYOUT_TAG v3, XPACT_FCUSTOMVERSION_LAYOUT_TAG, XPACT_REPMETA_LAYOUT_TAG v2, XPACT_FFAKEVTABLE_LAYOUT_TAG v2, XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG v1). A patch DLL compiled against a different ABI fails to link with a clean compile-time error before any runtime damage occurs.</p>
+<p>Per the Stage B addendum, every XHT-emitted <code>.gen.cpp</code> carries static_asserts pinning the ABI tags (XPACT_FNAME_LAYOUT_TAG, XPACT_FPROPERTY_LAYOUT_TAG v2, XPACT_FSTRUCT_LAYOUT_TAG v4, XPACT_FCLASS_LAYOUT_TAG v4, XPACT_FSCRIPTSTRUCT_LAYOUT_TAG v4, XPACT_FENUM_LAYOUT_TAG v4, XPACT_FINTERFACE_LAYOUT_TAG v4, XPACT_FCUSTOMVERSION_LAYOUT_TAG, XPACT_REPMETA_LAYOUT_TAG v2, XPACT_FFAKEVTABLE_LAYOUT_TAG v2, XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG v1). A patch DLL compiled against a different ABI fails to link with a clean compile-time error before any runtime damage occurs.</p>
 
 <hr>
 
@@ -1298,7 +1314,7 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
 
 <p>The intern-table FNameEntry layout (header 6 bytes + bytes trailing, per Rev 2 FIX-21 dropping the Reserved 2-byte field; Rev 3 FIX-R2-LOW-2 corrected from Rev 2's stale "8 bytes" wording) is internal to the XCore module and is NOT in the addendum (subject to internal evolution).</p>
 
-<h3>11.2 FField + FProperty subclass byte layouts + ABI lock byte offsets (Rev 3: FFakeVTable header arithmetic corrected per FIX-R2-MAJ-1; ConvertFromType slot added per FIX-R2-HIGH-1; FCppStructOpsFakeVTable row added per FIX-R2-MAJ-2; FProperty subclass sizes confirmed unchanged from Rev 2 since FProperty base is unaffected by TArray cascade)</h3>
+<h3>11.2 FField + FProperty subclass byte layouts + ABI lock byte offsets (Rev 3: FFakeVTable header arithmetic corrected per FIX-R2-MAJ-1; ConvertFromType slot added per FIX-R2-HIGH-1; FCppStructOpsFakeVTable row added per FIX-R2-MAJ-2; Rev 4: FProperty subclass sizes confirmed UNCHANGED from Rev 2/Rev 3 since FProperty base contains no TArray members &mdash; the Rev 4 FIX-R3-CRIT-1 TArray sizeof cascade does not affect this table; only the descriptor types in &sect;11.3 cascade)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Type</th><th>Total size</th><th>Field offsets</th></tr></thead>
@@ -1328,17 +1344,17 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
   </tbody>
 </table>
 
-<h3>11.3 FClass / FStruct / FScriptStruct / FEnum / FInterface layouts (Rev 3 recomputed per FIX-R2-CRIT-1 TArray sizeof cascade)</h3>
+<h3>11.3 FClass / FStruct / FScriptStruct / FEnum / FInterface layouts (Rev 4 recomputed per FIX-R3-CRIT-1 TArray sizeof cascade)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
-  <thead><tr><th>Type</th><th>Total size (Rev 3)</th><th>Rev 3 change</th></tr></thead>
+  <thead><tr><th>Type</th><th>Total size (Rev 4)</th><th>Rev 4 change</th></tr></thead>
   <tbody>
-    <tr><td>FStruct (base)</td><td><strong>104</strong></td><td>Rev 2 declared 112 with TArray=24 cite; Rev 3 corrected to 104 (TArray=16 per XCore-4a Rev 3 EBO; FIX-R2-CRIT-1). ObjectRefProperties TArray at offset 56 occupies 16 bytes (not 24). Field offsets shift accordingly: SchemaHash@72, SchemaVersion@80, UnversionedSchema@88, SerializeStructFn@96.</td></tr>
-    <tr><td>FScriptStruct</td><td><strong>120</strong> (104 FStruct + 16 ICppStructOps FakeVTable pattern)</td><td>Rev 2 erroneously declared 256 (112+144) which was structurally impossible per FIX-R2-MAJ-2 audit. Rev 3: ICppStructOps adopts FakeVTable pattern (mirroring FProperty FIX-2 design) &mdash; 32-bit Capabilities + 4-byte pad + 8-byte FakeVTable pointer = 16 bytes per FScriptStruct instance; the 16-slot handler table (<code>FCppStructOpsFakeVTable</code>) lives in <code>.rodata</code> at 136 bytes per subtype.</td></tr>
-    <tr><td>FClass</td><td><strong>200</strong> (104 FStruct + 96 FClass-specific)</td><td>Rev 2 declared 224 (112+112) with TArray=24 cite; Rev 3 corrected to 200 per FIX-R2-CRIT-1. ClassReps and NetFields are TArray = 16 bytes each (not 24). Field offsets from FStruct end: ClassConstructorFn@0, ClassVTableHelperCtorCaller@8, ClassDefaultObject@16, ClassFlags@24, ClassCastFlags@32, ClassWithin@40, FirstOwnedClassRep@48, ClassRepCount@52, ClassReps@56, NetFields@72, ClassConfigName@88.</td></tr>
-    <tr><td>FRepRecord (Rev 2 new per FIX-7)</td><td>16 per ClassReps entry</td><td>{FProperty* Property; int32 Index} matches UE's <code>Class.h:3984</code> exactly (Rev 3 FIX-R2-MED-3 corrected line citation from Rev 2's <code>:3915</code>)</td></tr>
-    <tr><td>FEnum</td><td><strong>64</strong> (32 FField + 32 FEnum-specific)</td><td>Rev 2 declared 72 with TArray=24 cite; Rev 3 corrected per FIX-R2-CRIT-1: TArray&lt;FEnumValue&gt; Values @ offset 40 occupies 16 bytes (not 24). CppForm@56.</td></tr>
-    <tr><td>FInterface</td><td><strong>56</strong> (32 FField + 24 FInterface-specific)</td><td>Rev 2 declared 64 with TArray=24 cite; Rev 3 corrected per FIX-R2-CRIT-1: TArray&lt;FFunctionDescriptor&gt; InterfaceFunctions @ offset 32 occupies 16 bytes (not 24). InterfaceFlags@48, _pad@52.</td></tr>
+    <tr><td>FStruct (base)</td><td><strong>112</strong></td><td>Rev 3 declared 104 with TArray=16 (theoretical EBO) assumption; Rev 4 corrected to 112 per FIX-R3-CRIT-1 (Phase 4b.5 implementation verified TArray=24 because XCore-4a's <code>DefaultAllocator</code> carries a 2-byte FMemTag for memory attribution per <code>DefaultAllocator.h:178-186</code>). ObjectRefProperties TArray at offset 56 occupies 24 bytes (not 16). Field offsets shift accordingly: SchemaHash@80, SchemaVersion@88, UnversionedSchema@96, SerializeStructFn@104.</td></tr>
+    <tr><td>FScriptStruct</td><td><strong>128</strong> (112 FStruct + 16 ICppStructOps FakeVTable pattern)</td><td>Rev 3 declared 120 (104+16) based on incorrect TArray=16 assumption; Rev 4 cascades to 128 (112+16) per FIX-R3-CRIT-1. ICppStructOps decomposition (FakeVTable pattern mirroring FProperty FIX-2 design) is unchanged: 32-bit Capabilities + 4-byte pad + 8-byte FakeVTable pointer = 16 bytes per FScriptStruct instance; the 16-slot handler table (<code>FCppStructOpsFakeVTable</code>) lives in <code>.rodata</code> at 136 bytes per subtype.</td></tr>
+    <tr><td>FClass</td><td><strong>224</strong> (112 FStruct + 112 FClass-specific)</td><td>Rev 3 declared 200 (104+96) based on incorrect TArray=16 assumption; Rev 4 corrected to 224 (112+112) per FIX-R3-CRIT-1. ClassReps and NetFields are TArray = 24 bytes each (not 16). Field offsets from FStruct end: ClassConstructorFn@0, ClassVTableHelperCtorCaller@8, ClassDefaultObject@16, ClassFlags@24, ClassCastFlags@32, ClassWithin@40, FirstOwnedClassRep@48, ClassRepCount@52, ClassReps@56, NetFields@80, ClassConfigName@104. The +24 delta (200&rarr;224) comes from: +8 from FStruct base growth + 2&times;(+8) for the two TArrays.</td></tr>
+    <tr><td>FRepRecord (Rev 2 new per FIX-7)</td><td>16 per ClassReps entry</td><td>{FProperty* Property; int32 Index} matches UE's <code>Class.h:3984</code> exactly (Rev 3 FIX-R2-MED-3 corrected line citation from Rev 2's <code>:3915</code>). FRepRecord itself contains no TArray; Rev 4 cascade does not change its sizeof.</td></tr>
+    <tr><td>FEnum</td><td><strong>72</strong> (32 FField + 40 FEnum-specific)</td><td>Rev 3 declared 64 with TArray=16 assumption; Rev 4 corrected per FIX-R3-CRIT-1: TArray&lt;FEnumValue&gt; Values @ offset 40 occupies 24 bytes (not 16). CppForm@64.</td></tr>
+    <tr><td>FInterface</td><td><strong>64</strong> (32 FField + 32 FInterface-specific)</td><td>Rev 3 declared 56 with TArray=16 assumption; Rev 4 corrected per FIX-R3-CRIT-1: TArray&lt;FFunctionDescriptor&gt; InterfaceFunctions @ offset 32 occupies 24 bytes (not 16). InterfaceFlags@56, _pad@60.</td></tr>
   </tbody>
 </table>
 
@@ -1352,22 +1368,22 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
 
 <p>Per Section 8.1: 32 bytes total &mdash; Key(16) + Version(4) + pad(4) + FriendlyName(8). <code>XPACT_FCUSTOMVERSION_LAYOUT_TAG = "FCustomVersion-v1: Key(FGuid 16) + Version(int32) + FriendlyName(FName)"</code>.</p>
 
-<h3>11.6 ContractVersion bump (Rev 3 tags refined per FIX-R2-CRIT-1 + FIX-R2-MAJ-1 + FIX-R2-MAJ-2 + FIX-R2-HIGH-1)</h3>
+<h3>11.6 ContractVersion bump (Rev 4 tags refined per FIX-R3-CRIT-1 TArray sizeof cascade)</h3>
 
-<p>The addendum bumps Contract <code>ContractSurface.SemanticVersionTag</code> from <code>"13.2"</code> to <code>"13.8"</code> (jumping over interim 13.3-13.7 because those were Rev-only documentation revisions; 13.8 is the first substantive addendum). The <code>ContractStructureHash</code> auto-rotates because every new layout tag enters the canonical contract-surface serialisation. Rev 3 ABI tags published in the addendum (supersede Rev 2 where byte layouts changed):</p>
+<p>The addendum bumps Contract <code>ContractSurface.SemanticVersionTag</code> from <code>"13.2"</code> to <code>"13.8"</code> (jumping over interim 13.3-13.7 because those were Rev-only documentation revisions; 13.8 is the first substantive addendum). The <code>ContractStructureHash</code> auto-rotates because every new layout tag enters the canonical contract-surface serialisation. Rev 4 ABI tags published in the addendum (supersede Rev 3 where byte layouts changed; every tag carrying a TArray-dependent byte total bumps to v4):</p>
 
 <ul>
   <li><code>XPACT_FNAME_LAYOUT_TAG = "FName-v1: 4+4 / Index+SerialNumber / 8-byte total / 4-byte aligned"</code> (unchanged from Rev 1)</li>
-  <li><code>XPACT_FPROPERTY_LAYOUT_TAG = "FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"</code> (Rev 2; unchanged in Rev 3 &mdash; FProperty layout unaffected by TArray cascade)</li>
-  <li><code>XPACT_FCLASS_LAYOUT_TAG = "FClass-v3: 104 FStruct base + 96 FClass-specific = 200 bytes; ClassReps is TArray&lt;FRepRecord&gt; (16 bytes); NetFields is TArray&lt;FField*&gt; (16 bytes); ObjectRefProperties is dense TArray on FStruct (16 bytes)"</code> (Rev 3 supersedes Rev 2's tag &mdash; TArray sizeof cascade per FIX-R2-CRIT-1)</li>
-  <li><code>XPACT_FSTRUCT_LAYOUT_TAG = "FStruct-v3: 104 bytes; ObjectRefProperties TArray @ offset 56 = 16 bytes; SchemaHash @ 72; SerializeStructFn @ 96"</code> (Rev 3 new &mdash; explicit FStruct tag per FIX-R2-CRIT-1)</li>
-  <li><code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG = "FScriptStruct-v3: 104 FStruct base + 16 ICppStructOps FakeVTable pattern = 120 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)"</code> (Rev 3 new per FIX-R2-MAJ-2)</li>
-  <li><code>XPACT_FENUM_LAYOUT_TAG = "FEnum-v3: 64 bytes; Values TArray @ offset 40 = 16 bytes; CppForm @ 56"</code> (Rev 3 new per FIX-R2-CRIT-1)</li>
-  <li><code>XPACT_FINTERFACE_LAYOUT_TAG = "FInterface-v3: 56 bytes; InterfaceFunctions TArray @ offset 32 = 16 bytes; InterfaceFlags @ 48"</code> (Rev 3 new per FIX-R2-CRIT-1)</li>
+  <li><code>XPACT_FPROPERTY_LAYOUT_TAG = "FProperty-v2: 96 base + 8 DispatchTable = 104 bytes; UE-equivalent rep-meta source; FakeVTable in .rodata; FFieldVariant LSB-tag (LSB=1 means FStruct, inverse of UE)"</code> (Rev 2; unchanged in Rev 4 &mdash; FProperty contains no TArray members, so the cascade does not affect it)</li>
+  <li><code>XPACT_FCLASS_LAYOUT_TAG = "FClass-v4: 112 FStruct base + 112 FClass-specific = 224 bytes; ClassReps is TArray&lt;FRepRecord&gt; (24 bytes); NetFields is TArray&lt;FField*&gt; (24 bytes); ObjectRefProperties is dense TArray on FStruct (24 bytes); reflects XCore-4a DefaultAllocator carrying 2-byte FMemTag for per-container memory attribution per Phase 4b.5 verification"</code> (Rev 4 supersedes Rev 3's tag &mdash; TArray sizeof cascade per FIX-R3-CRIT-1)</li>
+  <li><code>XPACT_FSTRUCT_LAYOUT_TAG = "FStruct-v4: 112 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; SerializeStructFn @ 104"</code> (Rev 4 supersedes Rev 3 &mdash; TArray sizeof cascade per FIX-R3-CRIT-1)</li>
+  <li><code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG = "FScriptStruct-v4: 112 FStruct base + 16 ICppStructOps FakeVTable pattern = 128 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)"</code> (Rev 4 supersedes Rev 3 &mdash; cascade through FStruct base growth)</li>
+  <li><code>XPACT_FENUM_LAYOUT_TAG = "FEnum-v4: 72 bytes; Values TArray @ offset 40 = 24 bytes; CppForm @ 64"</code> (Rev 4 supersedes Rev 3 per FIX-R3-CRIT-1)</li>
+  <li><code>XPACT_FINTERFACE_LAYOUT_TAG = "FInterface-v4: 64 bytes; InterfaceFunctions TArray @ offset 32 = 24 bytes; InterfaceFlags @ 56"</code> (Rev 4 supersedes Rev 3 per FIX-R3-CRIT-1)</li>
   <li><code>XPACT_FCUSTOMVERSION_LAYOUT_TAG = "FCustomVersion-v1: Key(FGuid 16) + Version(int32) + FriendlyName(FName)"</code> (unchanged from Rev 1)</li>
-  <li><code>XPACT_REPMETA_LAYOUT_TAG = "RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set"</code> (Rev 2; unchanged in Rev 3)</li>
-  <li><code>XPACT_FFAKEVTABLE_LAYOUT_TAG = "FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 (the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1"</code> (Rev 3 supersedes Rev 2 tag per FIX-R2-MAJ-1 + FIX-R2-HIGH-1: corrected from "16-byte header + 14 slots" to "8-byte header + 15 slots", same total 128 bytes by coincidence of arithmetic)</li>
-  <li><code>XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG = "FCppStructOpsFakeVTable-v1: 8-byte header (32-bit Capabilities + _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per FScriptStruct subtype in .rodata"</code> (Rev 3 new per FIX-R2-MAJ-2)</li>
+  <li><code>XPACT_REPMETA_LAYOUT_TAG = "RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set"</code> (Rev 2; unchanged in Rev 4)</li>
+  <li><code>XPACT_FFAKEVTABLE_LAYOUT_TAG = "FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 (the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1"</code> (Rev 2/Rev 3; unchanged in Rev 4 &mdash; FFakeVTable contains no TArray, so the cascade does not affect it)</li>
+  <li><code>XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG = "FCppStructOpsFakeVTable-v1: 8-byte header (32-bit Capabilities + _reservedHeader) + 16 handler slots (8 bytes each) = 136 bytes per FScriptStruct subtype in .rodata"</code> (Rev 3; unchanged in Rev 4 &mdash; FCppStructOpsFakeVTable contains no TArray, so the cascade does not affect it)</li>
 </ul>
 
 <h3>11.7 After-addendum invariant</h3>
@@ -1430,7 +1446,7 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
   <li><strong>B4.</strong> FakeVTable dispatch: a synthesised FBoolProperty round-trips through GetValueFn, SetValueFn, CopySingleValueFn, SerializeItemFn, ExportTextFn, ImportTextFn correctly; the dispatch is invoked exactly once per call; the FFakeVTable pointer in <code>.rodata</code> is verified read-only via mprotect inspection.</li>
   <li><strong>B5.</strong> Replication-metadata round-trip: an FProperty with BlueprintReplicationCondition = COND_OwnerOnly + RepNotifyFunc (FName) populated, plus EPropertyFlags carrying CPF_PushModel + CPF_DeltaCompressed, is consumed correctly by XNetworking's <code>XReplicationStateDescriptorBuilder</code> to produce an FReplicationStateDescriptor whose state matches the source FProperty. (Requires XNetworking integration; gate is end-to-end.)</li>
   <li><strong>B6 (Rev 2 new; Rev 3 reaffirmed)</strong>: FFakeVTable static_assert sizeof == 128 per FProperty subclass (Rev 3 per FIX-R2-MAJ-1 + FIX-R2-HIGH-1: 8-byte header + 15 slots; the 128-byte total is coincidentally identical to Rev 2's 16-byte header + 14 slots arithmetic, but the structural decomposition is different); the Capabilities bitmask matches the actually-populated slot set (CI inspection via testing each slot is null iff the corresponding Capabilities bit is clear). Slot 15 (ConvertFromType) is null for primitive subclasses (bool, int, float) and populated for schema-migration subclasses (FObjectProperty, FStructProperty).</li>
-  <li><strong>B7 (Rev 3 new per FIX-R2-MAJ-2)</strong>: FCppStructOpsFakeVTable static_assert sizeof == 136 per FScriptStruct subtype; FScriptStruct static_assert sizeof == 120 (104 FStruct + 16 ICppStructOps FakeVTable pattern). The 32-bit Capabilities mask covers ~24 active + 8 reserved bits.</li>
+  <li><strong>B7 (Rev 3 new per FIX-R2-MAJ-2; Rev 4 updated per FIX-R3-CRIT-1)</strong>: FCppStructOpsFakeVTable static_assert sizeof == 136 per FScriptStruct subtype; FScriptStruct static_assert sizeof == 128 (112 FStruct base + 16 ICppStructOps FakeVTable pattern). The 32-bit Capabilities mask covers ~24 active + 8 reserved bits.</li>
 </ul>
 
 <h3>C. FClass / FStruct / FEnum / FInterface</h3>
@@ -1444,7 +1460,7 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
   <li><strong>C6 (Rev 2 new per FIX-12).</strong> SchemaHash truncation-collision diagnostic: a synthesised pair of types whose BLAKE3-lower-64 hashes collide produces a clean <code>XCore4b003</code> link-time error naming both types and instructing the developer to rename one.</li>
   <li><strong>C7 (Rev 2 new per FIX-7).</strong> ClassReps FRepRecord shape: <code>XPROPERTY(Replicated) float Stamina[4]</code> on a class produces 4 entries in <code>FClass::ClassReps</code> (FRepRecord {Property=&amp;StaminaProperty, Index=0..3}); replication wire-encoding can address each element independently via RepIndex+ArrayDim arithmetic.</li>
   <li><strong>C8 (Rev 2 new per FIX-13).</strong> Dense ObjectRefProperties: <code>FStruct::ObjectRefProperties</code> is populated at FClass::Link with one entry per declared XObject-reference XPROPERTY across the class hierarchy; GC scan walks this dense TArray contiguously (verified via cachegrind-style instrumentation showing zero pointer-chase between adjacent ref-property accesses).</li>
-  <li><strong>C9 (Rev 3 new per FIX-R2-CRIT-1).</strong> Reflection-runtime sizeof cascade: every <code>static_assert(sizeof(FStruct) == 104)</code>, <code>sizeof(FClass) == 200</code>, <code>sizeof(FScriptStruct) == 120</code>, <code>sizeof(FEnum) == 64</code>, <code>sizeof(FInterface) == 56</code> fires correctly at compile time. The values reflect TArray = 16 bytes per XCore-4a Rev 3 EBO (verified against XCore-4a Rev 3 &sect;5.1 lines 365-368). A future XCore-4a change that defeats EBO (e.g., switch to a stateful allocator) bumps TArray to 24 bytes; CI catches the cascade via these static_asserts before the new layout reaches downstream consumers.</li>
+  <li><strong>C9 (Rev 3 new per FIX-R2-CRIT-1; Rev 4 corrected per FIX-R3-CRIT-1).</strong> Reflection-runtime sizeof cascade: every <code>static_assert(sizeof(FStruct) == 112)</code>, <code>sizeof(FClass) == 224</code>, <code>sizeof(FScriptStruct) == 128</code>, <code>sizeof(FEnum) == 72</code>, <code>sizeof(FInterface) == 64</code> fires correctly at compile time. The values reflect TArray = 24 bytes per Phase 4b.5 verified DefaultAllocator carrying a 2-byte FMemTag for memory attribution (XCore-4a <code>DefaultAllocator.h:178-186</code>). A future XCore-4a refactor making DefaultAllocator truly stateless (Option A in &sect;5.3) would shrink TArray to 16 bytes; CI catches the cascade via these static_asserts before the new layout reaches downstream consumers.</li>
   <li><strong>C10 (Rev 3 new per FIX-R2-LOW-8).</strong> ClassReps constinit-vs-runtime: XHT pre-emits <code>FClass::ClassReps</code> as constinit data; <code>FClass::Link</code> verifies the constinit length matches the runtime FProperty chain. Synthesized mismatch (XHT emitted N entries but runtime chain produces M&ne;N) fails the build via diagnostic <code>XCore4b004</code>.</li>
 </ul>
 
@@ -1513,9 +1529,9 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
   <li><strong>4b.2 FCustomVersion subsystem (Rev 2 reordered earlier per FIX-26).</strong> Depends on 4b.1 (FName) only; standalone from 4b.3-4b.6. Can ship in parallel with 4b.3-4b.5. Deliverables: <code>FCustomVersion.h</code> + <code>.cpp</code> + <code>FCustomVersionContainer.h</code> + <code>.cpp</code> + <code>FCustomVersionRegistry.h</code> + <code>.cpp</code>; unit tests for registration + container round-trip. Rationale for early ordering: both FName and FCustomVersion are leaf-level standalone modules; shipping them in parallel reduces critical-path length.</li>
   <li><strong>4b.3 FField + FFieldClass + FFieldVariant.</strong> Depends on 4b.1. Deliverables: <code>FField.h</code> + <code>FField.cpp</code>; unit tests for FField construction + cast acceleration; FFieldVariant LSB-tag (FIX-4) test vectors.</li>
   <li><strong>4b.4 FProperty base + FFakeVTable infrastructure + subclass family (Rev 3 expanded per FIX-2 + FIX-3 + FIX-R2-HIGH-1).</strong> Depends on 4b.1, 4b.3. Deliverables: <code>FProperty.h</code> + <code>FFakeVTable.h</code> + per-subclass <code>F{X}Property.h/cpp</code> (one pair per the 28 MVP subclasses in Section 5.5 table including FSoftObjectProperty, FSoftClassProperty, FTextProperty, FMulticastInlineDelegateProperty, FMulticastSparseDelegateProperty); unit tests for each subclass's FakeVTable dispatch (15 slots per Rev 3 FIX-R2-HIGH-1; ConvertFromType added as slot 15).</li>
-  <li><strong>4b.5 FStruct + FScriptStruct + FClass + FEnum + FInterface (Rev 3 expanded per FIX-5 + FIX-7 + FIX-13 + FIX-R2-MAJ-2 + FIX-R2-CRIT-1).</strong> Depends on 4b.1, 4b.3, 4b.4. Deliverables: <code>FStruct.h</code> (with dense ObjectRefProperties TArray = 16 bytes per FIX-R2-CRIT-1) + <code>FScriptStruct.h</code> (with FakeVTable-pattern ICppStructOps per FIX-R2-MAJ-2 + <code>FCppStructOpsFakeVTable.h</code>) + <code>FClass.h</code> (with TArray&lt;FRepRecord&gt; ClassReps = 16 bytes) + <code>FEnum.h</code> + <code>FInterface.h</code> + corresponding <code>.cpp</code> files; unit tests for IsA / FindPropertyByName / Link / ObjectRefProperties population at Link time.</li>
+  <li><strong>4b.5 FStruct + FScriptStruct + FClass + FEnum + FInterface (Rev 4 expanded per FIX-5 + FIX-7 + FIX-13 + FIX-R2-MAJ-2 + FIX-R3-CRIT-1).</strong> Depends on 4b.1, 4b.3, 4b.4. Deliverables: <code>FStruct.h</code> (with dense ObjectRefProperties TArray = 24 bytes per FIX-R3-CRIT-1 Phase 4b.5 verification) + <code>FScriptStruct.h</code> (with FakeVTable-pattern ICppStructOps per FIX-R2-MAJ-2 + <code>FCppStructOpsFakeVTable.h</code>) + <code>FClass.h</code> (with TArray&lt;FRepRecord&gt; ClassReps = 24 bytes) + <code>FEnum.h</code> + <code>FInterface.h</code> + corresponding <code>.cpp</code> files; unit tests for IsA / FindPropertyByName / Link / ObjectRefProperties population at Link time.</li>
   <li><strong>4b.6 XReflectionRuntime registry.</strong> Depends on 4b.1, 4b.3, 4b.4, 4b.5. Deliverables: <code>XReflectionRuntime.h</code> + <code>.cpp</code>; replace the XCore-Stub in-place; integration test against XHT-emitted <code>.gen.cpp</code> from a synthesised module.</li>
-  <li><strong>4b.7 Toolchain Contract Addendum (Contract Rev 13.8).</strong> Depends on 4b.1-4b.6 complete. Deliverable: update <code>XToolchainContract.html</code> to Rev 13.8 with the addendum content per Section 11 (including the Rev 3 ABI tags: FPROPERTY-v2, FCLASS-v3, FSTRUCT-v3, FSCRIPTSTRUCT-v3, FENUM-v3, FINTERFACE-v3, REPMETA-v2, FFAKEVTABLE-v2, FCPPSTRUCTOPSFAKEVTABLE-v1). Bump <code>ContractSurface.SemanticVersionTag</code> to <code>"13.8"</code>. Update XHT to emit the new static_assert pins (FFakeVTable 15-slot, FCppStructOpsFakeVTable 16-slot, FProperty 104-byte layout, FStruct 104-byte layout, FClass 200-byte layout, FScriptStruct 120-byte layout). Update XBT to verify the new ABI tags in its manifest.</li>
+  <li><strong>4b.7 Toolchain Contract Addendum (Contract Rev 13.8).</strong> Depends on 4b.1-4b.6 complete. Deliverable: update <code>XToolchainContract.html</code> to Rev 13.8 with the addendum content per Section 11 (including the Rev 4 ABI tags: FPROPERTY-v2, FCLASS-v4, FSTRUCT-v4, FSCRIPTSTRUCT-v4, FENUM-v4, FINTERFACE-v4, REPMETA-v2, FFAKEVTABLE-v2, FCPPSTRUCTOPSFAKEVTABLE-v1). Bump <code>ContractSurface.SemanticVersionTag</code> to <code>"13.8"</code>. Update XHT to emit the new static_assert pins (FFakeVTable 15-slot, FCppStructOpsFakeVTable 16-slot, FProperty 104-byte layout, FStruct 112-byte layout, FClass 224-byte layout, FScriptStruct 128-byte layout, FEnum 72-byte layout, FInterface 64-byte layout). Update XBT to verify the new ABI tags in its manifest.</li>
 </ol>
 
 <p>After 4b.7, XHT's emitter struct byte-layouts are frozen. System 5 (XCoreXObject) implementation can begin against the locked surface.</p>
@@ -1530,6 +1546,7 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
     <tr><td>1</td><td>2026-05-23</td><td>Initial spec authored by the combined XCore-4b subagent (UE-reference + XPact-draft in one pass after two prior parallel subagents hit socket-disconnect errors before producing output). 12000+ word document covering: FName intern table + complete API (replaces XCore-4a &sect;11.8 forward declaration); FField + FProperty + full subclass family (18 MVP subclasses + 4 reserved); full replication-metadata slot enumeration (15 ELifetimeCondition values, push-model bits, RepNotify pre-resolution); FClass / FStruct / FScriptStruct / FEnum / FInterface descriptors with zero virtual methods (hot-reload safety); FCustomVersion + per-type SchemaHash discipline with compile-time XHT enforcement; XReflectionRuntime registry with wait-free O(1) FindClass; Toolchain Contract addendum content for Contract Rev 13.8 freeze of XHT emitter struct byte-layouts; 12 engineering-principles wins over UE Core reflection; 32 acceptance criteria gates across 7 categories (A-G); 6 open items with RECOMMENDED defaults; 7-step implementation order. Contract reference Rev 13.7; the Stage B addendum bumps to Rev 13.8 at 4b.7 implementation step.</td></tr>
     <tr><td>2</td><td>2026-05-26</td><td>Round-1 audit fixes &mdash; 32 findings: 2 CRITICAL (plan-reference + dispatch-count) + 7 HIGH (Iris reconciliation + TStructOpsFakeVTable + missing subclasses + LSB-tag + CppStructOps + missing dispatch slots + C# interop) + 12 MAJOR/MEDIUM + 11 MINOR/LOW. FProperty footprint: 96+40=136 &rarr; 96+8=104 bytes via FakeVTable pattern. Replication metadata reconciled with Master Plan Rev 14: UE-equivalent SOURCE on FProperty for XNetworking's FReplicationStateDescriptorRegistry. See &sect;17 Changelog &mdash; Rev 2 for full per-fix detail.</td></tr>
     <tr><td>3</td><td>2026-05-26</td><td>Round-2 audit fixes &mdash; 24 findings: 1 CRITICAL [TArray sizeof cascade &mdash; TArray = 16 bytes per XCore-4a Rev 3 EBO, not 24] + 3 MAJOR [FakeVTable header arithmetic 8+15&times;8=128 not 16+14&times;8; FScriptStruct ICppStructOps adopts same FakeVTable pattern as FProperty; Master Plan Rev 15 amendment integrated] + 1 HIGH [ConvertFromType slot added &rarr; 15 slots; fixed-table dispatch deliberate-divergence rationale documented in new &sect;5.4.1] + 4 MEDIUM [CppStructOps Capabilities expanded to 32 bits = 24 active + 8 reserved; UE FakeVTable citation correction; ClassReps citation line number; capability-bitmask co-allocation clarification] + 8 LOW [§3 step 4 stale wording; FNameEntry header size; FProperty layout NextRef comment; FIX-13 narrative arithmetic; dispatch slot count text; LSB-tag inversion documentation; FSoftObjectProperty UE cross-check; ClassReps constinit-vs-runtime]. Cumulative Rev 1&rarr;3: 52 fixes. Cascade impact: FStruct 112&rarr;104; FClass 224&rarr;200; FScriptStruct 256&rarr;120 (impossibly large Rev 2 sizeof corrected via FakeVTable adoption); FEnum 72&rarr;64; FInterface 64&rarr;56. See &sect;18 Changelog &mdash; Rev 3 for full per-fix detail.</td></tr>
+    <tr><td>4</td><td>2026-05-26</td><td>Round-4 amendment &mdash; 1 finding from Phase 4b.5 implementation discovery (commit <code>d4062e8</code>): FIX-R3-CRIT-1 [TArray sizeof cascade re-correction]. Rev 3 FIX-R2-CRIT-1 was wrong: XCore-4a's <code>DefaultAllocator</code> is NOT stateless &mdash; it carries a 2-byte FMemTag for per-container memory attribution (verified at <code>DefaultAllocator.h:178-186</code> <code>static_assert(sizeof(DefaultAllocator) == 2)</code>). XPACT_NO_UNIQUE_ADDRESS has no padding hole to fold into; actual TArray sizeof is 24 bytes, not 16. Cascade impact: FStruct 104&rarr;112; FScriptStruct 120&rarr;128; FClass 200&rarr;224; FEnum 64&rarr;72; FInterface 64 (Rev 3 had 56). FProperty itself is unchanged at 104 bytes (contains no TArray members). Per Prime Directive, Option B adopted: ship accurate sizes that match XCore-4a's deliberate per-container memory-attribution feature; the 8-byte/TArray cost is acceptable to preserve the load-bearing leak-tracker + memory-budget telemetry. All v3 ABI tags bumped to v4 where the TArray cascade applies (FCLASS, FSTRUCT, FSCRIPTSTRUCT, FENUM, FINTERFACE). FPROPERTY (v2), FFAKEVTABLE (v2), FCPPSTRUCTOPSFAKEVTABLE (v1), FNAME (v1), REPMETA (v2), FCUSTOMVERSION (v1) are unchanged. Cumulative Rev 1&rarr;4: 53 fixes. See &sect;19 Changelog &mdash; Rev 4 for full detail.</td></tr>
   </tbody>
 </table>
 
@@ -1656,11 +1673,70 @@ static_assert(XPactDetail::CompileTimeStrEq(XPACT_FNAME_LAYOUT_TAG, "FName-v1: 4
 
 <h3>18.6 Rev 3 status</h3>
 
-<p>Cumulative fix count Rev 1 &rarr; Rev 3: <strong>52 fixes</strong> (Rev 1 ships fix-free as the initial spec; Rev 2 added 28 fixes from Round-1 audit; Rev 3 adds 24 fixes from Round-2 audit). The Round 2 audit verified that Rev 2's architectural decisions (FakeVTable pattern, UE-equivalent rep-meta source, dense ObjectRefProperties) are sound; the 24 corrections are byte-layout precision (the TArray sizeof cascade is the largest), FakeVTable header arithmetic, FScriptStruct ICppStructOps decomposition, ConvertFromType migration-hook addition, and documentation hygiene. <strong>Round 3 audit expected to converge to CONVERGED</strong>: no remaining architectural disagreement; all byte layouts are derivable from declared fields with the corrected TArray = 16 EBO basis; all UE citations verified against UE 5.4+ source.</p>
+<p>Cumulative fix count Rev 1 &rarr; Rev 3: <strong>52 fixes</strong> (Rev 1 ships fix-free as the initial spec; Rev 2 added 28 fixes from Round-1 audit; Rev 3 adds 24 fixes from Round-2 audit). The Round 2 audit verified that Rev 2's architectural decisions (FakeVTable pattern, UE-equivalent rep-meta source, dense ObjectRefProperties) are sound; the 24 corrections are byte-layout precision (the TArray sizeof cascade is the largest), FakeVTable header arithmetic, FScriptStruct ICppStructOps decomposition, ConvertFromType migration-hook addition, and documentation hygiene. <strong>Round 3 audit expected to converge to CONVERGED</strong>: no remaining architectural disagreement; all byte layouts are derivable from declared fields with the corrected TArray = 16 EBO basis; all UE citations verified against UE 5.4+ source. <em>(Historical note: Rev 3's TArray = 16 basis was itself wrong &mdash; superseded by Rev 4 FIX-R3-CRIT-1 after Phase 4b.5 implementation revealed XCore-4a's <code>DefaultAllocator</code> carries a 2-byte FMemTag for memory attribution, defeating EBO. See &sect;19 for the Rev 4 amendment.)</em></p>
 
 <hr>
 
-<p><em>End of XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) system specification (Rev 3). The Stage A surface is provisional pending user approval at design-review. Rev 1 was authored by a single combined subagent after two prior parallel subagents (UE-Verification + Implementation-QA) hit socket-disconnect errors before producing output; Rev 2 applied 28 fixes from a successful Round-1 audit by two parallel subagents; Rev 3 applies 24 fixes from the Round-2 audit (1 CRITICAL TArray sizeof cascade + 3 MAJOR FakeVTable arithmetic + FScriptStruct ICppStructOps pattern + Master Plan Rev 15 amendment + 1 HIGH ConvertFromType slot + 4 MEDIUM + 8 LOW) to produce the final pre-implementation surface. Cumulative Rev 1 &rarr; Rev 3 fix count: 52. The locked decisions (Section 1.3 + Section 2) carry the Master-Plan-Rev-15-locked decisions on FName UTF-8 case-sensitive MVP, UE-equivalent pre-Iris replication-metadata source on FProperty, FakeVTable-based hot-reload safety (no virtual methods on any descriptor; pattern applied to BOTH FProperty subclass dispatch AND FScriptStruct ICppStructOps dispatch &mdash; deliberate divergence from UE per Prime Directive), and FCustomVersion + per-type declared-shape SchemaHash with compile-time XHT enforcement. The OPEN items (Section 14) all carry RECOMMENDED defaults so user review can converge quickly. The internal areas (Sections 4-11) are independently testable per the dependency graph (Section 3); the implementation order in Section 15 splits into seven sub-steps (FName -&gt; FCustomVersion + FField + FProperty + Struct family parallel -&gt; XReflectionRuntime registry -&gt; Toolchain Contract Addendum). Hot-reload compatibility (Section 9) is enforced via zero virtual methods on descriptor types + Itanium-mangled stable symbol names + per-<code>.gen.cpp</code> ABI-tag static_asserts (XPACT_FNAME_LAYOUT_TAG, XPACT_FPROPERTY_LAYOUT_TAG v2, XPACT_FCLASS_LAYOUT_TAG v3, XPACT_FSTRUCT_LAYOUT_TAG v3, XPACT_FSCRIPTSTRUCT_LAYOUT_TAG v3, XPACT_FENUM_LAYOUT_TAG v3, XPACT_FINTERFACE_LAYOUT_TAG v3, XPACT_FCUSTOMVERSION_LAYOUT_TAG, XPACT_REPMETA_LAYOUT_TAG v2, XPACT_FFAKEVTABLE_LAYOUT_TAG v2, XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG v1) that catch ABI drift at compile time rather than runtime. The engineering-principles compliance summary (Section 12) lists 11 concrete ways XCore-4b beats UE Core's reflection runtime. Contract Rev 13.7 anchors this rev; the Stage B addendum at Contract Rev 13.8 ships with 4b.7. The acceptance gates (Section 13, organised into A-G categories) are CI-executable pass/fail predicates; aggregate pass is the merge criterion. <strong>Round 3 audit expected to converge to CONVERGED</strong>; XCore-4b implementation begins per plan Section 4 Step 4 implementation gate after audit convergence.</em></p>
+<h2 id="sec19">19. Changelog &mdash; Rev 4 (Round-4 amendment from Phase 4b.5 implementation discovery)</h2>
+
+<p>Rev 4 lands a single CRITICAL finding from Phase 4b.5 implementation (commit <code>d4062e8</code>). Unlike Rev 2 and Rev 3 which were audit-driven, Rev 4 is implementation-discovery-driven: the Phase 4b.5 subagent began coding the FStruct/FClass/FEnum/FInterface deliverables and discovered that the declared static_asserts (FStruct == 104, etc.) did not match actual sizeof on MSVC 19.44. Investigation traced the discrepancy to XCore-4a's <code>DefaultAllocator</code> being non-empty (carries a 2-byte FMemTag per <code>DefaultAllocator.h:178-186</code>); XPACT_NO_UNIQUE_ADDRESS therefore has no padding hole to fold into; the actual TArray sizeof is 24 bytes, not the 16 bytes that Rev 3 FIX-R2-CRIT-1 had cited based on a misreading of XCore-4a's spec.</p>
+
+<h3>19.1 CRITICAL (1 finding)</h3>
+
+<ul>
+  <li><strong>FIX-R3-CRIT-1 [TArray sizeof cascade re-correction]</strong>: Phase 4b.5 implementation (commit <code>d4062e8</code>) discovered XCore-4a's <code>DefaultAllocator</code> is NOT stateless. It carries a 2-byte FMemTag (<code>uint16</code>) for per-container memory attribution, with a locked <code>static_assert(sizeof(DefaultAllocator) == 2)</code> at <code>Engine/Source/Runtime/XCore/Public/Containers/DefaultAllocator.h:178-186</code>. The FMemTag-per-container design is a deliberate XCore-4a feature consumed by Phase 1b leak detection + Master Plan &sect;2b memory budget telemetry &mdash; it lets the leak tracker + memory-budget telemetry trace allocations to specific containers ("XActor's component list", "FString buffer", etc.). Because <code>DefaultAllocator</code> is non-empty, <code>XPACT_NO_UNIQUE_ADDRESS</code> has no padding hole to fold the allocator into. Actual TArray layout (verified by direct sizeof on MSVC 19.44):
+    <ul>
+      <li><code>T* m_data</code> @ 0 (8 bytes)</li>
+      <li><code>int32 m_num</code> @ 8 (4 bytes)</li>
+      <li><code>int32 m_capacity</code> @ 12 (4 bytes)</li>
+      <li><code>DefaultAllocator m_alloc</code> @ 16 (2 bytes; carries FMemTag)</li>
+      <li>pad @ 18 (6 bytes; alignment round-up to 8-byte alignment)</li>
+    </ul>
+    Total: <strong>24 bytes</strong>, not 16.
+    Cascade impact across reflection-runtime types:
+    <ul>
+      <li><strong>FStruct: 104 &rarr; 112</strong> (+8): ObjectRefProperties TArray @ 56 occupies 24 bytes, not 16; subsequent field offsets shift right by 8 (SchemaHash@80, SchemaVersion@88, UnversionedSchema@96, SerializeStructFn@104).</li>
+      <li><strong>FScriptStruct: 120 &rarr; 128</strong> (+8): FStruct 112 base + 16 ICppStructOps FakeVTable = 128. ICppStructOps decomposition unchanged.</li>
+      <li><strong>FClass: 200 &rarr; 224</strong> (+24): FStruct 112 base (+8) + 112 FClass-specific (+16 from two TArrays each growing by 8). Field offsets from FStruct end: ClassConstructorFn@0 (unchanged), ClassReps@56 occupies 24 bytes, NetFields@80 (was @72) occupies 24 bytes, ClassConfigName@104 (was @88).</li>
+      <li><strong>FEnum: 64 &rarr; 72</strong> (+8): Values TArray @ 40 occupies 24 bytes; CppForm@64 (was @56).</li>
+      <li><strong>FInterface: 56 &rarr; 64</strong> (+8): InterfaceFunctions TArray @ 32 occupies 24 bytes; InterfaceFlags@56 (was @48), _pad@60 (was @52).</li>
+    </ul>
+    FProperty itself (104 bytes) is UNCHANGED &mdash; FProperty contains no TArray members. FField (32 bytes), FFieldClass (48 bytes), FFieldVariant (8 bytes), FFakeVTable (128 bytes per subclass), FCppStructOpsFakeVTable (136 bytes per subtype), FCustomVersion (32 bytes), FRepRecord (16 bytes), FEnumValue (16 bytes), FFunctionDescriptor (16 bytes) are also UNCHANGED &mdash; none of them contain a TArray.
+    Every <code>static_assert(sizeof(...) == N)</code> on the affected types updated; every byte-offset citation in &sect;7 + &sect;11 updated; every <code>XPACT_*_LAYOUT_TAG</code> for affected types bumped v3 &rarr; v4 (FCLASS, FSTRUCT, FSCRIPTSTRUCT, FENUM, FINTERFACE). FPROPERTY remains v2; FFAKEVTABLE remains v2; FCPPSTRUCTOPSFAKEVTABLE remains v1.</li>
+</ul>
+
+<h3>19.2 Prime Directive analysis (Option A vs Option B)</h3>
+
+<p>Per Prime Directive (<code>engineering_principles.md</code>: "Use the thing that is correct not the thing that is easier to implement"), two responses were considered:</p>
+
+<ul>
+  <li><strong>Option A: Refactor XCore-4a to make DefaultAllocator truly stateless.</strong> Move FMemTag attribution to the per-allocation callsite (every <code>FMemory::Malloc(size, FMemTag::X)</code> call). Pros: 16-byte TArray as Rev 3 intended; ~8 bytes saved per TArray instance (cumulative savings across reflection runtime ~8 KB module-wide; cumulative savings across user code ~bytes-per-container-instance &times; container-instance count, e.g. ~80 KB savings for 10k user containers). Cons: substantial XCore-4a churn (~10k LoC touched across all containers; all containers + tests re-verified for the API surface change); API friction (FMemTag becomes an explicit parameter at every allocation callsite, propagating through every container method that allocates); loses the leak-tracker integration shape (per-container attribution becomes per-call attribution, which is noisier and harder to consume in leak reports); breaks XCore-4a's locked <code>static_assert(sizeof(DefaultAllocator) == 2)</code> ABI and forces a Contract Rev 14.x bump.</li>
+  <li><strong>Option B (Rev 4 adopts): Acknowledge XCore-4a's design choice and ship accurate sizes.</strong> Pros: matches actual implementation; preserves XCore-4a's leak-tracker + memory-budget attribution feature (a deliberate XCore-4a design choice already shipped in commits ba6455a, 984ef9a, 1195f31, 34d6826, 589d247); no XCore-4a churn; no Contract Rev 14 bump (the change is confined to XCore-4b spec + .gen.cpp emitter byte-totals). Cons: ~8 bytes per TArray vs theoretical optimum (the cost is bounded and small at scale; FStruct/FClass/FEnum/FInterface together carry 5 TArrays in the reflection-runtime hot path, so ~40 bytes per class hierarchy &times; ~5000 reflected classes in a large project &asymp; 200 KB).</li>
+</ul>
+
+<p><strong>Rev 4 adopts Option B</strong>. The FMemTag-per-allocator design is a load-bearing XCore-4a feature consumed by Phase 1b leak detection + Master Plan &sect;2b memory budget telemetry, and it's already shipped and locked. The Prime Directive instructs "do it right the first time, not the easy way" &mdash; in this case, the right thing is to honour XCore-4a's deliberate design decision (per-container memory attribution) rather than to retrofit XCore-4a for a minor reflection-runtime footprint win. The 8-byte/TArray cost is acceptable for the attribution capability; Option A is recorded here for future consideration if the cost ever becomes load-bearing (e.g., a future Quest 3 memory-budget escalation that needs to recover the ~200 KB).</p>
+
+<h3>19.3 Recommendation: Option A as a separate future task</h3>
+
+<p>If the user wants to revisit Option A in a separate task, the work would be:</p>
+
+<ul>
+  <li>Refactor <code>Engine/Source/Runtime/XCore/Public/Containers/DefaultAllocator.h</code> to remove <code>FMemTag m_tag</code>; update the locked <code>static_assert(sizeof(DefaultAllocator) == 2)</code> to <code>== 1</code> (effectively empty) or to a true empty-base class.</li>
+  <li>Audit every TArray/TMap/TSet/TQueue/FString allocation callsite in XCore-4a (~10k LoC) to add an explicit <code>FMemTag</code> parameter.</li>
+  <li>Update the leak-tracker integration shape to consume per-call attribution rather than per-container; this is a meaningful API + telemetry change.</li>
+  <li>Bump Contract <code>ContractSurface.SemanticVersionTag</code> to Rev 14.x; re-derive every XPact engine module that consumes TArray (which is nearly every module).</li>
+  <li>Re-revise XCore-4b spec (Rev 5) to reflect the 16-byte TArray cascade reversal: FStruct 112 &rarr; 104, FScriptStruct 128 &rarr; 120, FClass 224 &rarr; 200, FEnum 72 &rarr; 64, FInterface 64 &rarr; 56 (back to Rev 3 sizes).</li>
+</ul>
+
+<p>The Option A path is feasible but invasive; the Rev 4 recommendation is to defer until a concrete memory-budget escalation justifies the churn. The Phase 4b.5 implementation should proceed against Rev 4's accurate sizes; Option A becomes a candidate task for a future XCore-4a revision if memory pressure surfaces.</p>
+
+<h3>19.4 Rev 4 status</h3>
+
+<p>Cumulative fix count Rev 1 &rarr; Rev 4: <strong>53 fixes</strong> (Rev 1 ships fix-free; Rev 2 adds 28; Rev 3 adds 24; Rev 4 adds 1 critical re-correction). The Rev 4 amendment is small in fix-count but large in cascade reach: every byte-size citation across &sect;7 and &sect;11 had to be re-derived. The amendment is consequential because it represents the first time the spec's byte-totals match the verified implementation (Rev 2 had TArray = 24 based on Subagent A's R2 audit miscite, but the rationale was different from Rev 4's; Rev 3 had TArray = 16 based on theoretical EBO that didn't match the shipped allocator). Rev 4's basis is empirical: Phase 4b.5 commit <code>d4062e8</code> directly measured sizeof on MSVC 19.44 and traced the result to XCore-4a's deliberate FMemTag-carrying DefaultAllocator. <strong>Implementation should proceed against Rev 4</strong>: the static_asserts in &sect;7 + the layout tags in &sect;11 are now ground-truth.</p>
+
+<hr>
+
+<p><em>End of XCore-4b (Reflection Types &mdash; UE-Equivalent Replication-Metadata Source) system specification (Rev 4). The Stage A surface is provisional pending user approval at design-review. Rev 1 was authored by a single combined subagent after two prior parallel subagents (UE-Verification + Implementation-QA) hit socket-disconnect errors before producing output; Rev 2 applied 28 fixes from a successful Round-1 audit by two parallel subagents; Rev 3 applies 24 fixes from the Round-2 audit (1 CRITICAL TArray sizeof cascade + 3 MAJOR FakeVTable arithmetic + FScriptStruct ICppStructOps pattern + Master Plan Rev 15 amendment + 1 HIGH ConvertFromType slot + 4 MEDIUM + 8 LOW); Rev 4 applies 1 CRITICAL re-correction from Phase 4b.5 implementation discovery (TArray sizeof = 24 not 16; XCore-4a DefaultAllocator carries 2-byte FMemTag for per-container memory attribution per <code>DefaultAllocator.h:178-186</code>; cascade affects FStruct 104&rarr;112, FScriptStruct 120&rarr;128, FClass 200&rarr;224, FEnum 64&rarr;72, FInterface 56&rarr;64). Cumulative Rev 1 &rarr; Rev 4 fix count: 53. The locked decisions (Section 1.3 + Section 2) carry the Master-Plan-Rev-15-locked decisions on FName UTF-8 case-sensitive MVP, UE-equivalent pre-Iris replication-metadata source on FProperty, FakeVTable-based hot-reload safety (no virtual methods on any descriptor; pattern applied to BOTH FProperty subclass dispatch AND FScriptStruct ICppStructOps dispatch &mdash; deliberate divergence from UE per Prime Directive), and FCustomVersion + per-type declared-shape SchemaHash with compile-time XHT enforcement. The OPEN items (Section 14) all carry RECOMMENDED defaults so user review can converge quickly. The internal areas (Sections 4-11) are independently testable per the dependency graph (Section 3); the implementation order in Section 15 splits into seven sub-steps (FName -&gt; FCustomVersion + FField + FProperty + Struct family parallel -&gt; XReflectionRuntime registry -&gt; Toolchain Contract Addendum). Hot-reload compatibility (Section 9) is enforced via zero virtual methods on descriptor types + Itanium-mangled stable symbol names + per-<code>.gen.cpp</code> ABI-tag static_asserts (XPACT_FNAME_LAYOUT_TAG, XPACT_FPROPERTY_LAYOUT_TAG v2, XPACT_FCLASS_LAYOUT_TAG v4, XPACT_FSTRUCT_LAYOUT_TAG v4, XPACT_FSCRIPTSTRUCT_LAYOUT_TAG v4, XPACT_FENUM_LAYOUT_TAG v4, XPACT_FINTERFACE_LAYOUT_TAG v4, XPACT_FCUSTOMVERSION_LAYOUT_TAG, XPACT_REPMETA_LAYOUT_TAG v2, XPACT_FFAKEVTABLE_LAYOUT_TAG v2, XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG v1) that catch ABI drift at compile time rather than runtime. The engineering-principles compliance summary (Section 12) lists 11 concrete ways XCore-4b beats UE Core's reflection runtime. Contract Rev 13.7 anchors this rev; the Stage B addendum at Contract Rev 13.8 ships with 4b.7. The acceptance gates (Section 13, organised into A-G categories) are CI-executable pass/fail predicates; aggregate pass is the merge criterion. <strong>Rev 4 is implementation-ready</strong>; XCore-4b implementation continues from Phase 4b.5 against the corrected byte totals.</em></p>
 
 </body>
 </html>
