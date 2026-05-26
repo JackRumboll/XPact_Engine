@@ -675,6 +675,95 @@
 # does the rest.
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.4a (FProperty + FFakeVTable + 16 primitive
+# subclasses) adds:
+#
+#   * Tests/Reflection/FProperty.Tests/SizeofAndAlignof.cpp
+#                                         -- XCore-4b §11.2 ABI lock
+#                                            runtime check:
+#                                            sizeof(FProperty) == 104,
+#                                            sizeof(FFakeVTable) == 128,
+#                                            sizeof(FBoolProperty) == 120,
+#                                            sizeof(FByteProperty) == 112,
+#                                            sizeof(FEnumProperty) == 120,
+#                                            sizeof(remaining 12 primitive
+#                                            subclasses) == 104. Plus
+#                                            offsetof for every layout-
+#                                            locked member. Acceptance
+#                                            gate B1 + B3.
+#   * Tests/Reflection/FProperty.Tests/FFakeVTableDispatch.cpp
+#                                         -- XCore-4b §5.4 + §5.4.1
+#                                            fixed-table dispatch
+#                                            correctness: CapabilityBit
+#                                            mask-position; HasSlot
+#                                            truth table; GetSlot<T>
+#                                            typed cast + end-to-end
+#                                            dispatch round-trip.
+#                                            Acceptance gate B2.
+#   * Tests/Reflection/FProperty.Tests/EPropertyFlagsBitwise.cpp
+#                                         -- XCore-4b §5.3 + §5.8
+#                                            EPropertyFlags bit position
+#                                            locks + bitwise operator
+#                                            surface (|, &, ^, ~, |=, &=)
+#                                            + HasAny/HasAllPropertyFlags
+#                                            predicate sugar.
+#   * Tests/Reflection/FProperty.Tests/PrimitiveGetSet.cpp
+#                                         -- XCore-4b §5.4 dispatch
+#                                            wrapper correctness:
+#                                            GetValue/SetValue/
+#                                            CopySingleValue/Initialize
+#                                            Value/DestroyValue/Identical
+#                                            /GetValueTypeHash round-trip
+#                                            for every primitive type
+#                                            (FInt8/16/32/64, FUInt16/32/64,
+#                                            FFloat, FDouble, FByte,
+#                                            FBool plain-bool path,
+#                                            FName, FStr).
+#   * Tests/Reflection/FProperty.Tests/PrimitiveIdentical.cpp
+#                                         -- XCore-4b §5.4 ESlot::Identical
+#                                            correctness for every
+#                                            primitive type. Verifies
+#                                            float bytewise discipline
+#                                            (+0.0 vs -0.0 distinct;
+#                                            same-bit-pattern NaN
+#                                            identical). FBoolProperty
+#                                            true-canonicalisation (0x01
+#                                            and 0xFF both `true` =>
+#                                            Identical).
+#   * Tests/Reflection/FProperty.Tests/FBoolPropertyBitfield.cpp
+#                                         -- XCore-4b §5.5 FBoolProperty
+#                                            bitfield path: FieldSize=4
+#                                            + ByteOffset=2 + ByteMask=
+#                                            0x20 case; SetBoolValue
+#                                            sets the bit without
+#                                            disturbing neighbours;
+#                                            GetBoolValue reads the
+#                                            correct bit. Plus single-
+#                                            byte FieldSize=1 + ByteMask=
+#                                            0x04 sub-case.
+#   * Tests/Reflection/FProperty.Tests/CastFlagsHierarchy.cpp
+#                                         -- XCore-4b §5.2 + §5.5
+#                                            CastFlags bit assignments
+#                                            for all 15 primitive
+#                                            subclasses + kFProperty
+#                                            parent gate bit. Every
+#                                            subclass's CastFlags
+#                                            includes (kFProperty |
+#                                            own bit); IsA(FProperty)
+#                                            fast path succeeds via
+#                                            CastFlags AND. Cross-
+#                                            hierarchy IsA returns
+#                                            false. Acceptance gate
+#                                            B7 + partial C1.
+#
+# JUDGEMENT CALL (Phase 4b.4a tests). All tests call
+# `::XCore::HAL::FMemory::__Init()` at the start of main() so the
+# binned allocator is live before any FName / FString / FText
+# construction. Matches the FName.Tests pattern (every FName test
+# calls __Init() in main).
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

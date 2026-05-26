@@ -739,6 +739,246 @@
 #           is_trivially_copyable + is_trivially_destructible asserts).
 #
 # =====================================================================
+#
+# XCore-4b Phase 4b.4a (FProperty base + FFakeVTable + 16 primitive
+# subclasses) adds:
+#
+#   Public/Reflection/EPropertyFlags.h         -- 64-bit FProperty flag
+#                                                bitmask. Locks bit 0-13
+#                                                editor/replication/
+#                                                persistence flags + bit
+#                                                56 CPF_PushModel + bit
+#                                                57 CPF_DeltaCompressed
+#                                                (FIX-1 + FIX-20) + bit
+#                                                60-61 C# CPF_Nullable
+#                                                ReferenceType / CPF_
+#                                                RequiredInit (FIX-18 +
+#                                                §5.8). Strongly-typed
+#                                                enum class with full
+#                                                bitwise operator surface.
+#   Public/Reflection/EBlueprintFlags.h        -- 32-bit Blueprint
+#                                                metadata bitmask carried
+#                                                on FProperty @ offset 72.
+#                                                Placeholder MVP bits;
+#                                                Layer 20+ refines.
+#   Public/Reflection/EEditFlags.h             -- 32-bit Editor metadata
+#                                                bitmask carried on
+#                                                FProperty @ offset 76.
+#                                                Placeholder MVP bits.
+#   Public/Reflection/ELifetimeCondition.h     -- 15-value uint8 replication
+#                                                condition enum (§6.1).
+#                                                Numeric values locked at
+#                                                §11.4.
+#   Public/Reflection/FFakeVTable.h            -- 128-byte per-FProperty-
+#                                                subclass dispatch table
+#                                                (§5.4 + FIX-2 + FIX-R2-
+#                                                MAJ-1 + FIX-R2-HIGH-1).
+#                                                ESlot enum with 15
+#                                                entries; alignas(8);
+#                                                offsetof-locked layout.
+#                                                HasSlot + GetSlot<T>
+#                                                accessors. Fixed-table
+#                                                form per §5.4.1 (Prime
+#                                                Directive divergence
+#                                                from UE's variable-length
+#                                                FStructOpsFakeVTable).
+#   Public/Reflection/FProperty.h              -- 104-byte FProperty base
+#                                                (§5.3 + §11.2). Extends
+#                                                FField with type-shape
+#                                                fields, EPropertyFlags,
+#                                                UE-equivalent replication
+#                                                metadata (RepIndex +
+#                                                BlueprintReplicationCondition
+#                                                + RepNotifyFunc), Editor/
+#                                                Blueprint metadata,
+#                                                intra-struct linkage,
+#                                                and DispatchTable pointer
+#                                                to per-subclass
+#                                                FFakeVTable. NO virtual
+#                                                methods. 13 dispatch
+#                                                wrappers (GetValue,
+#                                                SetValue, CopySingleValue,
+#                                                CopyCompleteValue,
+#                                                InitializeValue,
+#                                                DestroyValue, Identical,
+#                                                SerializeItem,
+#                                                NetSerializeItem,
+#                                                ContainsObjectReference,
+#                                                ExportText, ImportText,
+#                                                GetValueTypeHash,
+#                                                ConvertFromType).
+#   Public/Reflection/FNumericPropertyCommon.h -- header-only shared
+#                                                template impls for
+#                                                numeric primitive
+#                                                dispatch slots
+#                                                (GetValueImpl<T>,
+#                                                SetValueImpl<T>, ...,
+#                                                ExportTextImpl<T>,
+#                                                ImportTextImpl<T>).
+#                                                Linker dedup via COMDAT
+#                                                across the 9 numeric
+#                                                subclass instantiations.
+#
+#   Per-subclass headers + cpps (15 primitive FProperty subclasses):
+#
+#     Public/Reflection/FBoolProperty.h           -- 120 bytes; bool +
+#                                                bitfield (FieldSize +
+#                                                ByteOffset + ByteMask +
+#                                                FieldMask + SetBitFunc
+#                                                payload).
+#     Public/Reflection/FByteProperty.h           -- 112 bytes; uint8 +
+#                                                typed-byte-as-enum
+#                                                (UnderlyingEnum FEnum*
+#                                                payload; FEnum forward-
+#                                                declared, lands Phase
+#                                                4b.5).
+#     Public/Reflection/FInt8Property.h           -- 104 bytes; int8.
+#     Public/Reflection/FInt16Property.h          -- 104 bytes; int16.
+#     Public/Reflection/FIntProperty.h            -- 104 bytes; int32
+#                                                (UE convention; NOT
+#                                                FInt32Property).
+#     Public/Reflection/FInt64Property.h          -- 104 bytes; int64.
+#     Public/Reflection/FUInt16Property.h         -- 104 bytes; uint16.
+#     Public/Reflection/FUInt32Property.h         -- 104 bytes; uint32.
+#     Public/Reflection/FUInt64Property.h         -- 104 bytes; uint64.
+#     Public/Reflection/FFloatProperty.h          -- 104 bytes; float.
+#     Public/Reflection/FDoubleProperty.h         -- 104 bytes; double.
+#     Public/Reflection/FStrProperty.h            -- 104 bytes; FString
+#                                                (non-trivially copyable
+#                                                value; dispatch slots
+#                                                use typed copy/move/
+#                                                destructor).
+#     Public/Reflection/FNameProperty.h           -- 104 bytes; FName.
+#     Public/Reflection/FTextProperty.h           -- 104 bytes; FText
+#                                                (Rev 2 MVP add per
+#                                                FIX-3; XCore::Loc::FText).
+#     Public/Reflection/FEnumProperty.h           -- 120 bytes; enum class
+#                                                with UnderlyingProp +
+#                                                Enum payload (FEnum
+#                                                forward-declared, lands
+#                                                Phase 4b.5).
+#
+#     Corresponding Private/Reflection/F<X>Property.cpp:
+#       FProperty.cpp                              -- kFPropertyStaticClass
+#                                                  + kFPropertyFakeVTable
+#                                                  (empty 0-slots table)
+#                                                  + GetFPropertyStaticClass
+#                                                  accessor.
+#       FInt8Property.cpp .. FDoubleProperty.cpp   -- 9 numeric subclasses;
+#                                                  each defines its own
+#                                                  kF<X>PropertyFakeVTable
+#                                                  (constinit; .rodata-
+#                                                  resident) + kF<X>
+#                                                  PropertyStaticClass +
+#                                                  ConstructFn.
+#       FByteProperty.cpp                          -- uint8 + UnderlyingEnum.
+#       FBoolProperty.cpp                          -- bool + bitfield;
+#                                                  SetBitImpl_PlainBool
+#                                                  vs SetBitImpl_Bitfield
+#                                                  selector in ctor.
+#       FNameProperty.cpp                          -- FName-specialised
+#                                                  dispatch (case-sensitive
+#                                                  Identical, FXxh3-64
+#                                                  hash via GetTypeHash).
+#       FStrProperty.cpp                           -- FString-specialised
+#                                                  dispatch (placement-
+#                                                  new InitializeValue,
+#                                                  ~FString DestroyValue,
+#                                                  operator= for
+#                                                  CopySingleValue).
+#       FTextProperty.cpp                          -- FText-specialised
+#                                                  dispatch; Identical
+#                                                  via ResolveForCurrentLocale.
+#       FEnumProperty.cpp                          -- int32-shaped fallback
+#                                                  for Phase 4b.4a; full
+#                                                  enumerator-name aware
+#                                                  ExportText/ImportText
+#                                                  lands Phase 4b.5 when
+#                                                  FEnum ships.
+#
+# Modified existing files:
+#
+#   Public/Reflection/EClassCastFlags.h        -- bit assignments for the
+#                                                15 primitive subclasses
+#                                                (bits 0-12, 19, 24) +
+#                                                kFProperty parent gate
+#                                                bit (bit 29). Remaining
+#                                                bits 13-18, 20-23, 25-28
+#                                                RESERVED for Phase 4b.4b
+#                                                (object/ref/container/
+#                                                delegate subclasses).
+#
+#   Public/Internationalization/FText.h        -- Phase 4b.4a correction:
+#                                                removed `constexpr` from
+#                                                FText() default ctor.
+#                                                FString::FString() is
+#                                                NOT constexpr, so the
+#                                                qualifier was a latent
+#                                                bug (MSVC 19.44+ raises
+#                                                C3615 under /WX). No
+#                                                in-tree `constexpr FText`
+#                                                or `constinit FText` use
+#                                                sites found; the fix is
+#                                                safe. See body comment
+#                                                for the audit notes.
+#
+# JUDGEMENT CALL (Phase 4b.4a / FFakeVTable function-pointer cast).
+# The constinit FFakeVTable initialiser uses `(void(*)(void))&Fn` C-
+# style casts to populate Slots[] from typed function pointers. C-style
+# function-pointer-to-function-pointer casts ARE reinterpret_cast
+# per [expr.reinterpret.cast]/8 and NOT formally a constant expression
+# per [expr.const]/5.10. In practice every major compiler (MSVC 19.30+,
+# Clang 13+, GCC 11+) accepts the pattern at constinit scope because
+# the storage bytes are the function's address verbatim -- no actual
+# byte transformation occurs at the cast site. The spec §5.4 example
+# uses the same pattern. Phase 4b.4a follows it.
+#
+# JUDGEMENT CALL (Phase 4b.4a / is_standard_layout_v dropped).
+# Phase 4b.3's FField static_assert pinned is_standard_layout_v.
+# FProperty is NOT formally standard layout per [class]/7 (both FField
+# AND FProperty have non-static data members; the rule allows at most
+# one base class with data members). The Phase 4b.4a static_assert
+# discipline DROPS is_standard_layout_v for FProperty + every subclass
+# but KEEPS is_trivially_copyable_v + is_trivially_destructible_v.
+# offsetof() remains well-defined in practice on every supported
+# compiler for single-inheritance + POD-throughout types -- this is
+# explicitly documented in §5.3 of the spec and matches UE's FProperty
+# discipline.
+#
+# JUDGEMENT CALL (Phase 4b.4a / SchemaHash slot deferred).
+# The §5.4 slot table includes AppendToSchemaHash (slot 13). The full
+# SchemaHash discipline (canonical byte-stream emission per FIX-10
+# §8.4) lands at Phase 4b.6 when XReflectionRuntime + the canonical
+# stream format are finalised. Phase 4b.4a populates the slot as
+# nullptr on every subclass; the Capabilities bit for slot 13 is
+# clear; the FProperty wrapper currently has no AppendToSchemaHash
+# accessor (would forward to ::Hash::FBlake3 once SchemaHash ships).
+#
+# JUDGEMENT CALL (Phase 4b.4a / FArchive deferred).
+# Slots 7 (SerializeItem) + 8 (NetSerializeItem) take an FArchive&.
+# FArchive lands in XSerialization (Layer 9; post-XCore-4b). Phase
+# 4b.4a forward-declares FArchive + FPropertyTag in FProperty.h and
+# populates both slots as nullptr on every primitive subclass. The
+# FProperty wrapper methods (SerializeItem, NetSerializeItem) probe
+# HasSlot before dispatch, so calling them today is a no-op (returns
+# false for NetSerializeItem).
+#
+# Acceptance gates covered (Phase 4b.4a):
+#   * B1 -- sizeof(FProperty) == 104 (SizeofAndAlignof.cpp);
+#           sizeof(FBoolProperty) == 120; sizeof(FByteProperty) == 112;
+#           sizeof(FEnumProperty) == 120; sizeof(other 12 primitive
+#           subclasses) == 104.
+#   * B2 -- FFakeVTable in `.rodata` (constinit const); per-subclass
+#           dispatch surface (15 slots) populated per §5.4 Slot table.
+#   * B3 -- Per-subclass ABI lock for the 15 primitives; ABI tag
+#           XPACT_FPROPERTY_LAYOUT_TAG honoured byte-for-byte.
+#   * B7 -- IsA acceleration via CastFlags-AND fast path (every subclass
+#           OR-includes kFProperty parent gate; single AND test resolves
+#           "is this any FProperty?" without SuperClass walk).
+#   * F3 -- No virtual methods in any FProperty subclass (verified by
+#           is_trivially_copyable + is_trivially_destructible static_asserts).
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

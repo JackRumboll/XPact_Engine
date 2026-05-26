@@ -94,11 +94,29 @@ public:
     // FString default empty value. ResolveForCurrentLocale on an
     // empty-default FText returns the empty FString.
     //
-    // The default ctor is constexpr so FText can appear as a constinit
-    // global / static member (parity with UE's FText::GetEmpty() which
-    // is a static-initialised empty FText).
+    // PHASE 4b.4a CORRECTION: the constexpr qualifier on this ctor
+    // (Rev 1 intent: "FText can appear as constinit global / static
+    // member") is incorrect -- FString::FString() is NOT constexpr
+    // (it touches the binned allocator at runtime), so FText() cannot
+    // satisfy the constant-evaluation requirement on its body. MSVC
+    // 19.44+ raises C3615 ("constexpr function cannot result in a
+    // constant expression"); this is a hard error under /WX, not a
+    // suppressible warning. Phase 4b.4a discovery: FTextProperty
+    // (XCore-4b §5.5 + §11.2 row `FTextProperty`) includes FText.h
+    // and triggered the error.
+    //
+    // The constexpr qualifier is removed here. The original
+    // motivation (constinit FText globals) is preserved at the
+    // application level via the FromLiteral path: a constinit FText
+    // global today is constructed via brace-init of the three rodata
+    // pointers + the kUnresolvedGeneration sentinel, NOT via the
+    // default ctor. Any existing constinit FText{} call site falls
+    // back to dynamic initialisation, which is the correct behaviour
+    // post-FIX -- but a survey of in-tree usage (`grep -rn
+    // "constexpr FText\|constinit FText" Engine/`) found zero such
+    // sites, so this fix is safe.
     // -----------------------------------------------------------------
-    constexpr FText() noexcept
+    FText() noexcept
         : m_namespace(nullptr)
         , m_key(nullptr)
         , m_literalFallback(nullptr)

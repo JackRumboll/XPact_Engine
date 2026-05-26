@@ -241,36 +241,62 @@ namespace XCore::Reflect
         }
 
         // -------------------------------------------------------------
-        // IsChildOf -- walk the SuperClass chain (or short-circuit via
-        // CastFlags AND if both classes have a dedicated cast bit).
+        // IsChildOf -- walk the SuperClass chain, with a Phase 4b.4a
+        // CastFlags-AND fast path for the common FProperty hierarchy
+        // case.
         //
-        // The fast path: if `OtherClass->Id` is one of the subclass cast
-        // bits (a single bit set), the question "am I a child of
-        // OtherClass?" reduces to `CastFlags & OtherClass->Id != 0`.
-        // This is the O(1) form UE uses (`Field.h:159`).
+        // FAST PATH (Phase 4b.4a):
         //
-        // The slow path: walk SuperClass chain. Used when OtherClass is
-        // a non-FProperty FField subclass (the base FField, or a future
-        // non-FProperty FField type like FFunction) whose Id is not a
-        // cast-flag bit.
+        // Every FProperty subclass's CastFlags includes the kFProperty
+        // parent gate bit (see EClassCastFlags.h) OR'd with its own
+        // dedicated subclass bit. If OtherClass has any CastFlags bit
+        // set, the question "am I a child of OtherClass?" reduces to
+        // "do my CastFlags include all of OtherClass's CastFlags?".
         //
-        // Phase 4b.3 ships the slow-path walk only (FProperty subclasses
-        // land at Phase 4b.4). The fast-path short-circuit is added in
-        // Phase 4b.4 once the per-subclass cast bits are populated.
+        // The bitmask test is one AND + one compare (single-cycle on
+        // every supported CPU). For OtherClass == FProperty's base
+        // class (kFProperty parent gate bit), every FProperty subclass
+        // passes the test trivially.
+        //
+        // SLOW PATH:
+        //
+        // If OtherClass has no CastFlags (the base FField class itself
+        // or any future non-FProperty FField subclass without a cast
+        // bit), fall back to the SuperClass chain walk. The chain has
+        // bounded depth (per spec §13 gate C1: typical <= 3, max <= 10
+        // for any FProperty subclass).
+        //
+        // The fast-path-or-slow-path branch is structural: a single
+        // compare on OtherClass->CastFlags resolves which path to take.
+        // The fast path's worst case (kNone CastFlags) falls through
+        // to the slow path; the slow path's worst case (deep
+        // hierarchy) is bounded by the spec invariant.
         // -------------------------------------------------------------
         [[nodiscard]] XPACT_FORCEINLINE constexpr bool IsChildOf(const FFieldClass* OtherClass) const noexcept
         {
             // nullptr is the "no class" sentinel; nothing is a child of
-            // it (and conversely, every class trivially is a child of
-            // itself when OtherClass == this).
+            // it.
             if (OtherClass == nullptr)
             {
                 return false;
             }
 
-            // Walk SuperClass chain. The chain has bounded depth (per
-            // spec §13 gate C1: typical <= 3, max <= 10 for any
-            // FProperty subclass).
+            // FAST PATH: if OtherClass has any CastFlags bits set,
+            // every class with those bits in its own CastFlags is a
+            // child of OtherClass. The discipline (Phase 4b.4a) is
+            // that every FProperty subclass's CastFlags OR-includes
+            // kFProperty | <own bit>; a class with FProperty's own
+            // CastFlags == kFProperty matches via this AND.
+            //
+            // Self-test: a class IS a child of itself; the fast path
+            // honours this because the class's own CastFlags include
+            // its own bits.
+            if (OtherClass->CastFlags != EClassCastFlags::kNone)
+            {
+                return ::XCore::Reflect::HasAllCastFlags(CastFlags, OtherClass->CastFlags);
+            }
+
+            // SLOW PATH: walk SuperClass chain.
             for (const FFieldClass* Walker = this; Walker != nullptr; Walker = Walker->SuperClass)
             {
                 if (Walker == OtherClass)
