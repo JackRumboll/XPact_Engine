@@ -3,11 +3,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Engine &mdash; XCoreXObject (XObject + Reflection Runtime + GC) &mdash; Rev 2</title>
+<title>XPact Engine &mdash; XCoreXObject (XObject + Reflection Runtime + GC) &mdash; Rev 3</title>
 </head>
 <body>
 
-<h1>XPact Engine &mdash; XCoreXObject &mdash; Rev 2</h1>
+<h1>XPact Engine &mdash; XCoreXObject &mdash; Rev 3</h1>
 
 <p><strong>System:</strong> XCoreXObject &nbsp;|&nbsp;
 <strong>Layer:</strong> 1 (Core Runtime) &nbsp;|&nbsp;
@@ -15,8 +15,8 @@
 <strong>Language:</strong> C++20 &nbsp;|&nbsp;
 <strong>Owner:</strong> Simgenics &nbsp;|&nbsp;
 <strong>Plan date:</strong> 2026-05-27 &nbsp;|&nbsp;
-<strong>Revision:</strong> Rev 2 (Round 1 audit fixes &mdash; 65 findings: 8 CRITICAL + 9 HIGH + 17 MAJOR + 14 MEDIUM + 17 MINOR/LOW. Key changes: schema-vector GC walker adopted (UE-MISS-1 largest perf miss); FXObjectInitializer + CreateDefaultSubobject designed; sizeof(UObjectBase) comparison corrected (UE is 40, XPact 56); Serialize slot signature with FArchiveContext void* for XSerialization forward-compat; hot-reload quiesce thread enumeration complete; C# generic instantiation reflection design; sim-path NewObject runtime invariant; init-phase contract reconciled (PostStaticInit, not PreStaticInit); XInsights weak-symbol bridge API; EObjectFlags taxonomy expanded; EClassFlags::Intrinsic bootstrap; cluster reservation expanded to 16 bytes; remote-id reservation dropped; XObject sizeof stays 56; Contract Rev 13.9 micro-bump confirmed.) &nbsp;|&nbsp;
-<strong>Status:</strong> Round 1 audit fixes applied; awaiting Round 2 review &nbsp;|&nbsp;
+<strong>Revision:</strong> Rev 3 (Round 2 audit fixes &mdash; 28 findings: 1 CRITICAL (FStruct-v5 tag + static_asserts + arithmetic) + 6 HIGH/MAJOR (byte offsets + schema-vector taxonomy expansion + emit rules + EagerCDO ordering) + 11 MEDIUM (variant for FInsightsValue, bPostInitFired wiring, MarkForKill guard, kMarkBit clarification, RF_NeedLoad path, hot-reload thread extension hook, etc.) + 10 MINOR. Spec stays at ~30k words; surgical fixes throughout. XPACT_FSTRUCT_LAYOUT_TAG v5 + XPACT_FCLASS_LAYOUT_TAG v6 properly pinned; schema-vector opcode taxonomy expanded to cover all 30 FProperty subclasses; XHT emit rules table specified per subclass.) &nbsp;|&nbsp;
+<strong>Status:</strong> Round 2 audit fixes applied; awaiting Round 3 review &nbsp;|&nbsp;
 <strong>Plan reference:</strong> Master Plan Rev 15 &sect;3 (L1 inventory), &sect;4 Step 5, &sect;11 Step 5.5 Foundation Prototype (9 pass criteria a-i); Master Plan Rev 16 amendment expected (Stage B extension for Contract Rev 13.9 and umbrella-spec posture &mdash; per FIX-A-CRIT-3 and FIX-A-CRIT-1 arbitration) &nbsp;|&nbsp;
 <strong>Contract reference:</strong> <code>XToolchainContract.html</code> Rev 13.8 (Stage B addendum frozen at XCore-4b ship). XCoreXObject triggers a Rev 13.9 micro-bump (adds FClass::LifecycleTable pointer, +8 bytes). See &sect;1.4 and &sect;11.2 for the bump details. &nbsp;|&nbsp;
 <strong>XCore-4a reference:</strong> <code>XCore-4a.html</code> Rev 3 (FMallocBinnedX, FMemTag::XObject, FLeakTracker, TArray/TMap/TSet, FName 8-byte handle forward decl, XGCRootSpan ABI, FRWLock, atomics, EInitPhase ladder). Note: Rev 4 follow-up required to expand <code>s_XObjectAllocator</code> hook signature from 2-arg to 3-arg per FIX-A-CRIT-4. &nbsp;|&nbsp;
@@ -54,7 +54,7 @@
   <li>The <strong>XInsights runtime API bridge</strong> (Rev 2; FIX-A-CRIT-6) &mdash; weak-symbol <code>XInsights::Emit(Category, Event, Payload)</code> that XCoreXObject calls for GC / Allocator / HotReload telemetry; becomes a no-op until XInsights links its strong implementation. See &sect;10.5.</li>
   <li>The <strong>cross-system integration</strong> with XReflectionRuntime, XCore-4a's FMemTag::XObject slot, FLeakTracker (XObject leaks attribute to the same tracker), the Phase-1g weak-symbol GC stubs (XCoreXObject is the strong-symbol replacement), and XHT-emitted <code>.gen.cpp</code> registration paths (XHT emits the <code>Z_Construct_FClass_*</code> functions whose runtime side is implemented here).</li>
   <li>The <strong>C++ macro surface</strong> &mdash; <code>XCLASS()</code>, <code>XPROPERTY()</code>, <code>XFUNCTION()</code>, <code>XINTERFACE()</code> &mdash; XHT-parsed; XHT emits the <code>.gen.h</code> / <code>.gen.cpp</code> per module per Contract Rev 13.8 (Rev 13.9 micro-bump applied); XCoreXObject is the runtime side those generated files call into.</li>
-  <li>The <strong>Toolchain Contract delta</strong> &mdash; XCoreXObject triggers a Contract Rev 13.9 <em>micro-bump</em> (per FIX-A-CRIT-3 / O1 arbitration) to add the FClass <code>LifecycleTable</code> pointer (+8 bytes; FClass sizeof 224 &rarr; 232). XCoreXObject adds new <code>XPACT_*_LAYOUT_TAG</code> string-literal pins per &sect;11: <code>XPACT_XOBJECT_LAYOUT_TAG</code>, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, <code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code>, <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code>, <code>XPACT_XWEAKPTR_LAYOUT_TAG</code>, <code>XPACT_XPTR_LAYOUT_TAG</code>, <code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code>, <code>XPACT_FCLASS_LAYOUT_TAG</code> (v6; updated for +8 byte LifecycleTable), <code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code> (Rev 2 addition for schema-vector). Master Plan &sect;2a freeze wording (end of Step 0.5 contract addendum land = XCore-4b complete) is acknowledged superseded by XCoreXObject completion; Master Plan Rev 16 amendment to file.</li>
+  <li>The <strong>Toolchain Contract delta</strong> &mdash; XCoreXObject triggers a Contract Rev 13.9 <em>micro-bump</em> (per FIX-A-CRIT-3 / O1 arbitration) to add the FClass <code>LifecycleTable</code> pointer + the FStruct <code>RefSchema</code> pointer (+8 bytes each; <strong>Rev 3 corrected per FIX-C-R2-1:</strong> FClass sizeof 224 &rarr; 240 [Rev 2 declared 232 with inconsistent arithmetic], FStruct sizeof 112 &rarr; 120). XCoreXObject adds new <code>XPACT_*_LAYOUT_TAG</code> string-literal pins per &sect;11: <code>XPACT_XOBJECT_LAYOUT_TAG</code>, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, <code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code>, <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code>, <code>XPACT_XWEAKPTR_LAYOUT_TAG</code>, <code>XPACT_XPTR_LAYOUT_TAG</code>, <code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code>, <code>XPACT_FSTRUCT_LAYOUT_TAG</code> (v5; Rev 3 added per FIX-C-R2-1 / FIX-N-R2-1), <code>XPACT_FCLASS_LAYOUT_TAG</code> (v6; updated for both appended pointers), <code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code> (Rev 2 addition for schema-vector). Master Plan &sect;2a freeze wording (end of Step 0.5 contract addendum land = XCore-4b complete) is acknowledged superseded by XCoreXObject completion; Master Plan Rev 16 amendment to file.</li>
 </ul>
 
 <h3>1.2 What XCoreXObject is NOT</h3>
@@ -109,7 +109,7 @@
         <ol>
           <li><strong>Static-init</strong> (TU init order; pre-<code>EInitPhase</code> ladder): constinit FClass instances are initialized. They reference FStruct/FProperty in <code>.rodata</code> (XCore-4b output).</li>
           <li><strong><code>EInitPhase::PreStaticInit</code></strong>: XCore-4a's <code>FMemory::__Init()</code> runs. XObject heap is <strong>NOT</strong> yet ready (XCoreXObject's PostStaticInit gate). FMemory is ready but NewObject is deferred.</li>
-          <li><strong><code>EInitPhase::PostStaticInit</code></strong>: <strong>XCoreXObject heap + collector come up here (Rev 2 corrected; Rev 1 incorrectly said PreStaticInit).</strong> <code>XReflectionRuntime::RegisterClass</code> calls are accepted at this gate. CDO construction (lazy by default per &sect;8.1) defers to first NewObject&lt;T&gt;; eager-CDO classes opt into PostStaticInit-time CDO construction. NewObject entry path asserts <code>XPACT_CHECK(EngineInitPhase() &gt;= EInitPhase::PostStaticInit)</code>.</li>
+          <li><strong><code>EInitPhase::PostStaticInit</code></strong>: <strong>XCoreXObject heap + collector come up here (Rev 2 corrected; Rev 1 incorrectly said PreStaticInit).</strong> <code>XReflectionRuntime::RegisterClass</code> calls are accepted at this gate. CDO construction (lazy by default per &sect;8.1) defers to first NewObject&lt;T&gt;; eager-CDO classes opt into PostStaticInit-time CDO construction <strong>via a deferred linker walk (Rev 3 per FIX-H-R2-6)</strong>: <code>LinkClass</code> queues EagerCDO classes onto <code>g_PendingEagerCDOs</code> during static-init, then XCoreXObject's PostStaticInit boot drains the queue after the heap is up. The earlier Rev 2 wording "eager-CDO classes opt into PostStaticInit-time CDO construction" understated the ordering discipline; Rev 3 formalizes it. NewObject entry path asserts <code>XPACT_CHECK(EngineInitPhase() &gt;= EInitPhase::PostStaticInit)</code>; the deferred queue ensures EagerCDO Z_Construct paths never trip that assert.</li>
         </ol>
       </li>
       <li><strong><code>s_XObjectAllocator</code> hook signature (FIX-A-CRIT-4).</strong> XCore-4a Rev 3 shipped with a 2-arg hook signature <code>void* (*)(size_t Size, size_t Align) noexcept</code>. XCoreXObject's <code>FXObjectAllocator::AllocateRaw</code> is 3-arg: <code>void* (size_t Size, size_t Align, const FClass* ClassDescriptor) noexcept</code> &mdash; the FClass argument is load-bearing for type-segregated free-list lookup per &sect;3.4. Rev 2 amends the cross-system contract: XCore-4a's hook signature <strong>MUST expand to 3 args</strong> as an XCore-4a Rev 4 follow-up note (forward-only; no breaking change to XCore-4a Rev 3 callers since the hook is uncalled until XCoreXObject ships). This is filed as an XCore-4a Rev 4 note to land before XCoreXObject implementation begins.</li>
@@ -149,7 +149,7 @@
   <li><strong>Direction-of-dependency note (FIX-A-MIN-45).</strong> XSerialization (System 9) is a <strong>downstream consumer</strong> of XCoreXObject, not the other way around. XCoreXObject defines the Serialize slot signature (FIX-A-HIGH-13: <code>void(*)(XObject* self, FArchive&amp; Ar, const FArchiveContext* Ctx) noexcept</code>); XSerialization fills the slot. The <code>FArchiveContext*</code> argument is a void* (XSerialization-defined) for forward-compatibility &mdash; XSerialization can extend the context type without breaking the lifecycle-table ABI.</li>
   <li><strong>Contract delta (FIX-A-CRIT-3 / O1 arbitration).</strong> XCoreXObject triggers Contract <strong>Rev 13.9 micro-bump</strong>. Rev 1's claim &ldquo;XCoreXObject does NOT trigger a Contract bump&rdquo; was incorrect; the FClass <code>LifecycleTable</code> pointer (8 bytes) is load-bearing for per-class lifecycle dispatch and inlining alternatives were rejected per Prime Directive (parallel TMap probe per dispatch = wrong perf; inline 8-slot table per FClass = 720 KB module footprint). The bump is the right answer.
     <ul>
-      <li>FClass sizeof: 224 (Rev 13.8) &rarr; 232 (Rev 13.9). One pointer appended.</li>
+      <li>FClass sizeof: 224 (Rev 13.8) &rarr; 240 (Rev 13.9). Two 8-byte pointers appended (FStruct.RefSchema + FClass-specific.LifecycleTable). <strong>Rev 3 correction (FIX-C-R2-1):</strong> Rev 2 originally declared 232 but the arithmetic was internally inconsistent (claimed FClass = 232 = 112 + 120 while simultaneously growing FStruct to 120 via RefSchema). Rev 3 publishes the mathematically correct FClass = 240.</li>
       <li>New addendum tags per &sect;11.1: <code>XPACT_XOBJECT_LAYOUT_TAG</code>, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, <code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code>, <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code>, <code>XPACT_XWEAKPTR_LAYOUT_TAG</code>, <code>XPACT_XPTR_LAYOUT_TAG</code>, <code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code>, <code>XPACT_FCLASS_LAYOUT_TAG</code> (v6: revised for +8 byte LifecycleTable), <code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code>.</li>
       <li>Master Plan &sect;2a freeze wording (end of Step 0.5 contract addendum land = XCore-4b complete) is acknowledged superseded by XCoreXObject completion; the freeze framing assumed XCore-4b's Rev 13.8 addendum was terminal. XCoreXObject is the next system that legitimately extends. Master Plan Rev 16 amendment to file (filed by main agent at Rev 2 commit time).</li>
       <li><strong>Implementation note (not Rev 2 work):</strong> the Contract Rev 13.9 bump also requires <code>AbiLayoutPins.cs</code> + <code>ContractSurface.cs</code> + <code>XReflectionRuntime.h</code> macro updates at Phase 5 implementation time. Rev 2 is design-phase only; the spec captures the delta.</li>
@@ -247,7 +247,15 @@ public:
 
     // === Lifecycle state (second cache line, first 16 bytes) ===
     std::atomic&lt;uint32_t&gt;  ObjectFlags;         // 32  +4   EObjectFlags (RF_*) atomic
-    uint32_t                _padObjectFlags;     // 36  +4   pad to 8-byte boundary
+    // Rev 3 (FIX-M-R2-3): per-object reachability flag (3 rotating reachability bits +
+    // 29 reserved bits). Consumes the former _padObjectFlags slot. Moves the mark-bit
+    // lookup from FXObjectArrayEntry.StateBits (one indirection through entry table)
+    // to inline-on-XObject (zero indirection in the GC mark inner loop). The 32-bit
+    // word holds bits 0..2 for rotating-cycle reachability (one bit set per cycle;
+    // the others clear naturally as GC advances three cycles), bits 3..7 reserved
+    // for GC-internal state (kPendingDestroy mirror, kRootPinned mirror), bits 8..31
+    // reserved for future GC scheme extensions.
+    std::atomic&lt;uint32_t&gt;  ReachabilityFlag;    // 36  +4   3 rotating reachability bits + 29 reserved
 
     // === Cluster reservation (16 bytes; UE FCluster shape, Phase 2) ===
     uint64_t                _reservedCluster0;   // 40  +8   cluster-root index (Phase 2: bit 63 = is-root, bits 0..30 = idx)
@@ -280,7 +288,7 @@ public:
                                 uint32_t flags) noexcept
         : ClassPrivate(cls), InternalIndex(-1), SerialNumber(0),
           Outer(outer), NamePrivate(name), ObjectFlags(flags),
-          _padObjectFlags(0), _reservedCluster0(0), _reservedCluster1(0) {}
+          ReachabilityFlag(0), _reservedCluster0(0), _reservedCluster1(0) {}
 
     // === Accessors (non-virtual; inline) ===
     XPACT_FORCEINLINE const FClass* GetClass() const noexcept { return ClassPrivate; }
@@ -312,7 +320,17 @@ public:
     // Mark-as-Garbage (per FIX-A-HIGH-19; mirrors UE MarkAsGarbage).
     // Sets RF_MarkedAsGarbage; next GC pass clears references to this object via
     // XPACT_GC_OPTION_ELIMINATE_GARBAGE_REFS sweep option.
+    // Rev 3 (FIX-M-R2-10): MarkForKill is non-sim-path. Calling it from a sim-path TU
+    // is forbidden because the next-GC-sweep timing is non-deterministic (the actual
+    // ref-nulling happens whenever the next GC cycle runs, which is not bound to a
+    // sim-tick boundary). Guarded via XPACT_CHECK_SL at entry.
     void                             MarkForKill() noexcept;
+    // (Implementation: void XObject::MarkForKill() noexcept {
+    //      XPACT_CHECK_SL(!::XCore::HAL::IsSimPathTU(),
+    //          "MarkForKill is non-sim-path; the next-GC-sweep timing is non-deterministic");
+    //      SetFlags(uint32_t(EObjectFlags::MarkedAsGarbage));
+    //  }
+    //  See §6 sim-path policy + §4.2 sweep options.)
     XPACT_FORCEINLINE bool           IsMarkedAsGarbage() const noexcept {
         return HasAnyFlags(uint32_t(EObjectFlags::MarkedAsGarbage));
     }
@@ -342,6 +360,7 @@ static_assert(offsetof(XObject, SerialNumber)      == 12, "XObject.SerialNumber 
 static_assert(offsetof(XObject, Outer)             == 16, "XObject.Outer offset lock");
 static_assert(offsetof(XObject, NamePrivate)       == 24, "XObject.NamePrivate offset lock");
 static_assert(offsetof(XObject, ObjectFlags)       == 32, "XObject.ObjectFlags offset lock");
+static_assert(offsetof(XObject, ReachabilityFlag)  == 36, "XObject.ReachabilityFlag offset lock (Rev 3 per FIX-M-R2-3)");
 static_assert(offsetof(XObject, _reservedCluster0) == 40, "XObject._reservedCluster0 offset lock");
 static_assert(offsetof(XObject, _reservedCluster1) == 48, "XObject._reservedCluster1 offset lock");
 </code></pre>
@@ -350,7 +369,7 @@ static_assert(offsetof(XObject, _reservedCluster1) == 48, "XObject._reservedClus
 
 <p>XPact's <code>XObject</code> at 56 bytes is LARGER than UE's <code>UObjectBase</code> alone by 16 bytes &mdash; but the 56 bytes UNIFY the header with cluster reservation + GC state shape inline. The split happens differently: XPact's <code>FXObjectArrayEntry</code> (32 bytes; &sect;3.3) holds the mark bit + state bits separately, but the cluster reservation + remote-id reservation are inline in the XObject header (not in the entry). At GC walk time, the inner loop hits one <code>XObject*</code> dereference + the FStruct::RefSchema vector walk; UE's walk hits the <code>UObjectBase*</code> AND fetches the parallel <code>FUObjectItem*</code> from the chunk pointer array.</p>
 
-<p>For 50k typical XObjects, the 16-24 byte/object cost is ~1 MB &mdash; well within Quest 3's 4 GB budget. The cache-coherency advantage at GC walk dominates: a single L1/L2 miss per ref-property walk costs ~50-200 cycles on Quest 3 ARM64. Across 100k objects each with 5-10 ref properties, the saving is order-of-megabytes of cycles per cycle &mdash; significantly better than the byte cost.</p>
+<p>For 50k typical XObjects, the 16-24 byte/object cost is ~0.8-1.2 MB (range bounded by 16-byte minimum cost &times; 50,000 = 800 KB and 24-byte maximum cost &times; 50,000 = 1.2 MB; Rev 3 per FIX-N-R2-3 precision update) &mdash; well within Quest 3's 4 GB budget. The cache-coherency advantage at GC walk dominates: a single L1/L2 miss per ref-property walk costs ~50-200 cycles on Quest 3 ARM64. Across 100k objects each with 5-10 ref properties, the saving is order-of-megabytes of cycles per cycle &mdash; significantly better than the byte cost.</p>
 
 <p>Per Prime Directive: the correct trade-off (more bytes per header, fewer indirections at GC walk) wins over the easy trade-off (mirror UE's split shape). This is intentional design.</p>
 
@@ -401,8 +420,16 @@ enum class EObjectFlags : uint32_t {
     _Reserved22                = 1u &lt;&lt; 22,
     _Reserved23                = 1u &lt;&lt; 23,
 
-    // === High bits reserved for plugin / user policy flags ===
+    // === High bits reserved for plugin / user policy flags (Rev 3 expanded per FIX-M-R2-2) ===
     UserFlag_Begin             = 1u &lt;&lt; 24,
+    UserFlag_1                 = 1u &lt;&lt; 24,
+    UserFlag_2                 = 1u &lt;&lt; 25,
+    UserFlag_3                 = 1u &lt;&lt; 26,
+    UserFlag_4                 = 1u &lt;&lt; 27,
+    UserFlag_5                 = 1u &lt;&lt; 28,
+    UserFlag_6                 = 1u &lt;&lt; 29,
+    UserFlag_7                 = 1u &lt;&lt; 30,
+    UserFlag_8                 = 1u &lt;&lt; 31,
     UserFlag_End               = 1u &lt;&lt; 31,
 };
 </code></pre>
@@ -460,8 +487,10 @@ enum class EObjectFlags : uint32_t {
 
 <pre><code>// FXObjectLifecycleTable: one per FClass, in .rodata. The FClass references this
 // table via a new const FXObjectLifecycleTable* LifecycleTable field (8 bytes
-// appended to FClass; FClass sizeof 224 -> 232 per Contract Rev 13.9 micro-bump,
-// FIX-A-CRIT-3 / O1 arbitration).
+// appended to FClass; Rev 3 corrected per FIX-C-R2-1: FClass sizeof 224 -> 240
+// per Contract Rev 13.9 micro-bump, FIX-A-CRIT-3 / O1 arbitration. The +16
+// growth comes from FStruct +8 RefSchema + FClass-specific +8 LifecycleTable
+// landing together at Rev 13.9; LifecycleTable lands at FClass-absolute offset 232).
 //
 // SLOT TABLE (8 slots; mirrors UE's UObject lifecycle virtuals, dropped to the
 // MVP-load-bearing set; Serialize slot signature accepts FArchiveContext void*
@@ -496,7 +525,7 @@ static_assert(static_cast&lt;uint32_t&gt;(EXObjectLifecycleSlot::Count) == 8,
 
 <p><strong>FClass LifecycleTable field (Contract Rev 13.9).</strong> The FClass references this table via a new <code>const FXObjectLifecycleTable* LifecycleTable</code> field (one 8-byte pointer added to FClass at the end of its layout). The Stage B addendum extension pin <code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code> covers the table layout; the updated <code>XPACT_FCLASS_LAYOUT_TAG</code> (v6) reflects the +8 byte FClass sizeof.</p>
 
-<p><strong>Contract Rev 13.9 micro-bump (decided per FIX-A-CRIT-3 / O1 arbitration).</strong> The FClass sizeof change from 224 &rarr; 232 IS a Contract delta. The alternative &mdash; placing the LifecycleTable pointer in a parallel <code>TMap&lt;const FClass*, const FXObjectLifecycleTable*&gt;</code> lookup &mdash; was rejected: the lookup would cost a TMap hash probe per PostInitProperties / BeginDestroy / FinishDestroy call, which is wrong per Prime Directive (the table-pointer is a single direct member load). The alternative of inlining the 8-slot table into FClass directly (72 bytes per FClass &times; 10k classes = 720 KB module footprint) was also rejected per Prime Directive (wrong space cost). The bump is the right answer. Master Plan Rev 16 amendment to file (filed by main agent).</p>
+<p><strong>Contract Rev 13.9 micro-bump (decided per FIX-A-CRIT-3 / O1 arbitration; Rev 3 corrected per FIX-C-R2-1).</strong> The FClass sizeof change from 224 &rarr; 240 (Rev 2 declared 232 with inconsistent arithmetic; Rev 3 corrects to 240) IS a Contract delta. The +16 byte growth comes from FStruct +8 (RefSchema, FIX-A-CRIT-8) + FClass-specific +8 (LifecycleTable). The alternative &mdash; placing the LifecycleTable pointer in a parallel <code>TMap&lt;const FClass*, const FXObjectLifecycleTable*&gt;</code> lookup &mdash; was rejected: the lookup would cost a TMap hash probe per PostInitProperties / BeginDestroy / FinishDestroy call, which is wrong per Prime Directive (the table-pointer is a single direct member load). The alternative of inlining the 8-slot table into FClass directly (72 bytes per FClass &times; 10k classes = 720 KB module footprint) was also rejected per Prime Directive (wrong space cost). The bump is the right answer. Master Plan Rev 16 amendment to file (filed by main agent).</p>
 
 <h3>2.5 Dispatch call sites</h3>
 
@@ -675,14 +704,28 @@ public:
     void     MarkPendingDestroy(int32_t InternalIndex) noexcept;
     void     ReleaseSlot(int32_t InternalIndex) noexcept;   // bumps SerialNumber
 
+    // Rev 3 (FIX-M-R2-3): Mark API operates on XObject.ReachabilityFlag directly,
+    // not on FXObjectArrayEntry.StateBits. One less indirection per call (the
+    // ReachabilityFlag is co-located with the XObject header, hot in the cache after
+    // the first reference load). The `kMarkBit` constant maps onto the rotating
+    // reachability bit selected by the current cycle.
     XPACT_FORCEINLINE bool IsMarked(int32_t InternalIndex) const noexcept {
-        return (Entries[InternalIndex].StateBits.load(std::memory_order_acquire) &amp; kMarkBit) != 0;
+        XObject* obj = Entries[InternalIndex].Object;
+        if (obj == nullptr) return false;
+        const uint32_t mask = CurrentCycleReachabilityMask();   // 1 &lt;&lt; g_CurrentReachabilityIndex (0/1/2)
+        return (obj-&gt;ReachabilityFlag.load(std::memory_order_acquire) &amp; mask) != 0;
     }
     XPACT_FORCEINLINE void Mark(int32_t InternalIndex) noexcept {
-        Entries[InternalIndex].StateBits.fetch_or(kMarkBit, std::memory_order_acq_rel);
+        XObject* obj = Entries[InternalIndex].Object;
+        if (obj == nullptr) return;
+        const uint32_t mask = CurrentCycleReachabilityMask();
+        obj-&gt;ReachabilityFlag.fetch_or(mask, std::memory_order_acq_rel);
     }
     XPACT_FORCEINLINE void ClearMark(int32_t InternalIndex) noexcept {
-        Entries[InternalIndex].StateBits.fetch_and(~kMarkBit, std::memory_order_acq_rel);
+        XObject* obj = Entries[InternalIndex].Object;
+        if (obj == nullptr) return;
+        const uint32_t mask = CurrentCycleReachabilityMask();
+        obj-&gt;ReachabilityFlag.fetch_and(~mask, std::memory_order_acq_rel);
     }
 
     template &lt;typename Visitor&gt; void ForEachObject(Visitor&amp;&amp; v) const noexcept;
@@ -695,20 +738,44 @@ private:
     TArray&lt;int32_t&gt;             FreeList;    // LIFO; recently-released slot first
     FCriticalSection            AllocLock;
 
-    // Bit 0: current-cycle reachable (alias for the cycle's rotating reachability flag)
-    static constexpr uint64_t kMarkBit              = 1ull &lt;&lt; 0;
+    // Rev 3 (FIX-M-R2-3): the rotating reachability bits MOVED to XObject.ReachabilityFlag.
+    // The FXObjectArrayEntry retains only the state bits that don't participate in the
+    // GC mark inner loop (pending-destroy, root-pinned, hot-reload, garbage).
+    //
+    // The IsMarked / Mark / ClearMark accessors below READ FROM XObject.ReachabilityFlag,
+    // not from FXObjectArrayEntry.StateBits &mdash; one less indirection per mark loop iteration.
+    // The accessors take an InternalIndex, fetch the XObject* from the entry, then
+    // access XObject.ReachabilityFlag directly. This saves one cache miss per object
+    // marked (~50-200 cycles on Quest 3 ARM64; significant at 100k objects per scan).
     static constexpr uint64_t kPendingDestroyBit    = 1ull &lt;&lt; 1;
     static constexpr uint64_t kRootPinnedBit        = 1ull &lt;&lt; 2;
     static constexpr uint64_t kHotReloadInProgress  = 1ull &lt;&lt; 3;
-    // Rev 2 (FIX-A-MED-23 / UE-VER-7): 3 rotating reachability flags.
-    // GC cycle counter modulo 3 selects "this-cycle's" bit; bit-rotation
-    // eliminates the clear-pass at cycle start.
-    static constexpr uint64_t kReachabilityFlag0    = 1ull &lt;&lt; 4;
-    static constexpr uint64_t kReachabilityFlag1    = 1ull &lt;&lt; 5;
-    static constexpr uint64_t kReachabilityFlag2    = 1ull &lt;&lt; 6;
     // Bit 7: Garbage flag (mirror of EObjectFlags::MarkedAsGarbage for fast sweep check; FIX-A-HIGH-19)
     static constexpr uint64_t kGarbageBit           = 1ull &lt;&lt; 7;
 };
+
+// Rev 3 (FIX-M-R2-3 + FIX-M-R2-11): kMarkBit is the ACTIVE mark bit. Implementation
+// details on the rotating-flag scheme:
+//
+// The XObject.ReachabilityFlag uint32 holds (low to high):
+//   bit 0: kReachabilityFlag0 (rotating; one of 0/1/2 is "current cycle" per cycle counter)
+//   bit 1: kReachabilityFlag1
+//   bit 2: kReachabilityFlag2
+//   bits 3..7: reserved for GC-internal mirrors (PendingDestroy/RootPinned/Garbage shadow)
+//   bits 8..31: reserved for future GC scheme additions
+//
+// Per cycle, the global `g_CurrentReachabilityIndex` (uint8 in 0/1/2) selects which
+// of bits 0..2 is the "this-cycle's" mark bit. The GC's IsMarked / Mark / ClearMark
+// API operates with the logical "current cycle's reachability bit"; a software
+// indirection masks the rotating index onto the physical bit. Three flag bits used
+// in rotation; exactly one bit always represents "current cycle reachable"; the two
+// unused-this-cycle bits clear naturally as GC advances three cycles (the cycle that
+// USED bit N two cycles ago is the one whose objects must be swept this cycle if
+// still unmarked).
+//
+// This is the UE 5.x EInternalObjectFlags::ReachabilityFlag0/1/2 pattern (ObjectMacros.h:678-680)
+// faithfully ported with the optimization that the bits live on the XObject header
+// (FIX-M-R2-3) rather than the entry table (avoid the indirection).
 </code></pre>
 
 <p><strong>Index 0 is reserved</strong>: a freshly-zeroed XWeakPtr / XObjectKey with InternalIndex == 0 represents "null"; the FXObjectArray never allocates index 0 to a real object.</p>
@@ -789,8 +856,18 @@ T* NewObject(XObject* Outer, FName Name, EObjectFlags Flags) {
     //    default-value initialization from the CDO). The FXObjectInitializer is
     //    stack-constructed and threaded through ClassConstructorFn (see &sect;8.4);
     //    its destructor (~FXObjectInitializer at scope exit) calls PostInitProperties.
-    FXObjectInitializer Initializer(storage, cls, Outer, Name);
-    cls-&gt;ClassConstructorFn(storage, FFieldVariant(Outer), Initializer);
+    //
+    // Rev 3 (FIX-M-R2-4): if RF_NeedLoad is set on entry, the loader is responsible
+    // for invoking PostInitProperties later (after Serialize completes); skip the
+    // FXObjectInitializer construction to avoid firing PostInitProperties twice.
+    // See &sect;10.6.1 for the async loading path.
+    const bool bSkipInitializer = (uint32_t(Flags) &amp; uint32_t(EObjectFlags::NeedLoad)) != 0;
+    if (bSkipInitializer) {
+        cls-&gt;ClassConstructorFn(storage, FFieldVariant(Outer), /*Initializer=*/nullptr);
+    } else {
+        FXObjectInitializer Initializer(storage, cls, Outer, Name);
+        cls-&gt;ClassConstructorFn(storage, FFieldVariant(Outer), Initializer);
+    }
 
     // 4. Fill XObject header.
     XObject* obj = static_cast&lt;XObject*&gt;(storage);
@@ -849,6 +926,32 @@ Result&lt;T*, FNewObjectError&gt; TryNewObject(XObject* Outer, FName Name, EObje
 
 <h2 id="sec4">4. GC Collector Algorithm</h2>
 
+<h3>4.0 EXGCOptions enum (Rev 3 per FIX-N-R2-6)</h3>
+
+<p>The collector exposes a runtime-tunable options bitmask <code>EXGCOptions</code>. Callers pass the bitmask via <code>XGarbageCollect::CollectGarbage(EXGCOptions Opts)</code> (or via the heuristic-driven internal trigger which selects defaults). Rev 3 formalizes the enum that earlier prose referred to as <code>XPACT_GC_OPTION_*</code> sentinel macros:</p>
+
+<pre><code>// Rev 3 (FIX-N-R2-6): EXGCOptions enum. Bitmask of per-cycle GC tunables.
+enum class EXGCOptions : uint32_t {
+    kNone                    = 0,
+    kEliminateGarbageRefs    = 1u &lt;&lt; 0,   // sweep also nulls references to RF_MarkedAsGarbage objects (FIX-A-HIGH-19)
+    kPreserveCDO             = 1u &lt;&lt; 1,   // never collect class default objects even if otherwise unreachable
+    kForceFullScan           = 1u &lt;&lt; 2,   // bypass card-table optimization for this cycle (debug/diagnostic use)
+    kSkipDeferredDestruction = 1u &lt;&lt; 3,   // synchronous BeginDestroy/FinishDestroy this cycle (shutdown path)
+    kIncrementalMark         = 1u &lt;&lt; 4,   // explicit incremental mark request (default is mostly-concurrent)
+    kEmitInsightsTelemetry   = 1u &lt;&lt; 5,   // emit XInsights GC.CycleComplete event (default: yes; opt-out for benchmarks)
+    kEmitVerboseLog          = 1u &lt;&lt; 6,   // emit XLog::XCoreXObject.GC at Verbose verbosity (default: Display)
+    // bits 7..31 reserved for future GC scheme additions.
+};
+XPACT_FORCEINLINE EXGCOptions operator|(EXGCOptions a, EXGCOptions b) noexcept {
+    return static_cast&lt;EXGCOptions&gt;(uint32_t(a) | uint32_t(b));
+}
+XPACT_FORCEINLINE bool HasFlag(EXGCOptions opts, EXGCOptions flag) noexcept {
+    return (uint32_t(opts) &amp; uint32_t(flag)) != 0;
+}
+</code></pre>
+
+<p>The <code>kEliminateGarbageRefs</code> option is referenced from <code>MarkForKill</code> (&sect;2.2) + the sweep flow (&sect;4.2); the rest are heuristic-tunable for specific scenarios (e.g., <code>kForceFullScan</code> at scenario unload to validate fragmentation discipline). The runtime default for an unannotated <code>CollectGarbage()</code> call is <code>kEliminateGarbageRefs | kEmitInsightsTelemetry</code>.</p>
+
 <h3>4.1 Algorithm choice (locked per Master Plan &sect;2a)</h3>
 
 <p>The collector is <strong>non-moving precise tracing mostly-concurrent mark-and-sweep with card-table generational scan-reduction</strong>. Each adjective is load-bearing:</p>
@@ -877,21 +980,21 @@ Result&lt;T*, FNewObjectError&gt; TryNewObject(XObject* Outer, FName Name, EObje
   <li><strong>Cycle end</strong>: collector resets state, increments cycle counter, updates statistics via XInsights (&sect;10.12), evaluates heuristic for next cycle.</li>
 </ol>
 
-<h4>4.2.1 Three-rotating-reachability-flags scheme (Rev 2; FIX-A-MED-23 / UE-VER-7)</h4>
+<h4>4.2.1 Three-rotating-reachability-flags scheme (Rev 2; FIX-A-MED-23 / UE-VER-7; Rev 3 relocated per FIX-M-R2-3)</h4>
 
-<p>UE 5.x uses a 3-rotating-flag scheme in <code>EInternalObjectFlags::ReachabilityFlag0/1/2</code> (ObjectMacros.h:678-680): each GC cycle picks one as "this-cycle-reachable" and another as "previous-cycle-reachable"; flipping one bit avoids a clear-pass over every entry's flag word. XPact mirrors this exactly: the FXObjectArrayEntry's StateBits low bits include 3 rotating reachability bits (bits 4, 5, 6); the GC cycle counter modulo 3 selects "this-cycle's" bit; the bit-rotation eliminates the clear-pass at cycle start (saves ~5 ms on 100k entries on Quest 3 ARM64).</p>
+<p>UE 5.x uses a 3-rotating-flag scheme in <code>EInternalObjectFlags::ReachabilityFlag0/1/2</code> (ObjectMacros.h:678-680): each GC cycle picks one as "this-cycle-reachable" and another as "previous-cycle-reachable"; flipping one bit avoids a clear-pass over every entry's flag word. XPact mirrors this exactly. <strong>Rev 3 storage location (per FIX-M-R2-3):</strong> the 3 rotating reachability bits live on the <strong>XObject header</strong> (the <code>std::atomic&lt;uint32_t&gt; ReachabilityFlag</code> field at offset 36, consuming the former <code>_padObjectFlags</code> pad slot), NOT on the FXObjectArrayEntry. This eliminates one indirection in the GC mark inner loop: previously the mark walker had to dereference the FXObjectArrayEntry, now it can read the bit directly off the XObject* that's already in the gray queue.</p>
 
-<p>Layout extension to FXObjectArrayEntry.StateBits low bits (compatible with the 32-byte ABI lock; the 64-bit StateBits has space):</p>
+<p>The GC cycle counter modulo 3 selects "this-cycle's" bit; the bit-rotation eliminates the clear-pass at cycle start (saves ~5 ms on 100k entries on Quest 3 ARM64). One bit always represents "current cycle reachable"; the other two clear naturally as GC advances three cycles (the cycle that USED bit N two cycles ago is the one whose still-unmarked objects must be swept this cycle).</p>
+
+<p>Layout (Rev 3):</p>
 <ul>
-  <li>bit 0: kMarkBit (legacy alias; in Rev 2 = current-cycle's reachability bit via index alias)</li>
-  <li>bit 1: kPendingDestroyBit</li>
-  <li>bit 2: kRootPinnedBit</li>
-  <li>bit 3: kHotReloadInProgress</li>
-  <li>bit 4: kReachabilityFlag0 (rotates per cycle)</li>
-  <li>bit 5: kReachabilityFlag1 (rotates per cycle)</li>
-  <li>bit 6: kReachabilityFlag2 (rotates per cycle)</li>
-  <li>bit 7: kGarbage (mirror of EObjectFlags::MarkedAsGarbage for fast sweep check)</li>
+  <li><strong>XObject.ReachabilityFlag</strong> (uint32 at offset 36; FIX-M-R2-3): bit 0 = kReachabilityFlag0 (rotates per cycle), bit 1 = kReachabilityFlag1, bit 2 = kReachabilityFlag2; bits 3..31 reserved. The "current cycle's" bit is selected by the global <code>g_CurrentReachabilityIndex</code> (uint8 in 0/1/2; advances monotonically per GC cycle).</li>
+  <li><strong>FXObjectArrayEntry.StateBits</strong> (uint64 at entry offset 16): bit 1 = kPendingDestroyBit, bit 2 = kRootPinnedBit, bit 3 = kHotReloadInProgress, bit 7 = kGarbageBit (mirror of EObjectFlags::MarkedAsGarbage for fast sweep check). Bits 0, 4, 5, 6 are reserved (Rev 2's mark + rotating-reachability bits relocated to XObject in Rev 3).</li>
 </ul>
+
+<p><strong>Why move them (FIX-M-R2-3 rationale).</strong> The GC mark inner loop visits each gray object's XObject pointer, walks its RefSchema, and recursively marks referenced objects. Marking a referenced object previously required: (i) load the FXObjectArrayEntry from the global table at <code>entry[InternalIndex]</code> (cache miss in steady state), (ii) atomic fetch_or on the StateBits. With Rev 3's relocation, marking is just (i) atomic fetch_or on <code>obj-&gt;ReachabilityFlag</code> &mdash; one less memory load. The savings compound across hundreds of thousands of mark operations per cycle.</p>
+
+<p><strong>kMarkBit clarification (Rev 3 per FIX-M-R2-11).</strong> The legacy <code>kMarkBit = 1ull &lt;&lt; 0</code> constant from Rev 2 was an alias for the current-cycle's reachability bit. Rev 3 makes the mechanism explicit: the IsMarked/Mark/ClearMark API operates on a mask <code>CurrentCycleReachabilityMask() = 1u &lt;&lt; g_CurrentReachabilityIndex</code> (where the index is 0/1/2 cycling per GC cycle). The mask rebinds at cycle boundary; in any single cycle, exactly one of bits 0/1/2 on each XObject's ReachabilityFlag represents "marked this cycle". The other two bits clear naturally three cycles later. This is the standard UE 5.x rotating-flag pattern (no novel mechanism); Rev 3 documents the operating model explicitly so implementation cannot accidentally treat kMarkBit as a fixed bit position.</p>
 
 <h4>4.2.2 3-color invariant SATB preserves (Rev 2; FIX-A-MED-34 / MAJOR-A11)</h4>
 
@@ -994,7 +1097,7 @@ extern "C" void XGC_WriteBarrier(void** Slot, void* NewValue) noexcept {
 
 <p><strong>Failure mode: remembered-set saturation</strong> (per Master Plan &sect;2a):</p>
 <ul>
-  <li>If the dirty-card count exceeds <code>kSaturationThreshold</code> (initial value: 50% of total cards), the collector falls back to a full-heap scan.</li>
+  <li>If the dirty-card count exceeds <code>kSaturationThreshold</code> (initial value: 50% of total cards), the collector falls back to a full-heap scan. <strong>Rev 3 verification note (per FIX-N-R2-7):</strong> the 50% threshold is calibrated against Foundation Prototype criterion (b) &lt;50ms on Quest 3 &mdash; the 50%-dirty-card scan time must complete within budget. Forward-task: validate at Phase 5.f (card-table) implementation by measuring actual scan time on a representative 50%-dirty heap; tune threshold up/down if measured time leaves &lt;10ms slack or exceeds budget.</li>
   <li>The fallback emits an XInsights telemetry event: <code>{type: "rememberedSetSaturation", cycleId: N, dirtyCardCount: M, totalCardCount: T, fallbackPauseMs: P}</code>.</li>
   <li>Card-table scan-reduction is automatically re-enabled when the old-to-young write rate stays below <code>kReentryRateThreshold</code> for <code>kReentryStabilityCycles</code> consecutive collections.</li>
   <li>In a lockstep multi-user session, a full-heap-scan fallback is a <strong>session-interrupting event</strong>: the slowest client's fallback pause delays the lockstep barrier. XCoreXObject's policy: when fallback is triggered and the local heap exceeds <code>kLockstepHardLimitMB</code>, the session pauses (instructor sees a modal: "GC saturation on client X; continue / abort"). The hard limit is calibrated so fallback pauses stay under the 50 ms criterion (b) target.</li>
@@ -1591,9 +1694,47 @@ enum class EXObjectRefSchemaOp : uint8_t {
     SlowARO                 = 15,  // deprecated slot but referenced for legacy compat
     MemberARO               = 16,  // per-member AddReferencedObjects
 
+    // Rev 3 additions (FIX-H-R2-3): full coverage of XCore-4b Rev 4's 30 FProperty subclasses
+    Interface               = 17,  // FInterfaceProperty (holds FInterface* + object reference)
+    ClassProperty           = 18,  // FClassProperty (holds FClass* meta-class reference; meta-class itself may be GC-traced)
+    SoftClass               = 19,  // FSoftClassProperty (holds soft path; resolves to FClass* on demand)
+    Delegate                = 20,  // FDelegateProperty (the bound UFunction's UObject context)
+    MulticastInlineDelegate = 21,  // FMulticastInlineDelegateProperty (TArray&lt;FDelegate&gt;)
+    MulticastSparseDelegate = 22,  // FMulticastSparseDelegateProperty (sparse-storage delegate; TSet-backed)
+
     // High bit reserved
     _Reserved255            = 255,
 };
+
+// Capability-bit assignments (FIX-H-R2-3 Rev 3 additions; existing 16-bit set extended to 22 active).
+// Active opcodes are bit-mapped onto a 32-bit capability mask carried alongside FXObjectRefSchema
+// for fast "does this schema contain any X-kind ref?" queries (used by sweep-phase
+// ELIMINATE_GARBAGE_REFS option and by XInsights debugger introspection).
+inline constexpr uint64_t kObjectOp                  = 1ull &lt;&lt;  1;
+inline constexpr uint64_t kWeakObjectOp              = 1ull &lt;&lt;  2;
+inline constexpr uint64_t kSoftObjectOp              = 1ull &lt;&lt;  3;
+inline constexpr uint64_t kArrayOfObjectOp           = 1ull &lt;&lt;  4;
+inline constexpr uint64_t kArrayOfStructOp           = 1ull &lt;&lt;  5;
+inline constexpr uint64_t kStridedArrayOfObjectOp    = 1ull &lt;&lt;  6;
+inline constexpr uint64_t kMapOfObjectKeyValueOp     = 1ull &lt;&lt;  7;
+inline constexpr uint64_t kSetOfObjectOp             = 1ull &lt;&lt;  8;
+inline constexpr uint64_t kStructOp                  = 1ull &lt;&lt;  9;
+inline constexpr uint64_t kFieldPathOp               = 1ull &lt;&lt; 10;
+inline constexpr uint64_t kFieldPathArrayOp          = 1ull &lt;&lt; 11;
+inline constexpr uint64_t kOptionalObjectOp          = 1ull &lt;&lt; 12;
+inline constexpr uint64_t kDynamicallyTypedValueOp   = 1ull &lt;&lt; 13;
+inline constexpr uint64_t kAROOp                     = 1ull &lt;&lt; 14;
+inline constexpr uint64_t kSlowAROOp                 = 1ull &lt;&lt; 15;
+inline constexpr uint64_t kMemberAROOp               = 1ull &lt;&lt; 16;
+// Rev 3 additions (FIX-H-R2-3):
+inline constexpr uint64_t kInterfaceOp               = 1ull &lt;&lt; 17;
+inline constexpr uint64_t kClassPropertyOp           = 1ull &lt;&lt; 18;
+inline constexpr uint64_t kSoftClassOp               = 1ull &lt;&lt; 19;
+inline constexpr uint64_t kDelegateOp                = 1ull &lt;&lt; 20;
+inline constexpr uint64_t kMulticastInlineOp         = 1ull &lt;&lt; 21;
+inline constexpr uint64_t kMulticastSparseOp         = 1ull &lt;&lt; 22;
+// Total active opcodes: 22 (out of 64-bit capability mask width).
+// Remaining bits 23-63 reserved for future XCore-4b FProperty subclass additions.
 
 struct FXObjectRefSchemaOp {
     EXObjectRefSchemaOp Op;          //  0  +1   opcode
@@ -1601,8 +1742,9 @@ struct FXObjectRefSchemaOp {
     uint16_t            ArrayDim;    //  2  +2   in-place array dim (for fixed-size arrays)
     int32_t             Offset;      //  4  +4   byte offset within the parent struct
     int32_t             StrideBytes; //  8  +4   stride for StridedArray opcodes; 0 otherwise
-    const FXObjectRefSchema* NestedSchema;   // 12 +8 (when Op == Struct or container of struct)
-                                              //          alignof 8 forces 12->16 padding
+    uint32_t            _padAlign;   // 12  +4   pad to align NestedSchema to 8 (Rev 3 per FIX-H-R2-5; previously implicit)
+    const FXObjectRefSchema* NestedSchema;   // 16 +8 (when Op == Struct or container of struct)
+                                              //          (4 bytes of pad at offset 12 to align NestedSchema to 8)
 };
 
 static_assert(sizeof(FXObjectRefSchemaOp) == 24,
@@ -1626,11 +1768,66 @@ static_assert(sizeof(FXObjectRefSchema) == 24,
               "FXObjectRefSchema ABI lock: 24 bytes");
 </code></pre>
 
-<p>FStruct gains a <code>FXObjectRefSchema* RefSchema</code> pointer (next to ObjectRefProperties &mdash; both exist; ObjectRefProperties is for slow-path inspection per &sect;7.3, RefSchema is for fast-path GC walk). XHT emits the packed Ops array in .rodata; the FStruct RefSchema pointer references it.</p>
+<p>FStruct gains a <code>FXObjectRefSchema* RefSchema</code> pointer (next to ObjectRefProperties &mdash; both exist; ObjectRefProperties is for slow-path inspection per &sect;7.3, RefSchema is for fast-path GC walk). XHT emits the packed Ops array in .rodata; the FStruct RefSchema pointer references it. <strong>FStruct.RefSchema is pinned at offset 112</strong> (immediately after SerializeStructFn@104; FStruct sizeof grows from 112 to 120 per Contract Rev 13.9 micro-bump &mdash; see &sect;11.2). The static_assert <code>offsetof(FStruct, RefSchema) == 112</code> in the <code>XPACT_VERIFY_XOBJECT_LAYOUT()</code> macro (&sect;11.3) catches drift at build time. <em>Forward-task / XEditor cross-layer note (per FIX-N-R2-8):</em> XEditor.PropertyInspector is a Layer 20 future consumer of the slow-path ObjectRefProperties (&sect;7.3); the reference is forward-only and lands when XEditor implements. The fast-path RefSchema is GC-internal; consumers outside XCoreXObject do not read it directly.</p>
+
+<h3>7.4.1 Schema-vector emit rules (Rev 3 added per FIX-H-R2-4)</h3>
+
+<p>XHT's emit pass walks <code>FClass.ObjectRefProperties</code> at compile time (the dense TArray populated at FClass::Link &mdash; see &sect;7.2) and emits one <code>FXObjectRefSchemaOp</code> per reference-carrying FProperty. The emit pass uses each FProperty's reflected subclass identity to select the opcode + the offset/stride parameters. Recursion into nested FStructProperty embeds a <code>Struct</code> opcode pointing at the nested struct's RefSchema (which is itself emitted as a separate .rodata vector). Primitive-typed FProperty subclasses that hold no XObject references (FInt32Property, FFloatProperty, FBoolProperty, FStrProperty, FNameProperty, FTextProperty, FEnumProperty, FByteProperty, FInt8Property, FInt16Property, FInt64Property, FUInt16Property, FUInt32Property, FUInt64Property, FDoubleProperty, FFloat16Property) emit no opcode (they don't appear in ObjectRefProperties at all).</p>
+
+<p>The full emit-rules table covers every XCore-4b Rev 4 FProperty subclass that can carry (directly or via container) an XObject reference:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>FProperty Subclass</th><th>Opcode</th><th>Offset</th><th>StrideBytes</th><th>NestedSchema</th></tr></thead>
+  <tbody>
+    <tr><td>FObjectProperty</td><td>Object</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FWeakObjectProperty</td><td>WeakObject</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FSoftObjectProperty</td><td>SoftObject</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FInterfaceProperty</td><td>Interface</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FClassProperty</td><td>ClassProperty</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FSoftClassProperty</td><td>SoftClass</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FStructProperty (inline)</td><td>Struct</td><td>property.Offset</td><td>0</td><td>property.Struct-&gt;RefSchema</td></tr>
+    <tr><td>FArrayProperty&lt;XPtr&lt;T&gt;&gt; (Inner is FObjectProperty)</td><td>ArrayOfObject</td><td>property.Offset</td><td>8 (sizeof XPtr)</td><td>nullptr</td></tr>
+    <tr><td>FArrayProperty&lt;XWeakPtr&lt;T&gt;&gt; (Inner is FWeakObjectProperty)</td><td>StridedArrayOfObject (weak variant)</td><td>property.Offset</td><td>8 (sizeof XWeakPtr)</td><td>nullptr</td></tr>
+    <tr><td>FArrayProperty&lt;FStructProperty&gt; (Inner is FStructProperty)</td><td>ArrayOfStruct</td><td>property.Offset</td><td>StructProp.ElementSize</td><td>StructProp.Struct-&gt;RefSchema</td></tr>
+    <tr><td>FArrayProperty (Inner primitive)</td><td>&mdash; (skip; no XObject refs)</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+    <tr><td>FMapProperty&lt;FName, XPtr&lt;T&gt;&gt;</td><td>MapOfObject_KeyValue (value variant)</td><td>property.Offset</td><td>KeyValPair.Stride</td><td>nullptr</td></tr>
+    <tr><td>FMapProperty&lt;XPtr&lt;T&gt;, V&gt;</td><td>MapOfObject_KeyValue (key variant)</td><td>property.Offset</td><td>KeyValPair.Stride</td><td>nullptr</td></tr>
+    <tr><td>FMapProperty&lt;XPtr&lt;K&gt;, XPtr&lt;V&gt;&gt;</td><td>MapOfObject_KeyValue (both variant)</td><td>property.Offset</td><td>KeyValPair.Stride</td><td>nullptr</td></tr>
+    <tr><td>FMapProperty&lt;FStruct, V&gt; (Key with nested refs)</td><td>MapOfObject_KeyValue</td><td>property.Offset</td><td>KeyValPair.Stride</td><td>KeyStruct-&gt;RefSchema</td></tr>
+    <tr><td>FSetProperty&lt;XPtr&lt;T&gt;&gt;</td><td>SetOfObject</td><td>property.Offset</td><td>8</td><td>nullptr</td></tr>
+    <tr><td>FSetProperty&lt;FStruct&gt; (with nested refs)</td><td>SetOfObject (struct variant)</td><td>property.Offset</td><td>Struct.ElementSize</td><td>Struct-&gt;RefSchema</td></tr>
+    <tr><td>FOptionalProperty&lt;XPtr&lt;T&gt;&gt;</td><td>OptionalObject</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FFieldPathProperty (single)</td><td>FieldPath</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FArrayProperty&lt;FFieldPath&gt;</td><td>FieldPathArray</td><td>property.Offset</td><td>sizeof(FFieldPath)</td><td>nullptr</td></tr>
+    <tr><td>FDelegateProperty</td><td>Delegate</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FMulticastInlineDelegateProperty</td><td>MulticastInlineDelegate</td><td>property.Offset</td><td>sizeof(FInlineDelegateInvocationList)</td><td>nullptr</td></tr>
+    <tr><td>FMulticastSparseDelegateProperty</td><td>MulticastSparseDelegate</td><td>property.Offset</td><td>sizeof(FSparseDelegateInvocationList)</td><td>nullptr</td></tr>
+    <tr><td>FDynamicallyTypedValueProperty (variant)</td><td>DynamicallyTypedValue</td><td>property.Offset</td><td>0</td><td>nullptr</td></tr>
+    <tr><td>FBoolProperty / FIntProperty / FFloatProperty / FStrProperty / FNameProperty / FTextProperty / FEnumProperty / FByteProperty (primitives)</td><td>&mdash; (skip; no XObject refs)</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Recursion + terminator:</strong> XHT emits one opcode per reference-carrying FProperty (no opcode for primitives), then appends a single <code>EXObjectRefSchemaOp::Terminator</code> opcode at the end. For <code>FStructProperty</code> (inline struct member), XHT emits a <code>Struct</code> opcode that points at the nested FStruct's RefSchema; the nested schema is emitted as a separate .rodata vector. The recursive walk happens at GC time (the interpreter follows the <code>NestedSchema</code> pointer), not at emit time (the schemas are independently emitted per FStruct, then referenced).</p>
+
+<p><strong>ARO opcodes:</strong> <code>ARO</code> / <code>SlowARO</code> / <code>MemberARO</code> opcodes are emitted only when the FClass declares an <code>AddReferencedObjects</code> lifecycle slot (i.e., the class has user-managed XObject references not reachable via reflected properties). These opcodes are rare (typically &lt;1% of FClasses); they dispatch through the FClass's FakeVTable AddReferencedObjects slot.</p>
+
+<p><strong>Emit-time validation:</strong> XHT verifies for each emitted opcode that (a) <code>Offset</code> is within the property's parent struct size, (b) <code>StrideBytes</code> matches the inner property's element size, (c) <code>NestedSchema</code> is non-null iff the opcode is <code>Struct</code> / <code>ArrayOfStruct</code> / <code>SetOfObject (struct variant)</code> / <code>MapOfObject_KeyValue (key/value struct variant)</code>. Violations are reported as XHT emit-time errors (forward-task: <code>XCoreXObject002 &mdash; schema-vector opcode validation failed for &lt;class&gt;.&lt;property&gt;</code>; file as forward-task for XHT Rev 7+).</p>
 
 <p><strong>Fast-path GC walk using the schema vector</strong>:</p>
 
-<pre><code>// Rev 2 fast-path mark-phase per-object scan. Replaces Rev 1's FProperty pointer-
+<pre><code>// Rev 3 (FIX-N-R2-10): cross-compiler prefetch abstraction. Defined in XCore-4a
+// macros header (or in XCoreXObject's gen-h if XCore-4a's header is unavailable
+// at the call site). Falls through to no-op on unknown compilers; on supported
+// ones, drives the platform's prefetch intrinsic at L1-hot temporal-locality 3.
+#if defined(_MSC_VER)
+  #define XPACT_PREFETCH(ptr) _mm_prefetch((const char*)(ptr), _MM_HINT_T0)
+#elif defined(__clang__) || defined(__GNUC__)
+  #define XPACT_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 3)
+#else
+  #define XPACT_PREFETCH(ptr) ((void)0)
+#endif
+
+// Rev 3 fast-path mark-phase per-object scan. Replaces Rev 1's FProperty pointer-
 // chase loop with cache-coherent opcode iteration. Targets 4000+ refs/ms on Quest 3
 // (vs Rev 1's 3000 refs/ms target with FProperty chase).
 void ScanObjectReferences_FastPath(XObject* obj, FXGrayQueue&amp; gray) {
@@ -1642,8 +1839,12 @@ void ScanObjectReferences_FastPath(XObject* obj, FXGrayQueue&amp; gray) {
 
     for (uint32_t i = 0; i &lt; numOps; ++i) {
         // Prefetch i+4 ahead (deeper than the FProperty walk because opcodes are smaller).
+        // Rev 3 (FIX-N-R2-10): cross-compiler prefetch via XPACT_PREFETCH macro
+        // defined in XCore-4a macros header (MSVC -&gt; _mm_prefetch; Clang/GCC -&gt; __builtin_prefetch;
+        // otherwise no-op). Earlier Rev 2 had a bare __builtin_prefetch which would fail to compile
+        // on MSVC.
         if (i + 4 &lt; numOps) {
-            __builtin_prefetch(&amp;ops[i + 4], 0, 0);
+            XPACT_PREFETCH(&amp;ops[i + 4]);
         }
 
         const FXObjectRefSchemaOp&amp; op = ops[i];
@@ -1704,19 +1905,33 @@ void ScanObjectReferences_FastPath(XObject* obj, FXGrayQueue&amp; gray) {
 <p>XPact uses a <strong>per-class policy</strong>:</p>
 
 <ul>
-  <li><strong>Eager CDO</strong> (declared via <code>XCLASS(MyType, MyBase, EagerCDO)</code>): the CDO is constructed at FClass::Link time, during module DLL load. Used for classes whose CDO is consumed by FClass::Link itself (i.e., the property defaults are needed for the initial property-link calculation). This is the minority; typically only engine-tier classes.</li>
+  <li><strong>Eager CDO</strong> (declared via <code>XCLASS(MyType, MyBase, EagerCDO)</code>): the CDO is constructed at FClass::Link time, during module DLL load. Used for classes whose CDO is consumed by FClass::Link itself (i.e., the property defaults are needed for the initial property-link calculation). This is the minority; typically only engine-tier classes. <strong>Rev 3 ordering (per FIX-H-R2-6):</strong> EagerCDO construction is deferred to a <em>PostStaticInit-time linker walk</em>, NOT done at static-init time. See &sect;8.1.1 below.</li>
   <li><strong>Lazy CDO</strong> (default; no annotation needed): the CDO is constructed on the first NewObject call for that class, OR on the first XPropertyEditor query for default values, OR on the first XSerialization save (which needs the default to determine which properties differ from default and need persisting). The construction happens under a per-class atomic CAS on FClass::ClassDefaultObject to ensure thread-safety.</li>
 </ul>
 
 <p><strong>Rationale</strong>: editor cold-start &le; 15 s on 1000-asset project (Foundation Prototype criterion (i)) demands aggressive lazy-load. Eager CDO construction was UE's well-known editor-startup hot spot; lazy is the correct fix per Prime Directive.</p>
 
-<h3>8.1.1 Immutable-CDO default (Rev 2; FIX-A-MED-30 / ALT-CDO-2)</h3>
+<h3>8.1.1 Immutable-CDO default + EagerCDO PostStaticInit ordering (Rev 2 + Rev 3 per FIX-H-R2-6)</h3>
 
 <p>The CDO is immutable post-construction. <code>FClass::DefaultObject</code> is <code>std::atomic&lt;const XObject*&gt;</code> (not <code>std::atomic&lt;XObject*&gt;</code>). Mutating a CDO at runtime is a bug; the type-system enforces it via the <code>const XObject*</code> accessor + the compile-time <code>const FClass</code>. UE's experimental <code>UE_WITH_IMMUTABLE_CDO</code> path is XPact's default.</p>
 
 <p>Rationale: editor + delta-serialization + replication reconciliation all read the CDO concurrently. Mutating it would require locking; immutability eliminates the race. UE 5.6+ has been moving in this direction; XPact ships the destination state from day one.</p>
 
 <p><strong>Hot-reload note</strong>: CDO replacement is the only operation that "modifies" the CDO; it does so via an atomic pointer swap (the old CDO is retired to the deferred-destruction queue; the new CDO is published atomically). See &sect;9.3.</p>
+
+<p><strong>EagerCDO + PostStaticInit ordering (Rev 3 per FIX-H-R2-6).</strong> The Rev 2 design had a subtle bootstrap ordering bug: <code>constinit const FClass</code> instances are created at static-init time (pre-<code>EInitPhase</code> ladder), but the NewObject entry path asserts <code>XPACT_CHECK(EngineInitPhase() &gt;= EInitPhase::PostStaticInit)</code>. If an EagerCDO class's <code>Z_Construct_FClass_*</code> function (in the module DLL's static-init phase) tries to construct the CDO via <code>NewObject&lt;CDO&gt;</code>, the assert fires and the engine aborts before reaching <code>main()</code>. Rev 3 resolves this with the following ordering discipline:</p>
+
+<ol>
+  <li><strong>Static-init time (TU initializers):</strong> the <code>Z_Construct_FClass_*</code> functions run for every reflected class. They register the FClass with XReflectionRuntime AND call XCoreXObject's <code>LinkClass</code> for the structural setup (PropertyLink computation, ObjectRefProperties population, RefSchema verification). For EagerCDO-flagged classes, <code>LinkClass</code> queues the CDO-construction request onto a deferred list (one global <code>TArray&lt;const FClass*&gt; g_PendingEagerCDOs</code>) instead of calling <code>NewObject</code> immediately.</li>
+  <li><strong><code>EInitPhase::PreStaticInit</code>:</strong> XCore-4a's <code>FMemory::__Init()</code> runs. No XCoreXObject work yet.</li>
+  <li><strong><code>EInitPhase::PostStaticInit</code>:</strong> XCoreXObject's <code>__Init()</code> runs &mdash; brings up the XObject heap, the FXObjectArray, the collector. After heap is ready, XCoreXObject walks <code>g_PendingEagerCDOs</code> and constructs each queued CDO via the standard <code>NewObject</code> path (now safe because the phase gate has crossed). The order of construction within the list is monotonic by registration order (which is itself deterministic per Master Plan TU-init policy).</li>
+</ol>
+
+<p>This is <strong>Option A</strong> from the FIX-H-R2-6 analysis. The alternative (Option B &mdash; EagerCDO restricted to plugin/Studio/Project modules loaded after PostStaticInit) was rejected because the engine itself has at least one EagerCDO requirement (the transient package + bootstrap singletons) and forcing those into dynamic-load mode is awkward. The deferred-PostStaticInit walk is the correct trade-off per Prime Directive: zero NewObject calls at static-init time, deterministic CDO order, no ordering surprises.</p>
+
+<p><strong>Foundational classes opt-out (Rev 2 FIX-A-HIGH-20 reaffirmed):</strong> XObject, XStruct, XClass, XInterface, XEnum use <code>EClassFlags::Intrinsic</code> and bypass normal CDO construction entirely. Their FClass instances live in <code>.rodata</code> with the FClass header pre-populated by XHT; they are hand-constructed during <code>XCoreXObject::__Init()</code> at PostStaticInit boundary BEFORE the <code>g_PendingEagerCDOs</code> walk fires. Intrinsic classes' CDOs are themselves Intrinsic-allocated (they sit in <code>.rodata</code>, not in the XObject heap; their InternalIndex is a sentinel negative value indicating "not in FXObjectArray").</p>
+
+<p><strong>Acceptance gate addition (Rev 3 per FIX-H-R2-6):</strong> X-INIT-EAGER &mdash; test that an EagerCDO class's CDO is constructed exactly once, at PostStaticInit, after the heap is up but before any user code runs. Catches the bootstrap-ordering bug at first NewObject call from EagerCDO Z_Construct path.</p>
 
 <h3>8.2 Lazy CDO construction</h3>
 
@@ -1815,8 +2030,33 @@ private:
     XObject*               OuterAtConstruction;
     FName                  NameAtConstruction;
     FObjectInstancingGraph InstancingGraph;   // archetype-aware sub-object tree (UE-faithful)
-    bool                   bPostInitFired = false;
+    bool                   bPostInitFired = false;   // Rev 3 (FIX-M-R2-5): wired into ~FXObjectInitializer for idempotency
 };
+
+// Rev 3 (FIX-M-R2-5): ~FXObjectInitializer wires bPostInitFired for idempotency.
+// Inheritance-chain ctors pass `const FXObjectInitializer&amp; Initializer` down by
+// const-ref; the most-derived initializer's destructor is the canonical PostInitProperties
+// trigger. The flag ensures multiple Initializer destructor firings (e.g., a copy
+// stored elsewhere, an explicit Initializer.Reset() call, etc.) don't double-fire
+// PostInitProperties. PostInitProperties is dispatched via the FClass lifecycle
+// FakeVTable (the FakeVTable's PostInitProperties slot's signature is `void(XObject*)`).
+inline FXObjectInitializer::~FXObjectInitializer() noexcept {
+    if (bPostInitFired) {
+        // Already fired (e.g., the inheritance chain's leaf initializer already triggered).
+        return;
+    }
+    bPostInitFired = true;
+    if (TargetObject != nullptr &amp;&amp; ClassDescriptor != nullptr &amp;&amp;
+        ClassDescriptor-&gt;LifecycleTable != nullptr) {
+        const uint32_t kPostInitBit = 1u &lt;&lt; uint32_t(EXObjectLifecycleSlot::PostInitProperties);
+        if ((ClassDescriptor-&gt;LifecycleTable-&gt;Capabilities &amp; kPostInitBit) != 0) {
+            auto* postInitFn = reinterpret_cast&lt;void(*)(XObject*)&gt;(
+                ClassDescriptor-&gt;LifecycleTable-&gt;Slots[
+                    uint32_t(EXObjectLifecycleSlot::PostInitProperties)]);
+            postInitFn(TargetObject);
+        }
+    }
+}
 </code></pre>
 
 <p><strong>FObjectInstancingGraph</strong> (UE mirror at UObjectInstancingGraph.h): tracks archetype mappings during construction. When a deserialize path constructs an XActor whose archetype is a Blueprint-derived class, the FObjectInstancingGraph maps each sub-object in the archetype's CDO to a sub-object instance in the new XActor. Sub-object templating: CDO sub-objects are deep-copied for non-CDO instances unless overridden.</p>
@@ -1849,6 +2089,50 @@ public:
 
 <p>CreateDefaultSubobject's stable-name discipline allows Blueprint-derived classes to override sub-object types: a Blueprint that derives from XCharacter and wants a custom XMeshComponent variant can declare <code>OverrideDefaultSubobject&lt;XCustomMesh&gt;("Mesh")</code>; the FObjectInstancingGraph resolves the override at construction.</p>
 
+<h4>8.4.1 Canonical FXObjectInitializer constructor signature (Rev 3 per FIX-M-R2-6)</h4>
+
+<p>The canonical XObject-derived constructor signature is <code>T(const FXObjectInitializer&amp; Initializer)</code>. The FXObjectInitializer is <code>mutable</code> internally (it tracks <code>bPostInitFired</code> state, CreateDefaultSubobject side effects, instancing graph mutations) but is exposed as <code>const FXObjectInitializer&amp;</code> to allow inheritance-chain pass-through. Standard inheritance pattern:</p>
+
+<pre><code>// Canonical inheritance pattern (Rev 3 explicit per FIX-M-R2-6).
+// XCharacter extends XActor extends XObject.
+// Each ctor takes `const FXObjectInitializer&amp; Initializer` and chains.
+
+class XActor : public XObject {
+    XCLASS(XActor, XObject, ClassFlags = (Placeable))
+
+public:
+    XActor(const FXObjectInitializer&amp; Initializer)
+        : XObject(Initializer) {
+        // XActor-specific construction (CreateDefaultSubobject calls allowed here).
+        Components = Initializer.CreateDefaultSubobject&lt;TArray&lt;XPtr&lt;XComponent&gt;&gt;&gt;("Components");
+    }
+};
+
+class XCharacter : public XActor {
+    XCLASS(XCharacter, XActor, ClassFlags = (Placeable, BlueprintInheritable))
+
+public:
+    XCharacter(const FXObjectInitializer&amp; Initializer)
+        : XActor(Initializer)   // chain to base; Initializer threaded by const-ref
+    {
+        // XCharacter-specific CreateDefaultSubobject calls
+        Mesh    = Initializer.CreateDefaultSubobject&lt;XMeshComponent&gt;("Mesh");
+        Capsule = Initializer.CreateDefaultSubobject&lt;XCapsuleComponent&gt;("Capsule");
+    }
+};
+
+// At NewObject scope exit (the FXObjectInitializer's destructor runs):
+//   ~FXObjectInitializer fires PostInitProperties on the just-constructed XCharacter.
+//   The bPostInitFired flag (FIX-M-R2-5) ensures the destructor's PostInitProperties
+//   call is idempotent: if any of the chain's intermediate ctors caused an Initializer
+//   destruction (which shouldn't happen in correct code, but the flag is defensive),
+//   PostInitProperties fires exactly once.
+</code></pre>
+
+<p>The const-ref signature gives the FXObjectInitializer the mutability it needs internally (via the <code>mutable</code> keyword on its private state) while preventing user code from reassigning the Initializer or moving it. Sub-objects registered via <code>CreateDefaultSubobject</code> from any level of the inheritance chain all attribute to the same Initializer, which knows the target object's identity from construction time.</p>
+
+<p><strong>XHT-emitter contract:</strong> XHT emits the per-class <code>ClassConstructorFnImpl</code> with the signature <code>void (void* InstancePtr, FFieldVariant Owner, const FXObjectInitializer&amp; Initializer)</code> (or accepting <code>nullptr</code> when the loader path skips Initializer per FIX-M-R2-4 / &sect;10.6.1). The placement-new call within the implementation reads <code>new (InstancePtr) ClassType(Initializer)</code>; the user-class constructor's signature must accept the const-ref to compile.</p>
+
 <hr>
 
 <h2 id="sec9">9. Hot-Reload Survival</h2>
@@ -1869,7 +2153,7 @@ public:
 <p>XLiveCoding orchestrates the cascade. The protocol involves XCoreXObject as follows. <strong>Layout-drift check moved (Rev 2 per FIX-A-HIGH-14):</strong> the layout-drift check is now performed at XLiveCoding's Phase 1 pre-commit gate, before BeginHotReloadQuiesce. XCoreXObject assumes any patch reaching FinishHotReloadCascade has cleared the upstream layout check. Patches with layout drift are rejected at Phase 1 (the close/reopen flow is required; FIX-A-HIGH-17).</p>
 
 <ol>
-  <li><strong>XLiveCoding signals BeginHotReloadQuiesce(FHotReloadThreadEnumeration)</strong>. XCoreXObject quiesces the explicitly-enumerated thread set (Rev 2 per FIX-A-HIGH-14):
+  <li><strong>XLiveCoding signals BeginHotReloadQuiesce(FHotReloadThreadEnumeration)</strong>. XCoreXObject quiesces the explicitly-enumerated thread set (Rev 2 per FIX-A-HIGH-14; Rev 3 extension-hook discipline per FIX-M-R2-9 below):
     <ul>
       <li><strong>Game thread</strong>: parked at frame boundary.</li>
       <li><strong>Render thread</strong>: parked after pending RenderCommand flush.</li>
@@ -1882,6 +2166,16 @@ public:
       <li><strong>Asset workers</strong> (texture-streaming, mesh-streaming): parked at next sleep point.</li>
       <li><strong>Audio mixer</strong>: parked after sample-frame flush.</li>
     </ul>
+    <strong>Extension-hook discipline (Rev 3 per FIX-M-R2-9).</strong> Future engine systems beyond the foundation set (XAutomationTool, XBuildPatchTool, XCloudPersistence, etc.) need to participate in the hot-reload quiesce without forcing a spec edit for each new addition. The hot-reload quiesce thread-set is registered via:
+    <pre><code>// Rev 3 (FIX-M-R2-9) extension hook on XLiveCoding's registry.
+namespace XLiveCoding {
+    void RegisterThreadRole(FName RoleName,
+                             void(*ParkHook)(),
+                             void(*UnparkHook)()) noexcept;
+    void UnregisterThreadRole(FName RoleName) noexcept;
+} // namespace XLiveCoding
+</code></pre>
+    XCoreXObject pre-registers the 10 core roles enumerated above (GameThread, RenderThread, RHIThread, AudioThread, AudioMixerThread, LoadingThread, WorkerPoolThread, GCMarkerThread, PSOCompileThread, AssetWorkerThread). Plugins can extend the parkable set at module-load time by calling <code>XLiveCoding::RegisterThreadRole</code>; the registered ParkHook fires during quiesce, the UnparkHook fires when the cascade completes. The hook contract: the ParkHook must drain its system's work queue, set the system to a quiescent state, and signal completion via the standard quiesce-completion API; the UnparkHook restores normal operation. The framework keeps Rev 3's enumeration intentionally complete for the foundation (so the core systems' quiesce is testable now), while supporting forward-only extension without spec edit.
     Additionally, XCoreXObject:
     <ul>
       <li>Waits for any in-progress GC cycle to complete.</li>
@@ -2000,16 +2294,12 @@ public:
 
 namespace XInsights {
 
-    // Variant payload value. Supports int64 / double / FString.
-    struct FInsightsValue {
-        enum class EKind : uint32_t { Int64, Double, String };
-        EKind   Kind;
-        union {
-            int64_t I64;
-            double  Dbl;
-            FString Str;
-        };
-    };
+    // Rev 3 (FIX-M-R2-1): Variant payload value. Supports int64 / double / FString.
+    // Was Rev 2 union + explicit Kind discriminator; Rev 3 replaces with std::variant
+    // which carries its own type-discriminator (variant::index()). The Kind field is
+    // unnecessary and is removed. std::variant is C++20 standard-library (matches
+    // Master Plan &sect;2a C++ standard row) and is constexpr-friendly.
+    using FInsightsValue = std::variant&lt;int64_t, double, FString&gt;;
 
     // Structured key-value blob; payload of a single event.
     struct FXInsightsPayload {
@@ -2044,16 +2334,71 @@ namespace XInsights {
   <li><code>constinit const FXObjectRefSchema XActor_RefSchema</code> in .rodata, pointing at the Ops array.</li>
 </ul>
 
-<h3>10.6.1 Async loading object graph (Rev 2; FIX-A-MED-28 / UE5-IMPRV-3)</h3>
+<h3>10.6.1 Async loading object graph (Rev 2 + Rev 3; FIX-A-MED-28 / UE5-IMPRV-3 / FIX-M-R2-4)</h3>
 
-<p>Async loading worker calls <code>NewObject&lt;T&gt;(Outer, Name, RF_NeedLoad)</code> with <code>RF_NeedLoad</code> set. The flag inhibits PostInitProperties; the object's references are not yet resolved. Async loading completes when all RF_NeedLoad objects' Serialize calls finish, then RF_NeedPostLoad triggers PostLoad in batch:</p>
+<p>Async loading worker calls <code>NewObject&lt;T&gt;(Outer, Name, RF_NeedLoad)</code> with <code>RF_NeedLoad</code> set. The flag inhibits PostInitProperties; the object's references are not yet resolved. Async loading completes when all RF_NeedLoad objects' Serialize calls finish, then RF_NeedPostLoad triggers PostLoad in batch.</p>
+
+<p><strong>RF_NeedLoad + FXObjectInitializer interaction (Rev 3 per FIX-M-R2-4).</strong> Async loading bypasses the FXObjectInitializer destructor-driven PostInitProperties flow. The loader's NewObject call sets <code>RF_NeedLoad</code> on the object; in this mode, the NewObject path does <strong>NOT</strong> construct an FXObjectInitializer on stack; PostInitProperties is deferred until after Serialize completes (and only fires if the object did not have <code>RF_NeedLoad</code> set on entry). Once Serialize sets the references, PostInitProperties + PostLoad fire in batch via the loader's batch-finalize step.</p>
+
+<p>The control-flow:</p>
 <ol>
-  <li>Loader allocates each object with <code>RF_NeedLoad | RF_NeedPostLoad</code>.</li>
-  <li>Loader runs <code>Serialize</code> via the FClass's lifecycle FakeVTable to fill in property values from archive.</li>
-  <li>When all RF_NeedLoad objects in the load batch have completed Serialize, the loader clears RF_NeedLoad on all.</li>
-  <li>For each object with RF_NeedPostLoad set, the loader calls <code>PostLoad</code> via the lifecycle FakeVTable.</li>
-  <li>After PostLoad, the loader clears RF_NeedPostLoad. The object is fully active.</li>
+  <li>Loader allocates each object with <code>RF_NeedLoad | RF_NeedPostLoad</code>. NewObject path detects the <code>RF_NeedLoad</code> bit at entry and skips the FXObjectInitializer construction (no <code>~FXObjectInitializer</code> firing PostInitProperties at scope exit). The object is left in a "constructed but uninitialized" state.</li>
+  <li>Loader runs <code>Serialize</code> via the FClass's lifecycle FakeVTable to fill in property values from archive (XSerialization is the strong-symbol provider of the Serialize slot per FIX-A-HIGH-13).</li>
+  <li>When all RF_NeedLoad objects in the load batch have completed Serialize, the loader clears <code>RF_NeedLoad</code> on all.</li>
+  <li>For each object with <code>RF_NeedPostLoad</code> set, the loader calls <code>PostInitProperties</code> via the lifecycle FakeVTable FIRST (the FXObjectInitializer's destructor-trigger was bypassed in step 1), then calls <code>PostLoad</code> via the lifecycle FakeVTable. Order is important: PostInitProperties sees the deserialized property values (since Serialize ran in step 2); PostLoad sees the fully-bound object graph.</li>
+  <li>After PostLoad, the loader clears <code>RF_NeedPostLoad</code>. The object is fully active.</li>
 </ol>
+
+<p>Inline code example (loader path):</p>
+<pre><code>// Async loader's per-object create + serialize + finalize sequence (Rev 3).
+namespace XSerialization {
+
+XObject* AsyncLoader::CreateAndSerialize(const FClass* cls,
+                                          XObject* outer,
+                                          FName name,
+                                          FArchive&amp; archive) {
+    // Step 1: NewObject with RF_NeedLoad bypasses FXObjectInitializer.
+    XObject* obj = NewObject&lt;XObject&gt;(outer, name,
+        EObjectFlags::NeedLoad | EObjectFlags::NeedPostLoad);
+    obj-&gt;ClassPrivate = cls;   // overridden because the FClass is resolved late
+
+    // Step 2: Serialize from archive (via FClass's lifecycle FakeVTable).
+    auto* serializeFn = reinterpret_cast&lt;void(*)(XObject*, FArchive&amp;, const FArchiveContext*)&gt;(
+        cls-&gt;LifecycleTable-&gt;Slots[uint32_t(EXObjectLifecycleSlot::Serialize)]);
+    if (serializeFn) {
+        serializeFn(obj, archive, /*Ctx=*/nullptr);
+    }
+
+    return obj;
+}
+
+void AsyncLoader::FinalizeBatch(TArrayView&lt;XObject*&gt; batch) {
+    // Step 3: clear RF_NeedLoad on all.
+    for (XObject* obj : batch) {
+        obj-&gt;ClearFlags(uint32_t(EObjectFlags::NeedLoad));
+    }
+    // Step 4: PostInitProperties then PostLoad (in batch order; respects archive order).
+    for (XObject* obj : batch) {
+        if (obj-&gt;HasAnyFlags(uint32_t(EObjectFlags::NeedPostLoad))) {
+            auto* postInitFn = reinterpret_cast&lt;void(*)(XObject*)&gt;(
+                obj-&gt;ClassPrivate-&gt;LifecycleTable-&gt;Slots[
+                    uint32_t(EXObjectLifecycleSlot::PostInitProperties)]);
+            if (postInitFn) postInitFn(obj);
+            auto* postLoadFn = reinterpret_cast&lt;void(*)(XObject*)&gt;(
+                obj-&gt;ClassPrivate-&gt;LifecycleTable-&gt;Slots[
+                    uint32_t(EXObjectLifecycleSlot::PostLoad)]);
+            if (postLoadFn) postLoadFn(obj);
+        }
+    }
+    // Step 5: clear RF_NeedPostLoad.
+    for (XObject* obj : batch) {
+        obj-&gt;ClearFlags(uint32_t(EObjectFlags::NeedPostLoad));
+    }
+}
+
+} // namespace XSerialization
+</code></pre>
+
 <p>The loader thread is included in the hot-reload quiesce thread enumeration (&sect;9.2 per FIX-A-HIGH-14).</p>
 
 <h3>10.7 XIL2CPP integration (System 6)</h3>
@@ -2078,6 +2423,27 @@ namespace XInsights {
   <li>Pure-value generics (e.g., <code>List&lt;int&gt;</code>, <code>Dictionary&lt;string, double&gt;</code>) emit no XGCRootSpan.</li>
 </ol>
 <p>Example: <code>List&lt;XActor&gt;</code> emits a typed XGCRootSpan with stride 8 (the XPtr&lt;XActor&gt; payload). <code>List&lt;object&gt;</code> emits Conservative XGCRootSpan plus a build-time sim-path warning. <code>Dictionary&lt;FName, XActor&gt;</code> emits typed-by-value (value stride) XGCRootSpan.</p>
+
+<p><strong>Closed-type-tree analysis bounds (Rev 3 per FIX-M-R2-7).</strong> XIL2CPP's generic-instantiation walk is bounded by:</p>
+<ul>
+  <li><strong>Max recursion depth 16</strong>. Closed generic types nest at most 16 levels deep before the walk halts. Depth 16 covers all reasonable nested-generic patterns (e.g., <code>List&lt;Dictionary&lt;FName, List&lt;XPtr&lt;XActor&gt;&gt;&gt;&gt;</code> is depth 4; depth 16 is well over typical engine use).</li>
+  <li><strong>Cycle-detection HashSet of visited type instantiations</strong>. C# generics can in principle declare cyclic dependencies (e.g., <code>class A&lt;T&gt; { B&lt;T&gt; b; } class B&lt;T&gt; { A&lt;T&gt; a; }</code>); the walk records every visited closed-type instantiation in a HashSet and refuses to revisit. The HashSet is per-walk (one walk per top-level reflected type emit).</li>
+</ul>
+<p>On exceeding either bound, XIL2CPP emits a <strong>build-time error</strong>:</p>
+<ul>
+  <li><code>XIL2CPP123 &mdash; generic instantiation closure exceeds depth 16</code> &mdash; the offending closed type is identified in the error message with its instantiation path.</li>
+  <li><code>XIL2CPP124 &mdash; cyclic generic type closure detected</code> &mdash; the cycle members are enumerated in the error message.</li>
+</ul>
+<p>The error is non-overrideable (no opt-out flag); the build fails per Prime Directive on either condition. The user must redesign the generic dependency graph.</p>
+
+<p><strong>Conservative XGCRootSpan warning timing (Rev 3 per FIX-M-R2-8).</strong> When XIL2CPP emits a Conservative XGCRootSpan for a closed type (List&lt;object&gt;, Dictionary&lt;K, object&gt;, open-typed members, etc.), it fires a build-time warning <strong>once per closed-type instantiation, suppressed on subsequent occurrences in the same build</strong>. The de-duplication uses XIL2CPP's build cache: each Conservative-emit records the canonical closed-type signature; subsequent emits with the same signature skip the warning. Warning category: <code>XIL2CPP-Conservative</code>. Format:</p>
+<pre><code>XIL2CPP-Conservative: closed type `&lt;name&gt;` emits Conservative XGCRootSpan at &lt;file&gt;:&lt;line&gt;.
+This adds 10-20 cycles per slot validation at GC time. If this type is consumed
+from sim-path code, validate at sim-path TUs: the type's mutations cannot be
+sim-path-deterministic. Consider switching to a statically-typed container
+(List&lt;XActor&gt; instead of List&lt;object&gt;) to eliminate the conservative scan.
+</code></pre>
+<p>The warning is informational (Build succeeds); the user can resolve it by refining the C# code's type annotations.</p>
 
 <h4>10.7.2 C# async/await with XObject captures (Rev 2; FIX-A-MED-25 / MOD-CS-2)</h4>
 
@@ -2202,37 +2568,58 @@ void FXObjectArray::RemoveDeleteListener(IXObjectDeleteListener* Listener) noexc
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Tag string-literal pin</th><th>Value</th></tr></thead>
   <tbody>
-    <tr><td><code>XPACT_XOBJECT_LAYOUT_TAG</code></td><td>"XObject-v2: 56 bytes; ClassPrivate@0, InternalIndex@8, SerialNumber@12, Outer@16, NamePrivate@24, ObjectFlags@32, _padObjectFlags@36, _reservedCluster0@40, _reservedCluster1@48; alignof = 8; no virtuals on the GC-relevant surface (FakeVTable pattern). Rev 2: cluster reservation expanded to 16 bytes; remote-id reservation dropped (FIX-A-MIN-49 / O5)."</td></tr>
+    <tr><td><code>XPACT_XOBJECT_LAYOUT_TAG</code></td><td>"XObject-v2: 56 bytes; ClassPrivate@0, InternalIndex@8, SerialNumber@12, Outer@16, NamePrivate@24, ObjectFlags@32, ReachabilityFlag@36 (Rev 3 per FIX-M-R2-3 moved from FXObjectArrayEntry), _reservedCluster0@40, _reservedCluster1@48; alignof = 8; no virtuals on the GC-relevant surface (FakeVTable pattern). Rev 2: cluster reservation expanded to 16 bytes; remote-id reservation dropped (FIX-A-MIN-49 / O5). Rev 3: per-object reachability flag consumes former _padObjectFlags slot."</td></tr>
     <tr><td><code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code></td><td>"XGCCardTable-v1: byte-per-card flat array; card size = 512 bytes; max heap = 4 GB; card table = 8 MB; clean = 0x00, dirty = 0x01"</td></tr>
-    <tr><td><code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code></td><td>"FXObjectArrayEntry-v1: 32 bytes; Object@0, SerialNumber@8, ClusterRootIndex@12, StateBits@16 (atomic; rotating reachability bits 4/5/6 per FIX-A-MED-23), _reserved@24; alignof = 8"</td></tr>
+    <tr><td><code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code></td><td>"FXObjectArrayEntry-v1: 32 bytes; Object@0, SerialNumber@8, ClusterRootIndex@12, StateBits@16 (atomic; pending-destroy + root-pinned + hot-reload + garbage bits), _reserved@24; alignof = 8. Rev 3: rotating reachability flag moved to XObject header per FIX-M-R2-3."</td></tr>
     <tr><td><code>XPACT_XOBJECTKEY_LAYOUT_TAG</code></td><td>"XObjectKey-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); ABI-compatible with XWeakPtr; alignof = 4"</td></tr>
     <tr><td><code>XPACT_XWEAKPTR_LAYOUT_TAG</code></td><td>"XWeakPtr-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); matches XCore-4b's FWeakObjectPtr placeholder shape; alignof = 4"</td></tr>
     <tr><td><code>XPACT_XPTR_LAYOUT_TAG</code> (Rev 2 added per FIX-A-MIN-43)</td><td>"XPtr-v1: 8 bytes; Ptr@0 (raw T* compatible); ABI-equivalent to T*; alignof = 8"</td></tr>
     <tr><td><code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code></td><td>"FXObjectLifecycleTable-v1: 72 bytes per FClass; 8-byte header (Capabilities@0 + _pad@4) + 8 slots * 8 bytes = 64 bytes; alignof = 8. Serialize slot signature: void(*)(XObject*, FArchive&amp;, const FArchiveContext*) per FIX-A-HIGH-13."</td></tr>
-    <tr><td><code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code> (Rev 2 added; FIX-A-CRIT-8 / UE-MISS-1)</td><td>"FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), _padTail@16; alignof = 8. FXObjectRefSchemaOp is 24 bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 (u16), Offset@4 (i32), StrideBytes@8 (i32), NestedSchema@16 (const FXObjectRefSchema*); alignof = 8."</td></tr>
+    <tr><td><code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code> (Rev 2 added; FIX-A-CRIT-8 / UE-MISS-1)</td><td>"FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), _padTail@16; alignof = 8. FXObjectRefSchemaOp is 24 bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 (u16), Offset@4 (i32), StrideBytes@8 (i32), NestedSchema@16 (const FXObjectRefSchema*); alignof = 8 (4 bytes of pad at offset 12 to align NestedSchema to 8). Rev 3: 22 active opcodes (added Interface, ClassProperty, SoftClass, Delegate, MulticastInlineDelegate, MulticastSparseDelegate per FIX-H-R2-3)."</td></tr>
+    <tr><td><code>XPACT_FSTRUCT_LAYOUT_TAG</code> (Rev 3 added; FIX-C-R2-1)</td><td>"FStruct-v5 (Contract Rev 13.9 extension via XCoreXObject Rev 3): 120 bytes; Class@0 (8) + Owner@8 (8) + Next@16 (8) + Name@24 (8) + SuperStruct@32 (8) + ChildProperties@40 (8) + PropertyLink@48 (8) + ObjectRefProperties@56 (16 = TArray&lt;FProperty*&gt;) + SchemaHash@72 (8) + SchemaVersion@80 (4) + _pad@84 (4) + UnversionedSchema@88 (8) + SerializeStructFn@96 (8) + DestructorLink@104 (8) + RefSchema@112 (8). RefSchema is the fast-path GC walker pointer appended per FIX-A-CRIT-8 / UE-MISS-1. Conceptual layout name string &mdash; the real field offsets per XCore-4b Rev 4 are: NamePrivate@0, SuperStruct@8, ChildProperties@16, PropertiesSize@24, MinAlignment@28, StructFlags@30, _padStructFlags@31, PropertyLink@32, DestructorLink@40, PostConstructLink@48, ObjectRefProperties@56 (24 byte TArray), SchemaHash@80, SchemaVersion@88, _padSchema@92, UnversionedSchema@96, SerializeStructFn@104, RefSchema@112 (Rev 3 appended)."</td></tr>
+    <tr><td><code>XPACT_FCLASS_LAYOUT_TAG</code> (Rev 3 v6 supersedes Rev 2; FIX-C-R2-1 / FIX-N-R2-1)</td><td>"FClass-v6 (Contract Rev 13.9 extension via XCoreXObject Rev 3): 240 bytes = 120 FStruct base (with appended RefSchema@112) + 120 FClass-specific (with appended LifecycleTable@112 relative to FClass-specific start = FClass-absolute offset 232). FClass-specific field layout (offsets relative to FStruct end at FClass-absolute 120): ClassConstructorFn@0, ClassVTableHelperCtorCaller@8, ClassDefaultObject@16, ClassFlags@24, ClassCastFlags@32, ClassWithin@40, FirstOwnedClassRep@48, ClassRepCount@52, ClassReps@56 (24 byte TArray&lt;FRepRecord&gt;), NetFields@80 (24 byte TArray&lt;FField*&gt;), ClassConfigName@104, LifecycleTable@112 (Rev 3 appended; FClass-absolute offset 232). Per XCore-4b Rev 4 §11.6 baseline (224 = 112 + 112) + Rev 13.9 micro-bump appends RefSchema@FStruct.112 (+8) and LifecycleTable@FClass-specific.112 (+8), yielding FClass total 240 bytes."</td></tr>
   </tbody>
 </table>
 
-<h3>11.2 Contract Rev 13.9 micro-bump (Rev 2 confirmed per FIX-A-CRIT-3 / O1)</h3>
+<h3>11.2 Contract Rev 13.9 micro-bump (Rev 3 arithmetic corrected per FIX-C-R2-1)</h3>
 
-<p>XCoreXObject triggers Contract Rev 13.9 micro-bump, adding one field to FClass:</p>
+<p>XCoreXObject triggers Contract Rev 13.9 micro-bump, adding <strong>two</strong> appended pointers (both 8-byte): one to FStruct (<code>RefSchema</code>) and one to FClass-specific (<code>LifecycleTable</code>). Rev 2's arithmetic was internally inconsistent (it claimed FClass = 232 = 112 + 120 while simultaneously claiming FStruct grew to 120 &mdash; mathematically those two assertions cannot both be true). Rev 3 corrects this by re-deriving against the XCore-4b Rev 4 ground truth.</p>
+
+<p><strong>Rev 3 arithmetic (matches XCore-4b Rev 4 §11.3 / §11.6 ground truth):</strong></p>
 
 <table border="1" cellpadding="6" cellspacing="0">
-  <thead><tr><th>Field</th><th>Offset</th><th>Type</th><th>Purpose</th></tr></thead>
+  <thead><tr><th>Type</th><th>XCore-4b Rev 4 (Contract Rev 13.8)</th><th>Rev 13.9 micro-bump (this spec)</th><th>Delta</th></tr></thead>
   <tbody>
-    <tr><td><code>const FXObjectLifecycleTable* LifecycleTable</code></td><td>Appended; sizeof FClass becomes 232 (Rev 13.8's 224 + 8)</td><td>8-byte pointer</td><td>Per-class lifecycle dispatch table (PostInitProperties, BeginDestroy, FinishDestroy, AddReferencedObjects, ...). Points to .rodata-resident table emitted by XHT.</td></tr>
+    <tr><td>FStruct</td><td>112 bytes (NamePrivate@0 ... SerializeStructFn@104)</td><td><strong>120 bytes</strong> &mdash; appends <code>const FXObjectRefSchema* RefSchema @ offset 112</code></td><td>+8</td></tr>
+    <tr><td>FClass-specific portion</td><td>112 bytes (ClassConstructorFn@0 ... ClassConfigName@104)</td><td><strong>120 bytes</strong> &mdash; appends <code>const FXObjectLifecycleTable* LifecycleTable @ FClass-specific offset 112</code> (FClass-absolute offset = 120 FStruct base + 112 = <strong>232</strong>)</td><td>+8</td></tr>
+    <tr><td>FClass total</td><td>224 bytes (112 + 112)</td><td><strong>240 bytes</strong> (120 FStruct base + 120 FClass-specific)</td><td>+16</td></tr>
   </tbody>
 </table>
 
-<p>Updated tag (Rev 2 corrected): <code>XPACT_FCLASS_LAYOUT_TAG = "FClass-v6: 232 bytes = 112 FStruct base + 120 FClass-specific (Rev 13.8's 112 + new 8-byte LifecycleTable pointer at offset 112). Triggered by XCoreXObject Rev 2 / Contract Rev 13.9 micro-bump."</code>.</p>
+<p><strong>Field detail (Rev 13.9):</strong></p>
 
-<p>FStruct also gains a <code>FXObjectRefSchema* RefSchema</code> pointer per FIX-A-CRIT-8 / UE-MISS-1. Implementation-time consideration: XCore-4b's FStruct sizeof was 112 (Rev 13.8); the RefSchema pointer addition is part of the Rev 13.9 micro-bump. FStruct sizeof becomes 120 in Rev 13.9. <strong>This is also part of the Contract delta XCoreXObject triggers</strong>; both FClass +8 and FStruct +8 (RefSchema) land together at Rev 13.9.</p>
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Field</th><th>Carrier</th><th>Offset within carrier</th><th>FClass-absolute offset</th><th>Type</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>const FXObjectRefSchema* RefSchema</code></td><td>FStruct (base)</td><td>112 (appended after SerializeStructFn@104)</td><td>112</td><td>8-byte pointer</td><td>Fast-path GC walker schema vector (UE-MISS-1 / FIX-A-CRIT-8). Points to .rodata-resident opcode array emitted by XHT.</td></tr>
+    <tr><td><code>const FXObjectLifecycleTable* LifecycleTable</code></td><td>FClass-specific portion</td><td>112 (appended after ClassConfigName@104 within FClass-specific)</td><td>232 (= 120 FStruct base + 112 FClass-specific offset)</td><td>8-byte pointer</td><td>Per-class lifecycle dispatch table (PostInitProperties, BeginDestroy, FinishDestroy, AddReferencedObjects, ...). Points to .rodata-resident table emitted by XHT.</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Rev 2 arithmetic divergence (per Prime Directive disclosure):</strong> Rev 2 claimed "FClass sizeof becomes 232 = 112 FStruct base + 120 FClass-specific" in this section. That arithmetic was wrong because it tried to keep FStruct at 112 while also (in &sect;7.4) appending RefSchema to FStruct. Rev 3 reconciles: both pointers are real, both add 8 bytes to their respective carriers, FClass becomes 240 (not 232). The Round 2 audit prompt at FIX-C-R2-1(c) requested the math be "120 + 112 = 232" based on an assumption that XCore-4b Rev 4 FClass-specific was 104 (not 112); that assumption contradicts XCore-4b Rev 4 &sect;7.3 (which explicitly shows ClassConstructorFn@0 through ClassConfigName@104 = 112 bytes FClass-specific) and the static_assert <code>sizeof(FClass) == 112 + 112</code> in XCore-4b Rev 4. Per Prime Directive ("Use the thing that is correct not the thing that is easier to implement"), Rev 3 publishes the mathematically correct FClass = 240 bytes. Master Plan Rev 16 amendment notes the corrected sizeof.</p>
+
+<p>Updated tag: <code>XPACT_FCLASS_LAYOUT_TAG = "FClass-v6: 240 bytes = 120 FStruct base (with appended RefSchema@112) + 120 FClass-specific (with appended LifecycleTable@FClass-specific.112 = FClass-absolute.232). Triggered by XCoreXObject Rev 3 / Contract Rev 13.9 micro-bump."</code>. The companion <code>XPACT_FSTRUCT_LAYOUT_TAG = "FStruct-v5: 120 bytes; RefSchema appended at offset 112."</code> lands at the same Rev 13.9 micro-bump (both pointers ship together; cascade is atomic).</p>
+
+<p><strong>Memory impact (Rev 3 sanity check):</strong> with FClass = 240 bytes and ~10k reflected classes per project, FClass-table footprint is 2.4 MB (was 2.32 MB in the Rev 2 incorrect estimate). The +16 byte/class delta against Rev 13.8 baseline costs ~160 KB module-footprint. Per FXObjectInitializer / XCoreXObject &sect;1.4 framing, the 240-byte FClass is the right trade-off (per-class lifecycle dispatch + per-class schema vector) vs the alternatives (parallel TMap lookup = hash-probe cost per dispatch; inline 72-byte lifecycle table per FClass = 720 KB module footprint). The 240-byte FClass is the correct point per Prime Directive.</p>
 
 <h3>11.3 Static_assert pin set (XCoreXObject side)</h3>
 
 <pre><code>// XCoreXObject's full pin set (gathered into a single header for build-time
 // verification; emitted per-module so any mismatch produces a clear error site).
-// Rev 2 expanded for cluster reservation, RefSchema, XStrongPtr.
+// Rev 3 expanded for: (i) FStruct sizeof + RefSchema offset pin (FIX-C-R2-1 + FIX-H-R2-1);
+// (ii) FClass sizeof + LifecycleTable offset pin (FIX-C-R2-1 + FIX-H-R2-2);
+// (iii) ReachabilityFlag offset on XObject (FIX-M-R2-3). Rev 2's pin set is preserved
+// for the unchanged types (XObject body, FXObjectArrayEntry, handles, lifecycle table).
 
 #define XPACT_VERIFY_XOBJECT_LAYOUT()                                                          \
     static_assert(sizeof(XObject)                       == 56, "XObject ABI lock");            \
@@ -2243,6 +2630,7 @@ void FXObjectArray::RemoveDeleteListener(IXObjectDeleteListener* Listener) noexc
     static_assert(offsetof(XObject, Outer)              == 16, "XObject.Outer offset");        \
     static_assert(offsetof(XObject, NamePrivate)        == 24, "XObject.NamePrivate offset");  \
     static_assert(offsetof(XObject, ObjectFlags)        == 32, "XObject.ObjectFlags offset");  \
+    static_assert(offsetof(XObject, ReachabilityFlag)   == 36, "XObject.ReachabilityFlag offset (Rev 3 per FIX-M-R2-3; consumes former _padObjectFlags)"); \
     static_assert(offsetof(XObject, _reservedCluster0)  == 40, "XObject._reservedCluster0");   \
     static_assert(offsetof(XObject, _reservedCluster1)  == 48, "XObject._reservedCluster1");   \
     static_assert(sizeof(FXObjectArrayEntry)            == 32, "FXObjectArrayEntry ABI lock"); \
@@ -2253,8 +2641,15 @@ void FXObjectArray::RemoveDeleteListener(IXObjectDeleteListener* Listener) noexc
     static_assert(sizeof(FXObjectLifecycleTable)        == 72, "FXObjectLifecycleTable ABI lock"); \
     static_assert(sizeof(FXObjectRefSchema)             == 24, "FXObjectRefSchema ABI lock");  \
     static_assert(sizeof(FXObjectRefSchemaOp)           == 24, "FXObjectRefSchemaOp ABI lock");\
-    static_assert(alignof(FXObjectRefSchemaOp)          ==  8, "FXObjectRefSchemaOp alignment");
+    static_assert(alignof(FXObjectRefSchemaOp)          ==  8, "FXObjectRefSchemaOp alignment"); \
+    /* Rev 3 (FIX-C-R2-1 + FIX-H-R2-1 + FIX-H-R2-2): FStruct + FClass cascade pins. */         \
+    static_assert(sizeof(FStruct)                       == 120, "FStruct ABI lock (Rev 13.9 micro-bump: 112 baseline + 8 byte RefSchema appended at offset 112)"); \
+    static_assert(offsetof(FStruct, RefSchema)          == 112, "FStruct.RefSchema offset lock (Rev 3 per FIX-H-R2-1; appended after SerializeStructFn@104)"); \
+    static_assert(sizeof(FClass)                        == 240, "FClass ABI lock (Rev 13.9 micro-bump: 224 baseline + 8 RefSchema in FStruct base + 8 LifecycleTable in FClass-specific = 240; Rev 3 corrected arithmetic per FIX-C-R2-1)"); \
+    static_assert(offsetof(FClass, LifecycleTable)      == 232, "FClass.LifecycleTable offset lock (Rev 3 per FIX-H-R2-2; FClass-absolute = 120 FStruct base + 112 FClass-specific offset)");
 </code></pre>
+
+<p><strong>Cross-arch verification note.</strong> The pin set above is verified at compile time on every supported compiler (MSVC 19.44+, Clang 17+, GCC 13+). On any compiler that diverges from the Itanium-style ABI in a way that would shift the offsets (e.g., a non-standard packing rule or different alignment for atomics), the static_asserts produce a hard error at build time. This is the Stage B addendum's enforcement mechanism for the Rev 13.9 micro-bump.</p>
 
 <hr>
 
@@ -2306,13 +2701,16 @@ public:
 
 // Rev 2: constinit FXObjectRefSchemaOp array in .rodata (FIX-A-CRIT-8 / UE-MISS-1).
 // XHT emits one Op per GC-ref property; terminated by Terminator.
+// Rev 3 (FIX-H-R2-5): each opcode struct has 7 fields (Op, _padOp, ArrayDim,
+// Offset, StrideBytes, _padAlign, NestedSchema); _padAlign was previously implicit.
 constinit const FXObjectRefSchemaOp XActor_RefSchemaOps[] = {
     // Location is FVector (no XObject refs); skipped.
     // Rotation is FRotator (no XObject refs); skipped.
     // Components is TArray&lt;XPtr&lt;XComponent&gt;&gt;: ArrayOfObject opcode.
-    { EXObjectRefSchemaOp::ArrayOfObject, 0, 0,
-      offsetof(XActor, Components), 0, nullptr },
-    { EXObjectRefSchemaOp::Terminator,    0, 0, 0, 0, nullptr },
+    { EXObjectRefSchemaOp::ArrayOfObject, /*_padOp=*/0, /*ArrayDim=*/0,
+      /*Offset=*/offsetof(XActor, Components), /*StrideBytes=*/0,
+      /*_padAlign=*/0, /*NestedSchema=*/nullptr },
+    { EXObjectRefSchemaOp::Terminator,    0, 0, 0, 0, 0, nullptr },
 };
 
 constinit const FXObjectRefSchema XActor_RefSchema = {
@@ -2443,7 +2841,8 @@ void Z_Construct_FClass_XActor() {
   <li><strong>X-NEW (Rev 2 added per FIX-A-CRIT-1)</strong>: sim-path NewObject runtime invariant guards. Test that <code>XPACT_CHECK_SL(IsSimPathThread() || !IsSimPathTU())</code> fires on every sim-path NewObject call from a non-SimPathSerialExecutor thread. Pass criterion: assert fires in Dev; abort in Shipping; no false-negatives.</li>
   <li><strong>X-INIT (Rev 2 added per FIX-A-CRIT-5)</strong>: init-phase gate. Test that NewObject called before <code>EInitPhase::PostStaticInit</code> asserts (Dev) / aborts (Shipping). Pass criterion: bootstrap-ordering bugs caught at first NewObject call site.</li>
   <li><strong>X-INIT-OBJ (Rev 2 added per FIX-A-HIGH-12)</strong>: FXObjectInitializer destructor-driven PostInitProperties. Test that PostInitProperties fires exactly once per NewObject after all CreateDefaultSubobject calls; sub-object's Outer equals the just-constructed object; sub-object's name matches the FName passed to CreateDefaultSubobject; sub-object's FClass equals the templated T.</li>
-  <li><strong>X-SCHEMA (Rev 2 added per FIX-A-CRIT-8 / UE-MISS-1)</strong>: schema-vector GC walk performance. Compare schema-vector walk vs FProperty pointer-chase walk on a 100k-object / 5-10-ref scene. Pass criterion: schema-vector walk &gt;4000 refs/ms on Quest 3 (vs FProperty walk's ~3000); schema-vector emit correctly encodes all FProperty kinds (Object / ArrayOfObject / Struct / etc.).</li>
+  <li><strong>X-SCHEMA (Rev 2 added per FIX-A-CRIT-8 / UE-MISS-1)</strong>: schema-vector GC walk performance. Compare schema-vector walk vs FProperty pointer-chase walk on a 100k-object / 5-10-ref scene. Pass criterion: schema-vector walk &gt;4000 refs/ms on Quest 3 (vs FProperty walk's ~3000); schema-vector emit correctly encodes all FProperty kinds (Object / ArrayOfObject / Struct / etc.). <strong>Rev 3 extension (FIX-H-R2-3):</strong> coverage tested for the full 22-opcode taxonomy including Interface / ClassProperty / SoftClass / Delegate / MulticastInlineDelegate / MulticastSparseDelegate; emit per the &sect;7.4.1 rule table.</li>
+  <li><strong>X-INIT-EAGER (Rev 3 added per FIX-H-R2-6)</strong>: EagerCDO PostStaticInit ordering. Test that an EagerCDO-flagged FClass's CDO is constructed exactly once, at PostStaticInit boundary (after the heap is up, before any user code runs). Test that <code>g_PendingEagerCDOs</code> queue is fully drained at the end of <code>XCoreXObject::__Init()</code>. Pass criterion: bootstrap-ordering bug from Rev 2 design is caught; CDO construction count matches EagerCDO-flagged FClass count.</li>
 </ul>
 
 <hr>
@@ -2455,7 +2854,7 @@ void Z_Construct_FClass_XActor() {
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>#</th><th>Open item</th><th>Rev 2 outcome</th><th>Rationale</th></tr></thead>
   <tbody>
-    <tr><td>O1 (arbitrated)</td><td>Contract Rev 13.9 micro-bump (adding LifecycleTable pointer to FClass) &mdash; bump or find an alternative?</td><td><strong>ACCEPTED: Bump to Rev 13.9.</strong> FClass sizeof 224 &rarr; 232. Also adds FStruct::RefSchema pointer per FIX-A-CRIT-8 (FStruct sizeof 112 &rarr; 120). Master Plan Rev 16 amendment to file.</td><td>Alternative (parallel TMap lookup) costs a hash probe per lifecycle dispatch &mdash; wrong perf per Prime Directive. Alternative (inline 8-slot table into FClass) costs 72 bytes per class &times; 10k classes = 720 KB module footprint &mdash; wrong space. The pointer is the right trade.</td></tr>
+    <tr><td>O1 (arbitrated)</td><td>Contract Rev 13.9 micro-bump (adding LifecycleTable pointer to FClass) &mdash; bump or find an alternative?</td><td><strong>ACCEPTED: Bump to Rev 13.9.</strong> FClass sizeof 224 &rarr; 240 (Rev 3 corrected from Rev 2's inconsistent 232 per FIX-C-R2-1). Also adds FStruct::RefSchema pointer per FIX-A-CRIT-8 (FStruct sizeof 112 &rarr; 120). The +16 byte FClass growth comes from FStruct +8 (RefSchema) + FClass-specific +8 (LifecycleTable). Master Plan Rev 16 amendment to file.</td><td>Alternative (parallel TMap lookup) costs a hash probe per lifecycle dispatch &mdash; wrong perf per Prime Directive. Alternative (inline 8-slot table into FClass) costs 72 bytes per class &times; 10k classes = 720 KB module footprint &mdash; wrong space. The pointer is the right trade.</td></tr>
     <tr><td>O2</td><td>Card-table card size (256 vs 512 vs 1024 bytes)</td><td><strong>512 bytes.</strong></td><td>Matches typical L2 cache line group on Quest 3 ARM64; bigger cards mean more false-sharing of dirty marks, smaller cards mean larger card table. 512 is the empirically common middle.</td></tr>
     <tr><td>O3</td><td>Per-thread SATB queue size (128 vs 256 vs 512 entries)</td><td><strong>256 entries.</strong></td><td>Flushes infrequently in steady state; 256 fits in 2 KB which fits comfortably in L1.</td></tr>
     <tr><td>O4</td><td>FXObjectArray initial reservation (8k vs 32k vs 128k entries)</td><td><strong>32k entries initial; grow in 32k-entry increments.</strong></td><td>32k &times; 32 bytes = 1 MB initial; one FMallocBinnedX large-bin allocation. Typical training session uses 30-80k entries; one or two grows.</td></tr>
@@ -2484,16 +2883,16 @@ void Z_Construct_FClass_XActor() {
   <li><strong>Phase 5.a &mdash; XObject base type</strong>: ship the 56-byte XObject header (Rev 2 cluster reservation 16 bytes; remote-id dropped), the EObjectFlags enum (Rev 2 expanded per FIX-A-HIGH-18 + FIX-A-HIGH-19), the FXObjectLifecycleTable struct (Rev 2 Serialize signature with FArchiveContext per FIX-A-HIGH-13). Unit tests verify byte layouts. Estimated: 1-2 weeks.</li>
   <li><strong>Phase 5.b &mdash; FXObjectArray + FXObjectAllocator</strong>: ship the global object table + size-class-pool allocator (3-arg AllocateRaw signature). Includes the slab discipline, type-segregated free-lists, FMemTag::XObject integration (and FMemTag::Reflection for card table per FIX-A-MIN-39). Includes basic NewObject path (without GC). Includes IXObjectCreateListener / IXObjectDeleteListener API (FIX-A-MED-22). Unit tests verify allocation throughput, cell layout, slab growth. Estimated: 3-4 weeks.</li>
   <li><strong>Phase 5.c &mdash; Object handles</strong>: ship XPtr, XStrongPtr (Rev 2 added per FIX-A-MIN-38), XWeakPtr, XSoftPtr, XObjectKey. Integration tests with reflection (FObjectProperty / FWeakObjectProperty payloads round-trip). Estimated: 1-2 weeks.</li>
-  <li><strong>Phase 5.d &mdash; CDO lifecycle + FXObjectInitializer + DSO</strong>: ship FClassDefaultObjectFactory with lazy + eager paths + immutable-CDO default (Rev 2 per FIX-A-MED-30); ship FXObjectInitializer destructor-driven PostInitProperties + CreateDefaultSubobject + FObjectInstancingGraph (Rev 2 per FIX-A-HIGH-12 / UE-MISS-2). Integration tests confirm CDO is constructed exactly once per FClass; sub-objects clone from CDO template. Estimated: 1-2 weeks.</li>
+  <li><strong>Phase 5.d &mdash; CDO lifecycle + FXObjectInitializer + DSO</strong>: ship FClassDefaultObjectFactory with lazy + eager paths + immutable-CDO default (Rev 2 per FIX-A-MED-30); ship FXObjectInitializer destructor-driven PostInitProperties + CreateDefaultSubobject + FObjectInstancingGraph (Rev 2 per FIX-A-HIGH-12 / UE-MISS-2). <strong>Rev 3 addition (FIX-H-R2-6):</strong> ship the deferred PostStaticInit-time EagerCDO walk via <code>g_PendingEagerCDOs</code> queue; ship <code>bPostInitFired</code> wiring in <code>~FXObjectInitializer</code> for idempotency (FIX-M-R2-5); ship RF_NeedLoad bypass of FXObjectInitializer construction (FIX-M-R2-4). Integration tests confirm CDO is constructed exactly once per FClass; sub-objects clone from CDO template; EagerCDO classes' CDOs are constructed at PostStaticInit boundary (X-INIT-EAGER gate). Estimated: 1-2 weeks.</li>
   <li><strong>Phase 5.e &mdash; GC root protocol</strong>: ship XGCRoot::AddRoot/RemoveRoot, the strong-symbol replacement for XCore-4a's weak-symbol XGC_RegisterRootSpan family, the precise stack-scan integration with XIL2CPP-emitted stack maps, the Conservative validation order per FIX-A-MED-35. Estimated: 2-3 weeks.</li>
   <li><strong>Phase 5.f &mdash; Card-table write barrier</strong>: ship the real XGC_WriteBarrier implementation + card-table allocation + the XPACT_GC_STORE macro. Unit tests confirm barrier emit cost, card-table dirty-marking, SATB snapshot capture. Estimated: 2 weeks.</li>
-  <li><strong>Phase 5.g' &mdash; Schema-vector emit (Rev 2 added per FIX-A-CRIT-8 / UE-MISS-1)</strong>: XHT emit of FXObjectRefSchema vector per FClass; FStruct::RefSchema pointer wiring; integration tests confirm schema-vector encoding matches FProperty linked-list for every property kind. Estimated: 1-2 weeks. Must complete before Phase 5.g.</li>
+  <li><strong>Phase 5.g' &mdash; Schema-vector emit (Rev 2 added per FIX-A-CRIT-8 / UE-MISS-1; Rev 3 expanded per FIX-H-R2-3 / FIX-H-R2-4)</strong>: XHT emit of FXObjectRefSchema vector per FClass; FStruct::RefSchema pointer wiring; integration tests confirm schema-vector encoding matches FProperty linked-list for every property kind. <strong>Rev 3 additions:</strong> support the full 22-opcode taxonomy (including Interface / ClassProperty / SoftClass / Delegate / MulticastInlineDelegate / MulticastSparseDelegate per FIX-H-R2-3); emit per the &sect;7.4.1 per-FProperty-subclass rule table; XHT-side diagnostic <code>XCoreXObject002 &mdash; schema-vector opcode validation failed for &lt;class&gt;.&lt;property&gt;</code> for emit-time validation. Estimated: 1-2 weeks. Must complete before Phase 5.g.</li>
   <li><strong>Phase 5.g &mdash; Collector mark phase</strong>: ship the mark phase including the safe-point handshake, root enumeration, gray-queue worker-pool, schema-vector walk (Rev 2 per FIX-A-CRIT-8), 3-rotating-reachability-flag scheme (Rev 2 per FIX-A-MED-23), SATB drain, write-barrier-set drain. Integration tests confirm correctness against synthetic graphs; perf gate &gt;4000 refs/ms on Quest 3 (X-SCHEMA). Estimated: 4-5 weeks.</li>
   <li><strong>Phase 5.h &mdash; Collector sweep + deferred destruction</strong>: ship the sweep phase + deferred-destruction queue + BeginDestroy/FinishDestroy lifecycle dispatch + EliminateGarbageRefs option (Rev 2 per FIX-A-HIGH-19). Tests confirm reclaim correctness, SerialNumber bumping, slot reuse. Estimated: 2-3 weeks.</li>
   <li><strong>Phase 5.i &mdash; Scenario-boundary mark-region clearing + idle slab coalescence</strong>: ship FXObjectAllocator::ReleaseClassPool + CoalesceIdleSlabs (FIX-A-MED-24) + the XScenarios integration hook. Tests confirm correctness when escape references are present (fallback to GC-driven collection). Estimated: 1-2 weeks.</li>
   <li><strong>Phase 5.j &mdash; Hot-reload integration</strong>: ship BeginHotReloadQuiesce (with explicit FHotReloadThreadEnumeration per FIX-A-HIGH-14) / ApplyClassReplacement (with per-FClass sub-pool rebind per FIX-A-MIN-40) / FinishHotReloadCascade + the XLiveCoding integration. Tests confirm XObjectKey resolution survives synthetic class replacement; fires OnClassReplaced delegate. Estimated: 2-3 weeks.</li>
   <li><strong>Phase 5.k &mdash; Telemetry + diagnostics</strong>: ship the XInsights weak-symbol bridge (FIX-A-CRIT-6) + telemetry hooks (RememberedSetSaturation event, pause histogram, mark/sweep rate counters per FIX-A-MED-32), XLog category integration (FIX-A-MED-31), FLeakTracker integration, DumpUsageReport. Estimated: 1-2 weeks.</li>
-  <li><strong>Phase 5.l &mdash; Foundation Prototype harness</strong>: ship the test harnesses that exercise pass criteria (a)-(i) + the Rev 2 X-DET / X-NEW / X-INIT / X-INIT-OBJ / X-SCHEMA gates. Estimated: 2-3 weeks.</li>
+  <li><strong>Phase 5.l &mdash; Foundation Prototype harness</strong>: ship the test harnesses that exercise pass criteria (a)-(i) + the Rev 2 X-DET / X-NEW / X-INIT / X-INIT-OBJ / X-SCHEMA gates + the Rev 3 X-INIT-EAGER gate (FIX-H-R2-6). Estimated: 2-3 weeks.</li>
 </ol>
 
 <p>Total estimated implementation duration: <strong>~25-36 weeks</strong> (6-8 months; Rev 2 added ~3-4 weeks for the schema-vector emit + Contract Rev 13.9 prerequisite + FXObjectInitializer/DSO + cluster-reservation reshape) at the foundation-system cadence (~9 wks/system) per Master Plan &sect;10 honest math. This is the largest single system in the engine per Master Plan &sect;10 explicit framing.</p>
@@ -2507,8 +2906,9 @@ void Z_Construct_FClass_XActor() {
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>Date</th><th>Author</th><th>Summary</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>2026-05-27</td><td>Subagent B (XPact-specific design synthesis; combined-pass posture)</td><td>Initial umbrella spec covering XObject base type, GC heap (FXObjectAllocator + FXObjectArray), non-moving precise mostly-concurrent mark-and-sweep collector with card-table generational scan-reduction, SATB write-barrier discipline, GC root protocol (XGCRoot::AddRoot + XGCRootSpan-via-containers + precise stack-scan + conservative-root for List&lt;object&gt;), object handle family (XPtr / XWeakPtr / XSoftPtr / XObjectKey), CDO lazy/eager policy, hot-reload survival with XObjectKey rebind, cross-system integration with XCore-4a (FMallocBinnedX + FMemTag::XObject + FLeakTracker + XGC_* function-pointer hooks) and XCore-4b (FClass + FStruct::ObjectRefProperties + XReflectionRuntime + FCustomVersion), Contract Rev 13.9 micro-bump (adds 8-byte FClass::LifecycleTable pointer), six new XPACT_*_LAYOUT_TAG pins, full acceptance gate mapping for Foundation Prototype criteria (a)-(i), 15 open items with RECOMMENDED defaults, 12-phase implementation plan estimated 22-32 weeks. Rev 1 is the standalone XPact-specific design; main agent will integrate UE-reference findings from parallel Subagent A pass into Rev 2.</td></tr>
+    <tr><td>1</td><td>2026-05-27</td><td>Two parallel subagents (UE deep-read + XPact draft), integrated into a single umbrella spec by main agent</td><td>Initial umbrella spec covering XObject base type, GC heap (FXObjectAllocator + FXObjectArray), non-moving precise mostly-concurrent mark-and-sweep collector with card-table generational scan-reduction, SATB write-barrier discipline, GC root protocol (XGCRoot::AddRoot + XGCRootSpan-via-containers + precise stack-scan + conservative-root for List&lt;object&gt;), object handle family (XPtr / XWeakPtr / XSoftPtr / XObjectKey), CDO lazy/eager policy, hot-reload survival with XObjectKey rebind, cross-system integration with XCore-4a (FMallocBinnedX + FMemTag::XObject + FLeakTracker + XGC_* function-pointer hooks) and XCore-4b (FClass + FStruct::ObjectRefProperties + XReflectionRuntime + FCustomVersion), Contract Rev 13.9 micro-bump (adds 8-byte FClass::LifecycleTable pointer), six new XPACT_*_LAYOUT_TAG pins, full acceptance gate mapping for Foundation Prototype criteria (a)-(i), 15 open items with RECOMMENDED defaults, 12-phase implementation plan estimated 22-32 weeks. <strong>Provenance (Rev 3 clarified per FIX-N-R2-4):</strong> Rev 1 was authored by two parallel subagents &mdash; Subagent A (UE-reference deep-read of CoreUObject GC + UObject allocator + UObjectArray + FGCObject + FUObjectGlobals + TWeakObjectPtr + UClass::CreateDefaultObject) and Subagent B (XPact-internal design synthesis with combined-pass posture). Their outputs were integrated into the single umbrella spec by the main agent. Subagent A's findings then formed the basis for the Round 1 audit applied at Rev 2.</td></tr>
     <tr><td>2</td><td>2026-05-27</td><td>Main agent (Rev 2 application of Round 1 audit fixes)</td><td>Round 1 audit fix application. 65 findings (8 CRITICAL + 9 HIGH + 17 MAJOR + 14 MEDIUM + 17 MINOR/LOW). Key structural changes: schema-vector GC walker adopted (UE-MISS-1 / FIX-A-CRIT-8 &mdash; the largest perf miss); FXObjectInitializer + CreateDefaultSubobject + FObjectInstancingGraph designed (UE-MISS-2 / FIX-A-HIGH-12); sizeof comparison vs UE corrected (UE is 40 bytes; XPact 56 trades RAM for cache-coherency &mdash; FIX-A-CRIT-7); Serialize slot signature with FArchiveContext void* for XSerialization forward-compat (FIX-A-HIGH-13); hot-reload quiesce thread enumeration complete (10 threads enumerated &mdash; FIX-A-HIGH-14); C# generic instantiation reflection design + async/await + IDisposable + struct-with-XObject handling (FIX-A-HIGH-15 / MED-25/26/27); sim-path NewObject runtime invariant via XPACT_CHECK_SL (FIX-A-CRIT-1 / O10 arbitration); init-phase contract reconciled (heap + collector at PostStaticInit, NOT PreStaticInit &mdash; FIX-A-CRIT-5); XInsights weak-symbol bridge API specified (FIX-A-CRIT-6); EObjectFlags taxonomy expanded with full UE RF_* mapping (FIX-A-HIGH-18 + FIX-A-HIGH-19); EClassFlags::Intrinsic bootstrap added (FIX-A-HIGH-20); cluster reservation expanded to 16 bytes (FIX-A-MIN-49 / O5 arbitration); remote-id reservation dropped (FIX-A-MIN-50); XObject sizeof stays 56 bytes; Contract Rev 13.9 micro-bump confirmed (FIX-A-CRIT-3 / O1 arbitration); XCore-4a Rev 4 follow-up for 3-arg s_XObjectAllocator hook (FIX-A-CRIT-4); cross-arch determinism invariant for SerialNumber + XObjectKey + iteration order (FIX-A-CRIT-2); XStrongPtr added (FIX-A-MIN-38); 3-rotating-reachability-flag scheme adopted (FIX-A-MED-23); umbrella spec posture kept (FIX-A-MIN-46 / O11 arbitration). Master Plan Rev 16 amendment to file by main agent at commit. New &sect;18 changelog enumerates all 65 fixes by category. Implementation duration revised to 25-36 weeks (added schema-vector emit phase, Contract Rev 13.9 prerequisite phase, FXObjectInitializer/DSO + cluster-reservation reshape).</td></tr>
+    <tr><td>3</td><td>2026-05-27</td><td>Main agent (Rev 3 application of Round 2 audit fixes)</td><td>Round 2 audit fix application. 28 findings (1 CRITICAL + 6 HIGH/MAJOR + 11 MEDIUM + 10 MINOR/LOW). Key changes: <strong>byte-arithmetic corrected per FIX-C-R2-1</strong> &mdash; FClass = 240 bytes (Rev 2 declared 232 with internally-inconsistent arithmetic; Rev 3 publishes the mathematically correct sizeof per Prime Directive: 120 FStruct base + 120 FClass-specific). LifecycleTable lands at FClass-absolute offset 232 (= 120 FStruct base + 112 FClass-specific offset); RefSchema lands at FStruct offset 112. New static_asserts pin both offsets + both sizeofs (FIX-H-R2-1 + FIX-H-R2-2). New <code>XPACT_FSTRUCT_LAYOUT_TAG</code> v5 + updated <code>XPACT_FCLASS_LAYOUT_TAG</code> v6 (FIX-C-R2-1 + FIX-N-R2-1). Schema-vector opcode taxonomy expanded to 22 opcodes covering all 30 XCore-4b Rev 4 FProperty subclasses (FIX-H-R2-3); per-FProperty-subclass emit rules table added (FIX-H-R2-4); explicit _padAlign field on FXObjectRefSchemaOp (FIX-H-R2-5); cross-compiler XPACT_PREFETCH macro (FIX-N-R2-10). EagerCDO PostStaticInit ordering resolved via deferred linker walk (FIX-H-R2-6). XObject.ReachabilityFlag moved from FXObjectArrayEntry to XObject header at offset 36 (FIX-M-R2-3) &mdash; one less indirection in GC mark inner loop. FInsightsValue converted to std::variant (FIX-M-R2-1). EObjectFlags bits 25-30 enumerated (FIX-M-R2-2). RF_NeedLoad bypass of FXObjectInitializer documented (FIX-M-R2-4). bPostInitFired wired into ~FXObjectInitializer (FIX-M-R2-5). Canonical FXObjectInitializer constructor signature documented (FIX-M-R2-6). C# generic instantiation depth bound 16 + cycle detection (FIX-M-R2-7). Conservative XGCRootSpan warning de-duplication (FIX-M-R2-8). Hot-reload quiesce extension hook (FIX-M-R2-9). MarkForKill sim-path guard (FIX-M-R2-10). kMarkBit rotating-cycle clarification (FIX-M-R2-11). EXGCOptions enum formalized (FIX-N-R2-6). kSaturationThreshold verification note + XEditor cross-layer note + prefetch macro + Rev 1 narrative + math precision tweaks. New &sect;19 changelog enumerates all 28 fixes with byte-arithmetic verification table. <strong>Divergence disclosure:</strong> Round 2 prompt's "FClass = 232 with LifecycleTable@224" rested on a baseline assumption (FClass-specific = 104 in XCore-4b) that contradicts XCore-4b Rev 4 &sect;7.3 + &sect;11.6 (FClass-specific = 112). Per Prime Directive ("Use the thing that is correct not the thing that is easier to implement"), Rev 3 publishes the math that matches XCore-4b Rev 4 ground truth. Master Plan Rev 16 amendment to file by main agent at commit; spec stays at ~30k words.</td></tr>
   </tbody>
 </table>
 
@@ -2554,7 +2954,7 @@ void Z_Construct_FClass_XActor() {
 <ul>
   <li><strong>FIX-A-CRIT-1 (A1 / O10)</strong>: Sim-path NewObject runtime invariant. Added <code>XPACT_CHECK_SL(IsSimPathThread() || !IsSimPathTU())</code> at NewObject entry path (&sect;3.5). Documented in &sect;1.3 row &ldquo;Engine paradigm&rdquo; + &sect;13 acceptance gate X-NEW.</li>
   <li><strong>FIX-A-CRIT-2 (A6)</strong>: Cross-arch determinism invariant for SerialNumber / XObjectKey / iteration order. Added explicit invariant in &sect;1.3 + &sect;2.2 + &sect;6 + &sect;13. Sim-path code MAY NOT read SerialNumber, hash XObjectKey, or depend on FXObjectArray iteration order. Compiled-in <code>XPACT_CHECK_SL</code> guards every accessor on sim-path TUs.</li>
-  <li><strong>FIX-A-CRIT-3 (A15 / O1)</strong>: Contract Rev 13.9 micro-bump confirmed. FClass sizeof 224 &rarr; 232 (+8 byte LifecycleTable pointer). Master Plan Rev 16 amendment to file. &sect;1.4 + &sect;2.4 + &sect;11.2.</li>
+  <li><strong>FIX-A-CRIT-3 (A15 / O1)</strong>: Contract Rev 13.9 micro-bump confirmed. FClass sizeof 224 &rarr; 232 (+8 byte LifecycleTable pointer) in Rev 2. <strong>Rev 3 corrected to FClass = 240</strong> per FIX-C-R2-1 once RefSchema is also added to FStruct base (+8). Master Plan Rev 16 amendment to file. &sect;1.4 + &sect;2.4 + &sect;11.2.</li>
   <li><strong>FIX-A-CRIT-4 (A16)</strong>: s_XObjectAllocator hook signature expanded to 3-arg (<code>void* (size_t Size, size_t Align, const FClass* ClassDescriptor) noexcept</code>). XCore-4a Rev 4 follow-up. &sect;1.4 + &sect;10.8.</li>
   <li><strong>FIX-A-CRIT-5 (A20)</strong>: Init phase contract reconciliation. XCoreXObject heap + collector come up at <code>EInitPhase::PostStaticInit</code>, NOT PreStaticInit (Rev 1 was incorrect). NewObject entry path asserts the phase gate. &sect;1.4.</li>
   <li><strong>FIX-A-CRIT-6 (A21)</strong>: XInsights runtime API specification. Weak-symbol bridge <code>XInsights::Emit(Category, Event, Payload)</code> defined; categories GC / Allocator / HotReload. &sect;10.5 + &sect;10.12.</li>
@@ -2631,7 +3031,88 @@ void Z_Construct_FClass_XActor() {
 
 <hr>
 
-<p><em>End of XCoreXObject.html Rev 2.</em></p>
+<h2 id="sec19">19. Changelog &mdash; Rev 3</h2>
+
+<p>Rev 3 incorporates 28 Round 2 audit findings (1 CRITICAL + 6 HIGH/MAJOR + 11 MEDIUM + 10 MINOR/LOW). Fixes are enumerated below by category.</p>
+
+<h3>19.1 CRITICAL fixes (1 applied)</h3>
+<ul>
+  <li><strong>FIX-C-R2-1</strong>: Contract Rev 13.9 FStruct delta tag + static_asserts + arithmetic. Three sub-fixes:
+    <ul>
+      <li><strong>(a)</strong> Added <code>XPACT_FSTRUCT_LAYOUT_TAG</code> v5 to &sect;11.1 tag table. The 120-byte FStruct (with RefSchema appended at offset 112) is now properly pinned.</li>
+      <li><strong>(b)</strong> Added <code>static_assert(sizeof(FStruct) == 120)</code>, <code>static_assert(sizeof(FClass) == 240)</code>, <code>static_assert(offsetof(FStruct, RefSchema) == 112)</code>, <code>static_assert(offsetof(FClass, LifecycleTable) == 232)</code> to the <code>XPACT_VERIFY_XOBJECT_LAYOUT()</code> macro in &sect;11.3.</li>
+      <li><strong>(c)</strong> Fixed &sect;11.2 arithmetic. Rev 2 claimed "112 FStruct base + 120 FClass-specific = 232" while simultaneously claiming FStruct grew to 120 (FIX-A-CRIT-8). Rev 3 corrects the math to <strong>FClass = 240 = 120 FStruct base + 120 FClass-specific</strong> per Prime Directive (cannot publish inconsistent arithmetic). The Round 2 audit prompt requested "120 + 112 = 232" based on an erroneous "104 existing FClass-specific" baseline assumption that contradicts XCore-4b Rev 4 &sect;7.3 + &sect;11.6 (which explicitly pins FClass-specific at 112 bytes). Rev 3 publishes the mathematically correct sizeof; Master Plan Rev 16 amendment notes the corrected delta. &sect;11.2.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>19.2 HIGH / MAJOR fixes (6 applied)</h3>
+<ul>
+  <li><strong>FIX-H-R2-1</strong>: RefSchema offset on FStruct documented + pinned. <code>static_assert(offsetof(FStruct, RefSchema) == 112)</code> in &sect;11.3; documented alongside the RefSchema design in &sect;7.4.</li>
+  <li><strong>FIX-H-R2-2</strong>: LifecycleTable offset on FClass documented + pinned. <code>static_assert(offsetof(FClass, LifecycleTable) == 232)</code> in &sect;11.3 (FClass-absolute = 120 FStruct base + 112 FClass-specific offset of LifecycleTable). Documented in &sect;2.4 + &sect;8.</li>
+  <li><strong>FIX-H-R2-3</strong>: Schema-vector opcode taxonomy expansion. Added 6 new opcodes covering the remaining XCore-4b Rev 4 FProperty subclasses: <code>Interface</code> (FInterfaceProperty), <code>ClassProperty</code> (FClassProperty), <code>SoftClass</code> (FSoftClassProperty), <code>Delegate</code> (FDelegateProperty), <code>MulticastInlineDelegate</code> (FMulticastInlineDelegateProperty), <code>MulticastSparseDelegate</code> (FMulticastSparseDelegateProperty). Added capability-bit constants (<code>kInterfaceOp</code> through <code>kMulticastSparseOp</code>) at bits 17-22. Total active opcodes now 22 (out of 64-bit capability width). &sect;7.4.</li>
+  <li><strong>FIX-H-R2-4</strong>: Schema-vector emit rules subsection (&sect;7.4.1) added. Per-FProperty-subclass emit table specifies Opcode/Offset/StrideBytes/NestedSchema for every reference-carrying subclass (28 reference-carrying + skipped primitives). Documents XHT's emit pass walking <code>FClass.ObjectRefProperties</code> + recursive FStructProperty handling + ARO opcode emission + emit-time validation rules.</li>
+  <li><strong>FIX-H-R2-5</strong>: FXObjectRefSchemaOp 24-byte layout comment fix. Added explicit <code>uint32_t _padAlign</code> field at offset 12 (4 bytes) so NestedSchema lands at offset 16 (not 12). The inline comment now reads "16 +8 (4 bytes of pad at offset 12 to align NestedSchema to 8)". The 24-byte sizeof static_assert stays correct. &sect;7.4.</li>
+  <li><strong>FIX-H-R2-6</strong>: EagerCDO + PostStaticInit ordering. Resolved the bootstrap-order bug where <code>constinit FClass</code> static-init time would trigger <code>NewObject&lt;CDO&gt;</code> before the heap is up (Rev 2 phase-gate assert would fire). Rev 3 introduces a <strong>deferred PostStaticInit-time linker walk</strong> (Option A from the FIX analysis): EagerCDO classes queue onto <code>g_PendingEagerCDOs</code> during static-init via LinkClass; XCoreXObject's PostStaticInit boot drains the queue after the heap is ready. Foundational Intrinsic-flagged classes (XObject, XStruct, XClass, XInterface, XEnum) hand-construct their CDOs from <code>.rodata</code> during <code>XCoreXObject::__Init()</code> before the eager-walk. New acceptance gate X-INIT-EAGER. &sect;1.4 + &sect;8.1.1.</li>
+</ul>
+
+<h3>19.3 MEDIUM fixes (11 applied)</h3>
+<ul>
+  <li><strong>FIX-M-R2-1</strong>: Replaced <code>FInsightsValue</code> union+Kind discriminator with <code>std::variant&lt;int64_t, double, FString&gt;</code>. The variant carries its own type-discriminator (no separate Kind field needed). C++20 standard-library. &sect;10.5.</li>
+  <li><strong>FIX-M-R2-2</strong>: EObjectFlags bits 25-30 explicit enumeration added. UserFlag_1 through UserFlag_8 (bits 24-31) are individually named. &sect;2.3.</li>
+  <li><strong>FIX-M-R2-3</strong>: Moved per-object kReachabilityFlag from FXObjectArrayEntry to XObject header (offset 36, consuming the former <code>_padObjectFlags</code> slot; 4 bytes = uint32 holding 3 rotating-reachability bits + 29 reserved bits). One less indirection in GC mark inner loop. Updated &sect;2.7 + &sect;4.2.1 + IsMarked/Mark/ClearMark API.</li>
+  <li><strong>FIX-M-R2-4</strong>: RF_NeedLoad + FXObjectInitializer interaction documented. Async loading bypasses the FXObjectInitializer destructor-driven PostInitProperties flow; PostInitProperties is deferred until after Serialize completes; loader fires PostInitProperties + PostLoad in batch via the loader's <code>FinalizeBatch</code>. NewObject path skips Initializer construction when <code>RF_NeedLoad</code> is set on entry. &sect;3.5 + &sect;10.6.1.</li>
+  <li><strong>FIX-M-R2-5</strong>: bPostInitFired flag wired. <code>~FXObjectInitializer()</code> checks the flag before firing PostInitProperties, then sets it. Provides idempotency for inheritance-chain pass-down patterns. &sect;8.4.</li>
+  <li><strong>FIX-M-R2-6</strong>: Canonical FXObjectInitializer constructor signature documented. <code>T(const FXObjectInitializer&amp; Initializer)</code> is the canonical signature; the Initializer is <code>mutable</code> internally but exposed as <code>const&amp;</code> to allow inheritance-chain pass-through. Example shown with XCharacter &rarr; XActor chain. &sect;8.4.1.</li>
+  <li><strong>FIX-M-R2-7</strong>: C# generic instantiation cycle detection + depth bound. Max recursion depth 16 + cycle-detection HashSet of visited type instantiations. Build-time errors <code>XIL2CPP123</code> (depth exceeded) / <code>XIL2CPP124</code> (cycle detected). &sect;10.7.1.</li>
+  <li><strong>FIX-M-R2-8</strong>: Conservative XGCRootSpan warning timing. Build-time warning fires once per closed-type instantiation, deduplicated via XIL2CPP build cache. Warning category <code>XIL2CPP-Conservative</code>. &sect;10.7.1.</li>
+  <li><strong>FIX-M-R2-9</strong>: Hot-reload quiesce extension hook. <code>XLiveCoding::RegisterThreadRole(FName, ParkHook, UnparkHook)</code> API; XCoreXObject pre-registers 10 core roles; plugins extend at module-load. &sect;9.2.</li>
+  <li><strong>FIX-M-R2-10</strong>: MarkForKill sim-path determinism guard. Added <code>XPACT_CHECK_SL(!::XCore::HAL::IsSimPathTU(), "MarkForKill is non-sim-path; the next-GC-sweep timing is non-deterministic")</code>. Documented in &sect;6 sim-path policy. The alternative (queue for next FRAME BOUNDARY) is a larger design change deferred to Phase 2 if needed. &sect;2.2.</li>
+  <li><strong>FIX-M-R2-11</strong>: kMarkBit clarification. The 3-rotating-reachability bits live on XObject.ReachabilityFlag; the IsMarked/Mark/ClearMark API operates on a dynamic mask <code>CurrentCycleReachabilityMask() = 1u &lt;&lt; g_CurrentReachabilityIndex</code> selecting the current cycle's bit (0/1/2 rotating per cycle). &sect;4.2.1.</li>
+</ul>
+
+<h3>19.4 MINOR / LOW fixes (10 applied)</h3>
+<ul>
+  <li><strong>FIX-N-R2-1</strong>: Added <code>XPACT_FCLASS_LAYOUT_TAG</code> v6 entry to the explicit &sect;11.1 tag table (previously inline-only). &sect;11.1.</li>
+  <li><strong>FIX-N-R2-2</strong>: Covered by FIX-C-R2-1 (no separate edit required).</li>
+  <li><strong>FIX-N-R2-3</strong>: &sect;17 (and &sect;2.2) prose math fixed: "~1 MB" &rarr; "~0.8-1.2 MB" (range bounded by 16-byte minimum and 24-byte maximum &times; 50,000). &sect;2.2 + &sect;17.</li>
+  <li><strong>FIX-N-R2-4</strong>: Rev 1 origin narrative clarified. Rev 1 was authored by two parallel subagents (UE deep-read + XPact draft) integrated into a single umbrella spec by main agent. &sect;16 Rev 1 row updated.</li>
+  <li><strong>FIX-N-R2-5</strong>: Verified &sect;14 O1-O15 listing completeness. All 15 open items remain present with their RECOMMENDED + arbitration state intact; no edit required. (Noted in this changelog row for traceability.)</li>
+  <li><strong>FIX-N-R2-6</strong>: Defined formal <code>EXGCOptions</code> enum (<code>kNone</code>, <code>kEliminateGarbageRefs</code>, <code>kPreserveCDO</code>, <code>kForceFullScan</code>, <code>kSkipDeferredDestruction</code>, <code>kIncrementalMark</code>, <code>kEmitInsightsTelemetry</code>, <code>kEmitVerboseLog</code>). Referenced from MarkForKill flow. &sect;4.0.</li>
+  <li><strong>FIX-N-R2-7</strong>: kSaturationThreshold 50% verification note added. Forward-task: validate at Phase 5.f (card-table) implementation. &sect;4.5.</li>
+  <li><strong>FIX-N-R2-8</strong>: XEditor cross-layer forward-reference note added at the FStruct.RefSchema documentation. &sect;7.4.</li>
+  <li><strong>FIX-N-R2-9</strong>: Covered by FIX-M-R2-5 (bPostInitFired wiring).</li>
+  <li><strong>FIX-N-R2-10</strong>: Cross-compiler prefetch abstraction. Replaced bare <code>__builtin_prefetch</code> in the fast-path GC walk with <code>XPACT_PREFETCH(ptr)</code> macro (MSVC <code>_mm_prefetch</code>; Clang/GCC <code>__builtin_prefetch</code>; otherwise no-op). &sect;7.4.</li>
+</ul>
+
+<h3>19.5 Byte-arithmetic verification (Rev 3 final-pass sanity check)</h3>
+
+<p>Per Hard Requirement "After all edits, spot-check internal consistency for the cascading byte-layout changes":</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Type</th><th>Rev 2 declared</th><th>Rev 3 declared</th><th>Verification</th></tr></thead>
+  <tbody>
+    <tr><td>XObject</td><td>56 bytes</td><td>56 bytes</td><td>Unchanged. ReachabilityFlag at offset 36 consumes former _padObjectFlags slot; no size change.</td></tr>
+    <tr><td>FXObjectArrayEntry</td><td>32 bytes</td><td>32 bytes</td><td>Unchanged. StateBits keeps its 64-bit width; bits 0, 4, 5, 6 now reserved (rotating reachability moved to XObject).</td></tr>
+    <tr><td>FStruct</td><td>112 bytes (XCore-4b Rev 4 baseline)</td><td><strong>120 bytes</strong></td><td>+8 RefSchema appended at offset 112. Rev 13.9 micro-bump.</td></tr>
+    <tr><td>FClass</td><td>232 bytes (Rev 2 declared; arithmetic was internally inconsistent)</td><td><strong>240 bytes</strong></td><td>120 FStruct base + 120 FClass-specific (LifecycleTable appended at FClass-specific offset 112 = FClass-absolute offset 232). Rev 3 corrected arithmetic.</td></tr>
+    <tr><td>RefSchema offset within FStruct</td><td>(implicit)</td><td><strong>112</strong></td><td>Pinned by <code>static_assert(offsetof(FStruct, RefSchema) == 112)</code>.</td></tr>
+    <tr><td>LifecycleTable offset within FClass</td><td>(implicit; Rev 2 implied 224)</td><td><strong>232</strong></td><td>Pinned by <code>static_assert(offsetof(FClass, LifecycleTable) == 232)</code>.</td></tr>
+    <tr><td>FXObjectLifecycleTable</td><td>72 bytes</td><td>72 bytes</td><td>Unchanged.</td></tr>
+    <tr><td>FXObjectRefSchema</td><td>24 bytes</td><td>24 bytes</td><td>Unchanged.</td></tr>
+    <tr><td>FXObjectRefSchemaOp</td><td>24 bytes (Rev 2 implicit padding)</td><td>24 bytes (explicit _padAlign field)</td><td>Rev 3 makes the 4-byte alignment pad explicit; sizeof unchanged.</td></tr>
+  </tbody>
+</table>
+
+<p><strong>FClass-absolute offset table for the appended pointers (Rev 3 ground truth):</strong></p>
+<ul>
+  <li>FStruct.NamePrivate @ 0; ...; FStruct.SerializeStructFn @ 104; FStruct.RefSchema @ 112 (Rev 3 appended). FStruct ends at 120.</li>
+  <li>FClass.ClassConstructorFn @ 120 (FClass-specific offset 0); ...; FClass.ClassConfigName @ 224 (FClass-specific offset 104); FClass.LifecycleTable @ 232 (FClass-specific offset 112; Rev 3 appended). FClass ends at 240.</li>
+</ul>
+
+<hr>
+
+<p><em>End of XCoreXObject.html Rev 3.</em></p>
 
 </body>
 </html>
