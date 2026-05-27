@@ -1,0 +1,1874 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XPact Engine &mdash; XCoreXObject (XObject base + GC heap + collector + write barriers + reflection integration) &mdash; Rev 1</title>
+</head>
+<body>
+
+<h1>XPact Engine &mdash; XCoreXObject &mdash; Rev 1</h1>
+
+<p><strong>System:</strong> XCoreXObject &nbsp;|&nbsp;
+<strong>Layer:</strong> 1 (Core Runtime) &nbsp;|&nbsp;
+<strong>Tier:</strong> Engine &nbsp;|&nbsp;
+<strong>Language:</strong> C++20 &nbsp;|&nbsp;
+<strong>Owner:</strong> Simgenics &nbsp;|&nbsp;
+<strong>Plan date:</strong> 2026-05-27 &nbsp;|&nbsp;
+<strong>Revision:</strong> Rev 1 (combined umbrella spec for the full XObject substrate &mdash; XObject base type, GC-managed heap, non-moving mostly-concurrent mark-and-sweep collector, card-table write barriers, GC root protocol, object-handle family, CDO lifecycle, hot-reload survival, and the reflection-runtime integration that ties it all to XCore-4b) &nbsp;|&nbsp;
+<strong>Status:</strong> awaiting design-review approval &nbsp;|&nbsp;
+<strong>Plan reference:</strong> Master Plan Rev 15 &sect;3 (L1 inventory), &sect;4 Step 5, &sect;11 Step 5.5 Foundation Prototype (9 pass criteria a-i) &nbsp;|&nbsp;
+<strong>Contract reference:</strong> <code>XToolchainContract.html</code> Rev 13.8 (Stage B addendum frozen at XCore-4b ship) &nbsp;|&nbsp;
+<strong>XCore-4a reference:</strong> <code>XCore-4a.html</code> Rev 3 (FMallocBinnedX, FMemTag::XObject, FLeakTracker, TArray/TMap/TSet, FName 8-byte handle forward decl, XGCRootSpan ABI, FRWLock, atomics, EInitPhase ladder) &nbsp;|&nbsp;
+<strong>XCore-4b reference:</strong> <code>XCore-4b.html</code> Rev 4 (FName complete impl, FField/FProperty + 28 subclasses, FStruct, FScriptStruct, FClass, FEnum, FInterface, FFakeVTable, FCppStructOpsFakeVTable, XReflectionRuntime registry, FCustomVersion, SchemaHash, FStruct::ObjectRefProperties dense array)</p>
+
+<p><strong>Prime Directive citation (per <code>engineering_principles.md</code>):</strong> &ldquo;Use the thing that is correct not the thing that is easier to implement. Remember we are trying to do the right thing not the easiest thing. Doesn't matter if it increases our development duration. Let's do it the right way the first time.&rdquo; XCoreXObject is the single largest engineering task in the foundation (Master Plan &sect;10 explicit: &ldquo;the collector + reflection runtime is the single largest engineering task in the foundation&rdquo;). Every design decision in this spec is held to the Prime Directive. Where a UE pattern is mirrored, it is mirrored because it is correct; where it is rejected, the rejection is justified per Prime Directive. Where a novel XPact-specific pattern is introduced (the non-moving mostly-concurrent collector + card-table write barriers + dense ObjectRef walk + size-class-segregated allocator + scenario-boundary mark-region clearing), the novelty is justified by the constraint set that no existing engine collector satisfies all at once (non-moving + precise + cross-arch deterministic-shape + mostly-concurrent + &lt;5 ms typical pause on Quest 3 + &lt;15% fragmentation over 4 hours + survives hot-reload + supports lockstep multi-user). This is the foundation for every gameplay object in the engine; the spec is long because it must be.</p>
+
+<p><strong>Provenance.</strong> XCoreXObject's design pass was scheduled as two parallel subagents &mdash; Subagent A (UE-reference deep-read of CoreUObject GC + UObject allocator + UObjectArray + FGCObject + FUObjectGlobals + TWeakObjectPtr + UClass::CreateDefaultObject) and Subagent B (this XPact-specific design synthesis). The main agent will integrate A's findings into the final Rev 2 of this spec; Rev 1 is the standalone XPact-specific design, written from the UE source directly + the Master Plan + the XCore-4a/XCore-4b ship state. Rev 1 stands on its own as the architectural commitment; Rev 2 will add UE-reference citations and absorb A's divergence flags.</p>
+
+<hr>
+
+<h2 id="sec1">1. Purpose, Scope, and Locked Decisions</h2>
+
+<h3>1.1 What XCoreXObject is</h3>
+
+<p>XCoreXObject is the System 5 deliverable per Master Plan Rev 15 &sect;4 Step 5: the C++ runtime that ships <strong>XObject</strong> (the gameplay-object base class), the <strong>GC-managed heap</strong> (the object pool every XObject lives in), the <strong>non-moving precise mostly-concurrent mark-and-sweep collector</strong> (the algorithm that reclaims unreachable XObjects), the <strong>card-table write-barrier intrinsic implementation</strong> (the real implementation behind XCore-4a's weak-symbol <code>XGC_WriteBarrier</code> stub), the <strong>GC root protocol</strong> (the way stacks, statics, native handles, and container-resident XObject pointers are enumerated at mark time), the <strong>object-handle family</strong> (XPtr, XWeakPtr, XSoftPtr, XObjectKey), the <strong>Class Default Object (CDO) lifecycle</strong>, and the <strong>hot-reload survival protocol</strong> that lets every previously-allocated XObject keep running after a downstream module's DLL is swapped.</p>
+
+<p>XCoreXObject is the system that turns XCore-4b's reflection types from descriptors-for-things-that-don't-exist into descriptors-for-real-runtime-objects. XCore-4b's <code>FClass</code> exists but has no instances; XCore-4b's <code>FProperty::ObjectRefProperties</code> dense TArray exists but is never walked; XCore-4b's <code>FClass::ClassDefaultObject</code> atomic slot exists but is always nullptr. XCoreXObject populates all three.</p>
+
+<p>The deliverables of XCoreXObject are:</p>
+<ul>
+  <li>The <strong><code>XObject</code> base type</strong> &mdash; a 56-byte header (target; UE's UObject is ~72 bytes) carrying <code>FClass*</code>, <code>Outer*</code>, <code>FName</code>, <code>EObjectFlags</code>, <code>FObjectInternalIndex</code>, <code>FObjectSerialNumber</code>; the universal parent of every reflected gameplay type in C++ and (via XIL2CPP transpilation) C#.</li>
+  <li>The <strong>XObject heap</strong> (<code>FXObjectAllocator</code> / <code>FXObjectArray</code>) &mdash; a size-class-segregated slab allocator owning every XObject's storage, distinct from XCore-4a's <code>FMallocBinnedX</code> (rationale &sect;3.1), with type-segregated free-lists to bound fragmentation (Foundation Prototype criterion (h) &lt;15% wasted heap over 4 hours of continuous load on Quest 3).</li>
+  <li>The <strong>non-moving precise mostly-concurrent mark-and-sweep collector</strong> &mdash; locked algorithm per Master Plan &sect;2a Memory/GC row, hitting Foundation Prototype criterion (a) &lt;5 ms typical pause on Quest 3 and criterion (b) &lt;50 ms full-heap-scan fallback on Quest 3.</li>
+  <li>The <strong>card-table write barrier</strong> &mdash; the real implementation of XCore-4a's weak-symbol <code>XGC_WriteBarrier</code>, marking 512-byte cards dirty so the next minor collection can skip clean cards entirely. Card granularity, byte vs bit table layout, and the snoop-vs-pre-store ordering are all specified in &sect;5.</li>
+  <li>The <strong>GC root protocol</strong> &mdash; the XGCRootSpan ABI (from XCore-4a &sect;5.4) is registered by every GC-aware container; native code uses <code>XGCRoot::AddRoot</code>; precise stack scanning uses XIL2CPP-emitted stack maps; the conservative-root fallback for non-statically-typed C# containers (<code>List&lt;object&gt;</code>) emits a build-time sim-path warning per Master Plan &sect;2a.</li>
+  <li>The <strong>object-handle family</strong> &mdash; <code>XPtr&lt;T&gt;</code> (strong, GC root via the container the XPtr sits in), <code>XWeakPtr&lt;T&gt;</code> ({InternalIndex; SerialNumber} 8-byte handle resolved at deref time), <code>XSoftPtr&lt;T&gt;</code> (FSoftObjectPath shape; resolves on demand), <code>XObjectKey</code> ({InternalIndex; SerialNumber} stable across hot-reload class replacement).</li>
+  <li>The <strong>Class Default Object lifecycle</strong> &mdash; one CDO per FClass; constructed lazily on first <code>NewObject&lt;T&gt;</code> call OR at module-init time depending on per-class registration policy (&sect;8); the CDO is the property-default-value source the editor's XPropertyEditor and the network reconciliation engine both consume.</li>
+  <li>The <strong>hot-reload survival protocol</strong> &mdash; how an XObject created against the pre-patch FClass keeps running after a downstream module's DLL is swapped: <code>XObjectKey</code> survives the swap, <code>FClass*</code> is rebound by XLiveCoding's cascade, instance vtables (where any exist in user-class C++ derivation) are versioned per XCore-4b's hot-reload commitment.</li>
+  <li>The <strong>NewObject + lifecycle</strong> surface &mdash; <code>NewObject&lt;T&gt;(Outer, Name, Flags)</code>, <code>XObject::PostInitProperties()</code> (function-pointer slot, NOT virtual), <code>XObject::BeginDestroy()</code> / <code>IsReadyForFinishDestroy()</code> / <code>FinishDestroy()</code>, deferred destruction queue, NewObject-during-GC defensive abort.</li>
+  <li>The <strong>cross-system integration</strong> with XReflectionRuntime, XCore-4a's FMemTag::XObject slot, FLeakTracker (XObject leaks attribute to the same tracker), the Phase-1g weak-symbol GC stubs (XCoreXObject is the strong-symbol replacement), and XHT-emitted <code>.gen.cpp</code> registration paths (XHT emits the <code>Z_Construct_FClass_*</code> functions whose runtime side is implemented here).</li>
+  <li>The <strong>C++ macro surface</strong> &mdash; <code>XCLASS()</code>, <code>XPROPERTY()</code>, <code>XFUNCTION()</code>, <code>XINTERFACE()</code> &mdash; XHT-parsed; XHT emits the <code>.gen.h</code> / <code>.gen.cpp</code> per module per Contract Rev 13.8; XCoreXObject is the runtime side those generated files call into.</li>
+  <li>The <strong>Toolchain Contract delta</strong> &mdash; XCoreXObject does NOT trigger a Contract bump (XCore-4b's Stage B addendum at Contract Rev 13.8 already locked the FClass/FProperty/FStruct/FName layouts). XCoreXObject adds two new <code>XPACT_*_LAYOUT_TAG</code> string-literal pins per &sect;11: <code>XPACT_XOBJECT_LAYOUT_TAG</code> (56-byte XObject header), <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code> (512-byte cards, byte-per-card flat table), <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code> (8-byte handle), <code>XPACT_XWEAKPTR_LAYOUT_TAG</code> (8-byte handle). These pins extend the Rev 13.8 addendum's coverage without a Contract revision bump.</li>
+</ul>
+
+<h3>1.2 What XCoreXObject is NOT</h3>
+
+<p>XCoreXObject is bounded narrowly to the substrate. It does NOT ship:</p>
+<ul>
+  <li><strong>XActor, XComponent, XWorld, XGameInstance, XGameMode.</strong> These are L7 gameplay framework systems that derive from XObject (via XCLASS). XCoreXObject ships the base; the gameplay-framework types are downstream.</li>
+  <li><strong>UFunction-equivalent (XFunction reflected method dispatch).</strong> XCore-4b's <code>FClass::NetFields</code> + <code>FInterface::InterfaceFunctions</code> reserve the slot; the runtime VM that dispatches XFunction calls lives in XBlueprintVM at L21. XCoreXObject calls into the slot via a function pointer when invoked (e.g., for PostInitProperties hooks), but does not own the dispatch infrastructure.</li>
+  <li><strong>XPackage / UPackage-equivalent.</strong> The package abstraction (groups of XObjects that load/save as a unit) lives in XSerialization (System 9) and XAssetRegistry (System 16). XCoreXObject's <code>XObject::Outer</code> slot supports the Outer chain that packages will use, but the package type itself is downstream.</li>
+  <li><strong>Asset serialization (FArchive&lt;XObject&gt; round-trip).</strong> XSerialization (System 9) implements the binary format; XCoreXObject's <code>XObject</code> participates via the per-FClass <code>SerializeStructFn</code> slot on FStruct (XCore-4b &sect;7.1), but the FArchive itself is XSerialization's deliverable.</li>
+  <li><strong>Replication metadata host.</strong> Per Master Plan Rev 15 &sect;3 L1 explicit note: &ldquo;XCoreXObject (XObject + reflection runtime + GC; NOT a replication-metadata host &mdash; that responsibility moved to XNetworking's FReplicationStateDescriptorRegistry at L13 per Rev 13 FIX-A).&rdquo; XNetworking owns <code>FReplicationStateDescriptorRegistry</code>; XCoreXObject's role is solely to ensure that the GC walk visits XObject reference properties (via FStruct::ObjectRefProperties dense array per XCore-4b FIX-13) so reachability is correct.</li>
+  <li><strong>The cluster pattern (UE's <code>UObjectCluster</code>).</strong> UE optimizes GC by clustering related objects into a single mark unit; XCoreXObject Rev 1 ships <strong>without</strong> clustering (clustering is a per-FClass declaration that, when set, makes the FClass's instances share a mark bit with their Outer chain). Clustering is a forward-compatibility hook: the <code>EObjectFlags::ClusterRoot</code> bit is reserved, but the cluster traversal path is a TODO(Phase 2) item with a clean opt-out path. Rationale: clusters add significant complexity (cluster-mutation tracking, cluster-spanning weak refs, cluster-replacement during hot-reload), and the Foundation Prototype's &lt;5 ms typical-pause / &lt;50 ms fallback targets are achievable without clustering for the MVP object population (XPact targets ~50k XObjects in a typical training session vs UE games' 200k-500k).</li>
+  <li><strong>Generational copying / compacting.</strong> Master Plan &sect;2a is explicit: <em>non-moving</em>. Stable pointers across object lifetime is a foundational invariant (the only model compatible with hot-reload's stable-symbol / stable-vtable requirements). The card-table is for scan-reduction, not for promotion.</li>
+  <li><strong>Cross-process / distributed GC.</strong> Multi-user lockstep is a per-process concern; each client runs its own collector; lockstep determinism applies to gameplay state, not to GC bookkeeping (the GC is non-sim-path; see &sect;4.6).</li>
+  <li><strong>Conservative scanning of the C++ stack.</strong> Master Plan &sect;2a is explicit: precise (no conservative stack scanning). C++ stack frames are not GC-scanned at all; gameplay-tier C++ code that holds a temporary XObject pointer on the stack must either (a) hold it through a container that registers an XGCRootSpan, (b) call <code>XGCRoot::AddRoot</code> explicitly for the duration, or (c) prove via stop-the-world coordination that no GC can run during the stack window (the SimPathSerialExecutor's frame boundary is the only such window). The XIL2CPP-transpiled C# stack IS precise-scanned via XIL2CPP-emitted stack maps; see &sect;5.3.</li>
+  <li><strong>Roslyn source-generator hosting.</strong> Per Master Plan &sect;2a C# version row, deferred to post-MVP.</li>
+</ul>
+
+<h3>1.3 Locked decisions inherited from upstream</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Decision</th><th>Value</th><th>Source</th><th>XCoreXObject impact</th></tr></thead>
+  <tbody>
+    <tr><td>Memory / GC model</td><td>Hybrid: XObject-derived types live in non-moving mark-and-sweep collector; plain C# types and containers transpile to native deterministic-lifetime equivalents; explicit GC root registration at the boundary; card-table write barriers for generational scan-reduction; failure-mode (remembered-set saturation &rarr; full-heap scan + XInsights telemetry)</td><td>Master Plan &sect;2a Memory/GC row</td><td>&sect;3 (allocator), &sect;4 (collector), &sect;5 (write barriers + roots) implement this verbatim. The "novel collector" framing in &sect;2a is acknowledged here: this spec is the substantive design of the novel piece.</td></tr>
+    <tr><td>Non-moving GC (locked re-affirmation)</td><td>Custom non-moving precise GC over Boehm; Master Plan &sect;2a (B-2) REAFFIRMED LOCKED</td><td>Master Plan &sect;2a Locked re-affirmations row</td><td>&sect;4 algorithm is non-moving; no copying, no compaction, no promotion. Stable pointers are a structural invariant. <strong>Consequence:</strong> fragmentation is real and must be bounded by allocator design (&sect;3 size-class segregation + scenario-boundary mark-region clearing).</td></tr>
+    <tr><td>Hot-reload commitment</td><td>Live-Coding-style DLL patching; no class-layout changes mid-session; no new XCLASS/XSTRUCT additions mid-session; no virtual-method signature changes; property additions go through close/reopen flow; non-moving GC + versioned vtables + stable exported symbol names already shipped as inherent constraints</td><td>Master Plan &sect;2a Hot-reload commitment row</td><td>&sect;9 hot-reload survival protocol; &sect;2 XObject header avoids virtuals on the GC-relevant surface (FakeVTable pattern from XCore-4b); FClass replacement at module unload uses XObjectKey to rebind instances; the single-method hot-patch path is a function-pointer swap (no class-layout change).</td></tr>
+    <tr><td>GC pause budgets (Foundation Prototype criteria a, b)</td><td>Typical pause &lt; 5 ms Quest 3; full-heap-scan fallback &lt; 50 ms Quest 3</td><td>Master Plan &sect;11 Step 5.5 (a), (b)</td><td>&sect;4.4 algorithm splits work across worker threads with mostly-concurrent marking + handshake-based safe point; &sect;3 allocator + FStruct::ObjectRefProperties dense walk (XCore-4b FIX-13) deliver the &lt;50 ms scan throughput on ARM64.</td></tr>
+    <tr><td>Cross-arch determinism (Foundation Prototype criterion c)</td><td>100 bit-exact replays Win64 x86_64 + Quest 3 ARM64; sim-path TUs only</td><td>Master Plan &sect;2a Determinism row + &sect;11 Step 5.5 (c)</td><td>GC pause time is non-deterministic (varies by heap state, allocation rate, available threads). GC operations are <strong>not sim-path</strong> and do not participate in cross-arch determinism. &sect;4.6 specifies the sim-path / GC boundary: NewObject is permitted during a sim tick, but the GC's mark/sweep runs only at frame boundaries (or asynchronously between frames) and never inside a sim tick &mdash; this preserves determinism by making "when GC runs" not affect sim state.</td></tr>
+    <tr><td>Fragmentation (Foundation Prototype criterion h)</td><td>4-hour Quest 3 continuous-load test ends &lt;15% wasted heap</td><td>Master Plan &sect;11 Step 5.5 (h) + &sect;2a GC pause budget row</td><td>&sect;3 allocator uses size-class-segregated free-lists (size-class spec: 16/24/32/48/64/96/128/192/256/384/512/...) + type-segregated within size class (all XActor instances share a sub-pool inside the 64-byte class) + scenario-boundary mark-region clearing (objects allocated during a scenario can be returned to the pool when the scenario unloads, even if they're individually unreachable).</td></tr>
+    <tr><td>Error handling discipline</td><td>Result&lt;T, E&gt; engine-wide; exceptions reserved for programmer errors only (assert in Dev, abort in Shipping)</td><td>Master Plan &sect;2a Error handling discipline row</td><td>&sect;7 lifecycle APIs (NewObject, BeginDestroy, FinishDestroy) return <code>Result&lt;XObject*, FNewObjectError&gt;</code> on the fallible path; pre-condition violations (NewObject during GC mark, BeginDestroy on already-destroyed object, etc.) are <code>XPACT_CHECK</code> assertions (Dev abort, Shipping abort via XCrashReportClient).</td></tr>
+    <tr><td>Threading</td><td>SimPathSerialExecutor + worker-pool job system; tick-group bucketing; GC integrates as a worker-pool participant, not a named major thread</td><td>Master Plan &sect;2a Threading row</td><td>&sect;4 collector spawns worker-pool jobs for mark / sweep phases; the safe-point coordination uses XCore-4a's atomics + condition variables; the collector itself does NOT have a dedicated thread (XTaskGraph hasn't shipped at XCoreXObject's design phase, so the collector uses XCore-4a's threading primitives directly; XTaskGraph integration is a Phase 2 enhancement &mdash; declared but not blocking).</td></tr>
+    <tr><td>String encoding</td><td>UTF-8 throughout; FName case-sensitive in MVP</td><td>Master Plan &sect;2a String encoding row + XCore-4b &sect;4</td><td>XObject.Name field is FName (XCore-4b 8-byte handle); object debug strings use FString (UTF-8). No Unicode normalization on names.</td></tr>
+    <tr><td>C++ standard</td><td>C++20 with constinit, concepts, ranges</td><td>Master Plan &sect;2a C++ standard row</td><td>&sect;2 XObject constructor used for FClass CDO can be consteval per XCore-4b's constinit posture; &sect;3 allocator slab tables are constinit; &sect;4 collector state is constinit-initialized.</td></tr>
+    <tr><td>Maximum lockstep participants per session</td><td>8 (one instructor + 7 trainees)</td><td>Master Plan &sect;2a Determinism row</td><td>The GC is per-process; multi-user lockstep sessions run N independent collectors. A full-heap-scan fallback on one client is a session-interrupting event (the lockstep barrier waits for the slowest client). &sect;4.5 specifies: full-heap-scan fallback in a lockstep session emits an XInsights telemetry event AND triggers a session-pause until all clients complete.</td></tr>
+  </tbody>
+</table>
+
+<h3>1.4 Dependencies</h3>
+
+<ul>
+  <li><strong>Hard dependencies on XCore-4a:</strong>
+    <ul>
+      <li><code>FMallocBinnedX</code> (the XObject heap allocator uses XCore-4a's binned allocator as its backing store for the slab pool, attributing all allocations to <code>FMemTag::XObject</code>; the XObject heap is a layer on top of FMallocBinnedX, not a replacement &mdash; rationale &sect;3.1).</li>
+      <li><code>FMemTag::XObject</code> (already reserved as slot 9 in XCore-4a's enum; this spec activates it).</li>
+      <li><code>FLeakTracker</code> (XObject leaks report through the same tracker; &sect;10.5).</li>
+      <li><code>TArray</code>, <code>TMap</code>, <code>TSet</code> (the FXObjectArray, the FClass-to-CDO map, the deferred destruction queue all use XCore-4a containers).</li>
+      <li><code>FRWLock</code>, <code>FCriticalSection</code>, <code>FAtomicInt32</code>, <code>FAtomicInt64</code>, <code>FAtomicPtr</code> (collector phase coordination).</li>
+      <li><code>FXxh3</code> / <code>FBlake3</code> (XObjectKey hashing, not on hot paths).</li>
+      <li><code>XGCRootSpan</code> ABI (XCore-4a &sect;5.4 + <code>XGCDeclarations.h</code>; this spec is the consumer that implements the four <code>XGC_*</code> functions as strong symbols).</li>
+      <li><code>EInitPhase</code> ladder (XCoreXObject heap + collector come up at <code>EInitPhase::PreStaticInit</code> alongside FMemory; XObject construction is permitted from PreStaticInit because FClass static-init can reach NewObject for CDO).</li>
+    </ul>
+  </li>
+  <li><strong>Hard dependencies on XCore-4b:</strong>
+    <ul>
+      <li><code>FClass</code> (XObject carries <code>const FClass*</code>; FClass.ClassDefaultObject is the CDO slot XCoreXObject populates).</li>
+      <li><code>FStruct::ObjectRefProperties</code> dense TArray (the GC mark walk reads this contiguously; XCore-4b FIX-13).</li>
+      <li><code>FProperty::DispatchTable-&gt;ContainsObjectReferenceFn</code> (the slot the FClass::Link path probes when populating ObjectRefProperties).</li>
+      <li><code>FName</code> (XObject.Name).</li>
+      <li><code>XReflectionRuntime</code> (XCoreXObject calls <code>RegisterClass(...)</code> at FClass-init time to populate the registry; conversely, XCoreXObject calls <code>FindClass</code> when a serialized XObject is loaded from disk &mdash; though the actual deserialization is XSerialization's responsibility, the FindClass path is consumed here).</li>
+      <li><code>FObjectProperty</code>, <code>FWeakObjectProperty</code>, <code>FSoftObjectProperty</code>, <code>FSoftClassProperty</code> (the four XCore-4b property subclasses that hold XObject references; XCoreXObject's handle family is the runtime payload for these property types).</li>
+      <li><code>FCustomVersion</code> (XObject layout itself is a FCustomVersion'd type; a future XObject header change would bump the custom version).</li>
+    </ul>
+  </li>
+  <li><strong>Phase-1g GC stubs (XCore-4a):</strong> XCoreXObject's link is the strong-symbol replacement for XCore-4a's weak-symbol <code>XGC_WriteBarrier</code> / <code>XGC_RegisterRootSpan</code> / <code>XGC_UpdateRootSpan</code> / <code>XGC_UnregisterRootSpan</code> stubs. The replacement happens at link time without source changes on the XCore-4a side. Additionally, XCore-4a &sect;4.4 declared an <code>s_XObjectAllocator</code> function-pointer hook initialized to nullptr; XCoreXObject's PreStaticInit code calls <code>RegisterXObjectAllocator(&amp;FXObjectAllocator::AllocateRaw)</code> to install the strong implementation.</li>
+  <li><strong>Contract delta:</strong> XCoreXObject does not trigger a Contract version bump (Rev 13.8 already locked the XCore-4b layouts). XCoreXObject's four new layout tags (<code>XPACT_XOBJECT_LAYOUT_TAG</code>, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code>, <code>XPACT_XWEAKPTR_LAYOUT_TAG</code>) are additive within Rev 13.8 (the addendum is extensible to new pins so long as existing pins do not change). If a future XObject header change is needed (e.g., adding a 4-byte field), it would require Contract Rev 13.9.</li>
+</ul>
+
+<p>XCoreXObject unblocks System 6 (XIL2CPP full emitter, which depends on the XObject runtime to emit GC-aware allocations and root scaffolding), System 8 (XTaskGraph, which integrates the GC with the worker pool), every L7+ gameplay framework system (XActor / XComponent / XWorld all derive from XObject), and the Foundation Prototype milestone (Step 5.5) which directly validates the XCoreXObject design under all 9 pass criteria.</p>
+
+<h3>1.5 Cross-references</h3>
+
+<ul>
+  <li><strong>Master Plan Rev 15 &sect;2a Memory/GC row</strong>: the locked novel-collector design; this spec implements it.</li>
+  <li><strong>Master Plan Rev 15 &sect;11 Step 5.5 Foundation Prototype</strong>: 9 pass criteria (a)-(i); &sect;13 maps each criterion to acceptance gates in this spec.</li>
+  <li><strong>XCore-4a.html Rev 3 &sect;4 Memory and Allocator</strong>: FMallocBinnedX is the XObject heap's backing store; FMemTag::XObject is the attribution slot.</li>
+  <li><strong>XCore-4a.html Rev 3 &sect;5.4 GC-aware containers</strong>: XGCRootSpan ABI is the contract this spec implements the collector side of.</li>
+  <li><strong>XCore-4b.html Rev 4 &sect;7.1 FStruct</strong>: ObjectRefProperties dense TArray is the GC walk's data source.</li>
+  <li><strong>XCore-4b.html Rev 4 &sect;7.3 FClass</strong>: ClassDefaultObject atomic slot is the CDO host; ClassConstructorFn is what NewObject calls.</li>
+  <li><strong>XCore-4b.html Rev 4 &sect;10 XReflectionRuntime</strong>: this spec calls RegisterClass at FClass-init time and FindClass on deserialize.</li>
+  <li><strong>Contract Rev 13.8 (XToolchainContract.html)</strong>: this spec adds four new <code>XPACT_*_LAYOUT_TAG</code> pins to the addendum's coverage.</li>
+  <li><strong>XHT</strong>: the <code>.gen.cpp</code> emitter generates <code>Z_Construct_FClass_*</code> functions whose runtime side is implemented here; the per-module <code>.init.gen.cpp</code> aggregator calls XCoreXObject's <code>RegisterClass</code> entry point.</li>
+  <li><strong>XSerialization (System 9)</strong>: when an XObject is loaded from disk, XSerialization calls <code>NewObject&lt;XObject&gt;(ResolvedOuter, NameFromArchive, RF_NeedLoad)</code> with the FClass* resolved via XReflectionRuntime::FindClass; XCoreXObject is the implementation of NewObject for that call path.</li>
+  <li><strong>XNetworking (System 13)</strong>: NetSerialize on an XObject reference uses XCoreXObject's XObjectKey for stable cross-process identity; XNetworking's FReplicationStateDescriptor caches XObjectKey instances for the replication state's referenced objects.</li>
+  <li><strong>XCoreXObject &harr; XLiveCoding (L0)</strong>: hot-reload cascade orchestrator calls XCoreXObject's <code>BeginHotReloadQuiesce()</code> / <code>FinishHotReloadCascade(NewClassMap)</code> bracket; the protocol is specified in &sect;9.</li>
+</ul>
+
+<hr>
+
+<h2 id="sec2">2. XObject Base Type</h2>
+
+<h3>2.1 Design philosophy</h3>
+
+<p>The XObject base type is the universal parent of every reflected gameplay type in the engine. Every XActor, every XComponent, every XScenario, every XAsset is an XObject. Per Master Plan &sect;3 L1 inventory note: &ldquo;XObject + reflection runtime + GC.&rdquo; The design must therefore:</p>
+
+<ul>
+  <li><strong>Be small</strong> &mdash; 50k XObjects &times; header size matters on Quest 3's 4 GB budget. UE's UObjectBase is ~72 bytes; XPact targets <strong>56 bytes</strong> (saves 800 KB on 50k-object population, 16 MB on 1M-object population).</li>
+  <li><strong>Avoid virtuals on the GC-relevant surface</strong> per Prime Directive + hot-reload commitment. UE's UObjectBase has a virtual destructor and a virtual <code>DeferredRegister</code>; XPact replaces both with function-pointer slots populated by the FClass's FakeVTable pattern (XCore-4b's discipline applied to XObject as well).</li>
+  <li><strong>Be precise-scan-friendly</strong> &mdash; the FClass* must be at a stable offset so the GC walk can decode reachability without virtual dispatch.</li>
+  <li><strong>Support weak references</strong> via a per-object 32-bit SerialNumber that increments on object slot reuse; a weak pointer holds {InternalIndex, SerialNumber} and verifies on deref.</li>
+  <li><strong>Support hot-reload-survivable identity</strong> via XObjectKey ({InternalIndex, SerialNumber}); the same handle remains valid across a class replacement because the InternalIndex slot is preserved.</li>
+  <li><strong>Support the Outer chain</strong> &mdash; XObject.Outer is the parent in the ownership/scoping hierarchy (Asset Outer is Package; Component Outer is Actor; etc.). Outer is itself an XObject and is GC-traced.</li>
+  <li><strong>Support reflection-driven access</strong> &mdash; FClass* lookup is O(1) (direct member access); property iteration via FStruct::PropertyLink (XCore-4b).</li>
+</ul>
+
+<h3>2.2 XObject header layout (target 56 bytes)</h3>
+
+<pre><code>// Rev 1: XObject header. Target sizeof = 56 bytes (UE UObjectBase ~72 bytes;
+// saves 16 bytes via FakeVTable + tighter EObjectFlags + dropped UE-only fields).
+// All field offsets are part of the Stage B addendum extension (XPACT_XOBJECT_LAYOUT_TAG).
+// Hot-reload commitment: NO virtual methods on this surface. Subclass behavior is
+// dispatched via the FClass's FakeVTable (XCore-4b pattern, extended to XObject lifecycle).
+//
+// FIELD ORDERING RATIONALE:
+//   * ClassPrivate at offset 0 lets GC mark walk decode the FClass* with a single
+//     load from the object pointer (no offset arithmetic) -- the hottest GC path.
+//   * InternalIndex at offset 8 is the FXObjectArray index; precedes Outer because
+//     the GC walk needs the InternalIndex before it needs the Outer for the per-object
+//     mark bit (mark bits are stored in the FXObjectArray, not on the XObject itself).
+//   * SerialNumber at offset 12 sits in the same cache line as InternalIndex
+//     (XWeakPtr deref reads both together).
+//   * Outer at offset 16 -- GC walk visits the Outer chain after the FStruct property
+//     walk; placing it in the second 16 bytes keeps the first 16 bytes hot.
+//   * NamePrivate at offset 24 -- 8-byte FName handle. Diagnostic / debug; not on the
+//     GC hot path.
+//   * ObjectFlags at offset 32 -- 32-bit atomic; lifecycle state (RF_NeedLoad,
+//     RF_NeedPostLoad, RF_BeginDestroyed, RF_FinishDestroyed, RF_ClassDefaultObject, ...).
+//   * _padObjectFlags at offset 36 -- 4-byte pad.
+//   * Cluster fields at offset 40-47 -- reserved 8 bytes for the cluster forward-
+//     compatibility hook (per &sect;1.2, clustering is a Phase 2 enhancement; the bytes
+//     are reserved here so a future Contract Rev 13.9 can repurpose them without
+//     bumping XObject sizeof).
+//   * RemoteObjectId at offset 48-55 -- reserved 8 bytes for distributed-XObject
+//     handle (post-MVP; UE's FRemoteObjectId equivalent for federated/multi-process
+//     deployments). Pre-MVP value is zero; the bytes are part of the 56-byte ABI
+//     lock so adding the feature post-MVP does not change sizeof.
+
+class XObject {
+public:
+    // === GC-hot identity (first cache line) ===
+    const FClass*           ClassPrivate;        //  0  +8   FClass descriptor; GC walk's first load
+    int32_t                 InternalIndex;       //  8  +4   FXObjectArray slot index (-1 = uninitialized)
+    uint32_t                SerialNumber;        // 12  +4   bumps on slot reuse; XWeakPtr deref checks this
+
+    // === Identity continuation (second half of first line) ===
+    XObject*                Outer;               // 16  +8   parent in ownership chain; GC-traced
+    FName                   NamePrivate;         // 24  +8   debug/diagnostic name (FName 8-byte handle)
+
+    // === Lifecycle state (second cache line, first 16 bytes) ===
+    std::atomic&lt;uint32_t&gt;  ObjectFlags;         // 32  +4   EObjectFlags (RF_*) atomic
+    uint32_t                _padObjectFlags;     // 36  +4   pad to 8-byte boundary
+
+    // === Forward-compatibility reservations ===
+    uint64_t                _reservedCluster;    // 40  +8   cluster forward-compat (Phase 2)
+    uint64_t                _reservedRemoteId;   // 48  +8   distributed-XObject forward-compat (post-MVP)
+
+    // No virtual methods. Subclass lifecycle (PostInitProperties / BeginDestroy /
+    // FinishDestroy / AddReferencedObjects) is dispatched via the FClass's
+    // FakeVTable, which lives in .rodata per the XCore-4b pattern (see &sect;2.4).
+    // Standard C++ derivation IS permitted -- a user-class can be `class XActor :
+    // public XObject` and provide virtual methods of its own. The GC walk does
+    // NOT consult any user-class vtable; it consults only the FClass's FakeVTable
+    // and the FStruct::ObjectRefProperties array. This is what makes hot-reload
+    // safe: a user-class vtable change is fine (the GC doesn't read it); only
+    // changes to XObject's own implicit destructor would matter, and XObject has
+    // none (the FakeVTable replaces it).
+
+    // === Constructors ===
+
+    // Default ctor: zero-initializes; expects subsequent NewObject path to fill
+    // ClassPrivate / InternalIndex / SerialNumber / Outer / NamePrivate.
+    // The "real" construction path is NewObject<T>(); this ctor exists only for
+    // the consteval CDO bootstrap (where the FClass populates the fields at
+    // compile time).
+    XObject() noexcept = default;
+
+    // Consteval ctor (per Master Plan &sect;2a C++ standard row + XCore-4b consteval
+    // CDO posture): constructs a constinit-friendly XObject for the FClass static
+    // initialization path.
+    explicit consteval XObject(const FClass* cls, XObject* outer, FName name,
+                                uint32_t flags) noexcept
+        : ClassPrivate(cls), InternalIndex(-1), SerialNumber(0),
+          Outer(outer), NamePrivate(name), ObjectFlags(flags),
+          _padObjectFlags(0), _reservedCluster(0), _reservedRemoteId(0) {}
+
+    // === Accessors (non-virtual; inline) ===
+    XPACT_FORCEINLINE const FClass* GetClass() const noexcept { return ClassPrivate; }
+    XPACT_FORCEINLINE XObject*       GetOuter() const noexcept { return Outer; }
+    XPACT_FORCEINLINE FName          GetFName() const noexcept { return NamePrivate; }
+    XPACT_FORCEINLINE int32_t        GetInternalIndex() const noexcept { return InternalIndex; }
+    XPACT_FORCEINLINE uint32_t       GetSerialNumber() const noexcept { return SerialNumber; }
+
+    // EObjectFlags read with explicit memory order
+    XPACT_FORCEINLINE uint32_t       GetFlags(std::memory_order o = std::memory_order_relaxed) const noexcept {
+        return ObjectFlags.load(o);
+    }
+    XPACT_FORCEINLINE bool           HasAnyFlags(uint32_t mask) const noexcept {
+        return (GetFlags() &amp; mask) != 0;
+    }
+    XPACT_FORCEINLINE bool           HasAllFlags(uint32_t mask) const noexcept {
+        return (GetFlags() &amp; mask) == mask;
+    }
+
+    // Atomic flag mutation (CAS-loop; see &sect;2.3 for ordering rules)
+    void                             SetFlags(uint32_t bits) noexcept;
+    void                             ClearFlags(uint32_t bits) noexcept;
+
+    // === Identity APIs ===
+    FString                          GetFullName() const;  // "Package.Outer.Name" form
+    FString                          GetPathName() const;
+    XObjectKey                       GetKey() const noexcept;  // see &sect;6.4
+
+    // === Class hierarchy APIs ===
+    bool                             IsA(const FClass* cls) const noexcept;  // O(1) via ClassCastFlags or O(depth) via SuperStruct walk
+    template &lt;typename T&gt;
+    bool                             IsA() const noexcept { return IsA(T::StaticClass()); }
+
+    template &lt;typename T&gt;
+    T*                               CastTo() noexcept {  // returns nullptr on type mismatch
+        return IsA&lt;T&gt;() ? static_cast&lt;T*&gt;(this) : nullptr;
+    }
+};
+
+static_assert(sizeof(XObject)  == 56, "XObject ABI lock: 56 bytes (UE UObjectBase ~72 bytes; saves 16)");
+static_assert(alignof(XObject) ==  8, "XObject alignment lock: 8-byte aligned (matches FClass* alignment)");
+static_assert(offsetof(XObject, ClassPrivate)  ==  0, "XObject.ClassPrivate offset lock");
+static_assert(offsetof(XObject, InternalIndex) ==  8, "XObject.InternalIndex offset lock");
+static_assert(offsetof(XObject, SerialNumber)  == 12, "XObject.SerialNumber offset lock");
+static_assert(offsetof(XObject, Outer)         == 16, "XObject.Outer offset lock");
+static_assert(offsetof(XObject, NamePrivate)   == 24, "XObject.NamePrivate offset lock");
+static_assert(offsetof(XObject, ObjectFlags)   == 32, "XObject.ObjectFlags offset lock");
+</code></pre>
+
+<p><strong>Size comparison vs UE.</strong> UE's UObjectBase at HEAD carries (rough order, per UObjectBase.h lines 397-430): <code>EObjectFlags ObjectFlags</code> (4) + <code>int32 InternalIndex</code> (4) + <code>TNonAccessTrackedObjectPtr&lt;UClass&gt; ClassPrivate</code> (8) + a union of <code>{FName Name; int32 ObjectListInternalIndex}</code> or <code>const char* UninitializedNameUTF8</code> (8-12) + <code>TNonAccessTrackedObjectPtr&lt;UObject&gt; OuterPrivate</code> (8) + virtual-destructor vptr (8) + <code>FRemoteObjectId</code> (when enabled; 8) + alignment-pad to 8-byte boundary + AutoRTFM bookkeeping (variable) = ~64-72 bytes typical, up to 80+ with optional features. XPact saves bytes by: (a) dropping the vtable pointer (FakeVTable on FClass instead); (b) using FName 8-byte handle directly rather than UE's wider name+index union; (c) explicit-not-AutoRTFM bookkeeping (XPact doesn't run AutoRTFM; XCore-4a's discipline does not assume transactional memory).</p>
+
+<h3>2.3 EObjectFlags layout</h3>
+
+<p>EObjectFlags is a 32-bit bitmask of lifecycle and policy flags. The atomic semantics matter: multiple threads can set/clear flags concurrently (e.g., the loader sets RF_NeedLoad, the loader thread sets RF_NeedPostLoad, the GC sets RF_BeginDestroyed). The CAS loop ensures no flag is lost.</p>
+
+<pre><code>// EObjectFlags (mirrors UE's EObjectFlags but trimmed to the load-bearing MVP set).
+// Hot-reload commitment: bit positions are part of the Stage B addendum.
+enum class EObjectFlags : uint32_t {
+    None                       = 0,
+
+    // === Allocation / lifecycle ===
+    NeedInitialization         = 1u &lt;&lt;  0,   // post-allocation, pre-PostInitProperties
+    ClassDefaultObject         = 1u &lt;&lt;  1,   // this is the CDO for its FClass
+    ArchetypeObject            = 1u &lt;&lt;  2,   // template object used as construction template
+    Transient                  = 1u &lt;&lt;  3,   // do not serialize
+    NeedLoad                   = 1u &lt;&lt;  4,   // serialized data not yet loaded
+    NeedPostLoad               = 1u &lt;&lt;  5,   // PostLoad pending
+    Standalone                 = 1u &lt;&lt;  6,   // root-set member; persists across GC
+    BeginDestroyed             = 1u &lt;&lt;  7,   // BeginDestroy has been called
+    FinishDestroyed            = 1u &lt;&lt;  8,   // FinishDestroy has been called (object slot may now be reused)
+
+    // === GC ===
+    MarkAsRootSet              = 1u &lt;&lt;  9,   // pinned in GC root set
+    MarkAsNative               = 1u &lt;&lt; 10,   // constinit-allocated; lives in .rodata or process-static memory
+    DefaultSubObject           = 1u &lt;&lt; 11,   // CDO-template-spawned child object
+
+    // === Hot-reload ===
+    BeingReplaced              = 1u &lt;&lt; 12,   // hot-reload swap in progress for this object's class
+    HotReloadReplaced          = 1u &lt;&lt; 13,   // post-swap; instance was rebound to a new FClass*
+
+    // === Reserved for engine extensions ===
+    _Reserved14                = 1u &lt;&lt; 14,
+    _Reserved15                = 1u &lt;&lt; 15,
+
+    // === Debug ===
+    DebugLogged                = 1u &lt;&lt; 16,   // already emitted a debug-print on lifecycle event
+
+    // === High bits reserved for plugin / user policy flags ===
+    UserFlag_Begin             = 1u &lt;&lt; 24,
+    UserFlag_End               = 1u &lt;&lt; 31,
+};
+</code></pre>
+
+<p><strong>Atomic mutation pattern.</strong> Both <code>SetFlags</code> and <code>ClearFlags</code> use a CAS loop with <code>memory_order_acq_rel</code> on success and <code>memory_order_acquire</code> on failure (matching UE's <code>FORCENOINLINE AtomicallySetFlags</code> in UObjectBase.h). The atomic operations are released so that observers reading the flag with <code>memory_order_acquire</code> see a happens-before-correct view of the object state at the time the flag was set.</p>
+
+<h3>2.4 XObject lifecycle dispatch (FakeVTable pattern extended to XObject)</h3>
+
+<p>UE's UObject has ~30 virtual methods (PostInitProperties, BeginDestroy, FinishDestroy, IsReadyForFinishDestroy, Serialize, PostLoad, PreSave, ...). Each is a hot-reload risk: a patch DLL whose user-class overrides a virtual method must be recompiled against the exact same vtable layout. XPact's pattern extends XCore-4b's FakeVTable mechanism (which was applied to FProperty and FScriptStruct ICppStructOps) to XObject lifecycle dispatch too: the FClass carries a per-class function-pointer table (the "XObjectFakeVTable"), populated at FClass static-init time, that holds the lifecycle slots.</p>
+
+<pre><code>// XObjectFakeVTable: one per FClass, in .rodata (typically) or in the FClass
+// descriptor itself (the function pointers can be inlined into FClass at the cost
+// of 8 bytes per slot per class). XPact Rev 1 inlines them into FClass via a new
+// XObjectLifecycleTable field on FClass (added as part of XCore-4b's existing
+// ClassConstructorFn slot expansion).
+//
+// SLOT TABLE (8 slots; mirrors UE's UObject lifecycle virtuals, dropped to the
+// MVP-load-bearing set):
+
+enum class EXObjectLifecycleSlot : uint32_t {
+    PostInitProperties      = 0,   // called after NewObject construction + default-value copy
+    BeginDestroy            = 1,   // first-phase destruction; instance is still mostly valid
+    IsReadyForFinishDestroy = 2,   // returns true when FinishDestroy is safe to call
+    FinishDestroy           = 3,   // second-phase destruction; instance bytes are about to be freed
+    Serialize               = 4,   // FArchive&lt;XObject&gt; round-trip (XSerialization consumer)
+    AddReferencedObjects    = 5,   // explicit GC root-walk hook for user-managed references
+    PostLoad                = 6,   // post-deserialize; runs after the entire object graph is loaded
+    PreSave                 = 7,   // pre-serialize; runs before the object is written to archive
+    Count                   = 8,   // sentinel
+};
+
+struct alignas(8) FXObjectLifecycleTable {
+    uint32_t Capabilities;          // 4-byte bitmask: bit N set =&gt; slot N is non-null
+    uint32_t _padHeader;            // 4-byte pad
+    void   (*Slots[8])(void);       // 8 * 8 = 64 bytes
+    // Total: 8 + 64 = 72 bytes per FClass, in .rodata.
+};
+
+static_assert(sizeof(FXObjectLifecycleTable) == 72,
+              "FXObjectLifecycleTable ABI lock: 8-byte header + 8 slots = 72 bytes per FClass");
+static_assert(static_cast&lt;uint32_t&gt;(EXObjectLifecycleSlot::Count) == 8,
+              "EXObjectLifecycleSlot count lock: 8 slots");
+</code></pre>
+
+<p>The FClass references this table via a new <code>const FXObjectLifecycleTable* LifecycleTable</code> field (one 8-byte pointer added to FClass at the end of its layout). The Stage B addendum extension pin <code>XPACT_FCLASS_LIFECYCLE_TABLE_TAG</code> covers this; it does not change FClass's existing 224-byte sizeof because the LifecycleTable pointer is appended after the existing fields (pushing FClass to 232 bytes). <strong>Rev 1 NOTE</strong>: the FClass sizeof change from 224 &rarr; 232 IS a Contract delta that XCoreXObject triggers. This requires a Contract Rev 13.9 micro-bump (not a major addendum). The alternative &mdash; placing the LifecycleTable pointer in a parallel TMap&lt;const FClass*, const FXObjectLifecycleTable*&gt; lookup &mdash; was rejected: the lookup would cost a TMap probe on every PostInitProperties / BeginDestroy / FinishDestroy call, which is wrong per Prime Directive (the table-pointer is a single direct member load). <strong>RECOMMENDED resolution</strong> documented at &sect;14.</p>
+
+<h3>2.5 Dispatch call sites</h3>
+
+<p>The runtime calls into the FakeVTable at the following points:</p>
+
+<ul>
+  <li><strong>NewObject path</strong> calls <code>PostInitProperties</code> after construction + default-value copy from the CDO. If the slot is null (Capabilities bit 0 = 0), no call.</li>
+  <li><strong>FClass::Link path</strong> (XCore-4b &sect;7.3) does not call any slot, but is part of XCoreXObject's responsibility because Link populates <code>FStruct::ObjectRefProperties</code> for the GC walk (&sect;4.2).</li>
+  <li><strong>GC sweep phase</strong> calls <code>BeginDestroy</code> on each unreachable XObject. After BeginDestroy returns, the object enters the deferred-destruction queue.</li>
+  <li><strong>Deferred-destruction queue drain</strong> (runs in the worker pool, between GC cycles) calls <code>IsReadyForFinishDestroy</code> repeatedly until it returns true, then calls <code>FinishDestroy</code>. Only after FinishDestroy returns does the FXObjectArray slot become available for reuse (SerialNumber bumps; FXObjectAllocator marks the slab cell free).</li>
+  <li><strong>XSerialization save/load paths</strong> call <code>PreSave</code>, <code>Serialize</code>, <code>PostLoad</code> through this table.</li>
+  <li><strong>GC mark phase</strong> calls <code>AddReferencedObjects</code> on objects whose class declares the slot (typically rare; the dense ObjectRefProperties walk covers most cases. AddReferencedObjects exists for native-only types that hold XObject pointers in non-reflected slots &mdash; e.g., editor caches, runtime pools).</li>
+</ul>
+
+<h3>2.6 C++ XCLASS macro surface (declarative)</h3>
+
+<pre><code>// XCLASS macro: declares an XObject subclass + emits the reflection markers XHT
+// parses. The macro expands to a forward-declared StaticClass() method that
+// returns the FClass*, plus the XHT-parseable markers (the markers themselves
+// are parsed out of the source, not emitted as runtime code).
+
+// Example user-class declaration:
+class XActor : public XObject {
+    XCLASS(XActor, XObject, ClassFlags = (Blueprintable, Placeable),
+                              ClassGroup = (Actor))
+public:
+    XPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform")
+    FVector Location;
+
+    XPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform")
+    FRotator Rotation;
+
+    XPROPERTY(VisibleAnywhere, Transient)
+    TArray&lt;XPtr&lt;XComponent&gt;&gt; Components;
+
+    XFUNCTION(BlueprintCallable, Category = "Transform")
+    void SetLocation(const FVector&amp; NewLocation);
+
+    // No virtual destructor needed (FakeVTable handles BeginDestroy / FinishDestroy)
+};
+</code></pre>
+
+<p>The macro expansion is:</p>
+
+<pre><code>// What XCLASS(XActor, XObject, ...) expands to (XHT-emitter side; this is the
+// declarative half. The runtime side -- the FClass static_assert / construction
+// table -- is emitted into the .gen.cpp by XHT).
+class XActor : public XObject {
+public:
+    using ThisClass  = XActor;
+    using SuperClass = XObject;
+
+    // StaticClass() returns the FClass* (one per type; constinit; in .rodata).
+    // The accessor is declared here; the definition is emitted in the .gen.cpp.
+    static const FClass* StaticClass() noexcept;
+
+    // Construction template for NewObject path (one per type).
+    // XHT emits the body in .gen.cpp.
+    static void ClassConstructorFnImpl(void* InstancePtr, FFieldVariant Outer);
+
+    // ... other XHT-emitted members (PostInitProperties slot, etc.)
+
+private:
+    // (User-facing class body continues; XPROPERTY / XFUNCTION are parsed out by
+    // XHT and contribute to the .gen.cpp emission.)
+};
+</code></pre>
+
+<p>The XHT-emitted <code>.gen.cpp</code> contains:</p>
+<ul>
+  <li>A <code>constinit const FXObjectLifecycleTable XActor_LifecycleTable</code> in .rodata, populated with the resolved function pointers for PostInitProperties / BeginDestroy / etc. (slots are nullptr for unimplemented operations).</li>
+  <li>A <code>constinit const FClass XActor_Class</code> in .rodata, populated with: Name = "XActor", SuperStruct = XObject_Class, ChildProperties = head-of-property-list, PropertyLink, DestructorLink, PostConstructLink, SchemaHash, SchemaVersion, SerializeStructFn, ClassConstructorFn, ClassDefaultObject (atomic nullptr; populated lazily), ClassFlags, ClassCastFlags, ClassWithin, FirstOwnedClassRep, ClassRepCount, ClassReps, NetFields, ClassConfigName, LifecycleTable = &amp;XActor_LifecycleTable.</li>
+  <li>A <code>void Z_Construct_FClass_XActor()</code> function that the per-module <code>.init.gen.cpp</code> aggregator calls at DLL load; the function calls <code>XReflectionRuntime::RegisterClass(&amp;XActor_Class)</code> and (if the FClass policy is "eager CDO"; &sect;8) constructs the CDO.</li>
+</ul>
+
+<p>This shape is byte-for-byte compatible with the XCore-4b Stage B addendum (Contract Rev 13.8). The only addition is the LifecycleTable pointer on FClass &mdash; tagged as Contract Rev 13.9 micro-bump per &sect;1.4.</p>
+
+<hr>
+
+<h2 id="sec3">3. The XObject Heap (Allocator)</h2>
+
+<h3>3.1 Design decision: separate XObject heap, layered on FMallocBinnedX</h3>
+
+<p><strong>Critical design decision (per spec critical-decisions list, item 1)</strong>: the XObject heap is a <em>separate allocator layer</em>, built on top of XCore-4a's <code>FMallocBinnedX</code> as a backing-store consumer. It is NOT a fully independent allocator (that would duplicate FMallocBinnedX's VM reservation, slab discipline, and OS-page management) and it is NOT a thin tag-wrapper around FMallocBinnedX (that would lose the type-segregated free-lists and the scenario-boundary mark-region clearing that bound fragmentation).</p>
+
+<p><strong>The layering</strong>:</p>
+<ul>
+  <li><strong>Tier 1 (XCore-4a):</strong> <code>FMallocBinnedX</code> manages OS virtual memory in 56 per-bin reserved ranges (XCore-4a &sect;4 design). Each VM range is a contiguous slab of pages.</li>
+  <li><strong>Tier 2 (XCoreXObject, this spec):</strong> <code>FXObjectAllocator</code> reserves a dedicated set of <em>slabs</em> from FMallocBinnedX via the existing <code>FMemory::Malloc</code> entry point with <code>FMemTag::XObject</code> attribution. Each slab becomes the backing storage for a <em>size-class pool</em> that owns multiple XObject slots.</li>
+  <li><strong>Tier 3 (XCoreXObject, this spec):</strong> within each size-class pool, the allocator maintains <em>type-segregated free-lists</em> &mdash; the slab is sub-divided into runs of cells, with each run dedicated to a specific FClass*. This is the fragmentation-mitigation per Master Plan &sect;2a FIX-A-I-2.</li>
+</ul>
+
+<p><strong>Why separate XObject heap from FMallocBinnedX</strong>:</p>
+<ul>
+  <li><strong>XObject lifetime is GC-managed</strong>: the allocator must know which addresses are XObject candidates so the GC's iteration can decode them (mark bit lookup, FClass* dispatch). FMallocBinnedX has no concept of "this block is an XObject"; tagging it post-hoc would require either (a) per-block back-pointer lookup (cost: one indirection per GC mark, multiplied by ~50k objects per scan = 50k extra cache misses per scan; busts the &lt;50 ms ARM64 budget) or (b) probing the FMallocBinnedX tag side-table at mark time (same cost shape).</li>
+  <li><strong>Size-class segregation for fragmentation</strong>: XObject sizes cluster around a few specific values (XActor = ~128 bytes, XComponent = ~96 bytes, XScenario step nodes = ~64 bytes, etc.). Size-class pools that match the actual XObject size distribution waste less heap than FMallocBinnedX's general-purpose 56-bin schedule.</li>
+  <li><strong>Type-segregation within size class</strong>: all XActor instances share a sub-pool inside the 128-byte size class. When the scenario unloads, the entire XActor sub-pool can be returned to the size class's free list in O(1), regardless of reachability of individual instances. This is the scenario-boundary mark-region clearing optimization that breaks fragmentation creep over multi-hour Quest 3 sessions.</li>
+  <li><strong>Mark-bit co-location</strong>: each size-class pool stores its mark bits in a dedicated bitmap at the head of the slab, separate from the user-visible cells. The bitmap is one bit per cell; for a 64 KB slab containing 1024 64-byte cells, the bitmap is 128 bytes (0.2% overhead).</li>
+  <li><strong>Hot-reload bookkeeping</strong>: when a downstream module is hot-reloaded and an FClass is replaced, the XObject allocator must walk every instance of the affected FClass (via the FXObjectArray) and rebind. The type-segregated sub-pools make this walk efficient (visit only the affected sub-pool, not the entire heap).</li>
+</ul>
+
+<p><strong>Why layer on FMallocBinnedX rather than reserve VM directly</strong>: FMallocBinnedX already owns OS page management (Win32 VirtualAlloc, mmap on Linux, Android's allocator); duplicating that would re-create complexity. FMallocBinnedX's FMemTag attribution feeds XCore-4a's leak tracker and memory-budget telemetry. FMallocBinnedX's per-thread TLS caches accelerate allocation of new slabs.</p>
+
+<h3>3.2 Size-class schedule</h3>
+
+<p>The XObject allocator's size classes are tuned to the XObject distribution. <strong>Rev 1 schedule</strong> (will be refined post-Foundation-Prototype based on measured XObject sizes):</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Size class (bytes)</th><th>Typical XObject types</th><th>Slab size (KB)</th><th>Cells per slab</th></tr></thead>
+  <tbody>
+    <tr><td>64</td><td>XComponent leaf types, XScenarioNode</td><td>64</td><td>1024</td></tr>
+    <tr><td>96</td><td>Most XComponents (Mesh, Collider, Light)</td><td>64</td><td>682</td></tr>
+    <tr><td>128</td><td>XActor (root), most user-class XActor subclasses</td><td>64</td><td>512</td></tr>
+    <tr><td>192</td><td>XActor with several components inlined</td><td>64</td><td>341</td></tr>
+    <tr><td>256</td><td>Larger custom XActor subclasses</td><td>64</td><td>256</td></tr>
+    <tr><td>384</td><td>XScenario root, XGameMode</td><td>64</td><td>170</td></tr>
+    <tr><td>512</td><td>XWorld, XGameInstance, XLevel</td><td>128</td><td>256</td></tr>
+    <tr><td>768</td><td>Large editor types (XPropertyTable, XGraphEditor)</td><td>128</td><td>170</td></tr>
+    <tr><td>1024</td><td>XPackage descriptors with large index arrays</td><td>128</td><td>128</td></tr>
+    <tr><td>1536+</td><td>XAsset (variable-size), XScenarioRecord</td><td>variable (size-rounded)</td><td>1 (large-object path)</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Size-class fit rule</strong>: a request for <code>S</code> bytes maps to the smallest size class &ge; <code>S</code>. Waste per cell is the size-class minus S. <strong>Size-class pool segregation</strong> (per Master Plan &sect;2a): allocations within 1.25&times; of a size class share a pool. A 70-byte object goes in the 96-byte class (70 &times; 1.25 = 87.5 &le; 96); a 100-byte object goes in the 128-byte class (100 &times; 1.25 = 125 &le; 128). Calibrated so worst-case per-object waste stays under 20% of size class.</p>
+
+<h3>3.3 FXObjectArray (the global object table)</h3>
+
+<p>The FXObjectArray is a global table indexed by <code>InternalIndex</code>; it holds metadata for every live XObject. UE's equivalent is <code>FUObjectArray</code> at <code>CoreUObject/Public/UObject/UObjectArray.h</code>. XPact's design diverges in three ways: (a) the array is a single sparse-array (not the UE chunk-pointer-array indirection); (b) each entry is 32 bytes (not UE's 48-64 depending on options); (c) the entry carries the XObject pointer + mark bit + cluster bit + flags directly, not a separate parallel array.</p>
+
+<pre><code>// FXObjectArray entry (32 bytes; one cache-half-line).
+// Stored densely in a contiguous TArray-like structure backed by FMallocBinnedX
+// with FMemTag::XObject. The array grows in 1 MB increments (32k entries per grow);
+// existing entries are NEVER relocated (pointer-stability of the entry, distinct
+// from pointer-stability of the XObject; see &sect;9.1).
+struct alignas(8) FXObjectArrayEntry {
+    XObject*              Object;             //  0  +8   null = entry slot is free (waiting reuse)
+    uint32_t              SerialNumber;       //  8  +4   bumps on each Object replacement; XWeakPtr deref checks
+    uint32_t              ClusterRootIndex;   // 12  +4   if this object is in a cluster, the index of the cluster root (Phase 2)
+    std::atomic&lt;uint64_t&gt; StateBits;          // 16  +8   atomic: mark bit (bit 0), pending-destroy bit (bit 1),
+                                              //          root-pinned bit (bit 2), hot-reload-in-progress bit (bit 3)
+    uint64_t              _reserved;          // 24  +8   future use (e.g., remote-handle bookkeeping)
+};
+
+static_assert(sizeof(FXObjectArrayEntry)  == 32, "FXObjectArrayEntry ABI lock: 32 bytes (1/2 cache line)");
+static_assert(alignof(FXObjectArrayEntry) ==  8, "FXObjectArrayEntry alignment lock");
+</code></pre>
+
+<p><strong>FXObjectArray API:</strong></p>
+
+<pre><code>class FXObjectArray {
+public:
+    int32_t  ReserveSlot(uint32_t* OutSerialNumber) noexcept;
+    void     BindObject(int32_t InternalIndex, XObject* Object) noexcept;
+    void     MarkPendingDestroy(int32_t InternalIndex) noexcept;
+    void     ReleaseSlot(int32_t InternalIndex) noexcept;   // bumps SerialNumber
+
+    XPACT_FORCEINLINE bool IsMarked(int32_t InternalIndex) const noexcept {
+        return (Entries[InternalIndex].StateBits.load(std::memory_order_acquire) &amp; kMarkBit) != 0;
+    }
+    XPACT_FORCEINLINE void Mark(int32_t InternalIndex) noexcept {
+        Entries[InternalIndex].StateBits.fetch_or(kMarkBit, std::memory_order_acq_rel);
+    }
+    XPACT_FORCEINLINE void ClearMark(int32_t InternalIndex) noexcept {
+        Entries[InternalIndex].StateBits.fetch_and(~kMarkBit, std::memory_order_acq_rel);
+    }
+
+    template &lt;typename Visitor&gt; void ForEachObject(Visitor&amp;&amp; v) const noexcept;
+    template &lt;typename Visitor&gt; void ForEachObjectOfClass(const FClass*, Visitor&amp;&amp; v) const noexcept;
+
+    int32_t  GetLiveCount() const noexcept;
+
+private:
+    TArray&lt;FXObjectArrayEntry&gt;  Entries;
+    TArray&lt;int32_t&gt;             FreeList;    // LIFO; recently-released slot first
+    FCriticalSection            AllocLock;
+
+    static constexpr uint64_t kMarkBit              = 1ull &lt;&lt; 0;
+    static constexpr uint64_t kPendingDestroyBit    = 1ull &lt;&lt; 1;
+    static constexpr uint64_t kRootPinnedBit        = 1ull &lt;&lt; 2;
+    static constexpr uint64_t kHotReloadInProgress  = 1ull &lt;&lt; 3;
+};
+</code></pre>
+
+<p><strong>Index 0 is reserved</strong>: a freshly-zeroed XWeakPtr / XObjectKey with InternalIndex == 0 represents "null"; the FXObjectArray never allocates index 0 to a real object.</p>
+
+<h3>3.4 FXObjectAllocator (the size-class-pool allocator)</h3>
+
+<p>The FXObjectAllocator owns one <code>FXObjectSizeClassPool</code> per size class. Each pool owns a TArray of slabs and a per-FClass sub-pool free-list. Allocation cost is O(1): find size class, find FClass sub-pool, pop a cell from the free-list.</p>
+
+<pre><code>class FXObjectAllocator {
+public:
+    void* AllocateRaw(size_t Size, size_t Align, const FClass* ClassDescriptor) noexcept;
+    void  FreeRaw(void* Storage, size_t Size, const FClass* ClassDescriptor) noexcept;
+
+    // Scenario-boundary mark-region clearing
+    Result&lt;void, FScenarioBoundaryError&gt;
+          ReleaseClassPool(const FClass* ClassDescriptor) noexcept;
+
+    template &lt;typename Visitor&gt; void ForEachSlab(Visitor&amp;&amp; v) const noexcept;
+    void  DumpUsageReport(FArchive&amp; out) const;
+
+private:
+    static constexpr int32_t kNumSizeClasses = 10;
+    FXObjectSizeClassPool    Pools[kNumSizeClasses];
+    TArray&lt;FXObjectLargeSlab&gt; LargeSlabs;
+    FCriticalSection          LargeSlabLock;
+};
+
+struct alignas(64) FXObjectSlab {
+    void*                Base;             // FMallocBinnedX-owned base pointer
+    int32_t              CellSize;
+    int32_t              NumCells;
+    uint8_t*             MarkBitmap;       // 1 bit per cell at slab head
+    const FXObjectAllocator* Owner;
+    // Cells follow this header in memory.
+};
+</code></pre>
+
+<h3>3.5 Allocation hot-path</h3>
+
+<pre><code>// Hot-path NewObject allocation (six load/store-bound steps; no locks on fast path):
+template &lt;typename T&gt;
+T* NewObject(XObject* Outer, FName Name, EObjectFlags Flags) {
+    const FClass* cls = T::StaticClass();
+
+    // Pre-condition: NewObject during GC mark is forbidden (could leak the
+    // new object from the mark phase). XPACT_CHECK in Dev; no-op in Shipping.
+    XPACT_CHECK(!FXObjectCollector::IsMarking());
+
+    // 1. Allocate raw storage from the size-class pool.
+    void* storage = g_XObjectAllocator.AllocateRaw(
+        cls-&gt;PropertiesSize, cls-&gt;MinAlignment, cls);
+
+    // 2. Reserve an entry slot in the FXObjectArray.
+    uint32_t serial;
+    int32_t  internalIndex = g_XObjectArray.ReserveSlot(&amp;serial);
+
+    // 3. Construct via the FClass's ClassConstructorFn (placement new +
+    //    default-value initialization from the CDO).
+    cls-&gt;ClassConstructorFn(storage, FFieldVariant(Outer));
+
+    // 4. Fill XObject header.
+    XObject* obj = static_cast&lt;XObject*&gt;(storage);
+    obj-&gt;ClassPrivate    = cls;
+    obj-&gt;InternalIndex   = internalIndex;
+    obj-&gt;SerialNumber    = serial;
+    obj-&gt;Outer           = Outer;
+    obj-&gt;NamePrivate     = Name;
+    obj-&gt;ObjectFlags.store(static_cast&lt;uint32_t&gt;(Flags | EObjectFlags::NeedInitialization),
+                            std::memory_order_release);
+
+    // 5. Bind XObject to the FXObjectArray slot.
+    g_XObjectArray.BindObject(internalIndex, obj);
+
+    // 6. Call PostInitProperties via the FClass's lifecycle FakeVTable (if defined).
+    const FXObjectLifecycleTable* lt = cls-&gt;LifecycleTable;
+    if ((lt-&gt;Capabilities &amp; (1u &lt;&lt; uint32_t(EXObjectLifecycleSlot::PostInitProperties))) != 0) {
+        auto fn = reinterpret_cast&lt;void(*)(XObject*)&gt;(
+            lt-&gt;Slots[uint32_t(EXObjectLifecycleSlot::PostInitProperties)]);
+        fn(obj);
+    }
+
+    obj-&gt;ClearFlags(uint32_t(EObjectFlags::NeedInitialization));
+    return static_cast&lt;T*&gt;(obj);
+}
+</code></pre>
+
+<p>Total cost per NewObject: ~150-300 ns on Win64 desktop, ~250-500 ns on Quest 3 ARM64 (target; measured against UE's NewObject path which is ~600-1000 ns).</p>
+
+<h3>3.6 Fragmentation discipline (Foundation Prototype criterion h)</h3>
+
+<p>Three layered defenses for &lt;15% wasted heap over 4-hour Quest 3 continuous-load:</p>
+
+<ol>
+  <li><strong>Size-class segregation</strong>: per-cell waste bounded by size-class spacing (worst case 33% at the 384-byte class).</li>
+  <li><strong>Type-segregated free-lists</strong>: cells in a free-list are reused by the same FClass, so cells are always sized exactly right for the next allocation of that class.</li>
+  <li><strong>Scenario-boundary mark-region clearing</strong>: at scenario unload, the entire FClass sub-pool for scenario-scoped types is released to the size class's free-list in O(1), regardless of individual reachability.</li>
+</ol>
+
+<p><strong>Mark-region clearing protocol</strong>: XScenarios marks itself as the "owning scenario" for every XObject created during its load. On scenario unload, XScenarios calls <code>FXObjectAllocator::ReleaseClassPool(cls)</code>. The allocator validates: walks FXObjectArray entries for instances of cls and confirms each is reachable ONLY from the scenario root. If any escape is detected, the call returns <code>Result::Err(FScenarioBoundaryError::EscapedReference)</code> and the scenario falls back to GC-driven collection. On success: all sub-pool cells return to the size-class free-list, the FXObjectArray entries are released, and SerialNumbers bump for every released slot.</p>
+
+<p><strong>Slab return to OS</strong>: slabs are NOT returned to FMallocBinnedX during normal operation. At process exit, all slabs are released. Hot-reload of a downstream module does NOT release the module's slabs; the post-hot-reload heap state preserves all live objects.</p>
+
+<h3>3.7 Cross-thread allocation</h3>
+
+<p>XObject allocation is permitted from any worker-pool thread. Per-thread TLS cache holds a small bundle of free cells per active FClass (~16 cells). Cells exhausted: refill from the pool's per-FClass free-list (under PoolLock). Cross-thread free: enqueue onto the owner-pool's MPSC reclaim queue (XCore-4a TBoundedMpscQueue); owner-pool drains on next allocation. FXObjectArray ReserveSlot/ReleaseSlot takes the AllocLock (one global mutex; uncontended).</p>
+
+<p><strong>Determinism contract</strong>: allocation IS deterministic given identical call sequences from a fixed thread set. BUT cross-thread allocation order is not deterministic. Convention: sim-path NewObject calls happen on the SimPathSerialExecutor's thread (per Master Plan &sect;2a Threading row); cross-thread NewObject is reserved for non-sim-path code.</p>
+
+<hr>
+
+<h2 id="sec4">4. GC Collector Algorithm</h2>
+
+<h3>4.1 Algorithm choice (locked per Master Plan &sect;2a)</h3>
+
+<p>The collector is <strong>non-moving precise tracing mostly-concurrent mark-and-sweep with card-table generational scan-reduction</strong>. Each adjective is load-bearing:</p>
+
+<ul>
+  <li><strong>Non-moving</strong>: objects never relocate post-allocation. Stable pointers across object lifetime is a hot-reload commitment; XPtr<T> can be a raw T* without forwarding-table indirection.</li>
+  <li><strong>Precise</strong>: every reference traversed is known to be a real XObject* (not a heuristic guess). Boehm-style conservative scanning is rejected (the Master Plan B-2 affirmation forbids it).</li>
+  <li><strong>Tracing</strong>: reachability is determined by reachability from a root set (not via reference counting). Tracing handles cycles; reference counting does not.</li>
+  <li><strong>Mostly-concurrent</strong>: the mark phase runs concurrently with the mutator (gameplay tick). Only a brief safe-point is taken to snapshot the root set; the bulk of the work overlaps with the next frame's execution.</li>
+  <li><strong>Mark-and-sweep</strong>: two-phase algorithm. Mark phase visits every reachable object and sets the mark bit. Sweep phase walks the FXObjectArray entries and reclaims any unmarked entry.</li>
+  <li><strong>Card-table generational scan-reduction</strong>: a card-table (one byte per 512 bytes of XObject heap) tracks which cards have been written to since the last minor collection. Minor collections skip clean cards entirely.</li>
+</ul>
+
+<h3>4.2 Phase structure</h3>
+
+<p>A collection cycle has the following phases:</p>
+
+<ol>
+  <li><strong>Trigger</strong> (mutator thread): the GC heuristic (allocation rate, heap occupancy, time since last collection) decides a collection is due. The trigger is also explicit: a NewObject call that would push heap occupancy past a threshold can synchronously trigger; a long idle period can trigger lazily.</li>
+  <li><strong>Safe-point handshake</strong> (~50-200 &mu;s typical): the collector signals every worker thread + the named major threads to reach a safe-point. Threads check the safe-point flag at every back-edge / function-return / allocation; when set, they spin briefly until the snapshot is complete. The safe-point exists to (a) snapshot the precise stack roots from XIL2CPP-emitted stack maps, (b) drain in-flight write-barrier queues, (c) clear the card-table (snapshotting the dirty cards before the sweep). The safe-point is the only synchronous-with-mutator phase.</li>
+  <li><strong>Root enumeration</strong> (mark thread; concurrent): walks XGCRoot::EnumerateRoots(), the FXObjectArray's pinned-root entries, the XGCRootSpans registered by GC-aware containers, the per-thread stack-root snapshots, and any AddReferencedObjects callbacks for native types. Each root produces one or more "gray" objects (in the mark queue, not yet scanned).</li>
+  <li><strong>Mark</strong> (mark threads; concurrent): drain the gray queue. For each gray object, mark its FXObjectArrayEntry, then walk its FClass-&gt;FStruct::ObjectRefProperties dense TArray (XCore-4b FIX-13); for each reference, if unmarked, push it onto the gray queue. Workers run in parallel; the gray queue is per-thread with work-stealing to balance.</li>
+  <li><strong>Write-barrier-set drain</strong> (mark threads; concurrent): the card-table marks cards as dirty when the mutator writes a reference into an old-generation slot. At end of mark, the collector re-scans dirty cards to find any object that may have been added to the live graph mid-mark. Drain is iterative until no new dirty cards remain.</li>
+  <li><strong>Sweep</strong> (sweep threads; concurrent): walk the FXObjectArray; for each unmarked, non-pinned, live entry, set the PendingDestroy bit and enqueue onto the deferred-destruction queue. The sweep is NOT mutator-stopping (the mutator can NewObject during sweep; new objects bypass the sweep by being created post-mark with their mark bit set to "this cycle's color").</li>
+  <li><strong>Deferred destruction</strong> (worker pool; over multiple frames): drain the deferred-destruction queue. For each pending object, call BeginDestroy, then poll IsReadyForFinishDestroy until true (or after a per-object timeout), then call FinishDestroy, then release the FXObjectAllocator cell and the FXObjectArray slot.</li>
+  <li><strong>Cycle end</strong>: collector resets state, increments cycle counter, updates statistics, evaluates heuristic for next cycle.</li>
+</ol>
+
+<h3>4.3 Mostly-concurrent marking: the snapshot-at-the-beginning (SATB) discipline</h3>
+
+<p><strong>Critical design decision (per spec critical-decisions list, item 2)</strong>: how does mostly-concurrent marking interact with the mutator?</p>
+
+<p>XCoreXObject Rev 1 adopts the <strong>snapshot-at-the-beginning (SATB)</strong> discipline (the same family as Azul's C4, Shenandoah's pre-Brooks-pointer phase, and Mono's SGen). SATB is the correct choice over the alternative <strong>incremental-update</strong> (Yuasa's algorithm) for these reasons:</p>
+
+<ul>
+  <li><strong>SATB closes the race once at safe-point start</strong>: the root set is snapshotted under the safe-point handshake, and from that moment any reference deleted from the snapshot is still considered reachable until the cycle ends. This means the mutator is free to overwrite slots concurrently with marking; the dirty-card pre-store barrier remembers the OLD reference value, ensuring the SATB snapshot remains complete.</li>
+  <li><strong>Incremental-update requires a snoop barrier on every read</strong>: the mutator must record what it sees so the collector can re-trace. This is incompatible with the &lt;5 ms pause budget on Quest 3 because the read-barrier cost per-frame would compound across all GC-aware field accesses.</li>
+  <li><strong>SATB's worst case (floating garbage) is bounded</strong>: objects deleted mid-cycle are not reclaimed until the next cycle. For XPact's tick rate (90 Hz Quest 3) and cycle cadence (per-second typical, per-frame stress), floating garbage is at most one cycle's worth of allocation, which is well within the heap budget.</li>
+  <li><strong>SATB integrates with XCore-4a's existing pre-store write barrier</strong>: the locked XGC_WriteBarrier(slot, newValue) is a pre-store barrier (mark card dirty BEFORE the slot is updated; XCore-4a XGCDeclarations.h line 207). This IS the SATB barrier; the implementation just needs to additionally record the old value of the slot for the snapshot.</li>
+</ul>
+
+<p><strong>Pre-store SATB barrier semantics</strong>:</p>
+
+<pre><code>// Mutator code (transparent to the user; emitted by XIL2CPP for C# writes,
+// inserted by user code for C++ writes via the XPACT_GC_STORE macro):
+//
+//     XPACT_GC_STORE(parent, slot, newValue);
+//
+// expands to (in Dev / when marking is active):
+//
+//     {
+//         XObject* oldValue = *slot;
+//         if (oldValue != nullptr &amp;&amp;
+//             FXObjectCollector::IsMarking()) {
+//             // SATB: ensure the OLD value is retained in the snapshot
+//             g_SATBQueue.PushTLS(oldValue);
+//         }
+//         FXGC_CardTable::MarkCardDirty(slot);   // generational scan-reduction
+//         *slot = newValue;                       // store
+//     }
+//
+// In Shipping (no marking active), the barrier collapses to:
+//
+//     {
+//         FXGC_CardTable::MarkCardDirty(slot);
+//         *slot = newValue;
+//     }
+//
+// (Constant-folding eliminates the IsMarking() branch when marking is provably
+// inactive at the call site; the typical call site cannot prove this, so the
+// IsMarking() check is always emitted but is cheap -- one TLS load + branch).
+</code></pre>
+
+<p><strong>SATB queue management</strong>: the SATB queue is per-thread (TLS), with a 256-entry circular buffer. When full, the buffer flushes into the global SATB log (a lock-free MPSC list, drained by the mark workers). At cycle end, the SATB log is drained; any object referenced in the SATB log is marked if not already.</p>
+
+<h3>4.4 Worker-pool concurrency</h3>
+
+<p>The collector spawns N worker jobs at mark phase entry, where N is the number of available worker-pool threads minus 1 (reserve one for the gameplay tick to avoid starving the frame). Each worker has a private gray queue + per-worker SATB drain; work-stealing balances. The mark phase ends when all gray queues + SATB queues are empty AND no dirty cards remain to scan.</p>
+
+<p>The sweep phase similarly parallelizes by partitioning the FXObjectArray into N chunks (one per worker), each worker walks its chunk independently. Sweep workers do not coordinate (each FXObjectArrayEntry is touched by exactly one worker).</p>
+
+<p><strong>Determinism note (per &sect;1.3)</strong>: GC operations are non-sim-path; the worker scheduling is non-deterministic. This is acceptable because GC operations do not affect sim state &mdash; they only reclaim unreachable storage. The only sim-observable GC effect is the BeginDestroy / FinishDestroy callbacks on destroyed objects; XCoreXObject sequences these via the deferred-destruction queue (which IS drained in deterministic order: monotonically increasing InternalIndex order).</p>
+
+<h3>4.5 Card-table generational scan-reduction</h3>
+
+<p>The card-table is a flat byte array, one byte per 512-byte card of XObject heap. Card 0 covers heap bytes 0-511; card 1 covers heap bytes 512-1023; etc.</p>
+
+<p><strong>Card byte semantics</strong> (one byte instead of one bit for simpler memory ordering on ARM64; the byte cost is negligible: 1 MB of XObject heap = 2 KB card table = 0.2% overhead):</p>
+
+<ul>
+  <li><code>0x00</code> &mdash; clean (no writes since last clearance).</li>
+  <li><code>0x01</code> &mdash; dirty (one or more writes since last clearance).</li>
+  <li>Other values reserved for future card-aging schemes.</li>
+</ul>
+
+<p><strong>Card index from address</strong>: <code>cardIdx = (addr - heapBase) &gt;&gt; 9</code>. (The 512-byte card size = 2^9 makes the shift a single instruction.)</p>
+
+<p><strong>Mark dirty</strong>:</p>
+
+<pre><code>// Implementation of XGC_WriteBarrier (replaces XCore-4a's weak-symbol stub).
+extern "C" void XGC_WriteBarrier(void** Slot, void* NewValue) noexcept {
+    // 1. SATB pre-store barrier (only if marking is active; checks TLS flag).
+    if (FXObjectCollector::IsMarkingActive()) {
+        void* oldValue = *Slot;
+        if (oldValue != nullptr) {
+            g_SATBQueue.PushTLS(static_cast&lt;XObject*&gt;(oldValue));
+        }
+    }
+
+    // 2. Card-table dirty mark (always; cost is one byte store).
+    const size_t cardIdx = (reinterpret_cast&lt;uintptr_t&gt;(Slot) - g_XObjectHeapBase) &gt;&gt; 9;
+    g_CardTable[cardIdx] = 0x01;
+}
+</code></pre>
+
+<p><strong>Minor collection scan-reduction</strong>: instead of walking every old-generation object's reference properties, the minor collection walks only objects whose covering card is dirty. The cost is O(dirty-cards) instead of O(old-generation-objects).</p>
+
+<p><strong>Failure mode: remembered-set saturation</strong> (per Master Plan &sect;2a):</p>
+<ul>
+  <li>If the dirty-card count exceeds <code>kSaturationThreshold</code> (initial value: 50% of total cards), the collector falls back to a full-heap scan.</li>
+  <li>The fallback emits an XInsights telemetry event: <code>{type: "rememberedSetSaturation", cycleId: N, dirtyCardCount: M, totalCardCount: T, fallbackPauseMs: P}</code>.</li>
+  <li>Card-table scan-reduction is automatically re-enabled when the old-to-young write rate stays below <code>kReentryRateThreshold</code> for <code>kReentryStabilityCycles</code> consecutive collections.</li>
+  <li>In a lockstep multi-user session, a full-heap-scan fallback is a <strong>session-interrupting event</strong>: the slowest client's fallback pause delays the lockstep barrier. XCoreXObject's policy: when fallback is triggered and the local heap exceeds <code>kLockstepHardLimitMB</code>, the session pauses (instructor sees a modal: "GC saturation on client X; continue / abort"). The hard limit is calibrated so fallback pauses stay under the 50 ms criterion (b) target.</li>
+</ul>
+
+<h3>4.6 Sim-path / GC boundary</h3>
+
+<p>The collector is <strong>non-sim-path</strong>. GC operations:</p>
+<ul>
+  <li><strong>NEVER run inside a sim tick</strong>. The sim tick boundary is the only window where GC can start. XScenarios / XPhysics / animation evaluation runs are exclusive of GC mark/sweep.</li>
+  <li>The collector's mostly-concurrent mark CAN overlap with the next frame's render + the next frame's audio, but not with the next frame's sim tick.</li>
+  <li>If a sim tick approaches and the collector is still in mark phase, the sim tick BLOCKS until mark completes. This is a known pessimization that requires the typical pause + concurrent overlap to fit within one frame budget; the &lt;5 ms typical pause target is the constraint.</li>
+  <li>Sweep + deferred-destruction CAN overlap with sim ticks because they do not write to live XObject reference slots (only mark bits + FXObjectArray entries that are not visible to gameplay code).</li>
+</ul>
+
+<p><strong>Implication for cross-arch determinism (criterion c)</strong>: GC has no observable effect on sim state. The same sim-path operations produce bit-exact results regardless of when GC runs. Cross-arch determinism testing (the 100-replay matrix) does NOT need to control GC timing; it suffices that GC never mutates a sim-observable property.</p>
+
+<h3>4.7 Trigger heuristic</h3>
+
+<p>The collector decides when to run based on:</p>
+
+<ul>
+  <li><strong>Heap occupancy</strong>: if live XObject heap exceeds <code>kOccupancyThreshold</code> (default 70% of available budget), schedule a collection.</li>
+  <li><strong>Allocation rate</strong>: if allocations-per-second exceeds <code>kAllocationRateThreshold</code> (default 5000 obj/s), schedule a collection earlier.</li>
+  <li><strong>Idle window</strong>: if the engine has been idle for &gt; <code>kIdleCollectMs</code> (default 5 s), run an opportunistic collection.</li>
+  <li><strong>Explicit request</strong>: <code>XGarbageCollect::CollectGarbage()</code> from C++ or <code>GC.Collect()</code> from C#.</li>
+  <li><strong>Pre-scenario-unload</strong>: XScenarios triggers a collection before mark-region clearing to maximize the size-class pool's reclaim opportunity.</li>
+</ul>
+
+<p>The trigger runs on the named GC thread (or, in MVP without XTaskGraph, on a dedicated thread spawned at XCoreXObject startup). The thread is otherwise idle.</p>
+
+<h3>4.8 Acceptance: pause budget breakdown</h3>
+
+<p>The &lt;5 ms typical pause budget (criterion a) decomposes as:</p>
+<ul>
+  <li>Safe-point handshake: 50-200 &mu;s (dominated by stack-root snapshot of all threads).</li>
+  <li>Synchronous root enumeration of pinned roots + XGCRootSpans: 200-500 &mu;s (typical 1000 pinned + 5000 root spans).</li>
+  <li>Card-table snapshot + clear: 100-300 &mu;s.</li>
+  <li>Final-mark drain (the brief synchronous re-trace after concurrent mark): 1-3 ms.</li>
+  <li>Pre-sweep accounting: 100-200 &mu;s.</li>
+</ul>
+
+<p>The remaining ~1 ms is slack for variance + cache effects. The concurrent mark + sweep phases run outside this budget (overlapped with mutator).</p>
+
+<p>The &lt;50 ms full-heap-scan fallback (criterion b) decomposes as:</p>
+<ul>
+  <li>Safe-point handshake: 200 &mu;s.</li>
+  <li>Synchronous full-heap mark of 100k XObjects, each with 5-10 ObjectRef properties: ~30 ms (estimate from prefetched dense-array walk on Quest 3 ARM64, ~3 properties/&mu;s sustained).</li>
+  <li>Sweep over 100k entries: ~5 ms (Mark-bit read + entry-flag write per entry).</li>
+  <li>Deferred-destruction enqueue: ~3 ms.</li>
+  <li>Pre-sweep accounting: 200 &mu;s.</li>
+</ul>
+
+<p>Total ~40 ms with 10 ms slack within the 50 ms budget.</p>
+
+<hr>
+
+<h2 id="sec5">5. Write Barriers + GC Root Protocol</h2>
+
+<h3>5.1 Card-table layout</h3>
+
+<p>The card-table is a single contiguous byte array sized to cover the entire XObject heap (allocated at XCoreXObject startup, with the heap-base address fixed at PreStaticInit). Layout:</p>
+
+<pre><code>// Card-table layout (Stage B addendum extension XPACT_XGC_CARDTABLE_LAYOUT_TAG).
+namespace XCore::XObject {
+
+inline constexpr size_t kCardSizeBytes = 512;        // 2^9; shift = 9
+inline constexpr size_t kCardSizeShift = 9;
+
+// Heap-base address is fixed at XCoreXObject startup. XObject heap is at most
+// kMaxXObjectHeapBytes large; the card-table is sized to cover the full max.
+inline constexpr size_t kMaxXObjectHeapBytes = 4ull * 1024 * 1024 * 1024;   // 4 GB max (Quest 3 budget bounded by §2a)
+inline constexpr size_t kCardTableBytes      = kMaxXObjectHeapBytes / kCardSizeBytes;   // 8 MB card table
+
+extern uintptr_t g_XObjectHeapBase;      // set at startup; immutable thereafter
+extern uint8_t*  g_CardTable;            // 8 MB; allocated from FMallocBinnedX with FMemTag::XObject
+
+static_assert(kCardSizeBytes == 512, "XGC card-size lock");
+static_assert(kCardSizeShift ==   9, "XGC card-shift lock");
+
+} // namespace XCore::XObject
+</code></pre>
+
+<p>The 4 GB max XObject heap aligns with the Quest 3 trainee app's 4 GB total budget (Master Plan &sect;2a Memory budget placeholder row). On Win64 (16 GB target), the XObject heap is bounded by configuration (typically 8-12 GB depending on project), but the card-table is sized once to cover the maximum so reservation cost is amortized.</p>
+
+<h3>5.2 Write-barrier emission</h3>
+
+<p><strong>Critical design decision (per spec critical-decisions list, item 3)</strong>: how do XIL2CPP-transpiled C# writes emit barriers?</p>
+
+<p><strong>C++ writes</strong> use the explicit <code>XPACT_GC_STORE(parent, slot, newValue)</code> macro at every reference-storing site. Container code (XPtr, TArray<XPtr<T>>, TMap with XObject* values, etc.) wraps the macro. User-class C++ code that stores an XObject* directly into a non-container slot (e.g., <code>this-&gt;OwnerRef = newOwner;</code>) MUST use the macro &mdash; XHT's static analysis pass enforces this at build time (looks for raw assignment of XObject-derived pointers to reflected XPROPERTY slots; emits diagnostic <code>XCoreXObject001 &mdash; missing XPACT_GC_STORE on reflected reference slot</code> if found).</p>
+
+<p><strong>C# transpiled writes</strong> use the XIL2CPP codegen pattern. Every C# assignment of the form <code>obj.Field = value;</code> where Field is an XObject reference (or contains XObject references in its type tree) lowers to:</p>
+
+<pre><code>// C# source:
+//   actor.Owner = newOwner;
+//
+// XIL2CPP emits (simplified):
+{
+    XObject** slot = &amp;reinterpret_cast&lt;XActor*&gt;(actor)-&gt;Owner;
+    XGC_WriteBarrier(reinterpret_cast&lt;void**&gt;(slot), newOwner);
+    *slot = newOwner;
+}
+</code></pre>
+
+<p>XIL2CPP recognizes reference-storing assignments through type analysis (the C# field's reflected type is FObjectProperty, FWeakObjectProperty, FStructProperty containing reference, FArrayProperty/FMapProperty/FSetProperty with reference inner, etc.). The codegen pass inserts the barrier emission at the IL-to-C++ lowering stage.</p>
+
+<p><strong>Performance cost of the barrier</strong>: ~3-5 cycles per emit (TLS load + branch for SATB check, indexed byte store for card mark). On a frame with 100k reference stores (typical for VFX-heavy training scenarios), barrier cost is ~0.3-0.5 ms. This is within the per-frame budget (90 Hz = 11 ms per frame; barrier is ~3-5% of frame). The cost is the price of generational scan-reduction; the alternative (no barrier, full-heap scan every cycle) would consume far more.</p>
+
+<h3>5.3 GC root protocol</h3>
+
+<p>The mark phase begins from the root set. The root set has four sources:</p>
+
+<ol>
+  <li><strong>Pinned roots in FXObjectArray</strong>: any XObject with the <code>kRootPinnedBit</code> set on its FXObjectArrayEntry is unconditionally a root. Set via <code>XGCRoot::AddRoot(XObject*)</code> from native code, cleared via <code>RemoveRoot</code>. Used for: native singletons that must persist (XEngine, XGameInstance), editor-toolwindow held objects, pre-CDO bootstrap.</li>
+  <li><strong>XGCRootSpans from GC-aware containers</strong>: the XGCRootSpan ABI (XCore-4a &sect;5.4) is registered by every GC-aware container's constructor. The collector walks the registered spans at mark phase; each span enumerates its slots and pushes referenced XObjects into the gray queue.</li>
+  <li><strong>Precise stack roots from XIL2CPP-emitted stack maps</strong>: every transpiled C# function emits a stack-map record listing the byte offsets of XObject references in its stack frame (locals + temporaries + arguments). At the safe-point handshake, the collector walks each suspended thread's stack frames, looks up the stack-map for the current PC, and enumerates the live XObject references.</li>
+  <li><strong>AddReferencedObjects callbacks</strong>: for native types that hold XObject references in non-reflected slots (e.g., editor caches, runtime pools), the FClass's lifecycle FakeVTable's AddReferencedObjects slot is invoked. The callback enumerates references via a visitor object provided by the collector.</li>
+</ol>
+
+<p><strong>XGCRoot::AddRoot/RemoveRoot API</strong>:</p>
+
+<pre><code>namespace XCore::XObject {
+
+class XGCRoot {
+public:
+    // Pin an XObject as a GC root. Idempotent: multiple AddRoot calls on the
+    // same object are reference-counted; the object stays pinned until the
+    // matching number of RemoveRoot calls.
+    static void AddRoot(XObject* Object) noexcept;
+    static void RemoveRoot(XObject* Object) noexcept;
+
+    // For native code that holds an XObject* as a member but cannot register
+    // an XGCRootSpan (because the slot is not an array). The visitor is called
+    // synchronously during mark with the slot's current value.
+    using FRootVisitor = void(*)(XObject** slot);
+    static void RegisterStaticRootVisitor(FRootVisitor visitor) noexcept;
+    static void UnregisterStaticRootVisitor(FRootVisitor visitor) noexcept;
+
+    // Iterate every currently-registered root span (collector internal use).
+    template &lt;typename V&gt; static void EnumerateAllRootSpans(V&amp;&amp; v) noexcept;
+
+    // Iterate every pinned XObject (collector internal use).
+    template &lt;typename V&gt; static void EnumeratePinnedObjects(V&amp;&amp; v) noexcept;
+};
+
+} // namespace XCore::XObject
+</code></pre>
+
+<p><strong>Conservative root registration for non-statically-typed C# containers</strong> (per Master Plan &sect;2a Memory/GC row):</p>
+
+<p><code>List&lt;object&gt;</code> and similar non-statically-typed C# containers can hold XObject references mixed with non-XObject values. The XIL2CPP transpiler cannot statically determine which slots hold XObject references. The discipline:</p>
+
+<ul>
+  <li>XIL2CPP emits a conservative root-registration scaffold: every slot of the container is treated as a potential XObject* via the XGCRootSpan kind <code>XGCRootKind::Conservative</code> (per XCore-4a XGCDeclarations.h).</li>
+  <li>The collector, when scanning a Conservative root span, treats each slot's value as a candidate XObject*: validates that the candidate lies within the XObject heap range AND that the candidate's FXObjectArray entry is live AND that the candidate's SerialNumber matches the entry. If all three hold, the candidate is treated as a real root.</li>
+  <li>XIL2CPP emits a build-time warning when a Conservative span appears on a sim-path TU. This is the explicit per-mutation root-register/unregister cost the Master Plan acknowledges.</li>
+  <li>The cost: each Conservative slot is ~10-20 cycles to validate (vs ~2-3 cycles for a precise reference). For a container with 1000 conservative slots scanned per GC cycle, the cost is ~10-20 &mu;s; bursts of conservative scanning can show in the pause budget.</li>
+</ul>
+
+<h3>5.4 Precise stack scanning</h3>
+
+<p>The XIL2CPP-emitted stack map is a per-function table mapping PC ranges (within the function body) to the byte offsets within the stack frame that hold XObject references at each PC. Format:</p>
+
+<pre><code>// Per-function stack map (emitted alongside the function body).
+// Static const data in .rodata; one record per "live range" within the function.
+struct alignas(8) FStackMapRecord {
+    uint32_t pcRangeBegin;     //  0  +4   byte offset within the function
+    uint32_t pcRangeEnd;       //  4  +4   byte offset
+    uint16_t numLiveRefs;      //  8  +2
+    uint16_t _pad;             // 10  +2
+    int32_t  liveRefOffsets[]; // 12 +4*N  byte offsets within the stack frame (negative = below stack-pointer)
+};
+</code></pre>
+
+<p>At safe-point, the collector iterates each thread's stack. For each frame, it locates the FStackMapRecord whose pcRange covers the current return-address-to-callsite distance, and enumerates the liveRefOffsets to find XObject references. Each found reference is pushed onto the gray queue.</p>
+
+<p><strong>Stack-map size budget</strong>: typical XIL2CPP-transpiled function has 1-3 live ranges with 2-5 references each &mdash; ~30 bytes per function. For a project with 10k transpiled C# functions, stack-map data is ~300 KB. This is a one-time per-binary cost.</p>
+
+<h3>5.5 Safe-point handshake protocol</h3>
+
+<p>At collection trigger, the GC sets a global flag <code>g_SafePointRequested</code>. Every worker-pool thread + the major named threads check this flag at safe-point insertion points:</p>
+
+<ul>
+  <li>Every NewObject call (path through the allocator already accesses the flag for the "no NewObject during mark" assertion).</li>
+  <li>Every GC-aware container mutation (TArray::Add of an XPtr<T>, TMap insertion, etc.).</li>
+  <li>Every XIL2CPP-emitted function entry (the compiler inserts the check at function prologue; cost is ~3-5 cycles).</li>
+  <li>Every long loop's back-edge (the compiler inserts the check at backward branches in loops &gt; some-threshold-iterations).</li>
+</ul>
+
+<p>When the flag is set, the thread suspends (parks on a condition variable) until the collector signals "safe-point complete". The collector waits for all threads to suspend before snapshotting roots; typical wait is &lt;200 &mu;s on Win64, &lt;500 &mu;s on Quest 3 ARM64.</p>
+
+<p><strong>Hot-path cost in steady state</strong>: when no safe-point is requested, the flag check is one TLS-cached read + one branch (~2 cycles). The branch is statically predicted "not taken" so the cost is near-zero in the steady-state mutator.</p>
+
+<h3>5.6 Hot-reload coordination</h3>
+
+<p>During XLiveCoding's Phase 2 quiesce window (per Contract Rev 13.7 &sect;7.1, also referenced from XCore-4a &sect;4.2.5), the GC must be in a coherent state. Specifically:</p>
+
+<ul>
+  <li>No collection cycle may straddle the quiesce window. XLiveCoding signals <code>BeginHotReloadQuiesce()</code>, which waits for any in-progress cycle to complete and blocks new cycle starts.</li>
+  <li>During quiesce, write-barriers continue to mark cards (so post-quiesce collections see consistent state), but SATB queue drain is paused.</li>
+  <li>XLiveCoding's class-replacement phase (the cascade) calls <code>XCoreXObject::ApplyClassReplacement(OldClass, NewClass)</code> for each replaced FClass; this walks the FXObjectArray for instances of OldClass, rebinds them to NewClass, and triggers re-initialization of any property whose layout has not changed (Master Plan hot-reload commitment: no class-layout changes mid-session).</li>
+  <li>After class replacement, XLiveCoding calls <code>FinishHotReloadCascade()</code>, which resumes the SATB queue drain and unblocks new cycle starts.</li>
+</ul>
+
+<hr>
+
+<h2 id="sec6">6. Object Handles (XPtr, XWeakPtr, XSoftPtr, XObjectKey)</h2>
+
+<p>Four handle types cover the spectrum of XObject reference semantics. Each has a distinct lifetime contract, root-participation rule, and ABI shape.</p>
+
+<h3>6.1 XPtr&lt;T&gt; (strong reference)</h3>
+
+<p><code>XPtr&lt;T&gt;</code> is the strong typed pointer. It is a thin wrapper around <code>T*</code> with the following invariants:</p>
+
+<ul>
+  <li>The XPtr does NOT itself register as a GC root. Rooting is determined by the container the XPtr lives in: an XPtr in a TArray that registers an XGCRootSpan is a root; an XPtr in a stack frame that the XIL2CPP stack-map enumerates is a root; an XPtr in a plain stack frame (un-mapped C++) is NOT a root and the pointee may be collected if no other reference exists.</li>
+  <li>Construction from a raw T* is checked: in Dev, asserts the pointer is a valid live XObject; in Shipping, trusts the caller.</li>
+  <li>Assignment uses XPACT_GC_STORE if the XPtr is inside a reflected slot (the container handles this); raw stack-local XPtr assignments do not emit barriers (no card to mark; stack is not in the XObject heap).</li>
+  <li>Dereference is a raw load; no SerialNumber check (the pointee is alive by contract because the XPtr held a strong reference path through its container).</li>
+</ul>
+
+<pre><code>// XPtr&lt;T&gt;: 8-byte strong typed pointer. Compatible with raw T* layout for
+// interop with XHT-emitted reflection metadata (FObjectProperty's stored
+// payload is XPtr-shaped).
+template &lt;typename T&gt;
+class XPtr {
+public:
+    constexpr XPtr() noexcept : Ptr(nullptr) {}
+    constexpr XPtr(std::nullptr_t) noexcept : Ptr(nullptr) {}
+    explicit XPtr(T* p) noexcept;            // Dev-checks p is a live XObject
+    XPtr(const XPtr&amp;) noexcept            = default;
+    XPtr(XPtr&amp;&amp;) noexcept                 = default;
+    XPtr&amp; operator=(const XPtr&amp;) noexcept = default;
+    XPtr&amp; operator=(XPtr&amp;&amp;) noexcept      = default;
+    ~XPtr() noexcept                      = default;
+
+    XPACT_FORCEINLINE T*  Get() const noexcept { return Ptr; }
+    XPACT_FORCEINLINE T*  operator-&gt;() const noexcept { return Ptr; }
+    XPACT_FORCEINLINE T&amp; operator*() const noexcept { return *Ptr; }
+    XPACT_FORCEINLINE explicit operator bool() const noexcept { return Ptr != nullptr; }
+
+    XPACT_FORCEINLINE bool operator==(const XPtr&amp; o) const noexcept { return Ptr == o.Ptr; }
+    XPACT_FORCEINLINE bool operator!=(const XPtr&amp; o) const noexcept { return Ptr != o.Ptr; }
+    XPACT_FORCEINLINE bool operator==(const T* o) const noexcept { return Ptr == o; }
+    XPACT_FORCEINLINE bool operator!=(const T* o) const noexcept { return Ptr != o; }
+
+    // Cast helpers (delegating to XObject::CastTo / IsA via the FClass).
+    template &lt;typename U&gt; XPtr&lt;U&gt; Cast() const noexcept {
+        return Ptr != nullptr ? XPtr&lt;U&gt;(Ptr-&gt;template CastTo&lt;U&gt;()) : nullptr;
+    }
+
+private:
+    T* Ptr;
+};
+
+static_assert(sizeof(XPtr&lt;XObject&gt;) == 8, "XPtr ABI lock: 8 bytes (raw-pointer-compatible)");
+</code></pre>
+
+<p>The static_assert ensures XPtr&lt;T&gt; can be reinterpreted-cast to <code>T*</code> for ABI interop with the reflected FObjectProperty payload. <strong>This is load-bearing</strong>: XCore-4b's FObjectProperty stores its value as a raw <code>XObject*</code> at the property's offset; consumers (XPropertyEditor, XSerialization, XNetworking) read the slot via <code>*reinterpret_cast&lt;XObject**&gt;(instance + property.Offset)</code>. An XPtr&lt;T&gt; in the same slot must read identically.</p>
+
+<h3>6.2 XWeakPtr&lt;T&gt; (weak reference)</h3>
+
+<p><code>XWeakPtr&lt;T&gt;</code> is the weak pointer. It does NOT keep its pointee alive and resolves to nullptr if the pointee has been collected. ABI shape: {InternalIndex, SerialNumber} 8-byte handle (matches XCore-4b's <code>FWeakObjectPtr</code> placeholder shape).</p>
+
+<pre><code>// XWeakPtr&lt;T&gt;: 8-byte weak typed pointer. Layout matches XCore-4b's
+// FWeakObjectPtr placeholder so FWeakObjectProperty's payload IS an XWeakPtr.
+// The 8-byte handle is {int32 InternalIndex; uint32 SerialNumber}.
+// Stage B addendum extension XPACT_XWEAKPTR_LAYOUT_TAG covers this.
+template &lt;typename T&gt;
+class XWeakPtr {
+public:
+    constexpr XWeakPtr() noexcept : InternalIndex(0), SerialNumber(0) {}
+    constexpr XWeakPtr(std::nullptr_t) noexcept : InternalIndex(0), SerialNumber(0) {}
+    explicit XWeakPtr(T* p) noexcept;        // captures {p-&gt;InternalIndex, p-&gt;SerialNumber}
+    XWeakPtr(const XWeakPtr&amp;) noexcept            = default;
+    XWeakPtr&amp; operator=(const XWeakPtr&amp;) noexcept = default;
+    ~XWeakPtr() noexcept                          = default;
+
+    // Resolve: returns the pointee if still alive, else nullptr.
+    T* Get() const noexcept;
+    // IsValid: faster check, true if pointee is alive without returning the pointer.
+    bool IsValid() const noexcept;
+    bool IsExplicitlyNull() const noexcept { return InternalIndex == 0; }
+
+    XPACT_FORCEINLINE bool operator==(const XWeakPtr&amp; o) const noexcept {
+        return InternalIndex == o.InternalIndex &amp;&amp; SerialNumber == o.SerialNumber;
+    }
+    XPACT_FORCEINLINE bool operator!=(const XWeakPtr&amp; o) const noexcept { return !(*this == o); }
+
+private:
+    int32_t  InternalIndex;     //  0  +4   FXObjectArray slot (0 = null)
+    uint32_t SerialNumber;      //  4  +4   captured at construction time
+};
+
+static_assert(sizeof(XWeakPtr&lt;XObject&gt;) == 8, "XWeakPtr ABI lock: 8 bytes (matches FWeakObjectPtr)");
+</code></pre>
+
+<p><strong>Get() implementation</strong>:</p>
+
+<pre><code>template &lt;typename T&gt;
+T* XWeakPtr&lt;T&gt;::Get() const noexcept {
+    if (InternalIndex == 0) return nullptr;
+    const FXObjectArrayEntry&amp; entry = g_XObjectArray.GetEntry(InternalIndex);
+    if (entry.SerialNumber != SerialNumber) return nullptr;     // slot was reused
+    XObject* obj = entry.Object;
+    if (obj == nullptr) return nullptr;                          // slot is unbound
+    if (obj-&gt;HasAnyFlags(uint32_t(EObjectFlags::BeginDestroyed))) return nullptr;
+    return static_cast&lt;T*&gt;(obj);
+}
+</code></pre>
+
+<p>Get() does NOT acquire a lock; the FXObjectArrayEntry fields are atomic (SerialNumber is updated under the AllocLock at slot release, and the SerialNumber compare uses memory_order_acquire). The cost is ~5-10 ns per call (one indexed load + two compares).</p>
+
+<h3>6.3 XSoftPtr&lt;T&gt; (soft path-based reference)</h3>
+
+<p><code>XSoftPtr&lt;T&gt;</code> is the soft pointer: a path-based reference that resolves on demand. The path is an FSoftObjectPath-shape from XCore-4b's <code>FSoftObjectProperty</code>. It does NOT register as a GC root (the pointee can be unloaded; resolution loads on demand).</p>
+
+<p><strong>Use case</strong>: scenario authoring. A scenario references an XActor by path; the path is serialized; the actor itself is not loaded until the scenario unloads or until the user explicitly resolves the reference.</p>
+
+<pre><code>// XSoftPtr&lt;T&gt;: path-based soft reference. Larger than XPtr/XWeakPtr because
+// it carries the path string; typical sizeof varies with path length.
+template &lt;typename T&gt;
+class XSoftPtr {
+public:
+    XSoftPtr() noexcept = default;
+    explicit XSoftPtr(const FSoftObjectPath&amp; path) noexcept;
+    explicit XSoftPtr(T* p) noexcept;            // captures the asset path from p's Outer chain
+
+    // Resolve: loads the asset if not already loaded; returns nullptr on miss.
+    T* Resolve() noexcept;
+    // Resolve without loading; returns nullptr if not loaded.
+    T* GetIfLoaded() const noexcept;
+
+    const FSoftObjectPath&amp; GetPath() const noexcept { return Path; }
+    bool IsNull() const noexcept { return Path.IsNull(); }
+
+    XPACT_FORCEINLINE bool operator==(const XSoftPtr&amp; o) const noexcept { return Path == o.Path; }
+    XPACT_FORCEINLINE bool operator!=(const XSoftPtr&amp; o) const noexcept { return !(*this == o); }
+
+private:
+    FSoftObjectPath Path;     // path is an FName + sub-path FString (variable size)
+};
+</code></pre>
+
+<p>The actual ABI size depends on FSoftObjectPath's layout (typically 8 + FString = ~24-32 bytes depending on the path string's interning). XSoftPtr is NOT in the ABI-lock set because its size is necessarily variable; FSoftObjectProperty's storage in reflected slots is its own bounded payload.</p>
+
+<h3>6.4 XObjectKey (stable identity across hot-reload)</h3>
+
+<p><strong>Critical design decision (per spec critical-decisions list, item 5)</strong>: how does XObjectKey survive a class replacement?</p>
+
+<p><code>XObjectKey</code> is the {InternalIndex, SerialNumber} 8-byte handle, ABI-compatible with XWeakPtr but used for stable identity rather than weak-resolve semantics. The key difference: XObjectKey survives a hot-reload class replacement because the InternalIndex slot is preserved across the replacement.</p>
+
+<p><strong>The rebind protocol</strong>:</p>
+
+<ol>
+  <li>Pre-hot-reload: an XObjectKey holds {idx=42, serial=7}. The FXObjectArray entry at idx 42 has Object = oldInstance (type oldClass), SerialNumber = 7.</li>
+  <li>Hot-reload cascade replaces oldClass with newClass (per &sect;9).</li>
+  <li>During cascade, the FXObjectArray entry at idx 42 is rebound: the old instance is destructed in-place, a new instance of newClass is placement-new constructed at the same address (assuming compatible layout per the hot-reload commitment: no class-layout changes mid-session), and the entry's Object pointer remains the same address. <strong>SerialNumber is NOT bumped</strong> because the instance is logically the same.</li>
+  <li>Post-hot-reload: XObjectKey {idx=42, serial=7} resolves to the rebound instance at the same address. The instance's FClass* now points at newClass.</li>
+</ol>
+
+<p><strong>The key difference from XWeakPtr</strong>: XWeakPtr's Get() returns nullptr if the slot has been logically released and re-acquired by a different object (SerialNumber bump). XObjectKey's Get() returns the rebound instance even after a class replacement because the SerialNumber is preserved across hot-reload.</p>
+
+<p><strong>When XObjectKey returns nullptr</strong>: only when the object was actually destroyed (the FXObjectArray slot was released and re-acquired by a different object, which bumps SerialNumber). A hot-reload class replacement does not destroy the object; it rebinds the FClass pointer.</p>
+
+<pre><code>// XObjectKey: 8-byte handle, ABI-compatible with XWeakPtr.
+// Stage B addendum extension XPACT_XOBJECTKEY_LAYOUT_TAG covers this.
+class XObjectKey {
+public:
+    constexpr XObjectKey() noexcept : InternalIndex(0), SerialNumber(0) {}
+    explicit XObjectKey(const XObject* o) noexcept
+        : InternalIndex(o ? o-&gt;GetInternalIndex() : 0),
+          SerialNumber (o ? o-&gt;GetSerialNumber()  : 0) {}
+
+    // Resolve to live XObject if still extant (including post-hot-reload rebound instances).
+    XObject* Resolve() const noexcept;
+
+    XPACT_FORCEINLINE bool IsNull() const noexcept { return InternalIndex == 0; }
+    XPACT_FORCEINLINE bool operator==(const XObjectKey&amp; o) const noexcept {
+        return InternalIndex == o.InternalIndex &amp;&amp; SerialNumber == o.SerialNumber;
+    }
+    XPACT_FORCEINLINE bool operator!=(const XObjectKey&amp; o) const noexcept { return !(*this == o); }
+
+    // Hash for TMap&lt;XObjectKey, V&gt; usage.
+    friend uint64_t GetTypeHash(const XObjectKey&amp; k) noexcept {
+        return XCore::Hash::XXH3(&amp;k, 8, 0);
+    }
+
+private:
+    int32_t  InternalIndex;
+    uint32_t SerialNumber;
+};
+
+static_assert(sizeof(XObjectKey) == 8, "XObjectKey ABI lock: 8 bytes");
+</code></pre>
+
+<p>Note that XObjectKey and XWeakPtr have the same byte layout. They differ only in the resolution semantics and the API surface. They are NOT type-interchangeable (no implicit conversion); each is used in distinct call sites.</p>
+
+<h3>6.5 Handle summary</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Handle</th><th>Size</th><th>Keeps alive?</th><th>Survives hot-reload class replace?</th><th>Lookup cost</th><th>Use case</th></tr></thead>
+  <tbody>
+    <tr><td>XPtr&lt;T&gt;</td><td>8 bytes</td><td>Yes (via the container it sits in)</td><td>Yes (raw pointer unchanged)</td><td>1 load</td><td>Owning references in reflected slots</td></tr>
+    <tr><td>XWeakPtr&lt;T&gt;</td><td>8 bytes</td><td>No</td><td>Yes (resolves to rebound instance)</td><td>~5-10 ns (indexed load + compare)</td><td>Non-owning references; observation; subscriber lists</td></tr>
+    <tr><td>XSoftPtr&lt;T&gt;</td><td>~24-32 bytes (path)</td><td>No</td><td>Yes (path is stable identity)</td><td>Resolve = asset load (~ms)</td><td>Scenario authoring; cross-asset references; lazy loading</td></tr>
+    <tr><td>XObjectKey</td><td>8 bytes</td><td>No</td><td>Yes (semantic identity preserved)</td><td>~5-10 ns</td><td>Stable identity in networking, editor selection, undo records</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec7">7. Reflection Runtime Integration with FClass</h2>
+
+<h3>7.1 XObject derives from FClass</h3>
+
+<p>Every XObject carries a <code>const FClass* ClassPrivate</code> at offset 0. The FClass is constructed at module-init by XHT-generated <code>.gen.cpp</code> code: each XCLASS-declared type emits a <code>constinit const FClass</code> in <code>.rodata</code> plus a <code>Z_Construct_FClass_*</code> function that calls XReflectionRuntime::RegisterClass at module load.</p>
+
+<p>XCoreXObject's role:</p>
+<ul>
+  <li>Populates <code>FClass::ClassConstructorFn</code> (the function called from NewObject's step 3).</li>
+  <li>Populates <code>FClass::ClassDefaultObject</code> atomic slot (the CDO).</li>
+  <li>Populates the new <code>FClass::LifecycleTable</code> pointer added by this spec (Contract Rev 13.9 micro-bump).</li>
+  <li>Populates <code>FStruct::ObjectRefProperties</code> dense TArray at FClass::Link time by walking the FProperty chain and probing each property's <code>DispatchTable-&gt;ContainsObjectReferenceFn</code> slot.</li>
+  <li>Calls <code>XReflectionRuntime::RegisterClass(&amp;XActor_Class)</code> from the per-module init aggregator.</li>
+</ul>
+
+<h3>7.2 FClass::Link &mdash; the post-registration finalization</h3>
+
+<p>After XReflectionRuntime::RegisterClass is called, the FClass's runtime-derived fields must be populated. This is the Link phase (mirrors UE's <code>UClass::Link</code>). XCoreXObject implements Link as a free function called from RegisterClass:</p>
+
+<pre><code>namespace XCore::XObject {
+
+void LinkClass(FClass* cls) {
+    // 1. Compute PropertyLink + DestructorLink + PostConstructLink chains
+    //    by walking ChildProperties from most-derived to base.
+    //    (This is XCore-4b reflection setup; XCoreXObject calls into it.)
+    cls-&gt;PropertyLink = ComputePropertyLink(cls);
+    cls-&gt;DestructorLink = ComputeDestructorLink(cls);
+    cls-&gt;PostConstructLink = ComputePostConstructLink(cls);
+
+    // 2. Populate FStruct::ObjectRefProperties (FIX-13 dense array) by probing
+    //    each FProperty's DispatchTable-&gt;ContainsObjectReferenceFn slot.
+    cls-&gt;ObjectRefProperties.Empty();
+    for (const FProperty* p = cls-&gt;PropertyLink; p != nullptr; p = p-&gt;PropertyLinkNext) {
+        const auto* fakeVT = p-&gt;DispatchTable;
+        const auto containsFn = reinterpret_cast&lt;FProperty::ContainsObjectReferenceFn&gt;(
+            fakeVT-&gt;Slots[uint32_t(ESlot::ContainsObjectReference)]);
+        TArray&lt;const FStructProperty*&gt; encountered;
+        if (containsFn != nullptr &amp;&amp; containsFn(encountered)) {
+            cls-&gt;ObjectRefProperties.Add(const_cast&lt;FProperty*&gt;(p));
+        }
+    }
+
+    // 3. Populate ClassReps (FRepRecord array) by walking PropertyLink and
+    //    expanding ArrayDim &gt; 1 properties into multiple FRepRecord entries.
+    //    (XHT pre-emits ClassReps as constinit per FIX-R2-LOW-8; Link verifies
+    //    the constinit length matches.)
+    VerifyAndLinkClassReps(cls);
+
+    // 4. Optionally construct the CDO (eager vs lazy policy; see &sect;8).
+    if (cls-&gt;HasAnyClassFlags(EClassFlags::EagerCDO)) {
+        FClassDefaultObjectFactory::ConstructCDO(cls);
+    }
+
+    // 5. Register the class in the per-class IsA acceleration tables
+    //    (cast-flag bitmask propagation through SuperStruct chain).
+    PropagateCastFlags(cls);
+}
+
+} // namespace XCore::XObject
+</code></pre>
+
+<h3>7.3 GC mark walk consumes FStruct::ObjectRefProperties</h3>
+
+<p>The mark phase's per-object scan is the inner loop of the entire collector. The cost target: under ARM64 Quest 3, the full-heap scan must process &gt;3000 object-references per millisecond to hit the 50 ms / 100k-objects / 5-refs-each budget. This requires:</p>
+
+<ul>
+  <li><strong>Dense ObjectRefProperties</strong> (XCore-4b FIX-13): the FProperty pointers are in a contiguous TArray, not a linked list. The walk is prefetch-friendly.</li>
+  <li><strong>Per-property offset arithmetic</strong>: reading the reference value is <code>*reinterpret_cast&lt;XObject**&gt;(instance + property.Offset)</code>; one load.</li>
+  <li><strong>InternalIndex-based mark</strong>: marking the referenced object is <code>g_XObjectArray.Mark(refObject-&gt;InternalIndex)</code>; one atomic OR.</li>
+  <li><strong>FStruct::ObjectRefProperties prefetch</strong>: the worker prefetches the next FProperty pointer + the next reference slot two iterations ahead to hide ARM64 memory latency.</li>
+</ul>
+
+<pre><code>// Mark-phase per-object scan (worker-thread inner loop).
+void ScanObjectReferences(XObject* obj, FXGrayQueue&amp; gray) {
+    const FClass* cls = obj-&gt;GetClass();
+    const TArray&lt;FProperty*&gt;&amp; refs = cls-&gt;ObjectRefProperties;
+    const int32_t numRefs = refs.Num();
+
+    for (int32_t i = 0; i &lt; numRefs; ++i) {
+        // Prefetch i+2 ahead (Quest 3 ARM64 latency hiding).
+        if (i + 2 &lt; numRefs) {
+            __builtin_prefetch(refs[i + 2], 0, 0);
+        }
+
+        const FProperty* p = refs[i];
+        const int32_t arrayDim = p-&gt;ArrayDim;
+        const int32_t elemSize = p-&gt;ElementSize;
+        const int32_t offset   = p-&gt;Offset;
+
+        for (int32_t e = 0; e &lt; arrayDim; ++e) {
+            XObject** slot = reinterpret_cast&lt;XObject**&gt;(
+                reinterpret_cast&lt;uint8_t*&gt;(obj) + offset + e * elemSize);
+            XObject* ref = *slot;
+            if (ref != nullptr) {
+                const int32_t idx = ref-&gt;GetInternalIndex();
+                if (!g_XObjectArray.IsMarked(idx)) {
+                    g_XObjectArray.Mark(idx);
+                    gray.Push(ref);
+                }
+            }
+        }
+    }
+
+    // Also walk the Outer chain (the Outer is part of the live graph).
+    if (obj-&gt;Outer != nullptr) {
+        const int32_t outerIdx = obj-&gt;Outer-&gt;GetInternalIndex();
+        if (!g_XObjectArray.IsMarked(outerIdx)) {
+            g_XObjectArray.Mark(outerIdx);
+            gray.Push(obj-&gt;Outer);
+        }
+    }
+
+    // If the FClass declares AddReferencedObjects, invoke it.
+    const FXObjectLifecycleTable* lt = cls-&gt;LifecycleTable;
+    if ((lt-&gt;Capabilities &amp; (1u &lt;&lt; uint32_t(EXObjectLifecycleSlot::AddReferencedObjects))) != 0) {
+        auto fn = reinterpret_cast&lt;void(*)(XObject*, FXGrayQueue&amp;)&gt;(
+            lt-&gt;Slots[uint32_t(EXObjectLifecycleSlot::AddReferencedObjects)]);
+        fn(obj, gray);
+    }
+}
+</code></pre>
+
+<p>The structural complexity is minimal; the performance critically depends on the dense array (XCore-4b FIX-13 win) and the FXObjectArray entry's cache locality (32-byte entries, two per cache line).</p>
+
+<h3>7.4 FindClass on deserialize</h3>
+
+<p>When XSerialization loads an XObject from disk, the archive contains the FClass's name (FName); XSerialization calls <code>XReflectionRuntime::FindClass(name)</code> to resolve the live FClass*, then calls XCoreXObject's <code>NewObject&lt;XObject&gt;(outer, name, RF_NeedLoad)</code> with the resolved FClass to construct the instance. The post-construction Serialize call (dispatched via the FClass's lifecycle FakeVTable) fills in the property values from the archive.</p>
+
+<hr>
+
+<h2 id="sec8">8. CDO Pattern</h2>
+
+<h3>8.1 Critical design decision: when does the CDO get built?</h3>
+
+<p><strong>Per spec critical-decisions list, item 4</strong>: CDO construction order.</p>
+
+<p>The CDO (Class Default Object) is the per-class template instance whose property values are the defaults for any NewObject of that class. UE constructs all CDOs at engine startup (during the class-registration phase). This is simple but slow: a typical UE game registers 10k-50k classes at boot, and constructing each CDO takes ~50-200 &mu;s, leading to a 1-10 second startup hit.</p>
+
+<p>XPact uses a <strong>per-class policy</strong>:</p>
+
+<ul>
+  <li><strong>Eager CDO</strong> (declared via <code>XCLASS(MyType, MyBase, EagerCDO)</code>): the CDO is constructed at FClass::Link time, during module DLL load. Used for classes whose CDO is consumed by FClass::Link itself (i.e., the property defaults are needed for the initial property-link calculation). This is the minority; typically only engine-tier classes.</li>
+  <li><strong>Lazy CDO</strong> (default; no annotation needed): the CDO is constructed on the first NewObject call for that class, OR on the first XPropertyEditor query for default values, OR on the first XSerialization save (which needs the default to determine which properties differ from default and need persisting). The construction happens under a per-class atomic CAS on FClass::ClassDefaultObject to ensure thread-safety.</li>
+</ul>
+
+<p><strong>Rationale</strong>: editor cold-start &le; 15 s on 1000-asset project (Foundation Prototype criterion (i)) demands aggressive lazy-load. Eager CDO construction was UE's well-known editor-startup hot spot; lazy is the correct fix per Prime Directive.</p>
+
+<h3>8.2 Lazy CDO construction</h3>
+
+<pre><code>namespace XCore::XObject {
+
+class FClassDefaultObjectFactory {
+public:
+    // Returns the CDO, constructing on first call. Thread-safe.
+    static XObject* GetOrConstructCDO(const FClass* cls);
+
+    // Force eager construction (called from FClass::Link for EagerCDO classes).
+    static XObject* ConstructCDO(const FClass* cls);
+
+    // Discard and rebuild (used during hot-reload class replacement; see &sect;9).
+    static void RebuildCDO(FClass* cls);
+};
+
+XObject* FClassDefaultObjectFactory::GetOrConstructCDO(const FClass* cls) {
+    XObject* existing = cls-&gt;ClassDefaultObject.load(std::memory_order_acquire);
+    if (existing != nullptr) {
+        return existing;
+    }
+
+    // Construct under a per-class lock to ensure single construction.
+    static FCriticalSection s_ConstructionLock;
+    FScopedLock lock(s_ConstructionLock);
+
+    // Re-check after lock (double-checked locking pattern).
+    existing = cls-&gt;ClassDefaultObject.load(std::memory_order_acquire);
+    if (existing != nullptr) {
+        return existing;
+    }
+
+    // Construct the CDO. The Outer is the "transient package" sentinel; the
+    // Name is "Default__&lt;ClassName&gt;"; flags include RF_ClassDefaultObject.
+    XObject* cdo = NewObject&lt;XObject&gt;(
+        g_TransientPackage,
+        ComposeCDOName(cls-&gt;NamePrivate),
+        EObjectFlags::ClassDefaultObject | EObjectFlags::MarkAsRootSet);
+
+    // Publish atomically.
+    const_cast&lt;FClass*&gt;(cls)-&gt;ClassDefaultObject.store(cdo, std::memory_order_release);
+    return cdo;
+}
+
+} // namespace XCore::XObject
+</code></pre>
+
+<p>The CDO is itself pinned in the GC root set (RF_MarkAsRootSet flag): a CDO is never collected during normal operation. Hot-reload class replacement is the only time a CDO is destroyed and rebuilt.</p>
+
+<h3>8.3 CDO consumers</h3>
+
+<ul>
+  <li><strong>NewObject</strong>: copies the CDO's property values into the new instance during step 3 (the FClass's ClassConstructorFn handles this).</li>
+  <li><strong>XPropertyEditor</strong>: the editor's property-inspector reads default values from the CDO when displaying "Reset to Default" affordances or when comparing instance values against defaults.</li>
+  <li><strong>XSerialization</strong>: the saver compares each instance property against the CDO's value; only differing properties are persisted (the "delta serialization" optimization).</li>
+  <li><strong>XNetworking</strong>: replication reconciliation uses CDO values for the "factory defaults" baseline.</li>
+</ul>
+
+<h3>8.4 Sub-object templates (DSO &mdash; default sub-objects)</h3>
+
+<p>UE's pattern: a class can declare child sub-objects via <code>CreateDefaultSubobject</code>; those sub-objects are part of the CDO template, and every instance of the outer class gets a clone of the sub-object structure.</p>
+
+<p>XPact MVP supports DSO via the same pattern: <code>XCLASS</code> macros that declare child components via <code>XPROPERTY(VisibleAnywhere) XPtr&lt;XMeshComponent&gt; Mesh = CreateDefaultSubobject&lt;XMeshComponent&gt;("MeshComp");</code>. The XHT-emitted constructor for the outer class invokes the sub-object constructor at NewObject-time; the sub-object's Outer is the outer instance, the sub-object is itself an XObject and gets its own FXObjectArray slot.</p>
+
+<p>DSOs are flagged with <code>EObjectFlags::DefaultSubObject</code> so the GC walk knows the sub-object is part of an instance's template structure.</p>
+
+<hr>
+
+<h2 id="sec9">9. Hot-Reload Survival</h2>
+
+<h3>9.1 Pointer stability vs identity stability</h3>
+
+<p>XCoreXObject distinguishes two kinds of stability:</p>
+
+<ul>
+  <li><strong>Pointer stability for object lifetime</strong>: the XObject*'s value (the address in memory) does not change from NewObject to FinishDestroy. This is the non-moving GC commitment; XPtr&lt;T&gt; relies on it.</li>
+  <li><strong>Identity stability across hot-reload</strong>: an XObjectKey (or an XWeakPtr) resolves to the "same logical object" across a downstream module's hot-reload, even if the FClass* is replaced. This is the XObjectKey rebind protocol from &sect;6.4.</li>
+</ul>
+
+<p>The two are independent: a hot-reload class replacement preserves identity (XObjectKey resolves) but may or may not preserve the pointer value (it does, in MVP, because XPact's hot-reload commitment forbids class-layout changes mid-session, so the same memory address remains a valid instance).</p>
+
+<h3>9.2 Cascade hot-patch protocol</h3>
+
+<p>XLiveCoding orchestrates the cascade. The protocol involves XCoreXObject as follows:</p>
+
+<ol>
+  <li><strong>XLiveCoding signals BeginHotReloadQuiesce()</strong>. XCoreXObject:
+    <ul>
+      <li>Waits for any in-progress GC cycle to complete.</li>
+      <li>Blocks new GC cycles from starting.</li>
+      <li>Pauses the SATB queue drain.</li>
+      <li>Quiesces the FXObjectArray AllocLock (no new ReserveSlot / ReleaseSlot during cascade).</li>
+    </ul>
+  </li>
+  <li><strong>XLiveCoding loads the new module DLL</strong>. The new DLL's <code>.init.gen.cpp</code> aggregator calls <code>XReflectionRuntime::RegisterClass(&amp;NewClass)</code> for each new FClass. The new FClass coexists temporarily with the old FClass.</li>
+  <li><strong>XLiveCoding identifies the replaced class set</strong>: for each old FClass that the new module replaces, XLiveCoding constructs an <code>FClassReplacement {OldClass, NewClass}</code> entry and calls <code>XCoreXObject::ApplyClassReplacement(OldClass, NewClass)</code>.</li>
+  <li><strong>ApplyClassReplacement</strong>:
+    <ul>
+      <li>Walks the FXObjectArray for instances whose FClass == OldClass.</li>
+      <li>For each instance, rebinds <code>ClassPrivate = NewClass</code> (atomic store).</li>
+      <li>If the new class's property layout differs from the old (forbidden by hot-reload commitment per &sect;2a; the check fires <code>XPACT_CHECK</code> in Dev and abort-with-crashdump in Shipping).</li>
+      <li>For each property in the new class's PropertyLink that did not exist in the old class, initializes the property to the CDO's default value (this is the "property addition" path; the Master Plan hot-reload commitment notes that property additions go through a close/reopen flow, but for the case of additive-only changes that happen to satisfy the layout constraint, this path supports it).</li>
+      <li>The XObjectKey for each instance remains valid (InternalIndex + SerialNumber unchanged).</li>
+    </ul>
+  </li>
+  <li><strong>XLiveCoding signals FinishHotReloadCascade()</strong>. XCoreXObject:
+    <ul>
+      <li>Resumes the SATB queue drain.</li>
+      <li>Unblocks new GC cycles.</li>
+      <li>Releases the FXObjectArray AllocLock.</li>
+      <li>Triggers a deferred GC cycle to reclaim any objects that are now unreachable post-cascade (e.g., temporary objects from the old module that the new module doesn't reference).</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>9.3 CDO replacement during hot-reload</h3>
+
+<p>The CDO must be re-constructed against the new FClass. <code>FClassDefaultObjectFactory::RebuildCDO(cls)</code>:</p>
+
+<ul>
+  <li>Marks the existing CDO with <code>EObjectFlags::BeingReplaced</code>.</li>
+  <li>Constructs the new CDO via the standard lazy path against the new FClass.</li>
+  <li>Atomically swaps <code>cls-&gt;ClassDefaultObject</code> to point at the new CDO.</li>
+  <li>Marks the old CDO for destruction (it enters the deferred-destruction queue at the next GC cycle).</li>
+</ul>
+
+<h3>9.4 Single-method hot-patch</h3>
+
+<p>For a single-method change (the &lt;30s cascade-free hot-patch from Foundation Prototype criterion (d)), the class layout is unchanged and only one function-pointer slot moves. The protocol:</p>
+
+<ul>
+  <li>XLiveCoding identifies the changed function symbol.</li>
+  <li>If the function is in an FClass's LifecycleTable, the LifecycleTable's slot is updated via atomic pointer store (the LifecycleTable lives in .rodata of the patched DLL; the new DLL has a new .rodata with the new slot value).</li>
+  <li>If the function is a user-class virtual method, the user-class vtable in the patched DLL has the new slot; instances continue to dispatch via the user-class vtable, picking up the new function on next call.</li>
+  <li>No FClass rebind needed (the FClass is unchanged).</li>
+  <li>No GC cycle needed.</li>
+</ul>
+
+<p>This is the fastest path because no FXObjectArray walk happens. Latency is dominated by XBT recompile + XLiveCoding's DLL patch (typically &lt;20 s) plus the function-pointer swap (microseconds).</p>
+
+<h3>9.5 Survival across module unload</h3>
+
+<p>If a plugin module unloads while instances of its classes exist, the instances are orphaned: the FClass becomes invalid; XObjectKey resolution returns nullptr (because the FClass* would be a dangling pointer). The discipline:</p>
+
+<ul>
+  <li>Module unload sets <code>EObjectFlags::BeingReplaced</code> on every instance of any FClass from the unloading module.</li>
+  <li>The next GC cycle marks all such instances as unreachable (their FClass is invalid; they cannot be safely traced) and destroys them.</li>
+  <li>Any XObjectKey referencing such an instance resolves to nullptr after the GC cycle.</li>
+  <li>Module unload of a plugin while gameplay code holds strong references is an explicit programming error; XLiveCoding refuses to unload until gameplay code drops the references (per Master Plan hot-reload commitment).</li>
+</ul>
+
+<hr>
+
+<h2 id="sec10">10. Cross-System Integration</h2>
+
+<h3>10.1 XReflectionRuntime registry (XCore-4b Phase 4b.6)</h3>
+
+<p>XReflectionRuntime is the FName-keyed registry of all FClass/FStruct/FEnum/FInterface. XCoreXObject:</p>
+<ul>
+  <li>Calls <code>RegisterClass(&amp;XActor_Class)</code> at FClass static-init time (from the XHT-emitted <code>.init.gen.cpp</code> aggregator).</li>
+  <li>Calls <code>FindClass(name)</code> from the XSerialization deserialize path (to resolve a serialized FName to a live FClass*).</li>
+  <li>Calls <code>IterateAllClasses(visitor)</code> during hot-reload cascade (to identify instances of each replaced class).</li>
+</ul>
+
+<h3>10.2 FClass.CDO population</h3>
+
+<p>XCore-4b's FClass struct declared <code>mutable std::atomic&lt;XObject*&gt; ClassDefaultObject</code> as a lazy slot. XCoreXObject populates this via <code>FClassDefaultObjectFactory</code> (&sect;8). The atomic semantics ensure thread-safe lazy construction.</p>
+
+<h3>10.3 FProperty walk for GC scan</h3>
+
+<p>The GC mark walk consumes <code>FStruct::ObjectRefProperties</code> dense TArray (XCore-4b &sect;7.1 FIX-13). Population happens at FClass::Link (&sect;7.2). The walk's prefetch + dense-array layout is what makes the &lt;50 ms full-heap-scan budget achievable on Quest 3 ARM64.</p>
+
+<h3>10.4 FMemTag::XObject for the XObject heap</h3>
+
+<p>XCore-4a's <code>FMemTag::XObject</code> (slot 9 in the enum) is the attribution tag for all XObject heap allocations. XCoreXObject's FXObjectAllocator routes every FMallocBinnedX call through <code>FMemory::Malloc(size, align, FMemTag::XObject)</code> so the leak tracker and memory-budget telemetry see XObject heap usage distinctly from generic Container / Math / Platform allocations.</p>
+
+<h3>10.5 FLeakTracker integration</h3>
+
+<p>XCore-4a's FLeakTracker tracks unfreed allocations in Dev/Development configs. XCoreXObject's FXObjectAllocator participates via two paths:</p>
+<ul>
+  <li>Slab allocations from FMallocBinnedX are tracked normally (per the existing FMemTag::XObject attribution).</li>
+  <li>Per-object leaks (an XObject that was never collected by the time of process exit) are detected by the FXObjectAllocator's shutdown path: walks the FXObjectArray, reports each live entry's {FClass name, InternalIndex, instance creation stack trace if available}. The instance creation stack trace is captured by NewObject in Dev/Development configs (zero-cost in Shipping; the capture path is conditional on a build-config macro).</li>
+</ul>
+
+<h3>10.6 XHT-emitted .gen.cpp registration paths</h3>
+
+<p>XHT's emitter generates per-module <code>.init.gen.cpp</code> that calls into XCoreXObject:</p>
+<ul>
+  <li><code>Z_Construct_FClass_XActor()</code> &mdash; emits the constinit FClass + calls XReflectionRuntime::RegisterClass + invokes XCoreXObject::LinkClass.</li>
+  <li><code>XActor::ClassConstructorFnImpl(InstancePtr, Outer)</code> &mdash; the placement-new + default-value-copy implementation invoked from NewObject step 3.</li>
+  <li><code>Z_PostInitProperties_XActor(obj)</code>, <code>Z_BeginDestroy_XActor(obj)</code>, etc. &mdash; the function-pointer implementations populated into the FXObjectLifecycleTable.</li>
+  <li><code>constinit const FXObjectLifecycleTable XActor_LifecycleTable</code> in .rodata, pointing at the Z_* functions.</li>
+</ul>
+
+<h3>10.7 XIL2CPP integration (System 6)</h3>
+
+<p>XIL2CPP transpiles C# to C++; for XObject-derived C# classes, it emits a C++ XCLASS-equivalent. The transpilation pattern:</p>
+<ul>
+  <li>A C# <code>class MyActor : Actor { ... }</code> emits a C++ <code>class MyActor : public XActor { ... }</code> with the same XCLASS macro and XPROPERTY/XFUNCTION markers.</li>
+  <li>C# field writes to XObject references are lowered to the XPACT_GC_STORE pattern (&sect;5.2).</li>
+  <li>C# stack frames are scaffolded with stack-map records (&sect;5.4) so the precise stack scan can enumerate live references.</li>
+  <li>C# generic collections (<code>List&lt;XObject&gt;</code>, <code>Dictionary&lt;FName, XObject&gt;</code>) are emitted as XCore-4a TArray / TMap with the GC-aware partial specialization (XGCRootSpan registration in constructor, unregister in destructor; XCore-4a &sect;5.4).</li>
+  <li>C# <code>List&lt;object&gt;</code> emits with the conservative root scaffold (&sect;5.3).</li>
+</ul>
+
+<h3>10.8 XCore-4a XGC_* function replacement</h3>
+
+<p>XCoreXObject's link step replaces XCore-4a's weak-symbol stubs for <code>XGC_WriteBarrier</code> / <code>XGC_RegisterRootSpan</code> / <code>XGC_UpdateRootSpan</code> / <code>XGC_UnregisterRootSpan</code> with strong-symbol implementations. The replacement is automatic at link time; no source change to XCore-4a is needed.</p>
+
+<p>XCore-4a's <code>s_XObjectAllocator</code> function-pointer hook (XCore-4a &sect;4.4) is installed by XCoreXObject's PreStaticInit code via <code>RegisterXObjectAllocator(&amp;FXObjectAllocator::AllocateRaw)</code>. This ensures the link-error-on-uninstalled-allocator gate from XCore-4a remains a real gate (test builds without XCoreXObject linked get the clear abort with stack trace).</p>
+
+<h3>10.9 XSerialization integration (System 9)</h3>
+
+<p>XSerialization's archive paths call into XCoreXObject:</p>
+<ul>
+  <li><strong>Save</strong>: walks the FStruct::PropertyLink for each object; delta-compares against the CDO; persists only differing properties. Each persisted XObject reference is encoded as {ClassName FName + ObjectPath FName}.</li>
+  <li><strong>Load</strong>: resolves {ClassName} via XReflectionRuntime::FindClass; allocates via NewObject; calls Serialize via the FClass's lifecycle FakeVTable to fill in properties.</li>
+  <li><strong>PostLoad</strong>: after the entire archive's object graph is loaded, walks each object and calls the PostLoad lifecycle slot.</li>
+</ul>
+
+<h3>10.10 XNetworking integration (System 13)</h3>
+
+<p>XNetworking's <code>FReplicationStateDescriptorRegistry</code> caches XObjectKey instances for the replication state's referenced objects. The XObjectKey-based identity is what survives across multiplayer reconnection and hot-reload. XNetworking's NetSerialize path for XObject references encodes the XObjectKey (8 bytes); on receive, the receiving end resolves the key via XCoreXObject's <code>XObjectKey::Resolve()</code> to find the corresponding local instance.</p>
+
+<hr>
+
+<h2 id="sec11">11. Byte Layouts (ABI Lock with sizeof Pins)</h2>
+
+<p>All byte-exact layouts in this spec are locked via static_asserts. The Stage B addendum (Contract Rev 13.8) is extended with the following new tags (per &sect;1.4); a future Rev 13.9 micro-bump adds FClass's LifecycleTable pointer.</p>
+
+<h3>11.1 New addendum tags (extends Rev 13.8 without bumping addendum revision)</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Tag string-literal pin</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td><code>XPACT_XOBJECT_LAYOUT_TAG</code></td><td>"XObject-v1: 56 bytes; ClassPrivate@0, InternalIndex@8, SerialNumber@12, Outer@16, NamePrivate@24, ObjectFlags@32, _padObjectFlags@36, _reservedCluster@40, _reservedRemoteId@48; alignof = 8; no virtuals on the GC-relevant surface (FakeVTable pattern)"</td></tr>
+    <tr><td><code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code></td><td>"XGCCardTable-v1: byte-per-card flat array; card size = 512 bytes; max heap = 4 GB; card table = 8 MB; clean = 0x00, dirty = 0x01"</td></tr>
+    <tr><td><code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code></td><td>"FXObjectArrayEntry-v1: 32 bytes; Object@0, SerialNumber@8, ClusterRootIndex@12, StateBits@16 (atomic), _reserved@24; alignof = 8"</td></tr>
+    <tr><td><code>XPACT_XOBJECTKEY_LAYOUT_TAG</code></td><td>"XObjectKey-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); ABI-compatible with XWeakPtr; alignof = 4"</td></tr>
+    <tr><td><code>XPACT_XWEAKPTR_LAYOUT_TAG</code></td><td>"XWeakPtr-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); matches XCore-4b's FWeakObjectPtr placeholder shape; alignof = 4"</td></tr>
+    <tr><td><code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code></td><td>"FXObjectLifecycleTable-v1: 72 bytes per FClass; 8-byte header (Capabilities@0 + _pad@4) + 8 slots * 8 bytes = 64 bytes; alignof = 8"</td></tr>
+  </tbody>
+</table>
+
+<h3>11.2 Contract Rev 13.9 micro-bump (proposed, triggered by this spec)</h3>
+
+<p>XCoreXObject triggers Contract Rev 13.9, adding one field to FClass:</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Field</th><th>Offset</th><th>Type</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><code>const FXObjectLifecycleTable* LifecycleTable</code></td><td>112 (FStruct end) + 112 (FClass body) = 224 in Rev 13.8; new offset 224, sizeof FClass becomes 232</td><td>8-byte pointer</td><td>Per-class lifecycle dispatch table (PostInitProperties, BeginDestroy, FinishDestroy, AddReferencedObjects, ...). Points to .rodata-resident table emitted by XHT.</td></tr>
+  </tbody>
+</table>
+
+<p>Updated tag: <code>XPACT_FCLASS_LAYOUT_TAG = "FClass-v5: 232 bytes = 112 FStruct base + 120 FClass-specific (Rev 13.8's 112 + new 8-byte LifecycleTable pointer at offset 112)"</code>.</p>
+
+<h3>11.3 Static_assert pin set (XCoreXObject side)</h3>
+
+<pre><code>// XCoreXObject's full pin set (gathered into a single header for build-time
+// verification; emitted per-module so any mismatch produces a clear error site).
+
+#define XPACT_VERIFY_XOBJECT_LAYOUT()                                                          \
+    static_assert(sizeof(XObject)                  == 56, "XObject ABI lock");                 \
+    static_assert(alignof(XObject)                 ==  8, "XObject alignment lock");           \
+    static_assert(offsetof(XObject, ClassPrivate)  ==  0, "XObject.ClassPrivate offset");      \
+    static_assert(offsetof(XObject, InternalIndex) ==  8, "XObject.InternalIndex offset");     \
+    static_assert(offsetof(XObject, SerialNumber)  == 12, "XObject.SerialNumber offset");      \
+    static_assert(offsetof(XObject, Outer)         == 16, "XObject.Outer offset");             \
+    static_assert(offsetof(XObject, NamePrivate)   == 24, "XObject.NamePrivate offset");       \
+    static_assert(offsetof(XObject, ObjectFlags)   == 32, "XObject.ObjectFlags offset");       \
+    static_assert(sizeof(FXObjectArrayEntry)       == 32, "FXObjectArrayEntry ABI lock");      \
+    static_assert(sizeof(XObjectKey)               ==  8, "XObjectKey ABI lock");              \
+    static_assert(sizeof(XWeakPtr&lt;XObject&gt;)        ==  8, "XWeakPtr ABI lock");                \
+    static_assert(sizeof(XPtr&lt;XObject&gt;)            ==  8, "XPtr ABI lock");                    \
+    static_assert(sizeof(FXObjectLifecycleTable)   == 72, "FXObjectLifecycleTable ABI lock");
+</code></pre>
+
+<hr>
+
+<h2 id="sec12">12. C++ Macro Surface (XCLASS / XPROPERTY / XFUNCTION)</h2>
+
+<h3>12.1 XCLASS</h3>
+
+<p>Declares an XObject subclass. XHT parses the macro to extract reflection markers; XHT emits the FClass descriptor in <code>.gen.cpp</code>. The macro itself is partially expanded in the user's source (the StaticClass() forward-declaration and using-aliases) and partially expanded in XHT's emit (the FClass definition).</p>
+
+<pre><code>// Header-side XCLASS expansion (what the user writes; what XHT parses):
+class XActor : public XObject {
+    XCLASS(XActor, XObject, ClassFlags = (Blueprintable, Placeable),
+                              ClassGroup = (Actor))
+
+public:
+    XPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform")
+    FVector Location;
+
+    XPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform")
+    FRotator Rotation;
+
+    XPROPERTY(VisibleAnywhere, Transient)
+    TArray&lt;XPtr&lt;XComponent&gt;&gt; Components;
+
+    XFUNCTION(BlueprintCallable, Category = "Transform")
+    void SetLocation(const FVector&amp; NewLocation);
+};
+</code></pre>
+
+<p>XHT-emitted <code>.gen.h</code> include (transparent to the user; included from the per-module <code>.gen.cpp</code>):</p>
+
+<pre><code>// Emitted into XActor.gen.h
+#define XActor_GENERATED_BODY \
+    public: \
+        using ThisClass  = XActor; \
+        using SuperClass = XObject; \
+        static const FClass* StaticClass() noexcept; \
+        static void ClassConstructorFnImpl(void* InstancePtr, FFieldVariant Outer); \
+        /* ... other XHT-emitted boilerplate ... */
+</code></pre>
+
+<p>XHT-emitted <code>.gen.cpp</code>:</p>
+
+<pre><code>// Emitted into XActor.gen.cpp
+#include "XActor.h"
+#include "XCoreXObject/Public/XObject.h"
+#include "XReflectionRuntime.h"
+
+// constinit FClass in .rodata
+constinit const FClass XActor_Class = {
+    // FStruct base
+    .NamePrivate          = FName("XActor"),
+    .SuperStruct          = &amp;XObject_Class,
+    .ChildProperties      = &amp;XActor_PropertyList,
+    .PropertiesSize       = sizeof(XActor),
+    .MinAlignment         = alignof(XActor),
+    .StructFlags          = 0,
+    .PropertyLink         = nullptr,    // populated at FClass::Link
+    .DestructorLink       = nullptr,
+    .PostConstructLink    = nullptr,
+    .ObjectRefProperties  = {},          // populated at FClass::Link
+    .SchemaHash           = 0xDEADBEEF... ,  // BLAKE3 of declared shape
+    .SchemaVersion        = 1,
+    .UnversionedSchema    = {nullptr},
+    .SerializeStructFn    = &amp;XActor::SerializeImpl,
+    // FClass body
+    .ClassConstructorFn          = &amp;XActor::ClassConstructorFnImpl,
+    .ClassVTableHelperCtorCaller = nullptr,
+    .ClassDefaultObject          = {nullptr},   // lazy CDO
+    .ClassFlags                  = EClassFlags::Blueprintable | EClassFlags::Placeable,
+    .ClassCastFlags              = EClassCastFlags::XActor,
+    .ClassWithin                 = nullptr,
+    .FirstOwnedClassRep          = 0,
+    .ClassRepCount               = 0,
+    .ClassReps                   = {},
+    .NetFields                   = {},
+    .ClassConfigName             = FName("Engine"),
+    // XCoreXObject extension (Contract Rev 13.9)
+    .LifecycleTable              = &amp;XActor_LifecycleTable,
+};
+
+// constinit FXObjectLifecycleTable in .rodata
+constinit const FXObjectLifecycleTable XActor_LifecycleTable = {
+    .Capabilities = (1u &lt;&lt; 0) | (1u &lt;&lt; 1) | (1u &lt;&lt; 3),  // PostInitProperties, BeginDestroy, FinishDestroy
+    ._padHeader   = 0,
+    .Slots = {
+        (void(*)(void))&amp;XActor::PostInitPropertiesImpl,
+        (void(*)(void))&amp;XActor::BeginDestroyImpl,
+        nullptr,    // IsReadyForFinishDestroy (default = true)
+        (void(*)(void))&amp;XActor::FinishDestroyImpl,
+        nullptr, nullptr, nullptr, nullptr,
+    },
+};
+
+// StaticClass accessor
+const FClass* XActor::StaticClass() noexcept {
+    return &amp;XActor_Class;
+}
+
+// Construction implementation
+void XActor::ClassConstructorFnImpl(void* InstancePtr, FFieldVariant Outer) {
+    new (InstancePtr) XActor();
+    // CDO default-value copy happens at the NewObject layer, after construction.
+}
+
+// Module-init registration (called from per-module .init.gen.cpp aggregator)
+void Z_Construct_FClass_XActor() {
+    XReflectionRuntime::RegisterClass(&amp;XActor_Class);
+    XCore::XObject::LinkClass(const_cast&lt;FClass*&gt;(&amp;XActor_Class));
+}
+</code></pre>
+
+<h3>12.2 XPROPERTY</h3>
+
+<p>Declares a reflected member. XHT parses the specifier list (EditAnywhere, BlueprintReadWrite, Replicated, etc.) and emits the FProperty descriptor in <code>.gen.cpp</code>. The XHT-emitted FProperty includes the dispatch table pointer to the per-subclass FFakeVTable (XCore-4b FIX-2).</p>
+
+<h3>12.3 XFUNCTION</h3>
+
+<p>Declares a reflected method. XHT parses the specifier list (BlueprintCallable, Server, Client, NetMulticast, etc.) and emits the FFunctionDescriptor in <code>.gen.cpp</code>. The function is then callable via reflection (e.g., from Blueprint VM); native callers continue to call the C++ method directly.</p>
+
+<h3>12.4 XINTERFACE</h3>
+
+<p>Declares a reflected interface. XHT emits the FInterface descriptor and the per-implementing-class InterfaceImplementations table (XCore-4b &sect;7.5.1).</p>
+
+<hr>
+
+<h2 id="sec13">13. Acceptance Gates</h2>
+
+<h3>13.1 Foundation Prototype mapping (Master Plan &sect;11 Step 5.5)</h3>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Criterion</th><th>XCoreXObject responsibility</th><th>Gate</th></tr></thead>
+  <tbody>
+    <tr><td>(a) GC pause &lt; 5 ms Quest 3 typical</td><td>&sect;4 collector design; &sect;4.8 budget breakdown</td><td>Foundation Prototype test: 10k allocations/sec for 60 s; measure pause durations; p99 must be &lt; 5 ms.</td></tr>
+    <tr><td>(b) Full-heap-scan fallback &lt; 50 ms Quest 3</td><td>&sect;3 dense ObjectRefProperties; &sect;4.5 fallback; &sect;4.8 budget breakdown</td><td>Foundation Prototype test: 100k XObjects, 5-10 ObjectRef properties each; force remembered-set saturation; measure fallback pause; must be &lt; 50 ms.</td></tr>
+    <tr><td>(c) Cross-arch determinism 100 replays Win64+Quest 3</td><td>&sect;1.3 (GC is non-sim-path)</td><td>Foundation Prototype test: 100 replays of trivial sim-path operation on Win64 + Quest 3; assert bit-exact state. GC must not affect sim state.</td></tr>
+    <tr><td>(d) Single-method hot-patch &lt; 30 s</td><td>&sect;9.4 single-method protocol</td><td>Foundation Prototype test: change a C# method body; recompile via XBT + XLiveCoding; measure end-to-end latency; must be &lt; 30 s.</td></tr>
+    <tr><td>(e) Cascade hot-patch &lt; 120 s nominal / 150 s kill</td><td>&sect;9.2 cascade protocol</td><td>Foundation Prototype test: Studio plugin patch with 3 dependent Project modules; recompile + apply; measure end-to-end latency including Phase 2 quiescence; must be &lt; 120 s nominal.</td></tr>
+    <tr><td>(f) Reflection round-trip clean</td><td>&sect;7 reflection runtime integration</td><td>Foundation Prototype test: a transpiled C# property is settable/gettable through XPropertyEditor's reflection-driven path; no marshalling errors.</td></tr>
+    <tr><td>(g) Deterministic codegen XIL2CPP</td><td>(XCoreXObject does not own codegen; XIL2CPP is responsible. XCoreXObject's role: the XObject ABI shape must be byte-exact across builds so XIL2CPP can emit deterministic code against it.)</td><td>Per the static_assert pin set (&sect;11.3): a build that produces different XObject layout than the addendum fails to compile.</td></tr>
+    <tr><td>(h) Fragmentation &lt; 15% over 4 hrs Quest 3</td><td>&sect;3 size-class segregation; &sect;3.6 scenario-boundary mark-region clearing</td><td>Foundation Prototype test: continuous-load Quest 3 4-hour soak; measure wasted heap at end; must be &lt; 15%.</td></tr>
+    <tr><td>(i) Editor cold-start &le; 15 s on 1000-asset project</td><td>&sect;8.1 lazy CDO (vs UE's eager CDO startup hot spot)</td><td>Foundation Prototype test: 1000-asset project; cold start; measure time to editor-ready; must be &le; 15 s.</td></tr>
+  </tbody>
+</table>
+
+<h3>13.2 XCoreXObject-specific acceptance gates</h3>
+
+<ul>
+  <li><strong>X1</strong>: sizeof(XObject) == 56; offset locks per &sect;11.3 hold on every supported compiler (MSVC 19.44+, Clang 17+, GCC 13+).</li>
+  <li><strong>X2</strong>: NewObject&lt;T&gt; latency &lt; 500 ns on Quest 3, &lt; 300 ns on Win64. Measured against 1M-iteration micro-benchmark.</li>
+  <li><strong>X3</strong>: XWeakPtr&lt;T&gt;::Get() latency &lt; 15 ns Quest 3, &lt; 8 ns Win64. Measured against 1M-iteration micro-benchmark.</li>
+  <li><strong>X4</strong>: write-barrier emit cost &lt; 5 cycles per call on Win64 + Quest 3 ARM64. Measured against synthetic mutation-rate benchmark.</li>
+  <li><strong>X5</strong>: card-table dirty card count after 10M reference writes stays &lt; 50% of total cards in a typical training scene (validates the size of the saturation threshold).</li>
+  <li><strong>X6</strong>: hot-reload class replacement preserves XObjectKey resolution for 100% of instances in a synthetic 10k-instance test.</li>
+  <li><strong>X7</strong>: CDO lazy construction takes &lt; 1 ms per FClass on first-call (Win64); CDO is constructed exactly once even under concurrent access from 8 threads.</li>
+  <li><strong>X8</strong>: FXObjectArray ReserveSlot / ReleaseSlot is contended at most 1 in 1000 calls in a 4-thread NewObject benchmark; uncontended path is &lt; 100 ns.</li>
+  <li><strong>X9</strong>: Conservative root span scanning is correct &mdash; every false-positive candidate (a non-XObject value that happens to land in the XObject heap range) is rejected by the SerialNumber check; no false-negatives (every real XObject candidate is correctly identified).</li>
+  <li><strong>X10</strong>: precise stack scanning enumerates 100% of XIL2CPP-emitted XObject locals on Win64 + Quest 3 in a synthetic test with 100 nested transpiled functions, each with 1-5 stack-resident XPtrs.</li>
+  <li><strong>X11</strong>: scenario-boundary mark-region clearing reclaims 100% of scenario-scoped XObjects on synthetic 1000-instance / 100-class scenarios; falls back to GC-driven collection when escape detected.</li>
+  <li><strong>X12</strong>: leak tracker reports zero false-positives in a 1-hour Dev-build smoke test with continuous NewObject/destroy cycles; reports correct counts for synthetic injected leaks.</li>
+</ul>
+
+<hr>
+
+<h2 id="sec14">14. Open Items (with RECOMMENDED defaults)</h2>
+
+<p>The following design questions remained open at Rev 1; each has a RECOMMENDED default that this spec ships against. The user may push back during design-review.</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>#</th><th>Open item</th><th>RECOMMENDED default</th><th>Rationale</th></tr></thead>
+  <tbody>
+    <tr><td>O1</td><td>Contract Rev 13.9 micro-bump (adding LifecycleTable pointer to FClass) &mdash; bump or find an alternative?</td><td><strong>Bump to Rev 13.9.</strong> Add the 8-byte pointer to FClass (sizeof 224 &rarr; 232).</td><td>Alternative (parallel TMap lookup) costs a hash probe per lifecycle dispatch &mdash; wrong per Prime Directive. Alternative (inline 8-slot table into FClass) costs 72 bytes per class &times; 10k classes = 720 KB module footprint &mdash; worse. The pointer is the right trade.</td></tr>
+    <tr><td>O2</td><td>Card-table card size (256 vs 512 vs 1024 bytes)</td><td><strong>512 bytes.</strong></td><td>Matches typical L2 cache line group on Quest 3 ARM64; bigger cards mean more false-sharing of dirty marks, smaller cards mean larger card table. 512 is the empirically common middle.</td></tr>
+    <tr><td>O3</td><td>Per-thread SATB queue size (128 vs 256 vs 512 entries)</td><td><strong>256 entries.</strong></td><td>Flushes infrequently in steady state; 256 fits in 2 KB which fits comfortably in L1.</td></tr>
+    <tr><td>O4</td><td>FXObjectArray initial reservation (8k vs 32k vs 128k entries)</td><td><strong>32k entries initial; grow in 32k-entry increments.</strong></td><td>32k &times; 32 bytes = 1 MB initial; one FMallocBinnedX large-bin allocation. Typical training session uses 30-80k entries; one or two grows.</td></tr>
+    <tr><td>O5</td><td>Cluster support (ship in MVP or defer to Phase 2)</td><td><strong>Defer to Phase 2.</strong> Reserve EObjectFlags::ClusterRoot bit + 8-byte FXObjectArrayEntry.ClusterRootIndex slot.</td><td>Clusters add significant complexity (mutation tracking, cross-cluster weak refs, hot-reload interaction); MVP object population (~50k typical) doesn't require clustering to hit the &lt;50 ms full-heap-scan budget.</td></tr>
+    <tr><td>O6</td><td>SATB barrier flag check inline (per-store TLS-read) vs trampoline (only-when-marking direct call)</td><td><strong>Inline TLS-read.</strong></td><td>TLS read is ~2 cycles; statically-predicted branch is free in steady state. Trampoline patching has hot-reload risk (the patched-trampoline code becomes invalid across DLL unload).</td></tr>
+    <tr><td>O7</td><td>Worker count for parallel mark/sweep (fixed vs adaptive)</td><td><strong>Adaptive: workers = available worker-pool threads minus 2 (reserve one for game tick, one for render).</strong></td><td>Fixed count would either over-subscribe (causing context switches) or under-subscribe (leaving cores idle). Adaptive responds to actual machine capacity.</td></tr>
+    <tr><td>O8</td><td>NewObject during sweep (allowed or fail-fast?)</td><td><strong>Allowed.</strong> New objects are created with their mark bit set to "this cycle's color" so they bypass the sweep.</td><td>Forbidding would force gameplay code to coordinate with GC cycles &mdash; intractable for a system with bursty allocation patterns.</td></tr>
+    <tr><td>O9</td><td>Deferred-destruction queue draining (one pass per frame or continuous)</td><td><strong>One pass per frame, time-budgeted (max 1 ms of FinishDestroy calls per frame).</strong></td><td>Continuous draining would compete with gameplay for thread time. Time-budgeted pass amortizes destruction across frames without starving any one frame.</td></tr>
+    <tr><td>O10</td><td>Cross-thread NewObject allowed in MVP?</td><td><strong>Allowed; sim-path discipline (NewObject on the SimPathSerialExecutor thread for sim-path code) is a convention, not a runtime check.</strong></td><td>Banning cross-thread NewObject would force a large refactor of editor and asset-pipeline code that legitimately allocates from worker threads. The sim-path discipline is enforceable via XHT static analysis; runtime enforcement is unnecessary overhead.</td></tr>
+    <tr><td>O11</td><td>Sub-doc split timing (split into 4 docs now or defer to implementation phase)</td><td><strong>Ship Rev 1 as one umbrella spec. Split during implementation phase (Phase 5.x) if individual sub-systems crystallize as separate work units.</strong></td><td>The four sub-systems (allocator + collector + write-barriers + reflection) are tightly coupled at the design level (the allocator's slab layout informs the collector's mark-bit lookup; the write-barriers' card size informs the allocator's fragmentation budget). Splitting at the design phase would force cross-document references for every cross-cutting design decision; better to keep it unified.</td></tr>
+    <tr><td>O12</td><td>XObject sizeof &mdash; 56 bytes vs 64 bytes (one cache line)?</td><td><strong>56 bytes.</strong></td><td>56 bytes saves 8 bytes per object (~400 KB on 50k-object population). The header + next 8 bytes of user-class state still fits in one cache line. 64-byte padding wastes 8 bytes per object for marginal alignment benefit. The 56-byte pin includes 16 bytes of reservation (cluster + remote-id) for forward compatibility.</td></tr>
+    <tr><td>O13</td><td>Size-class count &mdash; ship 10 classes per &sect;3.2 or expand?</td><td><strong>Ship 10. Expand to 14-15 if Foundation Prototype shows &gt;15% wasted heap.</strong></td><td>10 covers the typical XObject distribution. Adding more classes increases per-class fixed cost (per-class TLS cache, per-class slab list). Foundation Prototype is the right gate to re-tune.</td></tr>
+    <tr><td>O14</td><td>FClass.LifecycleTable lookup path &mdash; FClass member vs parallel TMap?</td><td><strong>FClass member (per O1).</strong></td><td>(See O1 rationale.)</td></tr>
+    <tr><td>O15</td><td>Conservative-scanning false-positive rate &mdash; acceptable?</td><td><strong>Acceptable. Validate at Foundation Prototype.</strong></td><td>Conservative scanning's worst case is one extra mark per false-positive; the mark is idempotent so the only cost is one extra cycle of work. Real-world false-positive rate on List&lt;object&gt; with typical contents is &lt;1% &mdash; tolerable.</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec15">15. Implementation Order (Sub-Phase Breakdown)</h2>
+
+<p>Per Master Plan &sect;11 Step 5, XCoreXObject is the design phase; the implementation phase (Step 5 implementation, after Step 5.5 Foundation Prototype clears) is broken into sub-phases:</p>
+
+<ol>
+  <li><strong>Phase 5.a &mdash; XObject base type</strong>: ship the 56-byte XObject header, the EObjectFlags enum, the FXObjectLifecycleTable struct + Contract Rev 13.9 micro-bump (adds LifecycleTable pointer to FClass). Unit tests verify byte layouts. Estimated: 1-2 weeks.</li>
+  <li><strong>Phase 5.b &mdash; FXObjectArray + FXObjectAllocator</strong>: ship the global object table + size-class-pool allocator. Includes the slab discipline, type-segregated free-lists, and FMemTag::XObject integration. Includes basic NewObject path (without GC). Unit tests verify allocation throughput, cell layout, slab growth. Estimated: 3-4 weeks.</li>
+  <li><strong>Phase 5.c &mdash; Object handles</strong>: ship XPtr, XWeakPtr, XSoftPtr, XObjectKey. Integration tests with reflection (FObjectProperty / FWeakObjectProperty payloads round-trip). Estimated: 1-2 weeks.</li>
+  <li><strong>Phase 5.d &mdash; CDO lifecycle</strong>: ship FClassDefaultObjectFactory with lazy + eager paths. Integration tests confirm CDO is constructed exactly once per FClass. Estimated: 1 week.</li>
+  <li><strong>Phase 5.e &mdash; GC root protocol</strong>: ship XGCRoot::AddRoot/RemoveRoot, the strong-symbol replacement for XCore-4a's weak-symbol XGC_RegisterRootSpan family, the precise stack-scan integration with XIL2CPP-emitted stack maps. Estimated: 2-3 weeks.</li>
+  <li><strong>Phase 5.f &mdash; Card-table write barrier</strong>: ship the real XGC_WriteBarrier implementation + card-table allocation + the XPACT_GC_STORE macro. Unit tests confirm barrier emit cost, card-table dirty-marking, SATB snapshot capture. Estimated: 2 weeks.</li>
+  <li><strong>Phase 5.g &mdash; Collector mark phase</strong>: ship the mark phase including the safe-point handshake, root enumeration, gray-queue worker-pool, dense ObjectRefProperties walk, SATB drain, write-barrier-set drain. Integration tests confirm correctness against synthetic graphs. Estimated: 4-5 weeks.</li>
+  <li><strong>Phase 5.h &mdash; Collector sweep + deferred destruction</strong>: ship the sweep phase + deferred-destruction queue + BeginDestroy/FinishDestroy lifecycle dispatch. Tests confirm reclaim correctness, SerialNumber bumping, slot reuse. Estimated: 2-3 weeks.</li>
+  <li><strong>Phase 5.i &mdash; Scenario-boundary mark-region clearing</strong>: ship FXObjectAllocator::ReleaseClassPool + the XScenarios integration hook. Tests confirm correctness when escape references are present (fallback to GC-driven collection). Estimated: 1-2 weeks.</li>
+  <li><strong>Phase 5.j &mdash; Hot-reload integration</strong>: ship BeginHotReloadQuiesce / ApplyClassReplacement / FinishHotReloadCascade + the XLiveCoding integration. Tests confirm XObjectKey resolution survives synthetic class replacement. Estimated: 2-3 weeks.</li>
+  <li><strong>Phase 5.k &mdash; Telemetry + diagnostics</strong>: ship the XInsights telemetry hooks (rememberedSetSaturation event, pause histogram, mark/sweep rate counters), FLeakTracker integration, DumpUsageReport. Estimated: 1-2 weeks.</li>
+  <li><strong>Phase 5.l &mdash; Foundation Prototype harness</strong>: ship the test harnesses that exercise pass criteria (a)-(i). Estimated: 2-3 weeks.</li>
+</ol>
+
+<p>Total estimated implementation duration: <strong>~22-32 weeks</strong> (5-7 months) at the foundation-system cadence (~9 wks/system) per Master Plan &sect;10 honest math. This is the largest single system in the engine per Master Plan &sect;10 explicit framing.</p>
+
+<p><strong>Sub-doc split decision</strong>: per O11 RECOMMENDED, this spec ships as one umbrella. During implementation, if sub-phases 5.b/5.f/5.g become independent enough to merit their own design docs, the split happens at that time (e.g., a "XCoreXObject-Allocator.html" expanding &sect;3, a "XCoreXObject-Collector.html" expanding &sect;4-5). Rev 1 of this umbrella spec is the canonical design until that split.</p>
+
+<hr>
+
+<h2 id="sec16">16. Revision History</h2>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>Rev</th><th>Date</th><th>Author</th><th>Summary</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>2026-05-27</td><td>Subagent B (XPact-specific design synthesis; combined-pass posture)</td><td>Initial umbrella spec covering XObject base type, GC heap (FXObjectAllocator + FXObjectArray), non-moving precise mostly-concurrent mark-and-sweep collector with card-table generational scan-reduction, SATB write-barrier discipline, GC root protocol (XGCRoot::AddRoot + XGCRootSpan-via-containers + precise stack-scan + conservative-root for List&lt;object&gt;), object handle family (XPtr / XWeakPtr / XSoftPtr / XObjectKey), CDO lazy/eager policy, hot-reload survival with XObjectKey rebind, cross-system integration with XCore-4a (FMallocBinnedX + FMemTag::XObject + FLeakTracker + XGC_* function-pointer hooks) and XCore-4b (FClass + FStruct::ObjectRefProperties + XReflectionRuntime + FCustomVersion), Contract Rev 13.9 micro-bump (adds 8-byte FClass::LifecycleTable pointer), six new XPACT_*_LAYOUT_TAG pins, full acceptance gate mapping for Foundation Prototype criteria (a)-(i), 15 open items with RECOMMENDED defaults, 12-phase implementation plan estimated 22-32 weeks. Rev 1 is the standalone XPact-specific design; main agent will integrate UE-reference findings from parallel Subagent A pass into Rev 2.</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2 id="sec17">17. Engineering Principles Wins-Over-UE</h2>
+
+<p>The following list enumerates the deliberate divergences from UE that this spec ships, each justified per Prime Directive.</p>
+
+<ol>
+  <li><strong>56-byte XObject vs 72-byte UObjectBase</strong> (saves 16 bytes per object &times; 50k objects = 800 KB; saves more on larger projects). UE pays the bytes for a virtual destructor vptr + AutoRTFM bookkeeping + wider UClass pointer encoding; XPact eliminates the vtable via FakeVTable, uses raw 8-byte FName, and skips AutoRTFM.</li>
+  <li><strong>No virtuals on the XObject GC-relevant surface</strong> (PostInitProperties / BeginDestroy / FinishDestroy / AddReferencedObjects all dispatched via FXObjectLifecycleTable in .rodata). UE's pattern requires hot-reload-DLL vtable matching; XPact's pattern is structurally immune to that class of bug.</li>
+  <li><strong>Non-moving precise mostly-concurrent collector</strong> &mdash; UE's GC is also non-moving and mark-and-sweep, but UE's pause behavior is significantly worse than the &lt;5 ms target (UE typically incurs 20-100 ms pauses on big object populations). XPact's design (dense ObjectRefProperties walk + SATB pre-store barrier + worker-pool parallel mark + safe-point handshake) targets sub-5-ms pauses with the same correctness guarantees.</li>
+  <li><strong>Card-table generational scan-reduction</strong> &mdash; UE's GC does a full-heap scan every cycle (no generational optimization). XPact's card-table elides scans of cards with no recent writes; minor collections amortize cost.</li>
+  <li><strong>SATB discipline</strong> &mdash; UE's GC is stop-the-world (the entire mark phase is mutator-stopped). XPact's mostly-concurrent SATB allows the mutator to run during marking, dramatically reducing observable pause.</li>
+  <li><strong>Size-class-segregated allocator with type-segregated free-lists</strong> &mdash; UE's FUObjectAllocator uses a simpler page-based pool; fragmentation creeps over long sessions. XPact's design specifically targets &lt;15% wasted heap over 4-hour Quest 3 sessions.</li>
+  <li><strong>Scenario-boundary mark-region clearing</strong> &mdash; UE has no equivalent; long-running training sessions hold scenario-scoped objects indefinitely. XPact's design lets XScenarios bulk-reclaim per-scenario object pools at unload.</li>
+  <li><strong>Lazy CDO construction</strong> &mdash; UE constructs all CDOs at engine boot, costing 1-10 s of cold-start time. XPact's lazy default targets the &le; 15 s editor cold-start criterion (i).</li>
+  <li><strong>XObjectKey survives hot-reload class replacement</strong> &mdash; UE's UObject identity is the pointer itself, which is invalidated on a class replacement; UE provides FObjectKey but its survivor semantics are weaker than XPact's. XPact's protocol preserves InternalIndex + SerialNumber across cascade.</li>
+  <li><strong>Single FXObjectArray sparse-array vs UE's chunked-array indirection</strong> &mdash; UE's FUObjectArray uses a chunk-pointer-array of chunks of entries to avoid contiguous reallocation; XPact uses a single sparse array (resized in 1 MB increments). The indirection cost on every FXObjectArray access is ~2 cycles in UE; XPact's direct access is 1 cycle.</li>
+  <li><strong>32-byte FXObjectArrayEntry vs UE's 48-64-byte equivalent</strong> &mdash; UE carries extra fields (RemoteObjectId, ObjectClusterRootObject pointer, EInternalObjectFlags) inline; XPact's design separates concerns (cluster support is in a reserved slot; remote-handle is a reserved slot; flags are on XObject not the entry).</li>
+  <li><strong>Pre-store SATB barrier vs UE's stop-the-world model</strong> &mdash; UE has no general-purpose GC write barrier; the GC is incremental but not concurrent. XPact's barrier enables true concurrent marking, paying ~3-5 cycles per reference write.</li>
+  <li><strong>Conservative root scanning is opt-in (Conservative XGCRootSpan kind), not the default</strong> &mdash; UE has no XGCRootSpan equivalent; root scanning is via FGCObject derivation. XPact's design makes root participation explicit and gives the build-time warning when conservative scanning enters a sim-path TU.</li>
+  <li><strong>Precise C# stack scanning via XIL2CPP stack maps</strong> &mdash; Unity's IL2CPP does precise stack scanning via similar maps; UE's blueprint VM doesn't have a comparable concept. XPact picks the precise approach as the only one compatible with the Master Plan's "no conservative stack scanning" lock.</li>
+  <li><strong>Toolchain Contract pinning of every byte layout</strong> &mdash; UE has no equivalent build-time-pinned ABI surface; UE's binary-compatibility breaks routinely on minor-version updates. XPact's static_assert pin set (&sect;11.3) catches drift at compile time.</li>
+</ol>
+
+<hr>
+
+<p><em>End of XCoreXObject.html Rev 1.</em></p>
+
+</body>
+</html>
+
