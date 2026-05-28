@@ -3,11 +3,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Engine &mdash; XIL2CPP (C# to C++ Transpiler) &mdash; Rev 2</title>
+<title>XPact Engine &mdash; XIL2CPP (C# to C++ Transpiler) &mdash; Rev 3</title>
 </head>
 <body>
 
-<h1>XPact Engine &mdash; XIL2CPP &mdash; Rev 2</h1>
+<h1>XPact Engine &mdash; XIL2CPP &mdash; Rev 3</h1>
 
 <p><strong>System:</strong> XIL2CPP (System 6) &nbsp;|&nbsp;
 <strong>Layer:</strong> L0 (standalone tool) &nbsp;|&nbsp;
@@ -17,8 +17,8 @@
 <strong>Output language:</strong> C++20 &nbsp;|&nbsp;
 <strong>Owner:</strong> Simgenics &nbsp;|&nbsp;
 <strong>Plan date:</strong> 2026-05-28 &nbsp;|&nbsp;
-<strong>Revision:</strong> Rev 2 (Round 1 audit applied; 161 findings: A=47, B=62, C=52) &nbsp;|&nbsp;
-<strong>Status:</strong> Rev 2; AWAITING ROUND 2 AUDIT &nbsp;|&nbsp;
+<strong>Revision:</strong> Rev 3 (Round 2 audit applied; 63 findings: D=41, E=22) &nbsp;|&nbsp;
+<strong>Status:</strong> Rev 3; AWAITING ROUND 3 AUDIT (OR CONVERGENCE) &nbsp;|&nbsp;
 <strong>Plan reference:</strong> Master Plan Rev 15 &sect;3 (L0/L4 inventory), &sect;4 Step 6 (XIL2CPP scheduling), &sect;11 Step 5.5 Foundation Prototype (criteria c, d, e, f, g all depend on XIL2CPP), &sect;2a Hot-reload commitment row, &sect;2a Memory/GC row, &sect;2a Determinism row &nbsp;|&nbsp;
 <strong>Contract reference:</strong> <code>XToolchainContract.html</code> Rev 13.9 (ABI envelope; symbol mangling; GC root span ABI; two-tier exception calling convention; C# string handle; FBS manifest schema) &nbsp;|&nbsp;
 <strong>XCoreXObject reference:</strong> <code>XCoreXObject.html</code> Rev 4 (CONVERGED; 56-byte XObject; FXObjectAllocator; FXObjectArray; XGCRootSpan; XPACT_GC_STORE; precise-stack-scan stack-map ABI; XGCRoot::AddRoot; FXObjectLifecycleTable; XPACT_CHECK_SL; sim-path NewObject invariant) &nbsp;|&nbsp;
@@ -572,7 +572,9 @@ CacheKey = SHA256(
   ),
   Sorted_concatenation(
     SHA256(every dependency module's .refonly.dll bytes)  // [Rev 2: applied FIX-C-CRIT-04 forward-commit]
-  )
+  ),
+  MergedTierTable_hash,                // [Rev 3: applied FIX-D-MED-10] empty for Pass 1 mode; SHA-256 of the merged TierTable for Pass 2 mode
+  InProcessSessionId                   // [Rev 3: applied FIX-D-MED-10] distinguishes in-process call N vs N+1; reset by ResetAsync; empty for out-of-process spawn
 )
 </pre>
 
@@ -613,8 +615,10 @@ public interface IXIL2CPPInProcess
     /// &lt;summary&gt;
     /// MUST be called between every pair of TranspileModuleAsync invocations.
     /// Disposes Roslyn workspace, releases all referenced reference-DLLs,
-    /// resets per-process invocation counter, invokes GC.Collect(generation: 2, mode: Forced)
-    /// to compact freed managed memory.
+    /// resets per-process invocation counter, invokes GC.Collect(generation: 2,
+    /// mode: GCCollectionMode.Aggressive) to compact freed managed memory.
+    /// [Rev 3: applied FIX-D-LOW-06 — mode: Forced is deprecated in .NET 8+;
+    /// GCCollectionMode.Aggressive is the .NET 7+ canonical replacement.]
     /// Cost: ~10-50 ms per reset.
     /// [Rev 2: applied FIX-C-CRIT-03 / FIX-C-MED-14]
     /// &lt;/summary&gt;
@@ -939,6 +943,10 @@ namespace Simgenics::XPact::Game
     extern "C" const ::XCore::Reflect::FClass* Z_Construct_FClass_MyModule_XHealthPickup() noexcept
     {
         static const ::XCore::Reflect::FClass* sCachedClass = []() noexcept {
+            // [Rev 3: applied FIX-D-MED-08] — XPACT_SAFEPOINT_CHECK at the start of the
+            // first-call init lambda so the registration happens at a safe-point boundary;
+            // prevents race between class registration and GC mark phase walking the class table.
+            XPACT_SAFEPOINT_CHECK();
             const auto* cls = &amp;XHealthPickup_Class;
             ::XCore::Reflect::XReflectionRuntime::RegisterClass(cls);
             return cls;
@@ -1553,6 +1561,20 @@ extern "C" void _v1..._XEngine__set_Singleton_V_XGameInstancePtr(::XGameInstance
 
 <p><strong><code>[StructLayout(Pack = N)]</code> attribute [Rev 2: applied FIX-C-MED-18].</strong> Banned on ARM64 targets when <code>N &lt; natural alignment of fields</code>: emit diagnostic <code>XIL2CPP093 &mdash; Packed struct on ARM64 requires unaligned access; pack-attribute is BANNED for non-1-byte fields on ARM64</code>. Build exit 41. Rationale: ARM64 traps unaligned access for many instructions; the conservative choice is to reject at compile time rather than ship a perf regression.</p>
 
+<p><strong>Record <code>with</code>-expression emit [Rev 3 per FIX-D-MED-13].</strong> C# 9+ <code>with</code>-expression on records invokes the synthesized <code>&lt;Clone&gt;$()</code> method (the record's clone-then-init pattern). XIL2CPP lowers <code>p with { X = 10 }</code> as:</p>
+<pre>
+// C# input:
+//   public record Point(int X, int Y);
+//   var p1 = new Point(5, 7);
+//   var p2 = p1 with { X = 10 };
+
+// C++ output:
+auto p2 = p1.Clone();       // p1's synthesized &lt;Clone&gt;$() emits a copy of the record
+p2.X = 10;                  // init-setter via privileged path (the with-expression-context bypass)
+                            // p2.Y carries p1.Y == 7 unchanged
+</pre>
+<p>The init-accessor's parse-time restriction (CS8852: "init-only property can only be assigned in object initializer or constructor") is relaxed inside the <code>with</code>-expression context: the lowering's <code>p2.X = 10</code> is privileged by Roslyn at AST normalization, so the XIL2CPP emit treats it as a legal setter call. For record-class (not record-struct), <code>Clone()</code> is a virtual member that returns a heap-allocated copy via <code>std::shared_ptr</code>; for record-struct, <code>Clone()</code> returns a stack-resident copy by value.</p>
+
 <p><strong>Nullable reference types.</strong> <code>XActor? Owner</code> emits the same C++ member as <code>XActor Owner</code> (no extra storage); the FProperty descriptor (XHT side) carries the <code>CPF_NullableReferenceType</code> bit.</p>
 
 <p><strong>Nullable value types.</strong> <code>int?</code> emits as <code>XOptional&lt;int32_t&gt;</code> (a 5-byte struct: 4 bytes int + 1 byte has-value; aligned to 8 bytes net).</p>
@@ -1632,7 +1654,7 @@ auto s = __h.ToStringAndClear();
 </ul>
 <p>The interned FString lookup emits the <code>const FString*</code> by literal; the same literal in any TU shares the interned address.</p>
 
-<p><strong><code>XCSharpStringBuilder</code> [Rev 2: applied FIX-A-LOW-7].</strong> Note: the existing Rev 1 mentions of <code>XCSharpStringBuilder</code> at use sites in non-interpolation contexts (e.g., explicit user-author code) refer to a type in the <code>XPact.CSharp.BCL</code> NuGet. If XCore-4a's existing <code>FStringBuilder</code> covers the use case, the BCL surface aliases to it; if not, <code>XCSharpStringBuilder</code> is added as a new BCL type. Forward-commit XPact.CSharp.BCL Rev 2 to settle the naming.</p>
+<p><strong><code>XCSharpStringBuilder</code> [Rev 2: applied FIX-A-LOW-7; Rev 3 resolution per FIX-D-MED-11].</strong> Rev 3 commits to the BCL Rev 2 forward-commit <code>BCL-Rev2-STRINGBUILDER</code> (see &sect;14.0): the BCL surface emits <code>using XCSharpStringBuilder = ::XCore::String::FStringBuilder;</code> as a type alias to XCore-4a's existing <code>FStringBuilder</code> if its API surface covers the C# <code>StringBuilder</code> contract (Append, Append(char), AppendLine, Length, Clear, ToString, etc.); if a coverage gap surfaces during BCL Rev 2 implementation, <code>XCSharpStringBuilder</code> ships as a wrapper struct that delegates to <code>FStringBuilder</code> for the covered surface and provides additional methods for the uncovered surface. The alias-vs-wrapper decision is BCL Rev 2's; XIL2CPP MVP emits the name <code>XCSharpStringBuilder</code> uniformly. Fallback if BCL Rev 2 misses: see XIL2CPP183 (use <code>FStringBuilder</code> directly).</p>
 
 <p><strong>Sim-path <code>s[i]</code> ban.</strong> Per Contract &sect;6.4 line 1128: emit time error <code>XIL2CPP042 &mdash; sim-path string index 's[i]' is non-deterministic at the UTF-8 byte boundary; use s.AsSpan()[i] for byte access or s.AsCodepoints()[i] for codepoint access</code>. Suppressible only via <code>[XFunction(SimPathStringIndexOK = true)]</code> on the enclosing method.</p>
 
@@ -1667,7 +1689,19 @@ auto s = __h.ToStringAndClear();
 }
 </pre>
 
-<p>Note that <code>int n</code> as an <code>object</code> pattern requires boxing on the C# side. XIL2CPP MVP rejects polymorphic boxing of value types via <code>object</code>; per Locked Commitment 1 there's no managed boxing. Sim-path code that switches on <code>object</code> with value-type patterns is a build-time error <code>XIL2CPP060 &mdash; pattern match on object with value-type pattern requires boxing; not supported on sim-path</code>. <strong>[Rev 2: applied FIX-B-CRIT-02 / FIX-A-MED-9]</strong> Non-sim-path code is ALSO banned in MVP from implicit boxing: <code>XIL2CPP062 &mdash; Implicit boxing of value type to object is not supported in MVP. Use a typed discriminant union (record) or an explicit Int32Box-style wrapper from XPact.CSharp.BCL</code>. Post-MVP non-sim-path adds the explicit wrapper-allocation path with documented XGCRootSpan registration; XIL2CPP-emitted boxing wrappers (<code>Int32Box</code>, <code>FloatBox</code>, etc.) are reference-typed XObject-derived classes that register their boxed value as a stack/heap root.</p>
+<p>Note that <code>int n</code> as an <code>object</code> pattern requires boxing on the C# side. XIL2CPP MVP rejects polymorphic boxing of value types via <code>object</code>; per Locked Commitment 1 there's no managed boxing. Sim-path code that switches on <code>object</code> with value-type patterns is a build-time error <code>XIL2CPP060 &mdash; pattern match on object with value-type pattern requires boxing; not supported on sim-path</code>. <strong>[Rev 2: applied FIX-B-CRIT-02 / FIX-A-MED-9]</strong> Non-sim-path code is ALSO banned in MVP from implicit boxing: <code>XIL2CPP062 &mdash; Implicit boxing of value type to object is not supported in MVP. Use a typed discriminant union (record) or an explicit Int32Box-style wrapper from XPact.CSharp.BCL</code>.</p>
+
+<p><strong>Boxing wrappers are <code>[XValueClass]</code> non-XObject types &mdash; NOT XObject-derived [Rev 3: applied FIX-D-CRIT-03 &mdash; structural fix].</strong> The Rev 2 description ("XIL2CPP-emitted boxing wrappers are reference-typed XObject-derived classes that register their boxed value as a stack/heap root") was structurally broken: any XObject-derived type triggers XIL2CPP001 at <code>new Int32Box(5)</code>, and the call site cannot synthesize a meaningful Outer for an inline boxing expression. Per Prime Directive, Rev 3 picks the architecturally correct resolution:</p>
+<ul>
+  <li><strong><code>Int32Box</code>, <code>FloatBox</code>, etc. are <code>[XValueClass]</code>-attributed plain reference types</strong>, NOT XObject-derived. They emit per the &sect;5.1 plain-class default (Rev 2's <code>std::shared_ptr&lt;T&gt;</code> behavior overridden by <code>[XValueClass]</code> to value-typed C++ structs). They have NO FClass, NO FXObjectLifecycleTable, NO 56-byte XObject header.</li>
+  <li><strong>Construction path</strong>: <code>var box = new Int32Box(5);</code> is legal (no XIL2CPP001 fires because the type is NOT XObject-derived) and emits as a stack-resident or shared_ptr-owned C++ value-typed struct: <code>Int32Box _box{5}</code> or <code>auto _box = std::make_shared&lt;Int32Box&gt;(5)</code> depending on the C# storage location.</li>
+  <li><strong>Hash + Equals defer to the primitive's value semantics</strong> (so <code>Int32Box(5).Equals(Int32Box(5))</code> is true; <code>Int32Box(5).GetHashCode()</code> returns the boxed int's hash).</li>
+  <li><strong>GC integration</strong>: the wrapped value is a primitive (<code>int32_t</code>, <code>float</code>, etc.) with no XObject references inside, so there's no XGCRootSpan registration needed at all &mdash; the wrapper is transparent to the collector. If a wrapper needs to hold an XObject reference (e.g., a future <code>XObjectRefBox</code> for an inverse use case), it would not be a boxing wrapper but a strongly-typed reference holder per the normal &sect;6.7 struct-with-XObject-field rules.</li>
+  <li><strong>Pattern-match cast</strong>: the &sect;5.6 emit <code>::XCore::Reflect::Cast&lt;::Int32Box&gt;(o)</code> becomes a runtime-type-check against the <code>[XValueClass]</code>-tagged discriminant; the implementation is a per-wrapper-type ID comparison, not an FClass lookup (because Int32Box has no FClass). The <code>object o</code> parameter is a discriminated-union surface that can only be produced via an explicit author wrap (<code>object o = Int32Box.From(5);</code>) &mdash; implicit boxing (<code>object o = 5;</code>) remains XIL2CPP062-banned.</li>
+</ul>
+<p>Post-MVP, the wrapper set may be extended via <code>BCL-Rev2-BOXING</code> forward-commit to cover the full primitive enumeration; Rev 3 commits to the type-shape rule (<code>[XValueClass]</code> non-XObject) so the construction story is solid before BCL Rev 2 ships. <strong>Fallback if BCL Rev 2 misses the wrappers</strong>: XIL2CPP MVP can ship without the wrappers because implicit boxing is already banned (XIL2CPP062 fires before the wrapper would be invoked); authors who need explicit boxing on non-sim-path TUs receive <code>XIL2CPP187 &mdash; Int32Box/FloatBox not yet shipped in XPact.CSharp.BCL; deferred to BCL Rev 2; consider using a typed record discriminant instead</code> (warning, not error). MVP critical path is not blocked.</p>
+
+<p><strong><code>List&lt;object&gt;</code> sim-path cascade [Rev 3: applied FIX-D-CRIT-03 cross-link].</strong> Per &sect;4.1 line 788, <code>List&lt;object&gt;</code> with value-type entries is XIL2CPP073-banned on sim-path. The non-sim-path emit per &sect;5.7 (<code>TArray&lt;void*&gt;</code> Conservative XGCRootSpan) accepts only reference-typed entries (XObject references or <code>[XValueClass]</code> wrappers); a value-type entry that would trigger implicit boxing still emits XIL2CPP062 at the <em>Add</em> call site. Authors who explicitly construct <code>Int32Box</code> wrappers and add them are legal (the wrapper IS reference-typed in the <code>[XValueClass]</code> non-XObject sense; the Conservative XGCRootSpan correctly treats the wrapper as a non-XObject pointer and skips it in GC traversal). The <code>TArray&lt;void*&gt;</code> Conservative XGCRootSpan is therefore correct: it scans for XObject pointers and treats <code>[XValueClass]</code> wrapper pointers as non-matching values (the conservative four-gate check rejects them because they are not in the FXObjectArray index).</p>
 
 <p><strong>Per-pattern emit rules [Rev 2: applied FIX-B-MEDIUM-06].</strong> Pattern matching cascades at AST normalization into nested if/switch chains per pattern kind:</p>
 <ul>
@@ -1723,7 +1757,23 @@ auto s = _switch_result;
   </tbody>
 </table>
 
-<p><strong>Container emission template (List&lt;XActor&gt; example) [Rev 2: applied FIX-A-MED-6 / FIX-A-MED-17 forward-commit].</strong> The Rev 1 emit used <code>this</code> as the parent_obj in the write barrier &mdash; this is wrong: the card-table mark should be on the XObject that owns the TArray (the field-owner), not on the TArray instance itself. The Rev 2 design adds a <code>m_parent</code> XObject* field to TArray (forward-commit XCoreXObject Rev 5):</p>
+<p><strong>Container emission template (List&lt;XActor&gt; example) [Rev 2: applied FIX-A-MED-6 / FIX-A-MED-17 forward-commit; Rev 3 clarification per FIX-D-CRIT-04].</strong> The Rev 1 emit used <code>this</code> as the parent_obj in the write barrier &mdash; this is wrong: the card-table mark should be on the XObject that owns the TArray (the field-owner), not on the TArray instance itself. The Rev 2 design adds a <code>m_parent</code> XObject* field to TArray.</p>
+
+<p><strong>[Rev 3: applied FIX-D-CRIT-04 &mdash; emit-timing clarification.]</strong> The <code>m_parent</code> field is NOT present in current XCore-4a Rev 3 TArray. It is a forward-commit to <strong>XCoreXObject Rev 5</strong> (per <code>XCXO-Rev5-CONTAINER-PARENT</code> in &sect;14.0). The container layout is layout-frozen mid-hot-reload session per Contract Rev 13.9 + the <code>container = true</code> flag (&sect;8.3); adding the field is itself a layout change that requires XCoreXObject Rev 5 to coordinate (the field appends at offset 16 of TArray; existing TArray clients link against the smaller pre-Rev-5 layout). The pseudocode below shows the <strong>target representation post-XCoreXObject-Rev-5</strong>; XIL2CPP MVP cannot emit TArray instances with this layout until XCoreXObject Rev 5 ships the field.</p>
+
+<p><strong>Constructor-argument synthesis rule.</strong> For every C# expression <code>new List&lt;XActor&gt;()</code> (or any other container-of-XPtr declaration), Pass 6 emits the C++ TArray constructor with an explicit parent argument:</p>
+<ul>
+  <li><strong>Field-storage case</strong>: <code>class Foo : XObject { List&lt;XActor&gt; m_list = new(); }</code> &rarr; the C++ field-init emits <code>m_list(this)</code> (parent is the enclosing XObject, supplied by C#'s field-initializer-runs-in-ctor semantics; XIL2CPP threads <code>this</code> through the field-init lowering).</li>
+  <li><strong>Local-storage case</strong>: <code>void M(XActor a) { var list = new List&lt;XActor&gt;(); list.Add(a); }</code> &rarr; the C++ emit declares the TArray with a per-call stack-resident sentinel: <code>::XCore::Container::TArray&lt;::XCore::Reflect::XPtr&lt;::XActor&gt;&gt; list{::XCore::Reflect::GetStackLocalSentinel()}</code>. The sentinel is a global <code>const XObject*</code> that the card-table mark recognizes as the "stack-local-container" marker (per XCoreXObject Rev 5 contract). The collector handles stack-local-sentinel-marked containers via shadow-stack tracking, not card-table marking.</li>
+  <li><strong>Static-field-storage case</strong>: <code>static List&lt;XActor&gt; AllActors = new();</code> &rarr; the parent is a per-module <code>const XObject*</code> static-field anchor that XIL2CPP emits at the top of every <code>.cs.cpp</code> containing static XObject-referencing fields. The anchor is registered with <code>XGCRoot::AddRoot</code> at $cctor per &sect;5.4 / FIX-A-HIGH-6.</li>
+  <li><strong>Reflection-driven construction</strong>: XHT-emitted FProperty descriptors carry the parent-field offset so the runtime reflection-driven TArray construction path (Initializer Setter etc.) supplies the correct parent automatically.</li>
+</ul>
+
+<p>The emit rule is documented in the cross-language binding table (per &sect;10.5) so XHT's matching FProperty descriptor emit and XIL2CPP's container construction stay synchronized.</p>
+
+<p><strong>Fallback if XCoreXObject Rev 5 misses <code>XCXO-Rev5-CONTAINER-PARENT</code>:</strong> If Rev 5 ships without the <code>m_parent</code> field on TArray, the write barrier on container <code>Add</code> falls back to the pre-Rev-5 behavior (<code>XPACT_GC_STORE(this, &amp;m_data[m_count], item.Raw())</code> using the TArray instance as parent_obj). This is incorrect for the card-table mark (the mark is on the TArray rather than the owning XObject), but it is not catastrophic: the next mark cycle conservatively scans the TArray's slot range as a non-XObject-rooted region, picking up the new value. The cost is a per-cycle full scan of TArray contents that should be card-table-localized. Acceptable degradation pending XCoreXObject Rev 5; track via <code>XIL2CPP171 &mdash; TArray write barrier emitting in degraded mode (XCoreXObject Rev 5 m_parent field not yet shipped)</code> diagnostic.</p>
+
+<p>The pseudocode emit (post-Rev-5; conditional on XCXO-Rev5-CONTAINER-PARENT landing):</p>
 
 <pre>
 // Closed instantiation TArray&lt;XPtr&lt;XActor&gt;&gt; emit (Rev 2):
@@ -1792,7 +1842,68 @@ private:
 
 <p><strong>Sim-path TMap / TSet partial specializations [Rev 2: applied FIX-A-HIGH-4].</strong> On sim-path TUs, the TMap and TSet partial specs ship with insertion-order iteration (insertion-ordered buckets via a doubly-linked list of slots). Non-sim-path TUs may use hash-order buckets for performance. This makes <code>foreach</code> over a sim-path TMap/TSet deterministic across rebuilds, satisfying X-DET cross-arch determinism. <code>TArray&lt;K&gt; SortedKeys()</code> and <code>SortedValues()</code> are universal accessors that emit a sorted copy regardless of TU sim-path status.</p>
 
-<p><strong>Tuple literals [Rev 2: applied FIX-B-MEDIUM-10 / FIX-B-MEDIUM-11].</strong> Tuples emit as positional anonymous C++ structs with members <code>Item1</code>, <code>Item2</code>, ... (matching the .NET IL convention). Field names in the C# declaration (e.g., <code>(int X, int Y)</code>) are name-aliases that AST-normalization (Pass 2) resolves to <code>Item1</code>/<code>Item2</code> at use sites; the C++ struct itself does NOT carry the C# field name. Two C# tuples with the same shape but different field names map to the SAME C++ struct (Option (a) per the audit).</p>
+<p><strong>TMap container emission template [Rev 3: applied FIX-D-MED-02].</strong> The TMap closed-instantiation emit follows the same parent-XObject pattern as TArray (post-Rev-5 cascade per <code>XCXO-Rev5-CONTAINER-PARENT</code>):</p>
+
+<pre>
+// Closed instantiation TMap&lt;FName, XPtr&lt;XActor&gt;&gt; emit (Rev 3):
+template &lt;&gt;
+class ::XCore::Container::TMap&lt;::FName, ::XCore::Reflect::XPtr&lt;::XActor&gt;&gt; {
+public:
+    ::XCore::Container::TMapBucket&lt;::FName, ::XCore::Reflect::XPtr&lt;::XActor&gt;&gt;* m_buckets = nullptr;
+    int32_t                                                                       m_bucketCount = 0;
+    int32_t                                                                       m_count = 0;
+    ::XCore::Reflect::XObject*                                                    m_parent = nullptr;
+    ::XCore::Reflect::XGCRootSpan                                                 m_rootSpan;
+    // copy = delete;  move-only per Contract &sect;3.4
+
+    explicit TMap(::XCore::Reflect::XObject* parent) : m_parent(parent) {
+        m_rootSpan = ::XCore::Reflect::XGCRootSpan{
+            /* base   */ reinterpret_cast&lt;void**&gt;(m_buckets),
+            /* stride */ sizeof(::XCore::Container::TMapBucket&lt;::FName, ::XCore::Reflect::XPtr&lt;::XActor&gt;&gt;),
+            /* count  */ 0,
+            /* kind   */ ::XCore::Reflect::XGCRootKind::Strong,  // (over the value column)
+            /* _padding */ 0
+        };
+        ::XCore::Reflect::XGC_RegisterRootSpan(&amp;m_rootSpan);
+    }
+    ~TMap() {
+        ::XCore::Reflect::XGC_UnregisterRootSpan(&amp;m_rootSpan);
+    }
+
+    // Indexer setter (dict[key] = actor): TMap's INTERNAL barrier per &sect;6.3 enumeration.
+    void Set(::FName key, ::XCore::Reflect::XPtr&lt;::XActor&gt; value) {
+        auto* bucket = FindOrAddBucket(key);
+        // [Rev 3] parent is m_parent (the owning XObject), not 'this' (the TMap instance):
+        XPACT_GC_STORE(m_parent, &amp;bucket-&gt;value, value.Raw());
+        bucket-&gt;value = value;
+        m_count++;  // if newly added
+        ::XCore::Reflect::XGC_UpdateRootSpan(&amp;m_rootSpan,
+            reinterpret_cast&lt;void**&gt;(m_buckets), m_bucketCount);
+    }
+
+    // Remove (dict.Remove(key)): same internal-barrier discipline.
+    bool Remove(::FName key) {
+        auto* bucket = FindBucket(key);
+        if (!bucket) return false;
+        // Reset to nullptr; the value's prior pointer goes through SATB:
+        XPACT_GC_STORE(m_parent, &amp;bucket-&gt;value, nullptr);
+        bucket-&gt;value = ::XCore::Reflect::XPtr&lt;::XActor&gt;{};
+        m_count--;
+        return true;
+    }
+
+    // ... Find, ContainsKey, GetEnumerator, etc.
+};
+
+// Use site:
+//   m_pickupsByName = TMap&lt;FName, XPtr&lt;XActor&gt;&gt;(this);   // 'this' is the owning XObject
+</pre>
+
+<p><strong>TSet emit</strong> follows the same pattern with a single-column bucket (only key, no value); the XGCRootSpan covers the key column for TSet&lt;XPtr&lt;T&gt;&gt;.</p>
+
+<p><strong>Tuple literals [Rev 2: applied FIX-B-MEDIUM-10 / FIX-B-MEDIUM-11; Rev 3 ODR resolution per FIX-D-MED-12].</strong> Tuples emit as positional anonymous C++ structs with members <code>Item1</code>, <code>Item2</code>, ... (matching the .NET IL convention). Field names in the C# declaration (e.g., <code>(int X, int Y)</code>) are name-aliases that AST-normalization (Pass 2) resolves to <code>Item1</code>/<code>Item2</code> at use sites; the C++ struct itself does NOT carry the C# field name. Two C# tuples with the same shape but different field names map to the SAME C++ struct.</p>
+
+<p><strong>ODR-safe tuple emission [Rev 3 per FIX-D-MED-12].</strong> Every distinct tuple shape (by-position element types) emits to a SHARED inline header <code>Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/Generated/Tuples.h</code> that every <code>.cs.cpp</code> includes. The shared header has internal linkage via <code>inline</code>-keyword on the struct definition (C++17 inline variables semantic; the struct itself uses <code>struct _Tuple_int_XCSharpString { ... };</code> with deduplication-safe linker treatment). This eliminates per-TU duplicate-definition risk that an in-TU emit would have. The header is emitted once per build (by the cross-module XIL2CPP closed-walk Pass 3) and consumed via include. The <code>operator== = default</code> defaulted comparison is required to give byte-identical results across MSVC 19.44+ / Clang 17+ / GCC 13+ &mdash; XIL2CPP's acceptance gate validates this via cross-compiler hash comparison on a known tuple corpus.</p>
 
 <pre>
 // C# input:
@@ -1862,26 +1973,42 @@ auto square = [](int32_t x) noexcept -&gt; int32_t { return x * x; };
 int32_t y = square(5);
 </pre>
 
-<p><strong>Capturing lambda (display class pattern) [Rev 2 rewrite per FIX-B-HIGH-06].</strong> At Pass 3, dataflow analysis identifies each scope's captured-locals set. Pass 6 emits one <code>__DisplayClass_&lt;MethodName&gt;_&lt;ScopeIndex&gt;</code> struct per scope; each captured local becomes a FIELD on the display class, and references both inside and outside the lambda become field-loads through a stack-resident display-class instance. Multiple lambdas in the same scope share the display class:</p>
+<p><strong>Capturing lambda (display class pattern) [Rev 2 rewrite per FIX-B-HIGH-06; Rev 3 clarification per FIX-D-HIGH-03 &mdash; Roslyn-style class-with-method, NOT C++-lambda-with-capture].</strong> At Pass 3, dataflow analysis identifies each scope's captured-locals set. Pass 6 emits one <code>__DisplayClass_&lt;MethodName&gt;_&lt;ScopeIndex&gt;</code> struct per scope; <strong>each captured local becomes a FIELD on the display class, and the lambda body becomes a MEMBER METHOD on the display class</strong>. References both inside and outside the lambda become field-loads through a stack-resident display-class instance. Multiple lambdas in the same scope SHARE the display-class instance (this is the load-bearing Roslyn semantic; C++-lambda-with-capture would create a distinct closure type per lambda). The Rev 2 emit was ambiguous between two lowerings; Rev 3 picks Roslyn-style explicitly.</p>
 
 <pre>
 // C# input:
 //   int n = 5;
 //   Func&lt;int, int&gt; addN = x =&gt; x + n;
-//   n = 10;            // mutation observed by the lambda
-//   int y = addN(7);    // y == 17, NOT 12
+//   Func&lt;int, int&gt; subN = x =&gt; x - n;  // shares same display class as addN
+//   n = 10;            // mutation observed by both lambdas
+//   int y1 = addN(7);   // y1 == 17, NOT 12
+//   int y2 = subN(7);   // y2 == -3, NOT 2
 
-// C++ output:
+// C++ output (Rev 3 — Roslyn-style display class with member methods):
 struct __DisplayClass_OuterMethod_Scope0 {
-    int32_t n;   // hoisted local
+    int32_t n;   // hoisted local; shared field across both lambda member methods
+
+    // Each lambda body becomes a member method on the display class:
+    int32_t __Method_addN(int32_t x) noexcept { return x + n; }
+    int32_t __Method_subN(int32_t x) noexcept { return x - n; }
 };
 __DisplayClass_OuterMethod_Scope0 _dc0;
 _dc0.n = 5;
 
-auto addN = [&amp;_dc0](int32_t x) noexcept -&gt; int32_t { return x + _dc0.n; };
-_dc0.n = 10;      // mutates the hoisted slot
-int32_t y = addN(7);   // reads _dc0.n == 10; y = 17 (correct C# semantic)
+// Delegate-typed locals bind to the member methods via a closure-pointer pair.
+// addN and subN are typed as XDelegate&lt;int32_t, int32_t&gt; per &sect;5.14 (post-Contract-1.1-amendment).
+// MVP intermediate emit: invoke via the captured display-class pointer.
+auto addN_invoke = [&amp;_dc0](int32_t x) -&gt; int32_t { return _dc0.__Method_addN(x); };
+auto subN_invoke = [&amp;_dc0](int32_t x) -&gt; int32_t { return _dc0.__Method_subN(x); };
+
+_dc0.n = 10;                  // mutates the hoisted slot; both methods observe
+int32_t y1 = addN_invoke(7);   // 7 + 10 = 17
+int32_t y2 = subN_invoke(7);   // 7 - 10 = -3
 </pre>
+
+<p>The thin "*_invoke" lambdas are emit intermediaries that select the appropriate member method; the canonical post-Contract delegate emit (per &sect;5.14) replaces these with the <code>FXDelegate&lt;ReturnT, Args...&gt;</code> typed wrapper struct binding the display-class pointer as <code>target</code> and the member-method pointer as <code>invoke</code>. The MVP intermediate emit form is the one above; the canonical post-Contract emit form is wrapped in the FXDelegate type.</p>
+
+<p><strong>Why not C++-lambda-with-capture?</strong> The C++-lambda <code>[&amp;_dc0](...)</code> form stores the captured display-class pointer in the closure object's hidden state. Each lambda instantiation is a distinct closure type. This conflicts with C# semantics where two lambdas in the same scope share state through the display class. The Roslyn class-with-method pattern preserves this sharing exactly; Rev 3 commits to it.</p>
 
 <p><strong>Implicit <code>this</code> capture [Rev 2: applied FIX-A-MED-14].</strong> A lambda body that references any non-static member of an enclosing class implicitly captures <code>this</code>. XIL2CPP captures <code>this</code> as a field on the display class, registers it in the XGCRootSpan (so the actor isn't collected while a lambda referencing it lives), and dispatches through <code>this-&gt;component</code>-style member access:</p>
 
@@ -1910,13 +2037,22 @@ struct __DisplayClass_MyActor_MakeUpdater_Scope0 {
         ::XCore::Reflect::XGC_RegisterRootSpan(&amp;_rootSpan);
     }
     ~__DisplayClass_MyActor_MakeUpdater_Scope0() {
-        ::XCore::Reflect::XGC_UnregisterRootSpan(&amp;_rootSpan);
+        // [Rev 3: applied FIX-D-HIGH-06] — destructor is idempotent on move-source state.
+        // If _rootSpan.base == nullptr, the span has already been unregistered by a move
+        // and this destructor is a no-op.
+        if (_rootSpan.base != nullptr) {
+            ::XCore::Reflect::XGC_UnregisterRootSpan(&amp;_rootSpan);
+        }
     }
-    // Move constructor [Rev 2: applied FIX-A-MED-4] — atomic-with-mark-phase
+    // Move constructor [Rev 2: applied FIX-A-MED-4 — atomic-with-mark-phase;
+    // Rev 3: applied FIX-D-HIGH-06 — invalidate move-source's _rootSpan to prevent double-unregister]
     __DisplayClass_MyActor_MakeUpdater_Scope0(__DisplayClass_MyActor_MakeUpdater_Scope0&amp;&amp; other) noexcept
       : _self(std::move(other._self))
     {
         ::XCore::Reflect::XGC_UnregisterRootSpan(&amp;other._rootSpan);
+        // [Rev 3 fix] Invalidate the move-source's _rootSpan so the source's destructor
+        // recognizes "already unregistered, skip" and does not double-unregister.
+        other._rootSpan.base = nullptr;
         _rootSpan = ::XCore::Reflect::XGCRootSpan{
             reinterpret_cast&lt;void**&gt;(&amp;_self),
             sizeof(::XCore::Reflect::XPtr&lt;::MyActor&gt;),
@@ -1973,55 +2109,75 @@ struct _Lambda_onClick {
 _Lambda_onClick onClick{ ::XCore::Reflect::XPtr&lt;::XActor&gt;(this) };
 </pre>
 
-<p><strong>Async method (non-sim-path; sim-path is banned).</strong> Per Q4 resolution: async is banned on sim-path TUs. Non-sim-path async methods emit as a state-machine struct per <code>XCoreXObject.html</code> &sect;10.7.2 line 2448-2461:</p>
+<p><strong>Async method (non-sim-path; sim-path is banned) [Rev 2 base; Rev 3 rewrite per FIX-D-HIGH-04 / FIX-D-HIGH-07].</strong> Per Q4 resolution: async is banned on sim-path TUs. Non-sim-path async methods emit as a state-machine struct per <code>XCoreXObject.html</code> &sect;10.7.2 line 2448-2461. The Rev 3 emit shows: heap-allocation via the per-FIX-A-MED-5 path; shared-ownership capture in continuations (NOT raw <code>[this]</code>); a <code>_rootSpan</code> that covers ALL XPtr&lt;T&gt; locals that span awaits, not just the first.</p>
 
 <pre>
 // C# input (non-sim-path):
-//   public async Task&lt;int&gt; LoadAsset(string path)
+//   public async Task&lt;int&gt; LoadAssets(string path, XActor partner)
 //   {
 //       XActor owner = this;
+//       XActor remote = partner;        // second XObject ref that spans awaits
 //       byte[] data = await ReadFileAsync(path);
 //       owner.OnDataLoaded(data);
+//       remote.NotifyComplete();         // partner observed after the await
 //       return data.Length;
 //   }
 
-// C++ output:
-struct _AsyncSM_LoadAsset {
+// C++ output (Rev 3 — heap-allocated state machine with multi-ref _rootSpan):
+struct _AsyncSM_LoadAssets {
     enum class State : int32_t { Initial, AfterReadFile, Done };
     State                                state = State::Initial;
     ::XCSharpString                      path;
-    ::XCore::Reflect::XPtr&lt;::XActor&gt;     owner;
-    ::XCore::Container::TArray&lt;uint8_t&gt;  data;
-    ::XCore::Reflect::XGCRootSpan        _rootSpan;  // covers owner across awaits
+    // [Rev 3: applied FIX-D-HIGH-07] All XPtr&lt;T&gt; locals that span awaits laid out contiguously
+    // so a SINGLE XGCRootSpan covers them all via start-of-locals + total-XPtr-count.
+    ::XCore::Reflect::XPtr&lt;::XActor&gt;     owner;     // _liveRefs[0]
+    ::XCore::Reflect::XPtr&lt;::XActor&gt;     remote;    // _liveRefs[1] — also spans awaits
+    ::XCore::Container::TArray&lt;uint8_t&gt;  data;       // value-typed; not in _rootSpan
+    ::XCore::Reflect::XGCRootSpan        _rootSpan;  // covers owner + remote (2 slots)
     ::XCore::Promise::Promise&lt;int32_t&gt;   promise;
 
-    _AsyncSM_LoadAsset(::XCSharpString p) : path(p) {
+    _AsyncSM_LoadAssets(::XCSharpString p) : path(p) {
+        // [Rev 3: applied FIX-D-HIGH-07] _rootSpan covers the contiguous owner..remote block.
         _rootSpan = ::XCore::Reflect::XGCRootSpan{
             reinterpret_cast&lt;void**&gt;(&amp;owner),
             sizeof(::XCore::Reflect::XPtr&lt;::XActor&gt;),
-            1,
+            2,                                       // 2 contiguous XPtr slots: owner + remote
             ::XCore::Reflect::XGCRootKind::Strong,
             0
         };
         ::XCore::Reflect::XGC_RegisterRootSpan(&amp;_rootSpan);
     }
-    ~_AsyncSM_LoadAsset() {
+    ~_AsyncSM_LoadAssets() {
         ::XCore::Reflect::XGC_UnregisterRootSpan(&amp;_rootSpan);
     }
 
-    void MoveNext(::XCore::Reflect::XObject* self) {
+    void MoveNext() {
+        // [Rev 3: applied FIX-D-HIGH-04 — MoveNext takes no `self` because the state machine
+        // already owns the relevant `this`-equivalent refs (owner/remote) via _rootSpan.
+        // The original caller's self is captured into `owner` at Initial state.]
         XPACT_SAFEPOINT_CHECK();
         switch (state) {
             case State::Initial:
-                owner = ::XCore::Reflect::XPtr&lt;::XActor&gt;(static_cast&lt;::XActor*&gt;(self));
-                ::XCore::Async::ReadFileAsync(path).Then([this](auto result) {
-                    this-&gt;data = std::move(result);
-                    this-&gt;state = State::AfterReadFile;
-                    this-&gt;MoveNext( /* this captured XObject* */ this-&gt;owner.Raw() );
-                });
+                // Caller threaded `this` and `partner` into the state machine via ctor or
+                // a separate init call before the first MoveNext. owner / remote already populated.
+                ::XCore::Async::ReadFileAsync(path).Then(
+                    // [Rev 3: applied FIX-D-HIGH-04] — Shared ownership of state machine via
+                    // XSharedPtr&lt;_AsyncSM_LoadAssets&gt; capture by VALUE (NOT [this] which would dangle
+                    // on promise cancellation). The state machine itself is a heap-rooted owner;
+                    // continuation lambda does NOT register a separate XGCRootSpan because the
+                    // state machine's own _rootSpan already covers owner+remote.
+                    [sm = ::XCore::SharedPtr::XSharedPtr&lt;_AsyncSM_LoadAssets&gt;(this->_shared_from_this)]
+                    (auto result) {
+                        sm->data = std::move(result);
+                        sm->state = State::AfterReadFile;
+                        sm->MoveNext();
+                    }
+                );
                 return;
             case State::AfterReadFile:
-                owner.Raw()-&gt;OnDataLoaded(data);
+                XPACT_SAFEPOINT_CHECK();      // per-state safe-point check
+                owner.Raw()->OnDataLoaded(data);
+                remote.Raw()->NotifyComplete();
                 promise.SetResult(data.Num());
                 state = State::Done;
                 return;
@@ -2032,7 +2188,11 @@ struct _AsyncSM_LoadAsset {
 };
 </pre>
 
-<p><strong>Async state machine allocation [Rev 2: applied FIX-A-MED-5].</strong> The async state machine struct is heap-allocated via <code>::FMemory::NewObject&lt;_AsyncSM_*&gt;</code> with memory-tag attribution <code>EMemTag::AsyncStateMachine</code>. The state machine's lifetime is bound to the awaiter's <code>XCore::Promise::Promise&lt;T&gt;</code> &mdash; when the promise completes (success or failure), the state machine is destroyed and freed. The XGCRootSpan stays registered as long as the heap allocation is live.</p>
+<p><strong>Per-state safe-point checks [Rev 3].</strong> Every state-machine state body emits a <code>XPACT_SAFEPOINT_CHECK()</code> at entry so the collector can preempt the async work between awaits. The check fires per-state entry (not just per-MoveNext entry) because intermediate states may run long enough to need cooperation.</p>
+
+<p><strong>Multi-ref <code>_rootSpan</code> emit rule [Rev 3 per FIX-D-HIGH-07].</strong> Every XObject reference that spans an await MUST be covered by the state machine's <code>_rootSpan</code>. The fields are laid out CONTIGUOUSLY in the state-machine struct so a single span (base = &amp;first_ref, count = N) covers them all. Non-reference locals (value-typed primitives, TArray containers with own XGCRootSpan, etc.) are interleaved AFTER the reference block in the struct layout. The struct layout discipline is enforced at Pass 6 emit. If the state machine has multiple disjoint reference groups (rare; e.g., refs partitioned by which await boundary they span), emit multiple <code>_rootSpan_0</code>, <code>_rootSpan_1</code>, etc. The discipline: <strong>EVERY XPtr&lt;T&gt; local that crosses an await is in some <code>_rootSpanN</code> registered with the collector</strong>.</p>
+
+<p><strong>Async state machine allocation [Rev 2: applied FIX-A-MED-5; Rev 3 clarification per FIX-D-HIGH-04].</strong> The async state machine struct is heap-allocated via <code>::FMemory::NewObject&lt;_AsyncSM_*&gt;</code> with memory-tag attribution <code>EMemTag::AsyncStateMachine</code>. The state machine's lifetime is bound via <code>XSharedPtr&lt;_AsyncSM_*&gt;</code> &mdash; the caller holds a shared pointer, the continuation lambda captures a shared pointer by value (NOT raw <code>[this]</code> which would dangle if the awaiter is destroyed mid-await). When all shared pointers go out of scope (caller completes + continuation completes), the state machine is destroyed and freed. The XGCRootSpan stays registered as long as the heap allocation is live (i.e., as long as any shared pointer exists).</p>
 
 <p><strong>Iterator (<code>yield return</code>; Q12 resolution) [Rev 2: applied FIX-B-MEDIUM-30].</strong> Same treatment as async: state-machine struct with XGCRootSpan over captures across yield boundaries. <strong>Sim-path iterator allocation</strong>: iterators ARE allowed on sim-path (unlike async, which is banned) because their semantics are deterministic given deterministic input. BUT the heap-allocation cost per iterator instance is unacceptable on the sim-path frame budget unless mitigated. Sim-path TUs emit iterators with pool-allocated state machines: a per-iterator-shape pool (per-type) pre-allocates N state machines at module load; <code>GetEnumerator()</code> draws from the pool. Pool exhaustion emits warning <code>XIL2CPP085 &mdash; sim-path iterator pool exhausted; consider raising pool capacity or restructuring the call site</code>.</p>
 
@@ -2182,21 +2342,36 @@ catch (const T&amp; ex) {
 </pre>
 <p>Note: C++ rethrow unwinds; C# filter does not. For the small set of programs that rely on the non-unwinding semantic (e.g., to inspect side effects of unwind-skipping), emit diagnostic <code>XIL2CPP033 &mdash; exception filter relies on non-unwinding semantics that differ from C++ catch+rethrow; consider restructuring</code>. In the Shipping XResult path, the filter check is inline in the discriminator branch and no unwinding occurs &mdash; no semantic divergence.</p>
 
-<p><strong><code>try / finally</code> (no catch) [Rev 2: applied FIX-B-HIGH-21].</strong> Lowered via a RAII scope guard (<code>XScopedGuard</code>) so the finally body runs whether the try body throws or completes normally:</p>
+<p><strong><code>try / finally</code> (no catch) [Rev 2: applied FIX-B-HIGH-21; Rev 3 rewrite per FIX-D-HIGH-05 / FIX-D-MED-01].</strong> Lowered via a RAII scope guard so the finally body runs whether the try body throws or completes normally. <strong>Two RAII variants exist post-Rev-3</strong> to honor C++'s noexcept contract correctly:</p>
+
+<ul>
+  <li><strong><code>XScopedGuard</code></strong>: cleanup body is provably-non-throwing (Pass 4 tier-classified noexcept). Used when the cleanup body is itself <code>noexcept</code>-correct (e.g., trivial flag-clear, atomic counter decrement). C++ destructor marked <code>noexcept</code>; any throw propagation is <code>std::terminate</code>.</li>
+  <li><strong><code>XScopedGuardWithThrow</code></strong>: cleanup body may throw. C++ destructor is NOT marked <code>noexcept</code>; if the cleanup throws, the standard double-exception handling fires (current-exception-takes-priority); a throw during stack unwinding routes through <code>XCore::HAL::Abort</code> with a clear diagnostic. Used when the cleanup body cannot be proven non-throwing.</li>
+</ul>
+
+<p>Pass 4 tier classification of the cleanup body decides which variant is emitted; if the cleanup body could throw (transitively calls a Tier 1 shim, calls a user method without proven NoThrow), <code>XScopedGuardWithThrow</code> is emitted.</p>
 
 <pre>
 // C# input:
 //   try { Body(); } finally { Cleanup(); }
 
-// C++ output:
+// C++ output (Cleanup proven noexcept; emit XScopedGuard):
 {
     ::XCore::Container::XScopedGuard _guard([&amp;]() noexcept { Cleanup(); });
     Body();
 }
 // _guard's destructor fires on scope exit (both normal completion and exception unwinding).
+
+// C++ output (Cleanup MAY throw; emit XScopedGuardWithThrow):
+{
+    ::XCore::Container::XScopedGuardWithThrow _guard([&amp;]() { Cleanup(); });
+    Body();
+}
+// _guard's destructor fires on scope exit. If Cleanup throws while the current exception
+// is unwinding, XCore::HAL::Abort fires with "double-exception in scope-guard cleanup".
 </pre>
 
-<p>The <code>XScopedGuard</code> RAII type is part of XPact.CSharp.BCL (or XCore-4a; forward-commit). The same pattern generalizes <code>try/catch/finally</code>:</p>
+<p>The <code>XScopedGuard</code> + <code>XScopedGuardWithThrow</code> RAII types are part of XPact.CSharp.BCL (forward-commit <code>BCL-Rev2-HANDLER</code>). The same pattern generalizes <code>try/catch/finally</code>:</p>
 
 <pre>
 // C# input:
@@ -2204,7 +2379,7 @@ catch (const T&amp; ex) {
 //   catch (FileNotFoundException ex) { LogError(ex.Message); }
 //   finally { Cleanup(); }
 
-// C++ output:
+// C++ output (Cleanup proven noexcept; LogError may throw; XScopedGuard for finally):
 {
     ::XCore::Container::XScopedGuard _guard([&amp;]() noexcept { Cleanup(); });
     try { Body(); }
@@ -2213,13 +2388,13 @@ catch (const T&amp; ex) {
 // _guard fires on normal exit AND on exception (it's RAII).
 </pre>
 
-<p><strong><code>return</code> inside try with finally [Rev 2: applied FIX-B-HIGH-21].</strong> The return value is stored in a local, the scope-end runs the finally via <code>XScopedGuard</code>, then the local is returned:</p>
+<p><strong><code>return</code> inside try with finally [Rev 2: applied FIX-B-HIGH-21].</strong> The return value is stored in a local, the scope-end runs the finally via the appropriate scope guard, then the local is returned:</p>
 
 <pre>
 // C# input:
 //   try { return ComputeValue(); } finally { Cleanup(); }
 
-// C++ output:
+// C++ output (assuming Cleanup proven noexcept):
 {
     ::XCore::Container::XScopedGuard _guard([&amp;]() noexcept { Cleanup(); });
     return ComputeValue();   // _guard fires before the actual return propagates up
@@ -2275,7 +2450,7 @@ struct TSpan {
 
 <p><strong>Span lifetime / <code>ref struct</code> rules [Rev 2: applied FIX-B-MEDIUM-34].</strong> C# enforces Span lifetime rules at the source level via <code>ref struct</code> semantics: Span cannot be stored in heap-allocated objects, captured in lambdas, returned across <code>async</code> boundaries, etc. XIL2CPP relies on Roslyn's CS8347-family diagnostics to reject illegal escape patterns at parse time. Post-XIL2CPP analyzer (gameplay-tier rule extension): <code>XIL2CPP082 &mdash; Span&lt;T&gt; escapes its stack frame; ref struct rules violated</code> for the rare cases Roslyn misses.</p>
 
-<p><strong><code>stackalloc</code> size limit [Rev 2: applied FIX-B-MEDIUM-35].</strong> Unbounded <code>alloca</code> is a stack-overflow risk. XIL2CPP emits a runtime size check on dynamically-sized stackalloc:</p>
+<p><strong><code>stackalloc</code> size limit [Rev 2: applied FIX-B-MEDIUM-35; Rev 3 extension per FIX-D-MED-05].</strong> Unbounded <code>alloca</code> is a stack-overflow risk. XIL2CPP emits a runtime size check on dynamically-sized stackalloc:</p>
 <pre>
 // C# input:
 //   Span&lt;int&gt; buf = stackalloc int[n];
@@ -2287,7 +2462,16 @@ if ((size_t)n * sizeof(int32_t) &gt; XPACT_MAX_STACKALLOC_BYTES) {
 int32_t* _stack_buf = static_cast&lt;int32_t*&gt;(alloca(n * sizeof(int32_t)));
 ::XCore::Span::TSpan&lt;int32_t&gt; buf(_stack_buf, n);
 </pre>
-<p>Default <code>XPACT_MAX_STACKALLOC_BYTES = 64 KB</code> (configurable per-module). Compile-time-sized stackalloc (<code>stackalloc int[16]</code>) emits no runtime check; the size is statically known.</p>
+<p>Default <code>XPACT_MAX_STACKALLOC_BYTES = 64 KB</code> (configurable per-module).</p>
+
+<p><strong>Compile-time-sized stackalloc check [Rev 3 per FIX-D-MED-05].</strong> Compile-time-sized stackalloc (<code>stackalloc int[16]</code>) emits no runtime check, but Pass 3 verifies that the static size does NOT exceed the limit at build time. A C# author writing <code>stackalloc int[100_000]</code> would otherwise emit <code>int32_t _stack_buf[100000];</code> (400 KB stack usage), bypassing the runtime check. Pass 3 adds:</p>
+<pre>
+// Pass 3 check (build-time):
+//   stackalloc T[N] where N * sizeof(T) > XPACT_MAX_STACKALLOC_BYTES emits diagnostic:
+//   XIL2CPP086 — stackalloc T[N] exceeds 64KB stack-allocation limit at static size;
+//                 reduce N or use TArray&lt;T&gt; (heap-allocated, RAII-managed).
+</pre>
+<p>The diagnostic fires at the build level (not at runtime); authors must address it before the build compiles. This closes the static-size escape hatch the Rev 2 limit advertised but did not enforce.</p>
 
 <h3>5.14 Events and delegates</h3>
 
@@ -2317,13 +2501,28 @@ int32_t* _stack_buf = static_cast&lt;int32_t*&gt;(alloca(n * sizeof(int32_t)));
 //   var x = new Disposable();
 //   try { ... } finally { ((IDisposable)x).Dispose(); }
 
-// C++ output (Rev 2: Dispose-safe scope guard):
+// C++ output (Rev 3: Dispose-safe scope guard; XScopedGuardWithThrow handles Dispose throws cleanly):
 {
     auto x = ::Disposable{};
-    ::XCore::Container::XScopedGuard _disposeGuard([&amp;]() noexcept {
-        try { x.Dispose(); } catch (...) {
+    // [Rev 3: applied FIX-D-HIGH-05 / FIX-D-MED-01] — use XScopedGuardWithThrow because
+    // x.Dispose() is not provably noexcept (Pass 4 cannot guarantee Dispose is non-throwing
+    // for arbitrary user-author Disposable types). The guard's destructor is NOT noexcept;
+    // double-exception (Dispose throws during stack unwinding) routes through HAL::Abort.
+    ::XCore::Container::XScopedGuardWithThrow _disposeGuard([&amp;]() {
+        try {
+            x.Dispose();
+        } catch (...) {
             // Dispose-time exception swallowed to preserve the original exception
-            // per the C# language convention; logged via XLog at Verbose for diagnosis.
+            // per the C# language convention. Diagnostic is logged via XLog at Verbose
+            // for post-mortem — XLog::Verbose MUST be noexcept (or the catch propagates).
+            //
+            // Pass 4 verifies XLog::Verbose is noexcept-clean (forward-commit XLog
+            // contract); if XLog::Verbose can throw (e.g., OOM on buffer alloc), the
+            // outer try-catch (...) here catches THAT too. The catch body itself is
+            // straight-line code with no further throwing operations.
+            //
+            // NET effect: XScopedGuardWithThrow's destructor either completes cleanly
+            // (Dispose threw, was swallowed) OR HAL::Abort fires (XLog itself threw mid-swallow).
         }
     });
     ...
@@ -2460,32 +2659,42 @@ int32_t Sum(int32_t a, int32_t b) noexcept {
 //       FlowMap flows;
 //   }
 
-// C++ output (in HealthPickup.cs.h or equivalent .cs.h):
+// C++ output [Rev 3: applied FIX-D-MED-04 — emit the using alias in .cs.cpp (single-TU),
+// NOT in .cs.h (multi-TU). The Rev 2 emit-in-anonymous-namespace-in-header pattern had
+// 100-instance duplication across including TUs even though it was technically correct.
+// Moving to the .cs.cpp avoids the per-TU duplication and matches the C# file-scoped semantics.
+
+// In HealthPickup.cs.h (header; public surface):
+namespace Simgenics::XPact::Game {
+    class XEngine {
+        // FlowMap is NOT visible at the header level; the field declaration uses the
+        // fully-qualified target type so the header doesn't depend on the alias.
+        ::XCore::Container::TMap&lt;::FName, ::XCore::Reflect::XPtr&lt;::XActor&gt;&gt; flows;
+        // ...
+    };
+}
+
+// In HealthPickup.cs.cpp (single-TU implementation):
 namespace {
     using FlowMap = ::XCore::Container::TMap&lt;::FName, ::XCore::Reflect::XPtr&lt;::XActor&gt;&gt;;
 }
 
-namespace Simgenics::XPact::Game {
-    class XEngine {
-        FlowMap flows;
-        // ...
-    };
-}
+// Body code in this .cs.cpp can use the short name FlowMap; other TUs cannot see it.
 </pre>
 
-<p><strong>Tuple-type aliases.</strong> <code>using Pair = (int, string);</code> emits the underlying tuple struct (per &sect;5.7) + a C++ <code>using</code> alias:</p>
+<p><strong>Tuple-type aliases.</strong> <code>using Pair = (int, string);</code> emits the underlying tuple struct (in shared <code>Generated/Tuples.h</code> per FIX-D-MED-12 ODR resolution &mdash; see below) + a C++ <code>using</code> alias in the per-TU <code>.cs.cpp</code>:</p>
 
 <pre>
 // C# input:
 //   using Pair = (int Year, string Title);
 
-// C++ output:
+// C++ output (in HealthPickup.cs.cpp):
 namespace {
-    using Pair = _Tuple_int_XCSharpString;   // the anonymous tuple struct from &sect;5.7
+    using Pair = _Tuple_int_XCSharpString;   // tuple struct from shared Generated/Tuples.h
 }
 </pre>
 
-<p>File-scoped: the <code>using</code> alias lives in the file's anonymous namespace so it does not leak to other TUs that include the header (the alias does not appear in the <code>.cs.h</code> at the top-level namespace).</p>
+<p><strong>File-scope alias correctness [Rev 3 per FIX-D-MED-04].</strong> The using alias lives in the <code>.cs.cpp</code> file's anonymous namespace (single-TU; internal linkage). This is the architecturally-correct location: each <code>.cs.cpp</code> is one TU; the anonymous namespace has internal linkage; the alias does not pollute the cross-TU header surface. The Rev 2 emit-in-.cs.h pattern was functional but mislabeled: every header-including TU got its own local copy of the alias (not multi-TU leakage at the linker level, but IDE-navigation confusion). The Rev 3 emit-in-.cs.cpp form eliminates the confusion entirely.</p>
 
 <h3>5.22 Exception class surface [Rev 2: applied FIX-B-MEDIUM-23 forward-reference]</h3>
 
@@ -2535,22 +2744,44 @@ namespace XCore::Reflect {
 //       // container.inner.Holder is a stack-resident XObject ref nested two structs deep
 //   }
 
-// C++ output:
+// C++ output [Rev 3: applied FIX-D-HIGH-02 (ordering) + FIX-D-HIGH-10 (stack-struct barrier semantics)]:
 extern "C" void _v1..._DoWork(::SomeObject* self) noexcept {
-    // Shadow stack — N=2 (self + container.inner.Holder transitive)
+    // Step (1): Shadow-stack array decl (zero-init) — N=2 (self + container.inner.Holder transitive).
+    // _liveRefs is a SCAN-ONLY view into live refs, NOT a separately-owned reference.
     ::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt; _liveRefs[2] = {};
+
+    // Step (1a): self slot write — populates _liveRefs[0] BEFORE any safe-point fires.
     _liveRefs[0] = ::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt;(
         reinterpret_cast&lt;::XCore::Reflect::XObject*&gt;(self));
+
+    // Step (2): Container constructors (XGCRootSpan registers).
+    // For this example, no container locals; this step is empty.
+    // (If the function had a TArray local, its constructor would run here BEFORE the safe-point.)
+
+    // Step (3): Safe-point check — now that the shadow stack + container roots are
+    // fully populated, the collector can safely observe this frame.
     XPACT_SAFEPOINT_CHECK();
 
+    // Step (4): User body.
     ::OuterContainer container = /* ... */;
     _liveRefs[1] = ::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt;(
         reinterpret_cast&lt;::XCore::Reflect::XObject*&gt;(container.inner.Holder));
-    // Subsequent operations on container.inner.Holder maintain _liveRefs[1] consistency:
-    // every write to container.inner.Holder also updates _liveRefs[1].
+    // Per FIX-D-HIGH-10: stack-resident structs with XObject references update
+    // _liveRefs[index] (shadow-stack tracking) but do NOT emit XPACT_GC_STORE
+    // because there's no XObject parent for the card-table mark — the parent
+    // is the STACK, not an XObject. The collector's mark phase sees the new
+    // value via the shadow stack.
     // At end of container's scope: _liveRefs[1] = nullptr.
 }
 </pre>
+
+<p><strong>Stack-resident struct write-barrier rule [Rev 3: applied FIX-D-HIGH-10].</strong> For stack-resident structs containing XObject references (e.g., <code>OuterContainer.inner.Holder</code>):</p>
+<ul>
+  <li><strong>Updates <code>_liveRefs[index]</code></strong> to the new value (shadow-stack tracking).</li>
+  <li><strong>Does NOT emit <code>XPACT_GC_STORE</code></strong> because there's no XObject parent for the card-table mark; the parent is the stack, not an XObject.</li>
+  <li>The collector's mark phase sees the new value via the shadow stack (the stack-map record's <code>liveRefOffsets[]</code> includes the embedded ref slot's offset within <code>_liveRefs</code>).</li>
+</ul>
+<p>Pass 3 enumeration walks struct-with-ref fields and marks them as <strong>shadow-stack-only writes, not barrier writes</strong>; Pass 6 emits accordingly. The struct-with-ref enumeration recurses to any nesting depth so nested struct fields (e.g., <code>container.inner.deeper.Holder</code>) are correctly tracked.</p>
 
 <p><strong>Safe-point ordering at function entry [Rev 2: applied FIX-A-HIGH-12].</strong> Function-entry safe-point fires AFTER any container/RAII-managed-root constructors complete and BEFORE the function body's first user statement: <em>(1) shadow-stack init → (2) container constructors (XGCRootSpan registers) → (3) safe-point check → (4) user body</em>. This ordering prevents the GC from observing a partially-constructed safe-point view.</p>
 
@@ -2610,7 +2841,7 @@ extern "C" int _StackMap_DoWork_RegisterAtLoad = [](){
 
 <p>The function-size-at-link-time computation is supported on all three toolchains (MSVC: <code>__ImageBase</code> + linker-emitted symbol size; Clang/GCC: <code>__builtin_function_size</code> or the linker's <code>.size</code> directive).</p>
 
-<p><strong>Generic-method principal-TU rule [Rev 2: applied FIX-A-HIGH-5].</strong> For closed instantiations of a generic method, the FStackMapRecord is emitted in the principal TU (the lexicographically-first source file where the closed instantiation is referenced). Other TUs that re-emit the same instantiation by accident are linker-safe via <code>__attribute__((selectany))</code> (Clang/GCC) / <code>__declspec(selectany)</code> (MSVC) on the registration object. This prevents double-registration with the collector.</p>
+<p><strong>Generic-method principal-TU rule [Rev 2: applied FIX-A-HIGH-5; Rev 3 precision per FIX-D-LOW-01].</strong> For closed instantiations of a generic method, the FStackMapRecord is emitted in the principal TU (the <strong>lexicographic-by-NFC-normalized-Unicode-codepoint-first</strong> source file where the closed instantiation is referenced). NFC normalization ensures cross-OS deterministic ordering for Unicode module names (the same accented module-name byte sequence sorts identically on Windows and Linux filesystems). Other TUs that re-emit the same instantiation by accident are linker-safe via <code>__attribute__((selectany))</code> (Clang/GCC) / <code>__declspec(selectany)</code> (MSVC) on the registration object. This prevents double-registration with the collector.</p>
 
 <p><strong>Per-platform shadow-stack [Rev 2: applied FIX-C-HIGH-17].</strong> The shadow-stack mechanism is platform-NEUTRAL by design (the array of pointers is portable C++; offsets are array-relative not register-relative; the optimizer can't fold the array because of address-of usage). Win64 and ARM64 produce identical shadow-stack layouts; per-platform FStackMapRecord emit is unnecessary. This is one major win of the shadow-stack approach over the Rev 1 register-spill approach.</p>
 
@@ -2651,6 +2882,9 @@ extern "C" int _StackMap_DoWork_RegisterAtLoad = [](){
       <li><strong>Default-interface-property setter dispatch</strong> &mdash; the dispatched concrete-class setter emits the barrier internally; the call site does NOT emit a barrier (the concrete setter doesn't know parent_obj from the caller's perspective; see FIX-A-HIGH-7).</li>
       <li><strong>Primary-constructor parameter-to-field init</strong> &mdash; record primary ctors emit barrier; class primary ctors capture into private mutable fields (not reflectable) and emit barrier same as regular field init.</li>
       <li><strong>Container <code>Add</code> / <code>Set</code> / <code>Remove</code> methods</strong> &mdash; internally implemented with the barrier; no external emit at the call site.</li>
+      <li><strong>Span&lt;T&gt; indexer setter</strong> (<code>span[i] = value</code>) [Rev 3: applied FIX-D-HIGH-09] &mdash; Span&lt;T&gt; is a value-type {T*, size_t} per &sect;5.13. If T is <code>XPtr&lt;XActor&gt;</code>, the write IS a reference store and would need the barrier &mdash; but the Rev 2 emit ban (XIL2CPP080 banning Span over XObject references) makes this moot in MVP. Enumerated here for completeness; if Span&lt;XActor&gt; ever ships post-MVP, the barrier emit site is the indexer setter on the underlying T* slot.</li>
+      <li><strong>Ref-typed return value assignment</strong> (<code>ref var slot = ref obj.field; slot = newValue;</code>) [Rev 3: applied FIX-D-HIGH-09] &mdash; C# 7+ ref returns. If <code>slot</code> is a ref to an XObject reference field, the assignment IS a reference store. Banned via XIL2CPP005 / FIX-A-CRIT-3 for XObject element types (the callee cannot recover the correct parent_obj for the SATB pre-store + card-table mark); for non-XObject ref-types, no barrier emit. Pass 3 enumeration tracks ref-returns to identify the underlying owner for diagnostics.</li>
+      <li><strong>Fixed-pointer writes</strong> (<code>fixed (T* p = ...) { *p = x; }</code>) [Rev 3: applied FIX-D-HIGH-09] &mdash; for T being XObject* (or <code>XPtr&lt;T&gt;</code>): BANNED via XIL2CPP091 (<code>fixed statement on XObject reference is meaningless; the GC is already non-moving</code>) plus an implicit ref-store barrier-bypass concern. For non-XObject T* (e.g., <code>int*</code>, <code>float*</code>), the <code>*p = x</code> assignment does NOT trigger any barrier emit because the slot is a value primitive. For <code>XPtr&lt;T&gt;*</code> pointer dereference (extremely rare; would require explicit <code>unsafe</code> + raw cast), the assignment WOULD bypass the barrier &mdash; banned via XIL2CPP091's broader ref-storage scope (the <code>fixed</code> diagnostic covers all XObject-ref pointer arithmetic uniformly).</li>
     </ul>
   </li>
 </ol>
@@ -2697,7 +2931,12 @@ extern "C" int _StackMap_DoWork_RegisterAtLoad = [](){
 //
 #define XPACT_SAFEPOINT_CHECK() \
     do { \
-        if ([[unlikely]] ::XCore::Reflect::XGCSafepoint::s_tlsPendingFlag) { \
+        /* [Rev 3: applied FIX-D-MED-06] — C++20 [[unlikely]] attribute attaches to */ \
+        /* the if-statement, NOT inside the condition expression. The position */ \
+        /* `if (cond) [[unlikely]] { ... }` is the spec-conformant form per */ \
+        /* [dcl.attr.unlikely]. The Rev 2 form `if ([[unlikely]] cond)` was */ \
+        /* C++ syntax error (attribute on expression is not accepted). */ \
+        if (::XCore::Reflect::XGCSafepoint::s_tlsPendingFlag) [[unlikely]] { \
             ::XCore::Reflect::XGCSafepoint::HandlePending(); \
         } \
     } while (0)
@@ -3015,25 +3254,34 @@ public:
 };
 
 namespace {
-    XHealthPickup_OnClassReplacedListener g_listener;
-    ::XCore::Reflect::FHandle g_listenerHandle;
+    // [Rev 3: applied FIX-D-HIGH-08] — collapse the three namespace-scope statics into
+    // a single struct that enforces construction order via member-init-list. Static-init
+    // ordering inside an anonymous namespace is implementation-defined; the bundled-struct
+    // pattern makes the order EXPLICIT (listener is constructed before its handle is captured).
+    struct ModuleInit {
+        XHealthPickup_OnClassReplacedListener listener;
+        ::XCore::Reflect::FHandle             handle;
 
-    struct ModuleInitGuard {
-        ModuleInitGuard() noexcept {
-            g_listenerHandle = ::XCore::CoreDelegates::GetOnClassReplaced()
-                .Subscribe(&amp;g_listener);
+        ModuleInit() noexcept
+          : listener{}
+          , handle{ ::XCore::CoreDelegates::GetOnClassReplaced().Subscribe(&amp;listener) }
+        {
+            // listener is fully constructed before Subscribe runs because member-init-list
+            // order matches declaration order (C++ standard guarantee).
         }
-        ~ModuleInitGuard() noexcept {
+        ~ModuleInit() noexcept {
             // Module-unload hook: deregister BEFORE the DLL's .text segment is unloaded.
-            ::XCore::CoreDelegates::GetOnClassReplaced().Unsubscribe(g_listenerHandle);
+            ::XCore::CoreDelegates::GetOnClassReplaced().Unsubscribe(handle);
         }
     };
-    static ModuleInitGuard g_moduleInitGuard;
+    static ModuleInit g_moduleInit;
 }
 
 extern "C" const ::XCore::Reflect::FClass* Z_Construct_FClass_MyModule_XHealthPickup() noexcept
 {
     static const ::XCore::Reflect::FClass* sCachedClass = []() noexcept {
+        // [Rev 3: applied FIX-D-MED-08] — safe-point at registration entry.
+        XPACT_SAFEPOINT_CHECK();
         const auto* cls = &amp;XHealthPickup_Class;
         ::XCore::Reflect::XReflectionRuntime::RegisterClass(cls);
         return cls;
@@ -3147,15 +3395,39 @@ In-process entry-point:
   <li><strong>30</strong>: RulesAssembly compile failure.</li>
 </ul>
 
-<p>[Rev 2: applied FIX-C-HIGH-04 / FIX-C-HIGH-12 — Phase 1 stub exit code semantically collides with XBT's legitimate use of 24 (PluginNotFound).] Phase 1 stub returns <strong>exit code 61</strong> with a custom message <code>"XIL2CPP Phase 1 stub: full implementation not yet shipped"</code>. XBT-side aggregation: 61 with the Phase-1-stub marker is treated as a "deferred build" (build can proceed if no actual XIL2CPP work is required, e.g., the module has no C# sources whose transpile is needed), not as "build failure". CI's distinction between "XIL2CPP stub (benign)" vs "XIL2CPP analysis failure (61)" is via the marker in stderr. Phase 6 (full XIL2CPP) returns the codes above. The Contract Rev 14 may introduce a dedicated <code>Phase1StubReturn</code> code if accumulated experience shows the 61-with-marker approach is insufficient.</p>
+<p>[Rev 2: applied FIX-C-HIGH-04 / FIX-C-HIGH-12; Rev 3: applied FIX-D-CRIT-06 &mdash; reconciled with XBT <code>run-xil2cpp</code> stub mode.]</p>
+
+<p><strong>Two-level stub reconciliation [Rev 3 per FIX-D-CRIT-06].</strong> There are two Phase 1 stub surfaces for XIL2CPP that must agree:</p>
+<ol>
+  <li><strong>XBT's <code>run-xil2cpp</code> mode stub</strong> (in <code>RunXIL2CPPMode.cs</code>) returns <strong>exit code 24 (<code>PluginNotFound</code> mnemonic)</strong> with a Phase 2 schedule diagnostic, symmetric to <code>run-xht</code> per XBT.html Rev 10 &sect;1.1 line 258. This is the user-facing CLI mode.</li>
+  <li><strong>XIL2CPP's own binary Phase 1 stub</strong> (per FIX-C-HIGH-04) returns <strong>exit code 61</strong> with a Phase-1-stub marker in stderr. This is the spawned-subprocess level.</li>
+</ol>
+
+<p>The Rev 2 reconciliation correctly identified that XIL2CPP-binary returning 24 directly would collide with the <code>PluginNotFound</code> semantic at the action-graph level, but did not reconcile the XBT-side wrapper. Rev 3 establishes the canonical propagation: <strong>XIL2CPP binary stub returns 61; XBT's <code>run-xil2cpp</code> mode wraps the spawn, recognizes the 61 + Phase-1-stub marker, and translates to 24 at the CLI surface</strong>. The wrapping preserves the symmetry with <code>run-xht</code> (which also returns 24) and avoids the semantic collision at the action-graph level (61 is XIL2CPP-domain; 24 is plugin-domain).</p>
+
+<p>Exit code summary by call surface:</p>
+<ul>
+  <li><strong>0</strong>: success.</li>
+  <li><strong>24</strong>: emitted by <code>xbt run-xil2cpp</code> CLI mode when wrapping a Phase-1-stub return. NOT emitted by XIL2CPP binary directly; only by XBT's wrapper mode.</li>
+  <li><strong>61</strong>: XIL2CPP subprocess failure (XBT aggregator code for child-process failure) OR Phase-1-stub marker on stderr (XBT's wrapper translates to 24).</li>
+  <li><strong>63</strong>: XIL2CPP analysis or emit failure (canonical XIL2CPP-internal failure). XBT's aggregator does NOT translate 63 to 24 &mdash; 63 is a real failure, not a stub indicator.</li>
+  <li><strong>41</strong>: SimPath banned-API check failure.</li>
+  <li><strong>30</strong>: RulesAssembly compile failure.</li>
+</ul>
+
+<p><strong>Phase-1-stub marker discipline.</strong> The XIL2CPP binary stub returns 61 with the line <code>XPact.XIL2CPP.Phase1Stub: full implementation not yet shipped</code> printed to stderr as the first stderr line. XBT's <code>RunXIL2CPPMode</code> reads the first stderr line: if it matches the marker, the mode translates the exit to 24 and emits its own Phase 2 schedule diagnostic; otherwise, the mode propagates 61 unchanged (it's a real failure). The marker discipline is part of the Phase 1 contract; the marker text is a versioned literal so a future XIL2CPP stub upgrade can change the marker without alias-breaking older XBT.</p>
+
+<p><strong>Forward-commit:</strong> Contract Rev 14 should introduce a dedicated <code>Phase1StubReturn</code> exit code (proposed code 90 in the reserved 90-99 Live-Coding-domain band, or a new 100+ band) to eliminate the marker-string parsing and make the stub status structurally encoded in the exit code rather than the stderr string. Until Contract Rev 14, the marker-string approach is canonical. <strong>Fallback if Contract Rev 14 misses <code>Phase1StubReturn</code>:</strong> the marker-string approach continues to be canonical indefinitely; no MVP critical-path block.</p>
 
 <h3>9.7 ABI envelope pinning</h3>
 
-<p>Per Constraint &sect;3.12 + Contract &sect;10.2 line 1821: every XIL2CPP-emitted <code>.cs.cpp</code> emits compile-time <code>static_assert</code>s pinning the manifest's ABI envelope tags to the runtime macros in <code>XReflectionRuntime.h</code>. [Rev 2: full enumeration per Contract Rev 13.9 &sect;14.1-14.2 + applied FIX-C-MED-04 (full 24-tag + 21-sizeof list) + FIX-A-CRIT-1 / FIX-C-CRIT-01 (verbatim Rev 13.9 content strings).]</p>
+<p>Per Constraint &sect;3.12 + Contract &sect;10.2 line 1821: every XIL2CPP-emitted <code>.cs.cpp</code> emits compile-time <code>static_assert</code>s pinning the manifest's ABI envelope tags to the runtime macros in <code>XReflectionRuntime.h</code>. [Rev 2: full enumeration per Contract Rev 13.9 &sect;14.1-14.2 + applied FIX-C-MED-04 + FIX-A-CRIT-1 / FIX-C-CRIT-01 (verbatim Rev 13.9 content strings); Rev 3: applied FIX-D-HIGH-11 (FClass-v6 prefix added) + FIX-D-HIGH-12 + FIX-E-CRIT-2 (header count reconciled to actual emit).]</p>
+
+<p><strong>Canonical counts (Rev 3 per FIX-E-CRIT-2 reconciliation).</strong> The emitted pin block is exactly: <strong>3 Stage-A envelope tags</strong> (gc_root_abi, exception_abi, mangling_scheme) + <strong>24 Stage-B / Rev 13.9 layout tags</strong> (15 Stage-B reflection-type tags + 9 XObject-side tags per Contract Rev 13.9 &sect;14.1) + <strong>22 sizeof pins</strong> (14 reflection-type + 7 XObject-side + 1 GC-root for XGCRootSpan per Contract Rev 13.9 &sect;14.2) + <strong>1 alignment constraint</strong> (FStackMapRecord % 8 == 0). Total = 50 static_assert lines. The XIL2CPP-side emit is BYTE-IDENTICAL to the Contract Rev 13.9 surface; no XIL2CPP-private extensions remain after the Rev 3 reconciliation (XGCRootSpan was added to Contract Rev 13.9 &sect;14.2 explicitly; FStackMapRecord's modulus is an alignment guard rather than a sizeof pin and is documented separately).</p>
 
 <pre>
 // At the top of every .cs.cpp:
-// Stage-A envelope (carry-forward from earlier revisions):
+// Stage-A envelope (3 entries; carry-forward from earlier revisions):
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_GC_ROOT_ABI_TAG,        "Span-based v1"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_EXCEPTION_ABI_TAG,      "Tier1-Shim/Tier2-Direct"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_MANGLING_SCHEME_TAG,    "Itanium-LengthPrefixed-v1"));
@@ -3176,18 +3448,24 @@ static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FFAKEVTABLE_LAYOUT_TAG,
     "FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots "
     "(8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 "
     "(the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1"));
+// [Rev 3: applied FIX-D-HIGH-11 — verbatim Contract Rev 13.9 §14.1 content; "FStruct-v5:" prefix included.]
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FSTRUCT_LAYOUT_TAG,
-    "FStruct-v5: 120 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; "
-    "SerializeStructFn @ 104; appended RefSchema@112 (8)"));
+    "FStruct-v5 (Rev 13.9): 120 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; "
+    "SerializeStructFn @ 104; appended RefSchema@112 (8) per FIX-A-CRIT-8 / UE-MISS-1 schema-vector GC walker fast-path"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FSCRIPTSTRUCT_LAYOUT_TAG,
-    "FScriptStruct-v5: 120 FStruct base (with appended RefSchema@112) + 16 ICppStructOps FakeVTable pattern = 136 bytes; "
-    "per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes"));
+    "FScriptStruct-v5 (Rev 13.9): 120 FStruct base (with appended RefSchema@112) + 16 ICppStructOps FakeVTable pattern = 136 bytes; "
+    "per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG,
     "FCppStructOpsFakeVTable-v1: 8-byte header (32-bit Capabilities + _reservedHeader) + 16 handler slots "
     "(8 bytes each) = 136 bytes per FScriptStruct subtype in .rodata"));
+// [Rev 3: applied FIX-D-HIGH-11 — "FClass-v6:" prefix added; Rev 2 emit omitted the prefix, would cause spurious static_assert failure.]
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FCLASS_LAYOUT_TAG,
+    "FClass-v6 (Rev 13.9; v5 skipped to align with XCoreXObject Rev 3 spec §11.1 per FIX-N-R2-1): "
     "240 bytes = 120 FStruct base (with appended RefSchema@112) + 120 FClass-specific "
-    "(with appended LifecycleTable@112 relative to FClass-specific start = FClass-absolute offset 232)"));
+    "(with appended LifecycleTable@112 relative to FClass-specific start = FClass-absolute offset 232) "
+    "per FIX-A-CRIT-3 O1 arbitration; ClassReps is TArray&lt;FRepRecord&gt; (24 bytes); "
+    "NetFields is TArray&lt;FField*&gt; (24 bytes); ObjectRefProperties is dense TArray on FStruct (24 bytes); "
+    "reflects XCore-4a DefaultAllocator carrying 2-byte FMemTag for per-container memory attribution per Phase 4b.5 verification"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FREPRECORD_LAYOUT_TAG,
     "FRepRecord-v1: 16 bytes per ClassReps entry; {FProperty* Property; int32 Index} matches UE's Class.h:3984"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FENUM_LAYOUT_TAG,
@@ -3199,25 +3477,43 @@ static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FCUSTOMVERSION_LAYOUT_TAG,
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_REPMETA_LAYOUT_TAG,
     "RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set"));
 
-// XObject-side layout tags (Rev 13.9 additions; 9 entries):
+// XObject-side layout tags (9 entries; verbatim Contract Rev 13.9 §14.1 content):
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XOBJECT_LAYOUT_TAG,
-    "56-byte XObject header"));
+    "XObject-v2: 56 bytes; ClassPrivate@0, InternalIndex@8, SerialNumber@12, Outer@16, NamePrivate@24, "
+    "ObjectFlags@32, ReachabilityFlag@36 (Rev 3 per FIX-M-R2-3 moved from FXObjectArrayEntry), "
+    "_reservedCluster0@40, _reservedCluster1@48; alignof = 8; no virtuals on the GC-relevant surface (FakeVTable pattern). "
+    "Rev 2: cluster reservation expanded to 16 bytes; remote-id reservation dropped (FIX-A-MIN-49 / O5). "
+    "Rev 3: per-object reachability flag consumes former _padObjectFlags slot."));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XGC_CARDTABLE_LAYOUT_TAG,
-    "8 MB card-table layout for the non-moving collector's generational scan-reduction"));
+    "XGCCardTable-v1: byte-per-card flat array; card size = 512 bytes; max heap = 4 GB; card table = 8 MB; clean = 0x00, dirty = 0x01"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG,
-    "32-byte FXObjectArray entry"));
+    "FXObjectArrayEntry-v1: 32 bytes; Object@0, SerialNumber@8, ClusterRootIndex@12, "
+    "StateBits@16 (atomic; pending-destroy + root-pinned + hot-reload + garbage bits), _reserved@24; alignof = 8. "
+    "Rev 3: rotating reachability flag moved to XObject header per FIX-M-R2-3."));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XOBJECTKEY_LAYOUT_TAG,
-    "8-byte {InternalIndex, SerialNumber} stable-identity handle"));
+    "XObjectKey-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); ABI-compatible with XWeakPtr; alignof = 4"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XWEAKPTR_LAYOUT_TAG,
-    "8-byte weak-reference handle, ABI-compatible with XObjectKey"));
+    "XWeakPtr-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); matches XCore-4b's FWeakObjectPtr placeholder shape; alignof = 4"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XPTR_LAYOUT_TAG,
-    "8-byte strong-reference wrapper (raw T* compatible)"));
+    "XPtr-v1: 8 bytes; Ptr@0 (raw T* compatible); ABI-equivalent to T*; alignof = 8"));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XOBJECT_LIFECYCLE_TABLE_TAG,
-    "72-byte per-FClass lifecycle dispatch table (8-byte header + 8 slots * 8 bytes)"));
+    "FXObjectLifecycleTable-v1: 72 bytes per FClass; 8-byte header (Capabilities@0 + _pad@4) + 8 slots * 8 bytes = 64 bytes; "
+    "alignof = 8. Serialize slot signature: void(*)(XObject*, FArchive&amp;, const FArchiveContext*) per FIX-A-HIGH-13."));
 static_assert(::XPactDetail::CompileTimeStrEq(XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG,
-    "24-byte schema-vector header (NumOps + Version + Ops* + _padTail)"));
+    "FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), _padTail@16; "
+    "alignof = 8. FXObjectRefSchemaOp is 24 bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 (u16), Offset@4 (i32), "
+    "StrideBytes@8 (i32), NestedSchema@16 (const FXObjectRefSchema*); alignof = 8 "
+    "(4 bytes of pad at offset 12 to align NestedSchema to 8). "
+    "Rev 3: 22 active opcodes (added Interface, ClassProperty, SoftClass, Delegate, MulticastInlineDelegate, "
+    "MulticastSparseDelegate per FIX-H-R2-3)."));
+static_assert(::XPactDetail::CompileTimeStrEq(XPACT_XGC_ROOTSPAN_LAYOUT_TAG,
+    "XGCRootSpan-v1: 32 bytes; BaseAddress@0 (8), ByteLength@8 (8), ElementStride@16 (8), "
+    "Kind@24 (1 uint8 EXGCRootSpanKind: kObject=0, kConservative=1), _pad@25 (7 bytes); alignof = 8. "
+    "Phase 5.e per XCoreXObject Rev 4 §5.3 + Rev 2 FIX-A-HIGH-11. Conservative kind validates each aligned "
+    "8-byte word via the four-gate order (heap-range → FXObjectArray index → entry-bind → SerialNumber match) "
+    "per spec §5.3 + Rev 2 FIX-A-MED-35."));
 
-// sizeof pins (Contract Rev 13.9 §14.2 — 21 entries):
+// sizeof pins (Contract Rev 13.9 §14.2 — 22 entries: 14 reflection-type + 7 XObject-side + 1 XGCRootSpan):
 static_assert(sizeof(::FName)                                  == 8);
 static_assert(sizeof(::XCore::Reflect::FField)                 == 32);
 static_assert(sizeof(::XCore::Reflect::FFieldClass)            == 48);
@@ -3232,14 +3528,18 @@ static_assert(sizeof(::XCore::Reflect::FRepRecord)             == 16);
 static_assert(sizeof(::XCore::Reflect::FEnum)                  == 72);
 static_assert(sizeof(::XCore::Reflect::FInterface)             == 64);
 static_assert(sizeof(::XCore::Reflect::FCustomVersion)         == 32);
-static_assert(sizeof(::XCore::Reflect::XObject)                == 56);   // Rev 13.9 addition
+// XObject-side pins (Rev 13.9 additions; 7 entries):
+static_assert(sizeof(::XCore::Reflect::XObject)                == 56);
 static_assert(sizeof(::XCore::Reflect::FXObjectArrayEntry)     == 32);
 static_assert(sizeof(::XCore::Reflect::XObjectKey)             == 8);
 static_assert(sizeof(::XCore::Reflect::XWeakPtr)               == 8);
 static_assert(sizeof(::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt;) == 8);
 static_assert(sizeof(::XCore::Reflect::FXObjectLifecycleTable) == 72);
 static_assert(sizeof(::XCore::Reflect::FXObjectRefSchema)      == 24);
+// GC-root pin (Rev 13.9 addition; 1 entry):
 static_assert(sizeof(::XCore::Reflect::XGCRootSpan)            == 32);
+
+// Alignment constraint (NOT a sizeof pin; separate discipline; per FStackMapRecord variable-length tail):
 static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
 </pre>
 
@@ -3263,13 +3563,20 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
 
 <p>XIL2CPP needs to resolve types across modules. The conventional approach (full source compilation per-dependency) is rejected because it makes per-module XIL2CPP serially dependent on every dependency.</p>
 
-<p>Rev 2 specifies a new XBT action: <strong>ReferenceCompileCSharpAction</strong> [Rev 2: applied FIX-C-CRIT-04 — REVISED ordinal allocation]. The Rev 1 ordinal-14 claim conflicted with XBT Rev 10's <code>Reserved_Phase2_F</code> slot. Per Prime Directive, Rev 2 forward-commits XBT Rev 11 amendment to expand the action ordinal pool: <strong>slot 17</strong> is the next-available after BuildPluginManifestAction at slot 16; slots 14/15 stay reserved. The amendment must:</p>
+<p>Rev 3 specifies a new XBT action: <strong>ReferenceCompileCSharpAction</strong> [Rev 3: applied FIX-D-CRIT-01 / FIX-D-HIGH-01 &mdash; ordinal RE-relocated; the Rev 2 slot-17 choice violated the XBT slot-stability invariant]. Per XBT.html Rev 10 &sect;5.1 line 788-790: <em>"slot 17 (formerly RunPostBuildAction) is RETIRED, not reused. Slot numbers are stable; reusing 17 would alias old ActionHistory entries to a different action type."</em> Slot 17 cannot be re-used &mdash; doing so would alias old <code>ActionHistory.bin</code> records to a different action type and break incremental rebuild deterministically.</p>
+
+<p>Per Prime Directive, Rev 3 picks the architecturally correct option: <strong>slot 14 (<code>Reserved_Phase2_F</code>)</strong>. Reserved slots 9-15 exist precisely so Phase 2 action types can land without rotating the <code>CommandVersion</code> hash &mdash; that is documented as the reservation's purpose in <code>XActionType.cs</code> remarks (<em>"Pre-allocating slots 9-15 means Phase 2 work can introduce these action types without forcing a full rebuild of every existing target"</em>). Slot 14 is the lowest-numbered free reserved slot; slot 15 (<code>Reserved_Phase2_G</code>) stays reserved for the next Phase 2 system. Rev 3 forward-commits XBT Rev 11 amendment:</p>
 <ol>
-  <li>Reserve slot 17 for ReferenceCompileCSharpAction in XBT &sect;5.1.</li>
-  <li>Document the prerequisite chain: <code>ReferenceCompileCSharpAction(M_dep)</code> must complete BEFORE <code>XIL2CPPAction(M)</code> for any M that depends on M_dep.</li>
+  <li>Rename <code>XActionType.Reserved_Phase2_F = 14</code> to <code>XActionType.ReferenceCompileCSharpAction = 14</code> in <code>XActionType.cs</code> (the ordinal stays; only the slot's reserved-handle name changes).</li>
+  <li>Add <code>"ReferenceCompileCSharpAction"</code> to <code>ContractSurface.ActionTypes</code> (declaration order; canonicalization picks up the rename so the structure hash rotates appropriately).</li>
+  <li>Document the prerequisite chain in XBT &sect;5.1: <code>ReferenceCompileCSharpAction(M_dep)</code> must complete BEFORE <code>XIL2CPPAction(M)</code> for any M that depends on M_dep.</li>
   <li>Add <code>.refonly.dll</code> bytes to <code>XIL2CPPAction</code>'s cache key (already in &sect;3.4's Rev 2 update).</li>
-  <li>Bump <code>CommandVersion</code> per XBT's auto-derived hash discipline (adding a new enum value rotates the hash).</li>
+  <li>Update XBT.html &sect;5.1 commentary to retire the "slot 14 reserved for Phase 2 system F (TBD)" line and replace with the ReferenceCompileCSharpAction allocation.</li>
 </ol>
+
+<p><strong>Why not append a new slot 18?</strong> Adding a new highest-numbered slot is technically append-only-safe, but it rotates <code>CommandVersion</code> for all targets on rebuild (because the enum's value count changes, and <code>ActionHistory.CurrentVersion</code> is auto-derived from the enum's named values). Using one of the pre-allocated reserved slots avoids the rebuild &mdash; that is exactly why the slots exist. The reserved-slot mechanism is the documented allocation path; appending a new slot is the fallback when no reserved slot is suitable.</p>
+
+<p><strong>Fallback if XBT Rev 11 misses the slot-14 rename:</strong> XIL2CPP MVP cannot ship without the cross-module type-resolution surface. If XBT Rev 11 misses the rename, XIL2CPP <em>hard-fails</em> at <code>XIL2CPPAction</code> dispatch with <code>XIL2CPP170 &mdash; ReferenceCompileCSharpAction not registered in XBT action graph; XBT Rev 11 amendment missing</code>, exit code 63. There is no graceful degradation path: without reference DLLs, Roslyn cross-module type resolution cannot proceed. Authors must hold the MVP critical-path until XBT Rev 11 lands.</p>
 
 <p>For each module M with C# sources:</p>
 <ol>
@@ -3430,7 +3737,8 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
     <tr><td>XIL2CPP030</td><td>Error</td><td>[XFunction(NoThrow = true)] proof failed; includes the failing callee chain [Rev 2: applied FIX-A-MED-18]</td><td>&sect;3.3</td></tr>
     <tr><td>XIL2CPP031</td><td>Warning</td><td>Function conservatively Tier 1 due to unresolved cross-module callee</td><td>&sect;3.3</td></tr>
     <tr><td>XIL2CPP032</td><td>Error</td><td>Tier 2 function attempting to throw</td><td>&sect;5.12</td></tr>
-    <tr><td>XIL2CPP033</td><td>Error</td><td>Exception filter relies on non-unwinding semantics that differ from C++ catch+rethrow; OR [XOnClassReplaced] method has wrong signature [Rev 2: applied FIX-B-HIGH-20 / FIX-C-MED-06]</td><td>&sect;5.12, &sect;8.4</td></tr>
+    <tr><td>XIL2CPP033</td><td>Error</td><td>Exception filter relies on non-unwinding semantics that differ from C++ catch+rethrow [Rev 2: applied FIX-B-HIGH-20; Rev 3 split per FIX-D-MED-07]</td><td>&sect;5.12</td></tr>
+    <tr><td>XIL2CPP039</td><td>Error</td><td>[XOnClassReplaced] method has wrong signature [Rev 3: split from XIL2CPP033 per FIX-D-MED-07]</td><td>&sect;8.4</td></tr>
     <tr><td>XIL2CPP034</td><td>Error</td><td>Generic constraint change on existing method; signature breakage forbidden by hot-reload commitment [Rev 2: applied FIX-C-HIGH-03]</td><td>&sect;8.2</td></tr>
     <tr><td>XIL2CPP035</td><td>Error</td><td>Tier 2 → Tier 1 demotion across hot-reload baseline [Rev 2: applied FIX-C-MED-09]</td><td>&sect;3.3, &sect;8</td></tr>
     <tr><td>XIL2CPP036</td><td>Error</td><td>NoThrow lookup failed; function has no XHT-emitted reflection entry [Rev 2: applied FIX-C-HIGH-15]</td><td>&sect;3.3, &sect;10.2</td></tr>
@@ -3444,13 +3752,16 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
     <tr><td>XIL2CPP046</td><td>Error</td><td>Sim-path hashes XObjectKey</td><td>&sect;7.3</td></tr>
     <tr><td>XIL2CPP047</td><td>Error</td><td>Sim-path iterates FXObjectArray ordered</td><td>&sect;7.3</td></tr>
     <tr><td>XIL2CPP048</td><td>Error</td><td>Task&lt;T&gt; / ValueTask&lt;T&gt; / IAsyncEnumerable&lt;T&gt; / await foreach / Task.Result / Task.Wait is banned on sim-path TUs [Rev 2: applied FIX-A-HIGH-2]</td><td>&sect;5.9, &sect;7.5</td></tr>
-    <tr><td>XIL2CPP049</td><td>Error / Warning</td><td>Random.* banned on sim-path; OR sim-path code constructs FName from non-literal string [Rev 2: applied FIX-A-HIGH-3 / FIX-A-MED-2]</td><td>&sect;5.5, &sect;7.4</td></tr>
+    <tr><td>XIL2CPP049</td><td>Error</td><td>Random.* banned on sim-path TUs [Rev 2 base; Rev 3 split per FIX-D-MED-07]</td><td>&sect;7.4, &sect;7.8</td></tr>
+    <tr><td>XIL2CPP059</td><td>Warning</td><td>Sim-path code constructs FName from non-literal string [Rev 3: split from XIL2CPP049 per FIX-D-MED-07]</td><td>&sect;5.5</td></tr>
     <tr><td colspan="4"><strong>050-059: Reflection runtime</strong></td></tr>
     <tr><td>XIL2CPP050</td><td>Error</td><td>Dynamic reflection invocation (Type.GetMethods / MethodInfo.Invoke) is post-MVP</td><td>&sect;5.11</td></tr>
     <tr><td>XIL2CPP051</td><td>Error</td><td>Activator.CreateInstance banned on all TUs in MVP [Rev 2 elevated per FIX-B-HIGH-22]</td><td>&sect;5.11</td></tr>
     <tr><td>XIL2CPP052</td><td>Error</td><td>System.Reflection.Emit is not supported (no managed runtime)</td><td>&sect;5.20</td></tr>
-    <tr><td>XIL2CPP053</td><td>Error / Warning</td><td>Type.MakeGenericType / Type.MakeGenericMethod not supported; OR locale-dependent ToString/Parse on sim-path [Rev 2: applied FIX-B-HIGH-22 / FIX-A-HIGH-3]</td><td>&sect;5.11, &sect;7.8</td></tr>
-    <tr><td>XIL2CPP054</td><td>Error</td><td>typeof(T) at open-generic site cannot be resolved at compile time; OR [ThreadStatic] banned on sim-path [Rev 2: applied FIX-B-MEDIUM-27 / FIX-A-HIGH-6]</td><td>&sect;5.4, &sect;5.11</td></tr>
+    <tr><td>XIL2CPP053</td><td>Error</td><td>Type.MakeGenericType / Type.MakeGenericMethod not supported [Rev 2: applied FIX-B-HIGH-22; Rev 3 split per FIX-D-MED-07]</td><td>&sect;5.11</td></tr>
+    <tr><td>XIL2CPP058</td><td>Error</td><td>Locale-dependent ToString/Parse on sim-path TUs [Rev 3: split from XIL2CPP053 per FIX-D-MED-07]</td><td>&sect;7.8</td></tr>
+    <tr><td>XIL2CPP054</td><td>Error</td><td>typeof(T) at open-generic site cannot be resolved at compile time [Rev 2: applied FIX-B-MEDIUM-27; Rev 3 split per FIX-D-MED-07]</td><td>&sect;5.4, &sect;5.11</td></tr>
+    <tr><td>XIL2CPP057</td><td>Error</td><td>[ThreadStatic] banned on sim-path [Rev 3: split from XIL2CPP054 per FIX-D-MED-07]</td><td>&sect;5.4</td></tr>
     <tr><td>XIL2CPP055</td><td>Error</td><td>Interlocked.* banned on sim-path TUs [Rev 2: applied FIX-A-HIGH-11]</td><td>&sect;5.10.5, &sect;7.4</td></tr>
     <tr><td>XIL2CPP056</td><td>Warning</td><td>Field used with Interlocked but not declared volatile; promoting to std::atomic in C++ emit [Rev 2: applied FIX-A-HIGH-11]</td><td>&sect;5.10.5</td></tr>
     <tr><td colspan="4"><strong>060-069: Pattern matching / boxing / foreach over IEnumerable</strong></td></tr>
@@ -3471,6 +3782,7 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
     <tr><td>XIL2CPP083</td><td>Warning</td><td>params T[] allocates per-call; consider params ReadOnlySpan&lt;T&gt; (post-MVP) or pass explicit array [Rev 2: applied FIX-B-MINOR-07]</td><td>&sect;5.2</td></tr>
     <tr><td>XIL2CPP084</td><td>Warning</td><td>Sim-path interpolation overflows stack buffer [Rev 2: applied FIX-B-HIGH-24]</td><td>&sect;5.5</td></tr>
     <tr><td>XIL2CPP085</td><td>Warning</td><td>Sim-path iterator pool exhausted [Rev 2: applied FIX-B-MEDIUM-30]</td><td>&sect;5.9</td></tr>
+    <tr><td>XIL2CPP086</td><td>Error</td><td>stackalloc T[N] exceeds 64KB stack-allocation limit at static size [Rev 3: applied FIX-D-MED-05]</td><td>&sect;5.13</td></tr>
     <tr><td colspan="4"><strong>090-099: Object lifecycle + struct layout</strong></td></tr>
     <tr><td>XIL2CPP090</td><td>Error</td><td>Explicit destructor call on XObject-derived type; use MarkForKill()</td><td>&sect;5.15</td></tr>
     <tr><td>XIL2CPP091</td><td>Error</td><td>fixed statement on XObject reference is meaningless (non-moving GC)</td><td>&sect;5.17</td></tr>
@@ -3479,12 +3791,13 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
     <tr><td>XIL2CPP096</td><td>Error</td><td>[XValueClass]-tagged type observed with reference identity [Rev 2: applied FIX-B-CRIT-03]</td><td>&sect;5.1</td></tr>
     <tr><td>XIL2CPP097</td><td>Error</td><td>XObject-derived constructor with explicit base(args) is not supported [Rev 2: applied FIX-B-MEDIUM-09]</td><td>&sect;5.2</td></tr>
     <tr><td colspan="4"><strong>100-109: LINQ / collection processing</strong></td></tr>
-    <tr><td>XIL2CPP100</td><td>Error (sim-path) / Error w/ post-MVP message (non-sim-path)</td><td>LINQ is post-MVP; use explicit foreach + TArray helpers [Rev 2: applied FIX-B-MEDIUM-31]</td><td>&sect;5.19</td></tr>
+    <tr><td>XIL2CPP100</td><td>Error (sim-path; PERMANENTLY BANNED) / Error (non-sim-path; DEFERRED TO POST-MVP)</td><td>LINQ is deferred to post-MVP on non-sim-path; permanently banned on sim-path [Rev 2: applied FIX-B-MEDIUM-31; Rev 3 wording standardized per FIX-D-MED-09]</td><td>&sect;5.19</td></tr>
     <tr><td colspan="4"><strong>110-119: Reserved for pattern-match diagnostics expansion (post-MVP)</strong></td></tr>
     <tr><td colspan="4"><strong>120-129: Generic instantiation</strong></td></tr>
     <tr><td>XIL2CPP123</td><td>Error</td><td>Generic instantiation closure exceeds depth 16</td><td>&sect;5.8</td></tr>
     <tr><td>XIL2CPP124</td><td>Error</td><td>Cyclic generic type closure detected</td><td>&sect;5.8</td></tr>
-    <tr><td>XIL2CPP125</td><td>Error</td><td>Generic constraint 'T : unmanaged' violated by XObject-derived T; OR cross-module duplicate FClass for closed instantiation [Rev 2: applied FIX-A-MED-19 / FIX-B-HIGH-17]</td><td>&sect;5.8</td></tr>
+    <tr><td>XIL2CPP125</td><td>Error</td><td>Generic constraint 'T : unmanaged' violated by XObject-derived T [Rev 2: applied FIX-A-MED-19; Rev 3 split per FIX-D-MED-07]</td><td>&sect;5.8</td></tr>
+    <tr><td>XIL2CPP129</td><td>Error</td><td>Cross-module duplicate FClass for closed instantiation [Rev 3: split from XIL2CPP125 per FIX-D-MED-07]</td><td>&sect;5.8</td></tr>
     <tr><td colspan="4"><strong>130-139: Reserved for generic-runtime diagnostics expansion (post-MVP)</strong></td></tr>
     <tr><td colspan="4"><strong>140-149: ABI / manifest mismatch</strong></td></tr>
     <tr><td>XIL2CPP140</td><td>Error</td><td>Manifest declares unknown ABI envelope tag value [Rev 2: applied FIX-C-MED-10]</td><td>&sect;9.7</td></tr>
@@ -3492,11 +3805,32 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
     <tr><td>XIL2CPP142</td><td>Error</td><td>Cross-tool symbol-space mismatch: XHT-declared singleton-getter not matched by XIL2CPP emit</td><td>&sect;10</td></tr>
     <tr><td>XIL2CPP143</td><td>Error</td><td>ABI envelope tag content mismatch between manifest and runtime header [Rev 2: applied FIX-A-CRIT-1 / FIX-C-CRIT-01]</td><td>&sect;5.1, &sect;9.7</td></tr>
     <tr><td>XIL2CPP144</td><td>Error</td><td>Roslyn version mismatch between manifest and XIL2CPP binary [Rev 2: applied FIX-C-HIGH-01]</td><td>&sect;8.1</td></tr>
-    <tr><td>XIL2CPP145</td><td>Error</td><td>vtable slot count or order changed; class layout drift forbidden mid-session; OR backing-field naming mismatch [Rev 2: applied FIX-C-HIGH-05 / FIX-B-HIGH-09]</td><td>&sect;5.2, &sect;8.2, &sect;10.5</td></tr>
+    <tr><td>XIL2CPP145</td><td>Error</td><td>vtable slot count or order changed; class layout drift forbidden mid-session [Rev 2: applied FIX-C-HIGH-05; Rev 3 split per FIX-D-MED-07]</td><td>&sect;5.2, &sect;8.2</td></tr>
+    <tr><td>XIL2CPP149</td><td>Error</td><td>Backing-field naming mismatch between XHT and XIL2CPP for property [Rev 3: split from XIL2CPP145 per FIX-D-MED-07]</td><td>&sect;10.5</td></tr>
     <tr><td>XIL2CPP146</td><td>Error</td><td>XHT-emitted FProperty descriptor schema version mismatches XIL2CPP's supported value [Rev 2: applied FIX-C-MED-11]</td><td>&sect;10</td></tr>
     <tr><td colspan="4"><strong>150-159: Cross-system contract</strong></td></tr>
     <tr><td>XIL2CPP150</td><td>Error</td><td>Cross-language type-pair manifest mismatch (C# type / C++ type pair declared but not aligned)</td><td>&sect;10.3</td></tr>
     <tr><td>XIL2CPP151</td><td>Error</td><td>FProperty descriptor missing from XHT-emitted reflection metadata for cross-module field</td><td>&sect;10.2</td></tr>
+    <tr><td colspan="4"><strong>160-169: Reserved for Rev 4 expansion (post-MVP)</strong></td></tr>
+    <tr><td colspan="4"><strong>170-189: Forward-commitment fallbacks [Rev 3 band addition per FIX-E-CRIT-4 / FIX-D-CRIT-01]</strong></td></tr>
+    <tr><td>XIL2CPP170</td><td>Error</td><td>ReferenceCompileCSharpAction not registered in XBT action graph; XBT Rev 11 amendment missing [Rev 3: applied FIX-D-CRIT-01]</td><td>&sect;9.8</td></tr>
+    <tr><td>XIL2CPP171</td><td>Warning</td><td>TArray write barrier emitting in degraded mode (XCoreXObject Rev 5 m_parent field not yet shipped) [Rev 3: applied FIX-D-CRIT-04]</td><td>&sect;5.7, &sect;6.3</td></tr>
+    <tr><td>XIL2CPP172</td><td>Error</td><td>XPACT_SAFEPOINT_CHECK macro not published by XCoreXObject Rev 5 [Rev 3: applied FIX-E-CRIT-4]</td><td>&sect;6.5, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP173</td><td>Warning</td><td>GC store memory-order forward-commit not yet honored; emitting conservative cross-arch release [Rev 3: applied FIX-E-HIGH-8]</td><td>&sect;6.3, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP174</td><td>Warning</td><td>XObject.NewRoot factory not yet shipped; XCoreXObject Rev 5 missing [Rev 3: applied FIX-A-LOW-8 fallback]</td><td>&sect;6.4, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP175</td><td>Error</td><td>IXObjectClassReplacedListener not published; XCoreXObject Rev 5 missing; hot-reload cascade hot-patch unavailable [Rev 3: applied FIX-E-MED-2 fallback]</td><td>&sect;8.4, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP176</td><td>Warning</td><td>XStackMapTable lazy-init not shipped; using eager-init fallback [Rev 3: applied FIX-E-MED-1 fallback]</td><td>&sect;6.1, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP177</td><td>Warning</td><td>Schema vector emit not supported by XHT; conservative scan fallback active [Rev 3: applied FIX-E-HIGH-1 fallback]</td><td>&sect;10.4, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP178</td><td>Warning</td><td>cpp_nothrow_symbols not published by XHT; conservative T1 shim active for all C++ callees [Rev 3: applied FIX-E-HIGH-2 fallback]</td><td>&sect;3.3, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP179</td><td>Warning</td><td>K/Q mangling discriminators not yet in Contract Rev 14; using XIL2CPP-private extension [Rev 3: applied FIX-E-MED-3 fallback]</td><td>&sect;5.8, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP180</td><td>Warning</td><td>Using __ separator pending Contract Rev 14 _X_ replacement; non-conformance risk accepted [Rev 3: applied FIX-E-HIGH-6 fallback]</td><td>&sect;8.1, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP181</td><td>Warning</td><td>BCL-Rev2-HANDLER not yet shipped; emitting inline RAII types [Rev 3: applied FIX-A-CRIT-3 / FIX-D-HIGH-05 cascade fallback]</td><td>&sect;5.12, &sect;5.15, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP182</td><td>Warning</td><td>XCharOps surface not yet shipped; non-sim-path callers may use FChar; sim-path callers must wait [Rev 3: applied FIX-E-HIGH-4 fallback]</td><td>&sect;14.0</td></tr>
+    <tr><td>XIL2CPP183</td><td>Warning</td><td>XCSharpStringBuilder naming not yet finalized; using FStringBuilder directly [Rev 3: applied FIX-D-MED-11 fallback]</td><td>&sect;5.5, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP184</td><td>Error</td><td>XCSharpException MVP surface not yet defined; Phase 6.j blocked [Rev 3: applied FIX-E-CRIT-3 fallback]</td><td>&sect;5.12, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP185</td><td>Info</td><td>Full XException surface deferred to post-MVP [Rev 3: applied FIX-E-CRIT-3 fallback]</td><td>&sect;5.12, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP186</td><td>Error</td><td>IDeterministicRng surface not yet published; sim-path PRNG blocked [Rev 3: applied FIX-E-HIGH-5 fallback]</td><td>&sect;7.4, &sect;14.0</td></tr>
+    <tr><td>XIL2CPP187</td><td>Warning</td><td>Int32Box/FloatBox not yet shipped in BCL Rev 2; use typed record discriminant instead [Rev 3: applied FIX-D-CRIT-03 / FIX-E-HIGH-3 fallback]</td><td>&sect;5.6, &sect;14.0</td></tr>
     <tr><td colspan="4"><strong>200-209: Hot-reload + module unload (Rev 2 band addition per FIX-C-LOW-01)</strong></td></tr>
     <tr><td>XIL2CPP200</td><td>Runtime Error</td><td>Module unload while OnClassReplaced listener still registered; potential dangling-pointer hazard [Rev 2: applied FIX-C-CRIT-02]</td><td>&sect;8.4</td></tr>
   </tbody>
@@ -3527,7 +3861,7 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
   <li><strong>SyntheticContainerCorpus</strong>: 25 C# classes exercising every container partial specialization (List&lt;XActor&gt;, Dictionary&lt;FName, XActor&gt;, HashSet&lt;XActor&gt;, List&lt;int&gt;, Dictionary&lt;int, int&gt;, etc.).</li>
   <li><strong>ShadowStackCoverageTest</strong> [Rev 2 addition per FIX-A-CRIT-2]: 100 nested transpiled functions, each with 1-5 stack-resident XPtrs &mdash; verifies the shadow-stack mechanism enumerates every live ref; uses the SyntheticActorCorpus as input.</li>
   <li><strong>SimPathConvergenceTest</strong>: a sim-path TU that exercises 100 NewObject calls across 100 frames; X-NEW gate validates the assertion fires from a worker pool thread.</li>
-  <li><strong>BoxingBanTest</strong> [Rev 2 addition per FIX-B-CRIT-02 / FIX-B-CRIT-06]: 30 sim-path TUs that attempt to box value types via <code>object o = 5;</code>, <code>new { Actor = a, Count = 5 };</code>, <code>List&lt;object&gt;</code> with value entries, etc. Every TU MUST emit the appropriate diagnostic; the XIL2CPP001/060/061/062/073 codes are validated.</li>
+  <li><strong>BoxingBanTest</strong> [Rev 2 addition per FIX-B-CRIT-02 / FIX-B-CRIT-06; Rev 3 cleanup per FIX-D-LOW-05]: 30 sim-path TUs that attempt to box value types via <code>object o = 5;</code>, <code>new { Actor = a, Count = 5 };</code>, <code>List&lt;object&gt;</code> with value entries, etc. Every TU MUST emit the appropriate diagnostic. <strong>Validated codes: XIL2CPP060 / 061 / 062 / 073</strong> (XIL2CPP001 removed; XIL2CPP001 belongs to X-IL2CPP-NEW-FACTORY test, NOT this test &mdash; conflating the two confuses test target coverage).</li>
   <li><strong>HotReloadCascadeTest</strong>: 10 modules each declaring 5 classes; one base class change cascades; criterion (e) timing measured. Also exercises the per-function cache: re-transpile after a no-op edit should be &le; 1 s.</li>
   <li><strong>OnClassReplacedListenerTest</strong> [Rev 2 addition per FIX-C-CRIT-02]: module load/unload cycle 100 times; verify no listener-leak; verify the typed listener pattern correctly registers AND unregisters.</li>
   <li><strong>CrossArchReplayTest</strong>: 100 replays on Win64 + Quest 3 in lockstep; bit-exact state at every frame.</li>
@@ -3564,43 +3898,50 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
   </tbody>
 </table>
 
-<h3>14.0 Rev 2 forward-commitments to other systems</h3>
+<h3>14.0 Forward-commitments to other systems [Rev 3: applied FIX-E-CRIT-3 (split XException) + FIX-E-CRIT-4 (fallback column) + FIX-E-HIGH-1 through 9 + FIX-E-MED-1 through 3 + FIX-E-MED-6 + FIX-E-LOW-2 (normalize IDs) + FIX-D-MED-11 (XCSharpStringBuilder)]</h3>
 
-<p>The following forward-commitments require coordinated work in other XPact specs / docs (carried forward beyond Rev 2):</p>
+<p>The following forward-commitments require coordinated work in other XPact specs / docs (carried forward beyond Rev 3). <strong>Every row carries a documented FALLBACK</strong> per FIX-E-CRIT-4: if the receiving spec misses the requested feature in its scheduled revision, the listed behavior is what XIL2CPP MVP does instead. Forward-commit IDs follow the <code>&lt;TargetSpec&gt;-Rev&lt;N&gt;-&lt;FeatureName&gt;</code> convention per FIX-E-LOW-2.</p>
 
 <table border="1" cellpadding="6" cellspacing="0">
-  <thead><tr><th>Forward-commit ID</th><th>Required by</th><th>Description</th><th>Rev 2 finding origin</th></tr></thead>
+  <thead><tr><th>Forward-commit ID</th><th>Required by</th><th>Description (Rev 3 fingerprint)</th><th>Fallback if missed</th><th>Origin</th></tr></thead>
   <tbody>
-    <tr><td><strong>XCXO-Rev5-SAFEPOINT</strong></td><td>XCoreXObject Rev 5</td><td>Publish <code>XPACT_SAFEPOINT_CHECK</code> macro, <code>::XCore::Reflect::XGCSafepoint::s_tlsPendingFlag</code>, <code>HandlePending()</code>, <code>XPACT_SAFEPOINT_FLAG_ABI_TAG</code></td><td>FIX-A-CRIT-6</td></tr>
-    <tr><td><strong>XCXO-Rev5-GCSTORE-MEM</strong></td><td>XCoreXObject Rev 5</td><td>ARM64 acquire/release memory-order for SATB + slot store; add <code>XPACT_GC_STORE_MEMORY_ORDER_TAG</code></td><td>FIX-A-HIGH-10</td></tr>
-    <tr><td><strong>XCXO-Rev5-NEWROOT</strong></td><td>XCoreXObject Rev 5</td><td><code>NewRootObject&lt;T&gt;(Name, Flags)</code> C++ factory variant (no Outer)</td><td>FIX-A-LOW-8</td></tr>
-    <tr><td><strong>XCXO-Rev5-LISTENER</strong></td><td>XCoreXObject Rev 5</td><td>Publish <code>IXObjectClassReplacedListener</code> interface + <code>::XCore::CoreDelegates::GetOnClassReplaced().Subscribe(listener)</code> returning <code>FHandle</code>; module-shutdown <code>Unsubscribe</code> discipline</td><td>FIX-C-CRIT-02, FIX-A-MED-33, FIX-C-HIGH-09</td></tr>
-    <tr><td><strong>XCXO-Rev5-CONTAINER-PARENT</strong></td><td>XCoreXObject Rev 5</td><td>TArray/TMap/TSet constructor accepts parent XObject*; card-table-mark uses parent (not <code>this</code>); Realloc mark-phase snapshot mechanism</td><td>FIX-A-MED-6, FIX-A-MED-17</td></tr>
-    <tr><td><strong>XCXO-Rev5-LAZY-INIT</strong></td><td>XCoreXObject Rev 5</td><td>Lazy init for XStackMapTable so registration ordering hazards are eliminated</td><td>FIX-A-MED-30</td></tr>
-    <tr><td><strong>XHT-Rev7-SCHEMA-VECTOR</strong></td><td>XHT Rev 7</td><td>Schema vector emit for C#-declared XClasses (cross-tool symbol contract amendment per &sect;10.4 Q14 resolution)</td><td>FIX-A-HIGH-1, Q14 carried-forward</td></tr>
-    <tr><td><strong>XHT-Rev7-NOTHROW-CPP</strong></td><td>XHT Rev 7</td><td>NoThrow annotation discovery for C++-declared functions in per-module <code>.gen.manifest</code></td><td>FIX-C-HIGH-15</td></tr>
-    <tr><td><strong>XHT-Rev7-BACKING-FIELD</strong></td><td>XHT Rev 7</td><td>Canonical auto-property backing field naming <code>__BackingField_&lt;X&gt;</code> (must match XIL2CPP emit)</td><td>FIX-B-HIGH-09</td></tr>
-    <tr><td><strong>XBT-Rev11-REFCOMPILE</strong></td><td>XBT Rev 11</td><td>Reserve slot 17 for <code>ReferenceCompileCSharpAction</code>; prerequisite chain in action graph; bump <code>CommandVersion</code></td><td>FIX-C-CRIT-04</td></tr>
-    <tr><td><strong>XBT-Rev11-MANIFEST-FIELDS</strong></td><td>XBT Rev 11</td><td>Manifest <code>schema_version: uint32</code>, <code>roslyn_version: string</code>, <code>dotnet_sdk_version: string</code>, <code>conditional_symbols: List&lt;string&gt;</code></td><td>FIX-C-HIGH-01, FIX-C-HIGH-04, FIX-C-HIGH-13, FIX-B-MEDIUM-25</td></tr>
-    <tr><td><strong>Contract-Rev14-MANGLING</strong></td><td>XToolchainContract Rev 14</td><td>Add param mangling discriminators: <code>K</code> for <code>ref readonly</code>; <code>Q</code> for nullability</td><td>FIX-B-HIGH-03, FIX-C-HIGH-02</td></tr>
-    <tr><td><strong>Contract-Rev14-SEPARATOR</strong></td><td>XToolchainContract Rev 14</td><td>Review linker-symbol separator (<code>__</code> reserved by C/C++ standards); propose alternative</td><td>FIX-B-HIGH-25</td></tr>
-    <tr><td><strong>BCL-Rev2-BOXING</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>Add <code>Int32Box</code>, <code>FloatBox</code>, and other primitive-wrapper XObject types for explicit boxing (non-sim-path)</td><td>FIX-B-CRIT-02, FIX-A-HIGH-8</td></tr>
-    <tr><td><strong>BCL-Rev2-HANDLER</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>Add <code>XDefaultInterpolatedStringHandler</code> + <code>XScopedGuard</code> + <code>XStackTraceHandle</code> RAII types</td><td>FIX-B-HIGH-24, FIX-B-HIGH-21, FIX-B-MEDIUM-23</td></tr>
-    <tr><td><strong>BCL-Rev2-CHAR</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>Add <code>XCharOps::IsDigit</code>, <code>IsLetter</code>, etc. on <code>char16_t</code></td><td>FIX-B-HIGH-23</td></tr>
-    <tr><td><strong>XException-V1</strong></td><td>New XException.html (post-MVP)</td><td>Full exception class surface: Message, StackTrace, Source, TargetSite, InnerException chain, per-arch stack-walking</td><td>FIX-B-MEDIUM-23</td></tr>
-    <tr><td><strong>XPact.Sim-PRNG</strong></td><td>XPact.Sim NuGet</td><td>Publish <code>IDeterministicRng</code> with seed-locked construction for sim-path PRNG</td><td>FIX-A-HIGH-3</td></tr>
+    <tr><td><strong>XCXO-Rev5-SAFEPOINT</strong></td><td>XCoreXObject Rev 5</td><td>Publish <code>XPACT_SAFEPOINT_CHECK</code> macro defined in <code>Engine/Source/Runtime/XCore/Public/XSafePoint.h</code>; TLS variable <code>::XCore::Reflect::XGCSafepoint::s_tlsPendingFlag</code> (1-byte per-thread; updated by fan-out broadcast); pending-handler <code>::XCore::Reflect::XGCSafepoint::HandlePending()</code>; ABI tag <code>XPACT_SAFEPOINT_FLAG_ABI_TAG</code> in Contract surface (Rev 14 addition).</td><td>HARD-FAIL at build with <code>XIL2CPP172 &mdash; XPACT_SAFEPOINT_CHECK macro not published by XCoreXObject Rev 5</code>; no MVP critical path without safe-points (GC correctness depends on them).</td><td>FIX-A-CRIT-6</td></tr>
+    <tr><td><strong>XCXO-Rev5-GCSTORE-MEM</strong></td><td>XCoreXObject Rev 5</td><td>[Rev 3: applied FIX-E-HIGH-8 per-arch fingerprint] x86-64 uses <code>memory_order_relaxed</code> for both SATB enqueue and slot store (TSO arch); ARM64 uses <code>memory_order_release</code> for both. Tag content: <code>"XGCStore-v1: SATB enqueue (relaxed on x86, release on ARM64); slot store (relaxed on x86, release on ARM64); read-side acquires inferred from architecture"</code>. Add <code>XPACT_GC_STORE_MEMORY_ORDER_TAG</code> to Contract Rev 13.9 &sect;14.1 (or Rev 14).</td><td>Conservative default: emit <code>memory_order_release</code> on both archs. Correct but loses ~2 cycles per barrier on x86. <code>XIL2CPP173 &mdash; GC store memory-order forward-commit not yet honored; emitting conservative cross-arch release</code> warning at build.</td><td>FIX-A-HIGH-10, FIX-E-HIGH-8</td></tr>
+    <tr><td><strong>XCXO-Rev5-NEWROOT</strong></td><td>XCoreXObject Rev 5</td><td><code>NewRootObject&lt;T&gt;(Name, Flags)</code> C++ factory variant (no Outer) at <code>Engine/Source/Runtime/XCore/Public/XObject.h</code>; restricted to internal-engine use via <code>[XObjectInternalConstructor]</code>.</td><td>Hard-fail at any C# call site of <code>XObject.NewRoot&lt;T&gt;</code> with <code>XIL2CPP174 &mdash; XObject.NewRoot factory not yet shipped; XCoreXObject Rev 5 missing</code>. Root-objects can be created via legacy <code>NewObject&lt;T&gt;(TransientPackage, Name, Flags)</code> with explicit transient outer until Rev 5 ships; warn diagnostic only.</td><td>FIX-A-LOW-8</td></tr>
+    <tr><td><strong>XCXO-Rev5-LISTENER</strong></td><td>XCoreXObject Rev 5</td><td>[Rev 3: applied FIX-E-MED-2 fingerprint extension] Publish <code>IXObjectClassReplacedListener</code> interface + <code>::XCore::CoreDelegates::GetOnClassReplaced().Subscribe(listener)</code> returning <code>FHandle</code>; module-shutdown <code>Unsubscribe</code> discipline. <strong>Firing semantics</strong>: per-XClass replacement (not per-module); fired on the XBT-self thread after rebind but before user code resumes; re-entrant Subscribe inside the listener body allowed but deferred to the next replacement event (avoiding infinite loop).</td><td>Hard-fail: Phase 6.k cannot ship without the listener interface. <code>XIL2CPP175 &mdash; IXObjectClassReplacedListener not published; XCoreXObject Rev 5 missing; hot-reload cascade hot-patch unavailable</code>. Criterion (e) cascade hot-patch is gated.</td><td>FIX-C-CRIT-02, FIX-A-MED-33, FIX-C-HIGH-09, FIX-E-MED-2</td></tr>
+    <tr><td><strong>XCXO-Rev5-CONTAINER-PARENT</strong></td><td>XCoreXObject Rev 5</td><td>[Rev 3: applied FIX-E-HIGH-7 split into three sub-fingerprints] <strong>Sub-1: TArray&lt;T&gt;(XObject* parent) constructor signature</strong> at <code>Engine/Source/Runtime/XCore/Public/Container/TArray.h</code>; <code>TArray&lt;int&gt;</code> (no XObject elements) still accepts parent for API uniformity; parameterless ctor reserved for stack-local-sentinel default. <strong>Sub-2: Card-table-mark API</strong>: <code>MarkCard(XObject* parent)</code> per-cache-line granularity (64 bytes) at <code>XGCWriteBarrier.h</code>. <strong>Sub-3: Realloc mark-phase snapshot mechanism</strong>: two-phase commit &mdash; (1) acquire snapshot lock on mark phase, (2) realloc-copy under lock, (3) atomic pointer swap + release. Cost: ~3-5 &micro;s per realloc on contended scenarios.</td><td>Degraded mode per &sect;5.7 Rev 3 fallback: use <code>this</code> (TArray instance) as parent_obj for write barriers; conservative GC scan on next cycle picks up the new value. Warn via <code>XIL2CPP171 &mdash; TArray write barrier emitting in degraded mode</code>.</td><td>FIX-A-MED-6, FIX-A-MED-17, FIX-E-HIGH-7</td></tr>
+    <tr><td><strong>XCXO-Rev5-LAZY-INIT</strong></td><td>XCoreXObject Rev 5</td><td>[Rev 3: applied FIX-E-MED-1 mechanism fingerprint] Per-module <code>XStackMapTable</code> wrapped in <code>LazyInit&lt;XStackMapTable&gt;</code>; population is single-threaded inside <code>FClass-module-load</code>, which is already serialized through <code>XReflectionRuntime::RegisterClass</code>. Init mechanism: function-local static (C++11 Magic Statics) for thread-safe first-call init; no double-checked locking needed.</td><td>Eager-init at module load (current Rev 1 behavior); ordering hazards may surface on cross-module static-init-order edge cases but workable. Warn via <code>XIL2CPP176 &mdash; XStackMapTable lazy-init not shipped; using eager-init fallback</code>.</td><td>FIX-A-MED-30, FIX-E-MED-1</td></tr>
+    <tr><td><strong>XHT-Rev7-SCHEMA-VECTOR</strong></td><td>XHT Rev 7</td><td>[Rev 3: applied FIX-E-HIGH-1 fingerprint extension] <strong>Input</strong>: XHT consumes the per-module <code>.cs.h</code> declarations emitted by XIL2CPP Phase 6.e to discover C#-declared XClasses and their FProperty fields. <strong>Output</strong>: XHT emits the FXObjectRefSchema opcode vector + extern declaration in the per-class <code>.gen.h</code>. <strong>Ordering</strong>: XHT's action runs AFTER XIL2CPP's emit action in the action graph; XBT slot 14 (ReferenceCompileCSharpAction) is XIL2CPP prereq, but XHT's reflect action is XIL2CPP's downstream consumer for C#-declared types. <strong>Failure mode</strong>: If XIL2CPP emits a C#-declared XClass with an FProperty XHT cannot understand (e.g., unknown generic instantiation), XHT emits typed diagnostic and the build fails. [Cross-ref FIX-E-HIGH-9 opcode bit-mask MVP/post-MVP table to land in XCoreXObject &sect;7.4.]</td><td>Conservative XGCRootSpan scan for C#-declared XClasses (no schema vector emitted; collector falls back to walking the entire XObject struct word-by-word as if Conservative). 4&times; GC walker cost (per criterion (b) X-SCHEMA budget). Warn via <code>XIL2CPP177 &mdash; schema vector emit not supported by XHT; conservative scan fallback active</code>.</td><td>FIX-A-HIGH-1, FIX-E-HIGH-1, FIX-E-HIGH-9, Q14 carried-forward</td></tr>
+    <tr><td><strong>XHT-Rev7-NOTHROW-CPP</strong></td><td>XHT Rev 7</td><td>[Rev 3: applied FIX-E-HIGH-2 fingerprint extension] <strong>Schema delta</strong>: XHT's <code>.gen.manifest</code> adds new section <code>cpp_nothrow_symbols: List&lt;MangledSymbol&gt;</code>. <strong>Source</strong>: XHT reads the per-module <code>.h</code> headers it already scans + adds a <code>noexcept</code> token scanner. <strong>Third-party scope</strong>: C++ symbols in modules NOT processed by XHT (third-party SDKs) are conservatively classified as throwing by XIL2CPP Phase 2; XIL2CPP01x diagnostic if a sim-path function transitively calls a throwing C++ callee. <strong>Fingerprint</strong>: MangledSymbol uses Contract Rev 13.9 mangling scheme; the C++ symbol's NoThrow attribution is derived from its declaration site (the <code>.h</code> is canonical; the <code>.cpp</code> is informational).</td><td>Conservative T1 shim for all C++ callees (correct but slow). XIL2CPP Phase 2 Pass 2 in <code>WholeProgramTier2</code> can promote later when NoThrow lands. Warn via <code>XIL2CPP178 &mdash; cpp_nothrow_symbols not published by XHT; conservative T1 shim active for all C++ callees</code>.</td><td>FIX-C-HIGH-15, FIX-E-HIGH-2</td></tr>
+    <tr><td><strong>XHT-Rev7-BACKING-FIELD</strong></td><td>XHT Rev 7</td><td>Canonical auto-property backing field naming <code>__BackingField_&lt;X&gt;</code> (must match XIL2CPP emit). Two-tool agreement on the literal naming convention.</td><td>Hard-fail: any drift between XHT and XIL2CPP emit fails XIL2CPP145 diagnostic at link time. No graceful degradation; both tools must agree.</td><td>FIX-B-HIGH-09</td></tr>
+    <tr><td><strong>XBT-Rev11-REFCOMPILE</strong></td><td>XBT Rev 11</td><td>[Rev 3: applied FIX-D-CRIT-01 / FIX-D-HIGH-01 &mdash; ordinal corrected.] Rename <code>XActionType.Reserved_Phase2_F = 14</code> to <code>XActionType.ReferenceCompileCSharpAction = 14</code> (occupy the reserved slot, do NOT add slot 18 which would rotate CommandVersion); add to <code>ContractSurface.ActionTypes</code> (declared-order canonicalization); document prerequisite chain in XBT &sect;5.1.</td><td>Hard-fail: XIL2CPP MVP cannot ship without cross-module type-resolution. <code>XIL2CPP170 &mdash; ReferenceCompileCSharpAction not registered in XBT action graph</code> exit 63.</td><td>FIX-C-CRIT-04, FIX-D-CRIT-01, FIX-D-HIGH-01</td></tr>
+    <tr><td><strong>XBT-Rev11-MANIFEST-FIELDS</strong></td><td>XBT Rev 11</td><td>[Rev 3: applied FIX-E-MED-6 fingerprint extension] Manifest fields with FBS ordinal hints: <code>schema_version: uint32 = 100; // ordinal N+1</code>; <code>roslyn_version: string = 101</code>; <code>dotnet_sdk_version: string = 102</code>; <code>conditional_symbols: List&lt;string&gt; = 103</code>. Semver-rule: roslyn_version exact-match required (parser-stability); dotnet_sdk_version major-only match acceptable. conditional_symbols composes with XIL2CPP built-in symbol set (XPACT_SIM_PATH, etc.) via union; collision is a build-time error.</td><td>Hard-fail on manifest read if XIL2CPP requires a manifest schema_version that XBT does not yet emit. <code>XIL2CPP141 &mdash; Manifest schema version V is older than XIL2CPP supports</code> exit 41.</td><td>FIX-C-HIGH-01, FIX-C-HIGH-04, FIX-C-HIGH-13, FIX-B-MEDIUM-25, FIX-E-MED-6</td></tr>
+    <tr><td><strong>Contract-Rev14-MANGLING</strong></td><td>XToolchainContract Rev 14</td><td>[Rev 3: applied FIX-E-MED-3 fingerprint extension] Add param mangling discriminators: <code>K</code> for <code>ref readonly</code>; <code>Q</code> for nullability. <strong>Position</strong>: suffix on parameter type, before the next parameter separator. <strong>Composition rules</strong>: K precedes Q if both apply; ordering matters: <code>KQ</code> is "ref readonly nullable T"; <code>QK</code> is illegal (ordering enforced at mangling pass).</td><td>XIL2CPP-private extension: use <code>_KQ_</code> token suffix on parameter type. Symbol-stability test verifies the extension survives rebuild; warn via <code>XIL2CPP179 &mdash; K/Q mangling discriminators not yet in Contract Rev 14; using XIL2CPP-private extension</code>. Migrates to canonical when Contract Rev 14 lands.</td><td>FIX-B-HIGH-03, FIX-C-HIGH-02, FIX-E-MED-3</td></tr>
+    <tr><td><strong>Contract-Rev14-SEPARATOR</strong></td><td>XToolchainContract Rev 14</td><td>[Rev 3: applied FIX-E-HIGH-6 &mdash; commit to alternative.] Replace <code>__</code> linker-symbol separator with <code>_X_</code> (XPact-tagged). The <code>__</code> token is reserved per C++ standard &sect;17.4.3.2.1 and is undefined behavior; <code>_X_</code> is linker-legal in all three toolchain forms (MSVC mangling pass-through; Itanium ABI accepts custom prefixes; Microsoft mangler accepts).</td><td>XIL2CPP MVP uses <code>__</code> with accepted non-conformance risk; symbol stability test does not fire on UB unless toolchain rejects. Warn via <code>XIL2CPP180 &mdash; using __ separator pending Contract Rev 14 _X_ replacement; non-conformance risk accepted</code>.</td><td>FIX-B-HIGH-25, FIX-E-HIGH-6</td></tr>
+    <tr><td><strong>BCL-Rev2-BOXING</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>[Rev 3: applied FIX-D-CRIT-03 type-shape fix + FIX-E-HIGH-3 enumeration] Boxing wrappers are <code>[XValueClass]</code> non-XObject types (NO FClass, NO lifecycle table). Explicit 15-type set: Int32Box, UInt32Box, Int64Box, UInt64Box, FloatBox, DoubleBox, BoolBox, ByteBox, SByteBox, ShortBox, UShortBox, CharBox, DecimalBox, DateTimeBox, GuidBox. Each wraps a single primitive field; Hash + Equals defer to the primitive value semantics. MVP gate: XIL2CPP062 implicit-boxing ban remains in effect; wrappers are for non-sim-path TUs that explicitly construct them.</td><td>MVP can ship without wrappers because implicit boxing is already XIL2CPP062-banned. Authors who need explicit boxing receive <code>XIL2CPP187 &mdash; Int32Box/FloatBox not yet shipped; use typed record discriminant instead</code> warning. NO critical-path block.</td><td>FIX-B-CRIT-02, FIX-A-HIGH-8, FIX-D-CRIT-03, FIX-E-HIGH-3</td></tr>
+    <tr><td><strong>BCL-Rev2-HANDLER</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>Add <code>XDefaultInterpolatedStringHandler</code> + <code>XScopedGuard</code> + <code>XScopedGuardWithThrow</code> + <code>XStackTraceHandle</code> + <code>Result&lt;T, E&gt;</code> RAII types. [Rev 3: <code>Result&lt;T, E&gt;</code> added per FIX-A-CRIT-3 cascade &mdash; ref/out XObject ban requires Result&lt;T, E&gt; for migrant authors.] <code>XScopedGuardWithThrow</code> per FIX-D-HIGH-05: variant that does NOT mark its body noexcept and routes throws through HAL::Abort fallback.</td><td>Inline emit of the handler types per-call-site (no shared BCL type); code-size cost is a few KB per TU. Warn via <code>XIL2CPP181 &mdash; BCL-Rev2-HANDLER not yet shipped; emitting inline RAII types</code>.</td><td>FIX-B-HIGH-24, FIX-B-HIGH-21, FIX-B-MEDIUM-23, FIX-A-CRIT-3, FIX-D-HIGH-05</td></tr>
+    <tr><td><strong>BCL-Rev2-CHAR</strong></td><td>XPact.CSharp.BCL Rev 2</td><td>[Rev 3: applied FIX-E-HIGH-4 enumeration] <code>XCharOps</code> static methods on <code>char16_t</code> (full enumeration; "etc." hand-wave eliminated): IsDigit, IsLetter, IsLetterOrDigit, IsWhiteSpace, IsUpper, IsLower, IsControl, IsNumber, IsPunctuation, IsSurrogate, IsHighSurrogate, IsLowSurrogate, IsSymbol, IsSeparator, IsSurrogatePair, IsAscii, IsAsciiDigit, IsAsciiHexDigit, IsAsciiLetter, IsBetween, ToUpperInvariant, ToLowerInvariant, GetNumericValue, GetUnicodeCategory, ConvertFromUtf32, ConvertToUtf32. <strong>Sim-path-allowed</strong>: Invariant variants only. <strong>XIL2CPP053 banned on sim-path</strong>: ToUpper, ToLower, Parse, TryParse (locale-dependent).</td><td>Hard-fail at any sim-path call site requiring an XCharOps method until BCL Rev 2 ships. Non-sim-path callers can use direct UE-style FChar facilities as legacy fallback. Warn via <code>XIL2CPP182 &mdash; XCharOps surface not yet shipped; non-sim-path callers may use FChar; sim-path callers must wait</code>.</td><td>FIX-B-HIGH-23, FIX-E-HIGH-4</td></tr>
+    <tr><td><strong>BCL-Rev2-STRINGBUILDER</strong> [Rev 3: NEW per FIX-D-MED-11]</td><td>XPact.CSharp.BCL Rev 2</td><td>Settle <code>XCSharpStringBuilder</code> naming: if XCore-4a's existing <code>FStringBuilder</code> covers the use case, the BCL alias is <code>using XCSharpStringBuilder = ::XCore::String::FStringBuilder;</code>; if not, add <code>XCSharpStringBuilder</code> as a new BCL type wrapping FStringBuilder semantics.</td><td>Direct use of <code>::XCore::String::FStringBuilder</code> at every emit site; no alias. Warn via <code>XIL2CPP183 &mdash; XCSharpStringBuilder naming not yet finalized; using FStringBuilder directly</code>.</td><td>FIX-A-LOW-7, FIX-D-MED-11</td></tr>
+    <tr><td><strong>XException-Rev1-MVP</strong> [Rev 3: NEW per FIX-E-CRIT-3 split]</td><td>XException.html Rev 1 OR XCoreXObject Rev 5</td><td>Minimum exception-class surface XIL2CPP MVP requires: <code>XCSharpException</code> with <code>Message</code> field (XCSharpString), <code>StackTrace</code> as opaque XStackTraceHandle, <code>InnerException</code> pointer chain. Carved into XCoreXObject Rev 5 OR new XException.html Rev 1 BEFORE Phase 6.j ships.</td><td>Hard-fail: Phase 6.j (exception emit) cannot ship without an exception-class contract. <code>XIL2CPP184 &mdash; XCSharpException MVP surface not yet defined; Phase 6.j blocked</code> exit 63. NO graceful degradation; this is a critical-path commitment.</td><td>FIX-B-MEDIUM-23, FIX-E-CRIT-3</td></tr>
+    <tr><td><strong>XException-Rev1-V1</strong> [Rev 3: NARROWED per FIX-E-CRIT-3 split]</td><td>XException.html Rev 1 (post-MVP)</td><td>Full reflective Exception surface including TargetSite, Source, custom exception subclasses, stack-walking semantics. Post-MVP; not blocking Phase 6.j MVP.</td><td>MVP ships without these surfaces; non-sim-path Exception.Source / Exception.TargetSite return <code>null</code> warning. <code>XIL2CPP185 &mdash; full XException surface deferred to post-MVP</code> info-level diagnostic.</td><td>FIX-B-MEDIUM-23, FIX-E-CRIT-3</td></tr>
+    <tr><td><strong>XPactSim-Rev1-PRNG</strong> [Rev 3: ID normalized per FIX-E-LOW-2]</td><td>XPact.Sim NuGet Rev 1</td><td>[Rev 3: applied FIX-E-HIGH-5 surface enumeration] <code>IDeterministicRng</code> surface: <code>NextInt32()</code>, <code>NextInt32(min, max)</code>, <code>NextSingle()</code> in [0, 1), <code>NextDouble()</code> in [0, 1), <code>NextBoolean()</code>, <code>NextBytes(Span&lt;byte&gt;)</code>. State export: <code>ExportState()</code> returns 64-byte <code>FRngState</code>; <code>RestoreState(FRngState)</code> reseeds. Seed type: ulong (64-bit). Construction: <code>IDeterministicRng XPactRng.CreateWithSeed(ulong seed)</code> factory. Implementation: XPact-canonical SplitMix64 or PCG64; cross-arch byte-for-byte deterministic.</td><td>Hard-fail: sim-path PRNG cannot be tested against criterion (c) cross-arch convergence without a deterministic RNG. <code>XIL2CPP186 &mdash; IDeterministicRng surface not yet published</code> blocks sim-path TUs using PRNG. NO graceful degradation for sim-path; non-sim-path can use System.Random with non-determinism warning.</td><td>FIX-A-HIGH-3, FIX-E-HIGH-5</td></tr>
   </tbody>
 </table>
 
-<h3>14.0.1 Cross-system contradictions surfaced during Rev 2 (Round 2 audit input)</h3>
+<h3>14.0.1 Cross-system contradictions [Rev 3: applied FIX-E-LOW-1 (table format) + FIX-E-MED-4 + FIX-E-MED-5 + FIX-D-NIT-03 (lifecycle phantom struck)]</h3>
 
-<ul>
-  <li><strong>XCoreXObject FXObjectLifecycleTable slot count</strong>: &sect;1.3 says 8 slots; Rev 2 lifecycle emit enumerates 7 explicit slots. Verify XCoreXObject Rev 5 maintains 8 (the 8th may be reserved).</li>
-  <li><strong>Contract Rev 13.9 ABI tag count</strong>: 24 layout tags + 21 sizeof pins per &sect;14.1. Rev 2 emits the FULL list; verify per-tool sanity (XHT emits the same superset).</li>
-  <li><strong>XHT NoThrow surface dual</strong>: XHT must emit NoThrow for BOTH C# and C++ functions; XHT Rev 6 docs only address C#. Forward-commit XHT Rev 7.</li>
-  <li><strong>Boxing wrappers</strong>: Int32Box / FloatBox not in XPact.CSharp.BCL yet. Forward-commit BCL Rev 2.</li>
-  <li><strong>Manifest schema_version vs contract_version</strong>: Current FBS manifest has <code>contract_version</code> but no <code>schema_version</code>. Forward-commit XBT Rev 11.</li>
-</ul>
+<p>The five contradictions Rev 2 surfaced are reformatted as a structured table with resolution path. The lifecycle slot count contradiction is STRUCK as phantom (Rev 2 &sect;5.1 enumerates all 8 slots; the Rev 2 "7 explicit" claim was self-stale).</p>
+
+<table border="1" cellpadding="6" cellspacing="0">
+  <thead><tr><th>ID</th><th>Statement</th><th>Real?</th><th>Resolution path</th><th>Receiving rev</th></tr></thead>
+  <tbody>
+    <tr><td><strong>CONTRA-1</strong></td><td>XCoreXObject FXObjectLifecycleTable slot count: &sect;1.3 says 8 slots; Rev 2 lifecycle emit enumerates 7 explicit slots.</td><td><strong>PHANTOM</strong> (struck per FIX-D-NIT-03 / FIX-E-MED-4)</td><td>Re-verified Rev 2 &sect;5.1 lines 906-922 enumerate all 8 slot bodies (PostInitProperties, BeginDestroy, IsReadyForFinishDestroy, FinishDestroy, Serialize, AddReferencedObjects, PostLoad, PreSave). Rev 2's "7 explicit" claim was stale doc prose contradicting its own emit two pages later. Rev 3 strikes the entry.</td><td>&mdash;</td></tr>
+    <tr><td><strong>CONTRA-2</strong></td><td>Contract Rev 13.9 ABI tag count: 24 layout tags + 22 sizeof pins per &sect;14.1-14.2. Rev 2 emit count drifted from prose count.</td><td><strong>REAL</strong> (worse than Rev 2 admits per FIX-E-CRIT-1)</td><td>Rev 3 prerequisite: <code>XToolchainContract.html</code> rolled to Rev 13.9 with the 24 layout tags + 22 sizeof pins table (FStruct 112&rarr;120, FScriptStruct 128&rarr;136, FClass 224&rarr;240; new XObject-side rows; XGCRootSpan@32 sizeof). Verified by <code>XBT.exe validate-abi-tags</code> exit 0. XIL2CPP Rev 3 &sect;9.7 emit reconciled to BYTE-IDENTICAL match the Contract surface per FIX-E-CRIT-2 (3 envelope + 24 layout + 22 sizeof + 1 alignment = 50 static_assert lines). XHT Rev 7 must emit the same pin block per the cross-tool symbol contract.</td><td>Contract Rev 13.9 (landed); XHT Rev 7 (forward-commit)</td></tr>
+    <tr><td><strong>CONTRA-3</strong></td><td>XHT NoThrow surface dual: XHT must emit NoThrow for BOTH C# and C++ functions; XHT Rev 6 docs only address C#.</td><td><strong>REAL</strong> (consistent with XHT-Rev7-NOTHROW-CPP forward-commit)</td><td>Forward-commit XHT Rev 7 per FIX-E-HIGH-2 fingerprint extension: manifest delta (<code>cpp_nothrow_symbols</code> section); per-symbol source (header noexcept token scan); third-party-SDK fallback (conservatively throwing).</td><td>XHT Rev 7</td></tr>
+    <tr><td><strong>CONTRA-4</strong></td><td>Boxing wrappers Int32Box / FloatBox not in XPact.CSharp.BCL yet.</td><td><strong>REAL</strong> (deeper construction issue per FIX-D-CRIT-03)</td><td>Rev 3 commits to TYPE-SHAPE (<code>[XValueClass]</code> non-XObject) per FIX-D-CRIT-03 structural fix; resolves the XIL2CPP001 collision. BCL Rev 2 still owns the per-type enumeration (15 explicit wrappers per FIX-E-HIGH-3 enumeration).</td><td>BCL Rev 2</td></tr>
+    <tr><td><strong>CONTRA-5</strong></td><td>Manifest schema_version vs contract_version: Current FBS manifest has <code>contract_version</code> but no <code>schema_version</code>.</td><td><strong>REAL</strong> (consistent with XBT-Rev11-MANIFEST-FIELDS)</td><td>Forward-commit XBT Rev 11 per FIX-E-MED-6: FBS ordinal hints + semver-rule for tooling version comparison + conditional_symbols composition rule.</td><td>XBT Rev 11</td></tr>
+  </tbody>
+</table>
 
 <h3>14.1 Resolved questions (Rev 1 honors the locked commitments)</h3>
 
@@ -3629,17 +3970,17 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
 <p>XIL2CPP is the largest single tool in the XPact toolchain after XCoreXObject. The implementation phase (Phase 6, post-XCoreXObject Phase 5 completion) is broken into sub-phases. Each sub-phase has clear deliverables, testing gates, and a duration estimate at the foundation-tool cadence.</p>
 
 <ol>
-  <li><strong>Phase 6.a &mdash; Roslyn front-end + parse-tree consumption (Pass 1)</strong>: ship the XIL2CPP CLI binary scaffold; integrate <code>Microsoft.CodeAnalysis.CSharp</code> v4.8+; implement the manifest reader (JSON + FBS); implement the per-module C# parse via CSharpSyntaxTree.ParseText + CSharpCompilation with reference-DLL metadata; ship the ReferenceCompileCSharpAction (XBT extension ordinal 14). Unit tests verify parse of every C# 12 syntax feature in &sect;4.1. Estimated: 2-3 weeks.</li>
+  <li><strong>Phase 6.a &mdash; Roslyn front-end + parse-tree consumption (Pass 1)</strong> [Rev 3: rewrite per FIX-D-HIGH-01 / FIX-D-CRIT-01]: ship the XIL2CPP CLI binary scaffold; integrate <code>Microsoft.CodeAnalysis.CSharp</code> v4.8+; implement the manifest reader (JSON + FBS); implement the per-module C# parse via CSharpSyntaxTree.ParseText + CSharpCompilation with reference-DLL metadata; ship the ReferenceCompileCSharpAction (<strong>XBT slot 14 per &sect;9.8 Rev 3 ordinal allocation</strong>; the Rev 1 ordinal-14 claim was correct but for the wrong reason &mdash; Rev 1 collided with the reservation, Rev 3 occupies it explicitly). Unit tests verify parse of every C# 12 syntax feature in &sect;4.1. Estimated: 2-3 weeks.</li>
   <li><strong>Phase 6.b &mdash; AST normalization + semantic analysis (Pass 2 + Pass 3)</strong>: ship the AST normalization pass (expand expression-bodied members, lower pattern matching, flatten using-blocks, expand collection expressions, normalize record positional ctors, expand <code>with</code> expressions, lower string interpolation); ship semantic analysis (XIL2CPP001 diagnostic; sim-path banned-API enumeration; reference-store enumeration; container enumeration; lambda capture analysis; async/iterator site enumeration; generic instantiation closed-walk; reflection consumption; cross-module callee NoThrow lookup). Unit tests verify each pass output against a golden corpus. Estimated: 3-4 weeks.</li>
   <li><strong>Phase 6.c &mdash; Tier classification Pass 1 (Pass 4)</strong>: ship the per-module fixpoint Tier 2 classification; ship <code>TierTable.partial.&lt;Module&gt;.json</code> emit; ship cross-module callee NoThrow lookup via XHT-emitted reflection metadata. Unit tests verify Tier 2 classification against synthetic corpus + verify Tier 1 conservatism on unresolved cross-module callees. Estimated: 1-2 weeks.</li>
   <li><strong>Phase 6.d &mdash; Two-pass tier classification Pass 2 (post-MVP)</strong>: ship the <code>Tier2WholeProgramPass</code> action (XActionType ordinal 13); ship the <code>-WholeProgramTier2</code> XIL2CPP mode; ship the per-module re-emit deltas. Unit tests verify Tier 2 promotion never demotes; verify whole-program fixpoint converges. Estimated: 1-2 weeks. <strong>Off-MVP-critical-path; can ship after Phase 6.l.</strong></li>
   <li><strong>Phase 6.e &mdash; C++ emit: classes / methods / properties (Pass 5 + Pass 6 baseline)</strong>: ship the mangling assignment (Pass 5); ship the basic C++ class emission (XCLASS body, ctor, FClass StaticClass() body, ClassConstructorFn, Z_PostInitProperties_*, lifecycle slot bodies, FXObjectLifecycleTable bridge); ship per-method Tier 1 shim + Tier 2 direct emit; ship the property getter/setter pair emit. Unit tests verify the emitted C++ compiles standalone; verify mangling determinism; verify ABI envelope <code>static_assert</code>s emit at the top of every .cs.cpp. Estimated: 4-5 weeks.</li>
   <li><strong>Phase 6.f &mdash; C++ emit: container types + GC-aware partial specializations</strong>: ship the per-closed-instantiation container emission (TArray, TMap, TSet partial specs with XGCRootSpan registration in ctor + update on resize + unregister in dtor); ship move-only semantics; ship <code>container = true</code> class-descriptor flag; ship Conservative kind warning + dedup. Unit tests verify the emitted containers pass round-trip serialization + survive synthetic GC cycles + survive hot-reload class replacement. Estimated: 3-4 weeks.</li>
-  <li><strong>Phase 6.g &mdash; Stack-map emit + safe-point check + GC root span emit</strong>: ship the per-function FStackMapRecord emission with explicit register spilling at every safe-point; ship the XPACT_SAFEPOINT_CHECK at function entry + back-edge; ship the long-loop detection (Pass 3 augmentation); ship the FStackMapTable registration at module load. Unit tests verify 100% function coverage + verify the collector's binary search finds the right record + verify long-loop detection threshold. Estimated: 3-4 weeks. <strong>X-IL2CPP-STACKMAP-COV + X10 acceptance gates.</strong></li>
+  <li><strong>Phase 6.g &mdash; Stack-map emit + safe-point check + GC root span emit</strong> [Rev 3: rewrite per FIX-D-CRIT-02]: ship the per-function FStackMapRecord emission with the <strong>shadow-stack mechanism</strong> (<code>XPtr&lt;XObject&gt;* _liveRefs[N]</code> stack array per &sect;6.1 Rev 2 rewrite per FIX-A-CRIT-2 &mdash; NOT explicit register spilling, which was rejected as architecturally infeasible under the locked toolchain matrix per &sect;6.1); ship the XPACT_SAFEPOINT_CHECK at function entry + back-edge; ship the long-loop detection (Pass 3 augmentation); ship the XStackMapTable registration at module load via the lazy-init pattern (FIX-A-MED-30). Per-platform shadow-stack is platform-NEUTRAL by design (per FIX-C-HIGH-17; the Win64 and ARM64 layouts are identical because the array of pointers is portable C++; offsets are array-relative, not register-relative). Unit tests verify 100% function coverage via <code>_liveRefs</code> index tracking + verify the collector's binary search finds the right record + verify long-loop detection threshold + verify the safe-point ordering (shadow-stack init &rarr; container constructors &rarr; safe-point check &rarr; user body per FIX-D-HIGH-02 &sect;6.1). Estimated: 3-4 weeks. <strong>X-IL2CPP-STACKMAP-COV + X-IL2CPP-SHADOWSTACK-COV + X10 acceptance gates.</strong></li>
   <li><strong>Phase 6.h &mdash; Write barrier insertion</strong>: ship the XPACT_GC_STORE emission at every reference-store site (per Pass 3 enumeration); ship the new-object-init barrier omission; ship the cross-property-chain emit. Unit tests verify 100% barrier coverage + verify barrier cost &le; 5 cycles. Estimated: 2 weeks. <strong>X-IL2CPP-BARRIER-EMIT + X4 acceptance gates.</strong></li>
   <li><strong>Phase 6.i &mdash; async/await + lambda + iterator state-machine emit (with sim-path enforcement)</strong>: ship the closure-struct emit for lambdas with XObject captures; ship the state-machine emit for async methods (non-sim-path); ship the state-machine emit for yield-return iterators; ship the XIL2CPP044 diagnostic for sim-path async. Unit tests verify XGCRootSpan registration over captures; verify state-machine MoveNext correctness; verify the async state machine survives a GC cycle mid-await. Estimated: 3-4 weeks.</li>
   <li><strong>Phase 6.j &mdash; Exception handling emit (try/catch/finally + throw)</strong>: ship the Tier 1 shim emit for functions that throw / catch; ship the Dev/Test native-exception lowering; ship the Shipping XResult lowering; ship the per-call-site XResult destructor teardown; ship XCSharpException type infrastructure. Unit tests verify cross-config ABI (Dev shim sig = Shipping shim sig); verify exception propagation through Tier 1 boundaries; verify XResult RAII destructor fires correctly. Estimated: 3 weeks. <strong>X-IL2CPP-TIER1-ABI acceptance gate.</strong></li>
-  <li><strong>Phase 6.k &mdash; Hot-reload integration (symbol mangling stability + cross-module rebind)</strong>: ship the OnClassReplaced delegate listener auto-emission at <code>Z_Construct_FClass_*</code>; ship the per-FClass sub-pool rebind cooperation; verify symbol mangling stability across rebuild via SHA-256 comparison; verify container layout-freeze enforcement. Integration tests with XLiveCoding (synthetic patch DLL) verify Tier 1 shim RVA rewrite + Tier 2 module rebuild path. Estimated: 2-3 weeks. <strong>X-IL2CPP-MANGLE-DET + criterion (d) + criterion (e) acceptance gates.</strong></li>
+  <li><strong>Phase 6.k &mdash; Hot-reload integration (symbol mangling stability + cross-module rebind)</strong> [Rev 3: rewrite per FIX-D-CRIT-05]: ship the <strong>typed <code>IXObjectClassReplacedListener</code> per-module static listener emission at the <code>.init.cs.cpp</code> aggregator</strong> (per &sect;8.4 Rev 2 rewrite per FIX-C-CRIT-02 / FIX-C-HIGH-09 &mdash; NOT per-<code>Z_Construct_FClass</code>-site emission; per-site would register N listeners per module instead of 1, change deregistration sequencing in module-unload, and break the ModuleInitGuard correctness pattern); ship the explicit <code>Subscribe</code>/<code>Unsubscribe</code> lifecycle around <code>ModuleInitGuard</code>; ship the per-FClass sub-pool rebind cooperation; ship the per-closed-instantiation generic FClass cache invalidation hooks (FIX-C-HIGH-08); verify symbol mangling stability across rebuild via SHA-256 comparison; verify container layout-freeze enforcement. Integration tests with XLiveCoding (synthetic patch DLL) verify Tier 1 shim RVA rewrite + Tier 2 module rebuild path + module-unload listener-leak prevention. Estimated: 2-3 weeks. <strong>X-IL2CPP-MANGLE-DET + criterion (d) + criterion (e) acceptance gates.</strong></li>
   <li><strong>Phase 6.l &mdash; Foundation Prototype harness for X10, Criterion (c), Criterion (d), Criterion (e), Criterion (g)</strong>: ship the SyntheticActorCorpus + SyntheticContainerCorpus + SimPathConvergenceTest + HotReloadCascadeTest + CrossArchReplayTest + SymbolStabilityTest; ship the X-* gate validation tests; integrate with XInsights telemetry for transpile-time metrics. Estimated: 3-4 weeks. <strong>All XIL2CPP-side Foundation Prototype gates.</strong></li>
 </ol>
 
@@ -3657,13 +3998,14 @@ static_assert(sizeof(::XCore::Reflect::FStackMapRecord) % 8 == 0);
   <thead><tr><th>Rev</th><th>Date</th><th>Author</th><th>Summary</th></tr></thead>
   <tbody>
     <tr><td>1</td><td>2026-05-28</td><td>Main agent (XIL2CPP Rev 1 draft) authored against the XIL2CPP-Constraints.md inventory (1066 lines, 10.7k words) + the three user-locked architectural commitments (2026-05-28: pure transpilation, C# 12 / .NET 8, explicit XObject.New&lt;T&gt; factory) + the Prime Directive + the structural template of XCoreXObject.html Rev 4</td><td>Initial umbrella spec covering: (a) Architectural Commitments (Locked) per the three user 2026-05-28 commitments; (b) Pipeline Architecture (7-pass: Roslyn Parse, AST Normalization, Semantic Analysis, Tier Classification Pass 1, Mangling, C++ Emit, Output Write); (c) C# 12 Language Coverage matrix with sim-path / non-sim-path columns covering ~80 features; (d) IL/AST &rarr; C++ Mapping Rules with detailed emit sketches for every construct (classes, methods, properties, statements, expressions, containers, generics, lambdas, async, iterators, strings, exceptions, pattern matching, lock, reflection, checked/unchecked, fixed, unsafe, stackalloc, Span); (e) GC Integration (FStackMapRecord per function, XGCRootSpan per container, XPACT_GC_STORE write barrier, safe-point check at entry + back-edge, struct-with-XObject-field handling); (f) Sim-path TU Discipline (compile flag enforcement, runtime checks via XPACT_CHECK_SL, build-time banned-API enforcement, async ban, cross-arch determinism commitment); (g) Hot-reload Integration (symbol mangling stability, vtable stability via no-virtuals, container layout freeze, sub-pool rebind, RVA-rewrite trampoline targeting); (h) XBT Build Pipeline Integration (action-graph placement, ReferenceCompileCSharpAction extension, in-process mode, exit codes, ABI envelope pinning); (i) XHT Reflection Consumption (the XHT/XIL2CPP boundary, Q14 resolution: XHT emits the schema vector for both C++- and C#-declared types); (j) Acceptance Criteria + Foundation Prototype Mapping (XCoreXObject gates inherited + 12 XIL2CPP-specific gates); (k) Diagnostic Code allocations (XIL2CPP001-XIL2CPP151; ~30 codes across 8 categories); (l) Implementation Sub-Phase Breakdown (12 phases 6.a-6.l; ~30-40 weeks estimated). Resolves Constraint inventory Q1, Q3, Q13, Q28 via Locked Commitments. Resolves Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q14 via Rev 1 commitments with Prime-Directive justification. Flags 15 items for Round 1 audit scrutiny in &sect;14. Awaits Round 1 audit.</td></tr>
-    <tr><td>2</td><td>2026-05-28</td><td>Main agent (XIL2CPP Rev 2)</td><td><strong>Applied 161 Round 1 audit findings: A=47, B=62, C=52.</strong> CRITICAL: 16 (all addressed); HIGH: 53 (all addressed); MEDIUM: 59 (57 addressed, 2 deferred to Rev 3 pending cross-system Contract amendment); LOW/NIT/MINOR: 33 (32 addressed, 1 cosmetic dash-normalization deferred). Major Rev 2 changes: (1) ABI envelope tag content corrected to Contract Rev 13.9 &sect;14.1 verbatim (FIX-A-CRIT-1 / FIX-C-CRIT-01) &mdash; full 24-tag + 21-sizeof list emitted in &sect;5.1 + &sect;9.7; (2) Stack-map mechanism replaced with shadow-stack (FIX-A-CRIT-2) &mdash; substantial &sect;6.1 rewrite; (3) ref/out XObject banned via XIL2CPP005 (FIX-A-CRIT-3); (4) FP_SEMANTICS_TAG static_assert removed (FIX-A-CRIT-4) &mdash; replaced with __FAST_MATH__/_M_FP_FAST compile-time guard; (5) Write-barrier enumeration positively-listed (FIX-A-CRIT-5) &mdash; covers 12 distinct C# reference-store paths; (6) XPACT_SAFEPOINT_CHECK macro forward-committed to XCoreXObject Rev 5 with TLS-cached pattern (FIX-A-CRIT-6); (7) Boxing of value types to object banned via XIL2CPP062 in MVP (FIX-B-CRIT-02) &mdash; cascade ban for List&lt;object&gt; XIL2CPP073 (FIX-B-CRIT-06); (8) Plain-class default emit changed to <code>std::shared_ptr&lt;T&gt;</code> with [XValueClass] opt-in for value semantics (FIX-B-CRIT-03); (9) <code>using X = SomeType;</code> alias-any-type emit specified in new &sect;5.21 (FIX-B-CRIT-04); (10) <code>where T : new()</code> constraint removed from XObject.New&lt;T&gt; (FIX-B-CRIT-05 / FIX-B-HIGH-16 / FIX-A-MED-20) &mdash; resolves the Locked Commitment 3 contradiction; (11) OnClassReplaced listener replaced with typed IXObjectClassReplacedListener + explicit Subscribe/Unsubscribe lifecycle (FIX-C-CRIT-02) &mdash; &sect;8.4 rewrite; (12) In-process Roslyn workspace lifecycle specified per-call; ResetAsync() added; XBT-self hot-reload quiesce protocol (FIX-C-CRIT-03); (13) ReferenceCompileCSharpAction ordinal relocated to slot 17 via XBT Rev 11 forward-commit (FIX-C-CRIT-04); (14) Lambda capture rewritten to Roslyn display-class pattern (FIX-B-HIGH-06); (15) Pattern matching per-kind emit rules added (FIX-B-MEDIUM-06); (16) Multi-interface dispatch via FInterface table (FIX-B-HIGH-14 / FIX-C-HIGH-06) &mdash; replaces C++ pure-virtual interface emit; (17) Per-platform stack-map collapsed to platform-neutral shadow-stack (FIX-C-HIGH-17); (18) Static field XObject rooting protocol (FIX-A-HIGH-6); (19) Sim-path foreach over HashSet/Dictionary elevated from warning to error (FIX-A-HIGH-4); (20) Async Task surface extended ban (FIX-A-HIGH-2); (21) Determinism mapping table for Math.* + ToString/Parse + Random (FIX-A-HIGH-3); (22) Diagnostic code catalog expanded from ~30 codes to ~70 codes across 12 bands with reserved-for-expansion bands documented (FIX-B-MINOR-10, FIX-C-MED-15, FIX-C-LOW-01); (23) Forward-commitments to XCoreXObject Rev 5, XHT Rev 7, XBT Rev 11, Contract Rev 14, XPact.CSharp.BCL Rev 2 enumerated in &sect;14.0. Word count grew from ~22k (Rev 1) to ~37k (Rev 2). Round 2 audit input: 5 cross-system contradictions surfaced (&sect;14.0.1). Awaits Round 2 audit.</td></tr>
+    <tr><td>2</td><td>2026-05-28</td><td>Main agent (XIL2CPP Rev 2)</td><td><strong>Applied 161 Round 1 audit findings: A=47, B=62, C=52.</strong> CRITICAL: 16 (all addressed); HIGH: 53 (all addressed); MEDIUM: 59 (57 addressed, 2 deferred to Rev 3 pending cross-system Contract amendment); LOW/NIT/MINOR: 33 (32 addressed, 1 cosmetic dash-normalization deferred). Major Rev 2 changes: (1) ABI envelope tag content corrected to Contract Rev 13.9 &sect;14.1 verbatim (FIX-A-CRIT-1 / FIX-C-CRIT-01); (2) Stack-map mechanism replaced with shadow-stack (FIX-A-CRIT-2); (3) ref/out XObject banned via XIL2CPP005 (FIX-A-CRIT-3); (4) FP_SEMANTICS_TAG static_assert removed (FIX-A-CRIT-4); (5) Write-barrier enumeration positively-listed (FIX-A-CRIT-5); (6) XPACT_SAFEPOINT_CHECK macro forward-committed to XCoreXObject Rev 5 (FIX-A-CRIT-6); (7) Boxing of value types to object banned (FIX-B-CRIT-02 + FIX-B-CRIT-06); (8) Plain-class default emit changed to <code>std::shared_ptr&lt;T&gt;</code> with [XValueClass] opt-in (FIX-B-CRIT-03); (9) <code>using X = SomeType;</code> alias-any-type emit specified in &sect;5.21 (FIX-B-CRIT-04); (10) <code>where T : new()</code> constraint removed from XObject.New&lt;T&gt; (FIX-B-CRIT-05); (11) OnClassReplaced listener replaced with typed IXObjectClassReplacedListener (FIX-C-CRIT-02); (12) In-process Roslyn workspace lifecycle specified (FIX-C-CRIT-03); (13) ReferenceCompileCSharpAction ordinal relocated to slot 17 (FIX-C-CRIT-04) &mdash; SUBSEQUENTLY OVERRIDDEN in Rev 3 by FIX-D-CRIT-01 to slot 14; (14-23) various HIGH/MEDIUM fixes. Word count grew from ~22k to ~37k. Awaited Round 2 audit (delivered as D=41, E=22).</td></tr>
+    <tr><td>3</td><td>2026-05-28</td><td>Main agent (XIL2CPP Rev 3)</td><td><strong>Applied 63 Round 2 audit findings: D=41, E=22.</strong> CRITICAL: 10 (all addressed); HIGH: 21 (all addressed); MEDIUM: 19 (all addressed). LOW/NIT/MINOR: 13 (easy wins applied; structural-defer items remain for Rev 4). <strong>Prerequisite landed</strong>: <code>XToolchainContract.html</code> rolled Rev 13.8 &rarr; Rev 13.9 (per FIX-E-CRIT-1); 24 layout tags + 22 sizeof pins documented in &sect;14.1-14.2 to match the C# canonical surface in <code>ContractSurface.cs</code>; verified by <code>XBT.exe validate-abi-tags</code> exit 0. <strong>Rev 3 critical changes</strong>: (1) ReferenceCompileCSharpAction ordinal RE-relocated to <strong>slot 14 (Reserved_Phase2_F)</strong>, NOT slot 17 (FIX-D-CRIT-01); slot 17 is RETIRED per XBT Rev 10 invariant. (2) §15 Phase 6.a / 6.g / 6.k REWRITTEN to align with Rev 2 body (FIX-D-CRIT-02 / 05; FIX-D-HIGH-01): Phase 6.g now correctly references shadow-stack mechanism; Phase 6.k references typed listener at .init.cs.cpp aggregator. (3) Boxing wrappers Int32Box/FloatBox redefined as <strong>[XValueClass] non-XObject types</strong> (FIX-D-CRIT-03) &mdash; eliminates XIL2CPP001 collision; no factory call needed; primitive value semantics. (4) TArray <code>m_parent</code> field properly forward-committed with emit-timing clarification (FIX-D-CRIT-04); explicit fallback (XIL2CPP171 degraded mode) documented if XCXO Rev 5 misses. (5) XBT stub vs XIL2CPP-binary stub exit code reconciled: XIL2CPP returns 61; XBT's run-xil2cpp mode translates to 24 at CLI surface (FIX-D-CRIT-06). (6) §9.7 ABI pin block reconciled to BYTE-IDENTICAL Contract Rev 13.9 surface: 3 envelope + 24 layout + 22 sizeof + 1 alignment = 50 static_assert lines; "FClass-v6:" prefix included (FIX-D-HIGH-11 / FIX-E-CRIT-2). (7) §14.0 forward-commits restructured with <strong>fallback column on every row</strong> (FIX-E-CRIT-4) covering all 19 commits (1 new: BCL-Rev2-STRINGBUILDER; 2 split: XException-Rev1-MVP + XException-Rev1-V1). (8) Six overloaded diagnostic codes (XIL2CPP033/049/053/054/125/145) split into distinct codes per FIX-D-MED-07 using reserved bands. (9) Shadow-stack ordering example rewritten to show 4-step discipline (FIX-D-HIGH-02); stack-resident struct write-barrier rule documented (FIX-D-HIGH-10). (10) Async state machine emit rewritten with heap-allocation + XSharedPtr capture + multi-ref _rootSpan (FIX-D-HIGH-04 / 07). (11) Lambda emit committed to Roslyn-style display class with member methods, NOT C++-lambda-with-capture (FIX-D-HIGH-03). (12) XScopedGuardWithThrow variant introduced for cleanups that may throw (FIX-D-HIGH-05 / FIX-D-MED-01). (13) Display-class move ctor invalidates source's _rootSpan to prevent double-unregister (FIX-D-HIGH-06). (14) Listener static-init order fiasco eliminated via bundled ModuleInit struct (FIX-D-HIGH-08). (15) Write barrier enumeration extended with Span/ref-return/fixed-pointer paths (FIX-D-HIGH-09). (16) §14.0.1 contradictions reformatted as table; lifecycle slot-count phantom struck (FIX-D-NIT-03 / FIX-E-MED-4). (17) <code>using</code> alias moved to .cs.cpp anonymous namespace (FIX-D-MED-04). (18) TMap container emission template added (FIX-D-MED-02). (19) Static-size stackalloc Pass 3 check added; XIL2CPP086 diagnostic (FIX-D-MED-05). (20) [[unlikely]] attribute syntax corrected (FIX-D-MED-06). (21) Z_Construct safe-point check (FIX-D-MED-08). (22) Diagnostic catalog wording standardized "BANNED" vs "DEFERRED" (FIX-D-MED-09). (23) Cache key MergedTierTable_hash + InProcessSessionId additions (FIX-D-MED-10). (24) Record <code>with</code>-expression Clone() emit documented (FIX-D-MED-13). (25) Tuple ODR-safe Generated/Tuples.h shared header (FIX-D-MED-12). LOW/NIT applied: NFC-normalized lexicographic order (FIX-D-LOW-01), GCCollectionMode.Aggressive (FIX-D-LOW-06), BoxingBanTest cleanup (FIX-D-LOW-05). New diagnostic codes: XIL2CPP039/057/058/059/086/129/149 (split per FIX-D-MED-07) + XIL2CPP170-187 (Rev 3 fallback band per FIX-E-CRIT-4). New forward-commits added: BCL-Rev2-STRINGBUILDER, XException-Rev1-MVP split, XException-Rev1-V1 narrowed. Rev 3 represents <strong>STRUCTURAL CONVERGENCE</strong> on every CRITICAL audit finding; Rev 4 anticipated as a CONVERGED-or-MINOR-cleanup pass.</td></tr>
   </tbody>
 </table>
 
 <hr>
 
-<p><strong>End of XIL2CPP.html Rev 2.</strong> Status: AWAITING ROUND 2 AUDIT. 161 Round 1 audit findings applied (A=47, B=62, C=52); changelog at <code>Documents/XIL2CPP-Rev2-Changelog.md</code>. Sub-Phase Breakdown is in &sect;15. Forward-commitments to other systems are in &sect;14.0. Diagnostic codes are in &sect;12 (~70 codes across 12 bands). Foundation Prototype Mapping is in &sect;11 + &sect;13.</p>
+<p><strong>End of XIL2CPP.html Rev 3.</strong> Status: AWAITING ROUND 3 AUDIT (OR CONVERGENCE). 63 Round 2 audit findings applied (D=41, E=22); changelog at <code>Documents/XIL2CPP-Rev3-Changelog.md</code>. Prerequisite Contract Rev 13.9 carry-forward landed in <code>Documents/XToolchainContract.html</code>; verified by <code>XBT.exe validate-abi-tags</code> exit 0 (24 layout tags + 22 sizeof pins match canonical surface). Sub-Phase Breakdown is in &sect;15. Forward-commitments to other systems are in &sect;14.0 (now with fallback column per row per FIX-E-CRIT-4). Cross-system contradictions in &sect;14.0.1 (reformatted as table; lifecycle phantom struck). Diagnostic codes in &sect;12 (~90 codes across 14 bands; new Rev 3 forward-commit fallback band 170-189). Foundation Prototype Mapping is in &sect;11 + &sect;13. Rev 3 represents STRUCTURAL CONVERGENCE on every CRITICAL Round 2 audit finding.</p>
 
 </body>
 </html>
