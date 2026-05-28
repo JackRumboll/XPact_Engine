@@ -33,6 +33,8 @@
 #include <sys/types.h>     // pid_t
 #include <unistd.h>        // getpid, readlink
 
+#include "Containers/FString.h"  // FString concrete definition (Phase 1g)
+
 // gettid() availability: glibc 2.30+ ships it as a libc function. Older
 // glibc requires the syscall form. The conditional below handles both
 // without forcing a libc version requirement.
@@ -113,8 +115,13 @@ void FPlatformProcess::YieldThread() noexcept
 // ---------------------------------------------------------------------
 // GetExecutablePath -- readlink("/proc/self/exe", ...).
 //
-// PHASE 1b GATING: see Win64 implementation. The platform path
-// (readlink) is exposed via the test shim below.
+// /proc/self/exe is a kernel-maintained symlink to the canonical
+// executable path (bypasses argv[0] ambiguity). The readlink output
+// is already UTF-8 on Linux (filesystem paths are byte strings; the
+// kernel does not re-encode). GetExecutablePath wraps the byte buffer
+// in an FString. The same UTF-8 helper is reachable via the
+// XPACT_TEST_GetExecutablePathUtf8 extern "C" shim for tests that want
+// the raw bytes.
 // ---------------------------------------------------------------------
 namespace
 {
@@ -134,14 +141,12 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformProcess::GetExecutablePath()
 {
     char Buf[4096];
-    (void)WriteExecutablePathUtf8(Buf, sizeof(Buf));
-    return FString{};
+    const ::std::size_t Bytes = WriteExecutablePathUtf8(Buf, sizeof(Buf));
+    return FString(Buf, static_cast<::int32>(Bytes));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" ::std::size_t XPACT_TEST_GetExecutablePathUtf8(
     char* OutBuf, ::std::size_t OutBufBytes) noexcept

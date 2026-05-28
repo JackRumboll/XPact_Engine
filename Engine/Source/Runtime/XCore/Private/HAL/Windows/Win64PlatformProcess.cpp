@@ -40,6 +40,8 @@
 
 #include <cstdint>
 
+#include "Containers/FString.h"  // FString concrete definition (Phase 1g)
+
 namespace XCore::HAL
 {
 
@@ -132,10 +134,12 @@ void FPlatformProcess::YieldThread() noexcept
 // relative path or symlink to the .exe). GetModuleFileNameW returns
 // the canonical fully-resolved path with the .exe suffix.
 //
-// PHASE 1b GATING: FString is forward-declared in Phase 1a/1b; the
-// body returning FString by value cannot be defined here. The
-// platform-syscall path is exposed via XPACT_TEST_GetExecutablePathUtf8
-// for Phase 1b testing.
+// The wide path is transcoded to UTF-8 via WideCharToMultiByte(CP_UTF8)
+// inside WriteExecutablePathUtf8 below; GetExecutablePath wraps the
+// byte buffer in an FString. The same UTF-8 helper is also reachable
+// via the XPACT_TEST_GetExecutablePathUtf8 extern "C" shim for
+// platform-syscall tests that want to probe the raw bytes without
+// constructing an FString.
 // ---------------------------------------------------------------------
 
 namespace
@@ -174,16 +178,12 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformProcess::GetExecutablePath()
 {
     char Buf[4096];
     const ::std::size_t Bytes = WriteExecutablePathUtf8(Buf, sizeof(Buf));
-    (void)Bytes;
-    // TODO(Phase 1g): construct FString from {Buf, Bytes}.
-    return FString{};
+    return FString(Buf, static_cast<::int32>(Bytes));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" ::std::size_t XPACT_TEST_GetExecutablePathUtf8(
     char* OutBuf, ::std::size_t OutBufBytes) noexcept

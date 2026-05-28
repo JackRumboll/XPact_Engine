@@ -44,6 +44,7 @@
 #include <sys/sysinfo.h>     // sysinfo
 #include <unistd.h>
 
+#include "Containers/FString.h"       // FString concrete definition (Phase 1g)
 #include "Macros/XAssertionMacros.h"  // AbortWithMessage
 
 #if __ANDROID_API__ >= 28
@@ -80,8 +81,10 @@ EPlatform FPlatformMisc::GetPlatform() noexcept
 // Phase 2 follow-up (XAndroidJNI module).
 //
 // For Phase 1b we generate a process-lifetime random UUID at first call
-// and cache it. PHASE 1b GATING: the FString surface is deferred to
-// Phase 1g; the UUID bytes are exposed via the test shim below.
+// and cache it; GetMachineId formats the cached 16-byte UUID as a
+// lowercase canonical 36-char (with dashes) GUID UTF-8 string and
+// returns it as an FString. The raw UUID bytes remain reachable via
+// the XPACT_TEST_GetProcessUuid extern "C" shim below for tests.
 // ---------------------------------------------------------------------
 
 namespace
@@ -115,15 +118,30 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetMachineId()
 {
     EnsureProcessUuidReady();
-    // TODO(Phase 1g + Phase 2 JNI): format g_ProcessUuid as a UTF-8
-    // hex string and construct FString from the bytes.
-    return FString{};
+
+    // Format the 16-byte UUID as the canonical 36-char dashed lowercase
+    // GUID string: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx". This matches
+    // the form Win64 returns from MachineGuid + the form Java's
+    // UUID.toString() produces for ANDROID_ID once the Phase 2 JNI
+    // bridge ships, so consumers see a consistent shape across all
+    // three platforms.
+    char Buf[37] = { 0 };  // 36 chars + nul (FString ctor ignores nul)
+    const char Hex[] = "0123456789abcdef";
+    int Idx = 0;
+    for (int i = 0; i < 16; ++i)
+    {
+        if (i == 4 || i == 6 || i == 8 || i == 10)
+        {
+            Buf[Idx++] = '-';
+        }
+        Buf[Idx++] = Hex[(g_ProcessUuid[i] >> 4) & 0x0F];
+        Buf[Idx++] = Hex[ g_ProcessUuid[i]       & 0x0F];
+    }
+    return FString(Buf, static_cast<::int32>(Idx));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" int XPACT_TEST_GetProcessUuid(unsigned char* OutBuf, ::std::size_t OutBufBytes) noexcept
 {
@@ -173,15 +191,19 @@ extern "C" int XPACT_TEST_GetProcessUuid(unsigned char* OutBuf, ::std::size_t Ou
 }
 
 // ---------------------------------------------------------------------
-// GetEngineVersionString -- placeholder; gated on
-// XPACT_PHASE_1G_FSTRING_AVAILABLE.
+// GetEngineVersionString -- see Win64 implementation for the full
+// rationale. Returns XPACT_ENGINE_VERSION when the XBT version-emit
+// pass has populated XCoreVersion.gen.h; falls back to the bare
+// Engine.xengine semver "0.1.0" until then.
 // ---------------------------------------------------------------------
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetEngineVersionString()
 {
-    return FString{};
+#if defined(XPACT_ENGINE_VERSION)
+    return FString(XPACT_ENGINE_VERSION);
+#else
+    return FString("0.1.0");
+#endif
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 // ---------------------------------------------------------------------
 // RequestExit -- one-shot flag (same pattern as Linux/Win64).

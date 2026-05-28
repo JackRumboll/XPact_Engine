@@ -52,6 +52,7 @@
 
 #include <cstdio>     // std::snprintf for the version-string placeholder
 
+#include "Containers/FString.h"       // FString concrete definition (Phase 1g)
 #include "Macros/XAssertionMacros.h"  // AbortWithMessage
 
 // BCryptGenRandom's NTSTATUS success sentinel; <ntdef.h> would provide
@@ -85,17 +86,12 @@ EPlatform FPlatformMisc::GetPlatform() noexcept
 // for the OS install lifetime; rotated only by a reinstall or by an
 // IT admin explicitly resetting the key.
 //
-// PHASE 1b GATING: FString is forward-declared only in Phase 1a/1b
-// (Macros/XCoreFwd.h). Returning FString by value requires the type
-// to be complete, which it is not until Phase 1g ships FString.h. The
-// .cpp body therefore is gated on the XPACT_PHASE_1G_FSTRING_AVAILABLE
-// macro; the platform-syscall path (the registry read itself) is
-// reachable via the internal symbol `XPACT_TEST_ReadMachineGuid` for
-// Phase 1b testing.
-//
-// When Phase 1g sets XPACT_PHASE_1G_FSTRING_AVAILABLE the body
-// transcodes WideBuf via WideCharToMultiByte(CP_UTF8, ...) and
-// constructs the returned FString from the UTF-8 byte buffer.
+// The registry read returns UTF-16; the body transcodes via
+// WideCharToMultiByte(CP_UTF8, ...) into a stack buffer and constructs
+// the returned FString from the UTF-8 byte buffer. The wide-buffer
+// path remains reachable via the internal symbol
+// `XPACT_TEST_ReadMachineGuid` for tests that want the raw UTF-16
+// without paying the transcode.
 // ---------------------------------------------------------------------
 
 namespace
@@ -123,7 +119,6 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetMachineId()
 {
     wchar_t WideBuf[64] = { 0 };
@@ -131,13 +126,24 @@ FString FPlatformMisc::GetMachineId()
     {
         return FString{};
     }
-    // TODO(Phase 1g): WideCharToMultiByte(CP_UTF8, ...) transcode +
-    // FString construction. Body is gated until Phase 1g; consumers in
-    // Phase 1b that need the GUID call ReadMachineGuidUtf16 directly
-    // via the test shim below.
-    return FString{};
+
+    // Transcode UTF-16 -> UTF-8. The canonical GUID is 36 ASCII chars
+    // (1 byte each in UTF-8), so a 64-byte buffer is comfortably large;
+    // we still pass the wide length explicitly so any future kernel
+    // format change does not silently truncate.
+    const int WideLen = static_cast<int>(::wcslen(WideBuf));
+    char Utf8Buf[128] = { 0 };
+    const int Utf8Bytes = ::WideCharToMultiByte(
+        CP_UTF8, 0,
+        WideBuf, WideLen,
+        Utf8Buf, static_cast<int>(sizeof(Utf8Buf)),
+        nullptr, nullptr);
+    if (Utf8Bytes <= 0)
+    {
+        return FString{};
+    }
+    return FString(Utf8Buf, static_cast<::int32>(Utf8Bytes));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" int XPACT_TEST_ReadMachineGuid(wchar_t* OutBuf, ::std::size_t OutBufWchars) noexcept
 {
@@ -194,23 +200,25 @@ extern "C" int XPACT_TEST_ReadMachineGuid(wchar_t* OutBuf, ::std::size_t OutBufW
 // ---------------------------------------------------------------------
 // GetEngineVersionString -- "X.Y.Z-build-<git-shortsha>".
 //
-// PHASE 1b GATING: same FString-incomplete-type story as GetMachineId.
-// The body is gated on XPACT_PHASE_1G_FSTRING_AVAILABLE.
+// Target format is "X.Y.Z-build-<git-shortsha>" (e.g.,
+// "0.1.0-build-b8210cc"); fully populated by the XBT-emitted
+// `XCoreVersion.gen.h` which defines `XPACT_ENGINE_VERSION` from
+// /Engine/Engine.xengine + the current commit short SHA.
 //
-// TODO(Phase 1b XBT integration): populate from XBT-emitted
-// `XCoreVersion.gen.h` which carries the build's semver + git short
-// SHA. The format is "X.Y.Z-build-<git-shortsha>" (e.g.,
-// "0.1.0-build-b8210cc"). The macro XPACT_ENGINE_VERSION is defined
-// in the .gen.h via XBT's version-emit pass.
+// TODO(Phase 1b XBT integration): once XBT's version-emit pass ships
+// XCoreVersion.gen.h with XPACT_ENGINE_VERSION, swap the literal below
+// for the macro. Until then we return the bare engine semver from
+// Engine.xengine ("0.1.0") so callers get a well-formed string rather
+// than an empty FString that would null-out logging surfaces.
 // ---------------------------------------------------------------------
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetEngineVersionString()
 {
-    // TODO(Phase 1g + Phase 1b XBT integration): return FString::FromAscii(
-    //     XPACT_ENGINE_VERSION).
-    return FString{};
+#if defined(XPACT_ENGINE_VERSION)
+    return FString(XPACT_ENGINE_VERSION);
+#else
+    return FString("0.1.0");
+#endif
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 // ---------------------------------------------------------------------
 // Shutdown-request state: a one-shot atomic flag + exit code.

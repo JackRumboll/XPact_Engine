@@ -25,6 +25,8 @@
 #include <sys/types.h>     // pid_t
 #include <unistd.h>        // getpid, gettid, readlink
 
+#include "Containers/FString.h"  // FString concrete definition (Phase 1g)
+
 namespace XCore::HAL
 {
 
@@ -83,9 +85,10 @@ void FPlatformProcess::YieldThread() noexcept
 // Android's Bionic supports /proc/self/exe; the returned path is the
 // canonical APK-extracted native-library path or the dex-launched
 // activity binary depending on the launch mode. The path is already
-// UTF-8.
-//
-// PHASE 1b GATING: see Win64 implementation.
+// UTF-8 (Bionic filesystem paths are byte strings). GetExecutablePath
+// wraps the byte buffer in an FString. The same UTF-8 helper is
+// reachable via the XPACT_TEST_GetExecutablePathUtf8 extern "C" shim
+// for tests that want the raw bytes.
 // ---------------------------------------------------------------------
 namespace
 {
@@ -105,14 +108,12 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformProcess::GetExecutablePath()
 {
     char Buf[4096];
-    (void)WriteExecutablePathUtf8(Buf, sizeof(Buf));
-    return FString{};
+    const ::std::size_t Bytes = WriteExecutablePathUtf8(Buf, sizeof(Buf));
+    return FString(Buf, static_cast<::int32>(Bytes));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" ::std::size_t XPACT_TEST_GetExecutablePathUtf8(
     char* OutBuf, ::std::size_t OutBufBytes) noexcept

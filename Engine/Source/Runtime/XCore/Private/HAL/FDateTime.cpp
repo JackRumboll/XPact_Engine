@@ -35,6 +35,7 @@
 #include "Macros/XPactMacros.h"
 #include "Macros/XAssertionMacros.h"
 
+#include "Containers/FString.h"     // FString concrete definition (Phase 1g)
 #include "XDateTimeAlgorithms.h"
 
 #include <atomic>
@@ -274,24 +275,20 @@ Result<FDateTime, FDateRangeError> FDateTime::ParseIso8601(::std::string_view Is
 // ---------------------------------------------------------------------
 // ToIso8601 -- emit YYYY-MM-DDTHH:MM:SS.ffffffZ.
 //
-// PHASE 1b GATING: the return type is FString which is forward-
-// declared in Phase 1a/1b. The body is therefore gated on
-// XPACT_PHASE_1G_FSTRING_AVAILABLE; the underlying algorithm runs
-// through the XPACT_TEST_EmitIso8601 `extern "C"` shim defined at the
-// bottom of this file so the round-trip property test (Section
-// 17.4 D-extra-2) verifies determinism without blocking on FString.
+// Construct an FString from the EmitIso8601 UTF-8 byte buffer. The
+// algorithm is sim-path-safe (pure proleptic-Gregorian arithmetic)
+// and bit-exact across the three XPact targets. The body also fronts
+// the XPACT_TEST_EmitIso8601 `extern "C"` shim defined at the bottom
+// of this file which the round-trip property test (Section 17.4
+// D-extra-2) exercises directly against the byte buffer.
 // ---------------------------------------------------------------------
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FDateTime::ToIso8601() const
 {
     char Buf[32] = { 0 };
     const ::std::size_t Written =
         ::XCore::HAL::DateAlgorithms::EmitIso8601(m_unixMicros, Buf, sizeof(Buf));
-    (void)Written;
-    // TODO(Phase 1g): construct FString from {Buf, Written}.
-    return FString{};
+    return FString(Buf, static_cast<::int32>(Written));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 // ---------------------------------------------------------------------
 // Year / Month / Day / Hour / Minute / Second / Microsecond accessors.

@@ -49,6 +49,7 @@
 #include <sys/sysinfo.h>    // sysinfo() for total RAM
 #include <unistd.h>         // _exit, getpid, syscall, sysconf
 
+#include "Containers/FString.h"       // FString concrete definition (Phase 1g)
 #include "Macros/XAssertionMacros.h"  // AbortWithMessage
 
 // SYS_getrandom: defined in <sys/syscall.h> on glibc 2.25+; older
@@ -81,10 +82,11 @@ EPlatform FPlatformMisc::GetPlatform() noexcept
 //
 // systemd's documented stable per-machine identifier
 // (man machine-id(5)). 128-bit value formatted as 32 lowercase hex
-// chars + newline.
-//
-// PHASE 1b GATING: see Win64 implementation for the rationale. The
-// platform path (the file read) is exposed via the test shim below.
+// chars + newline. ReadMachineIdUtf8 strips the trailing newline so
+// the canonical 32-hex-char form lands in Buf, and GetMachineId wraps
+// the byte buffer in an FString. The same UTF-8 helper is reachable
+// via the XPACT_TEST_ReadMachineId extern "C" shim for tests that
+// want the raw bytes.
 // ---------------------------------------------------------------------
 namespace
 {
@@ -134,15 +136,12 @@ namespace
     }
 }
 
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetMachineId()
 {
     char Buf[64] = { 0 };
     const ::std::size_t Bytes = ReadMachineIdUtf8(Buf, sizeof(Buf));
-    (void)Bytes;
-    return FString{};
+    return FString(Buf, static_cast<::int32>(Bytes));
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 extern "C" ::std::size_t XPACT_TEST_ReadMachineId(
     char* OutBuf, ::std::size_t OutBufBytes) noexcept
@@ -193,15 +192,19 @@ extern "C" ::std::size_t XPACT_TEST_ReadMachineId(
 }
 
 // ---------------------------------------------------------------------
-// GetEngineVersionString -- placeholder; see Win64 implementation.
-// Gated on XPACT_PHASE_1G_FSTRING_AVAILABLE.
+// GetEngineVersionString -- see Win64 implementation for the full
+// rationale. Returns XPACT_ENGINE_VERSION when the XBT version-emit
+// pass has populated XCoreVersion.gen.h; falls back to the bare
+// Engine.xengine semver "0.1.0" until then.
 // ---------------------------------------------------------------------
-#if defined(XPACT_PHASE_1G_FSTRING_AVAILABLE)
 FString FPlatformMisc::GetEngineVersionString()
 {
-    return FString{};
+#if defined(XPACT_ENGINE_VERSION)
+    return FString(XPACT_ENGINE_VERSION);
+#else
+    return FString("0.1.0");
+#endif
 }
-#endif // XPACT_PHASE_1G_FSTRING_AVAILABLE
 
 // ---------------------------------------------------------------------
 // RequestExit -- one-shot exit-request flag + _exit on the actor side.
