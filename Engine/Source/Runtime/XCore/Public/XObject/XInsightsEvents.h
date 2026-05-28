@@ -147,6 +147,72 @@ namespace XCore::HAL::XInsightsEvents
             static const ::XCore::Reflect::FName Name("RememberedSetSaturation");
             return Name;
         }
+
+        // -----------------------------------------------------------------
+        // Phase 5.g mark-phase events (additive to spec §10.12).
+        //
+        // The spec §10.12 table enumerates three GC events (CycleComplete,
+        // FullScanFallback, RememberedSetSaturation). Phase 5.g adds six
+        // more events that surface the mark-phase substructure to
+        // telemetry consumers. Justification per Prime Directive: the
+        // mark phase is the single most expensive GC sub-phase; the
+        // spec's `CycleComplete` carries aggregated mark/sweep durations
+        // but does NOT expose per-sub-phase pause budget breakdowns. The
+        // spec §4.8 acceptance table itemises mark / safe-point / final-
+        // drain budgets independently; emitting per-sub-phase events is
+        // required to verify those budgets are honoured at runtime.
+        //
+        // The spec-side editorial pass can adopt these events into §10.12
+        // without churn (the FName accessor surface is forward-compatible).
+        // -----------------------------------------------------------------
+
+        // Mark phase begin. Payload: {cycleId:i64, reachabilityIndex:i64,
+        // rootCount:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& MarkStart() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("MarkStart");
+            return Name;
+        }
+
+        // Mark phase end. Payload: {cycleId:i64, markedCount:i64,
+        // durationUs:i64, grayQueuePeak:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& MarkEnd() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("MarkEnd");
+            return Name;
+        }
+
+        // Final-mark drain begin. Payload: {cycleId:i64, satbQueueDepth:i64,
+        // dirtyCardCount:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& FinalDrainStart() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("FinalDrainStart");
+            return Name;
+        }
+
+        // Final-mark drain end. Payload: {cycleId:i64, finalMarkedCount:i64,
+        // satbResidual:i64, durationUs:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& FinalDrainEnd() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("FinalDrainEnd");
+            return Name;
+        }
+
+        // Safe-point entered (the synchronous-with-mutator window opens).
+        // Payload: {cycleId:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SafePointEntered() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("SafePointEntered");
+            return Name;
+        }
+
+        // Safe-point exited (the synchronous-with-mutator window closes).
+        // Payload: {cycleId:i64, durationUs:i64}.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SafePointExited() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("SafePointExited");
+            return Name;
+        }
     } // namespace GC
 
     // =================================================================
@@ -323,6 +389,31 @@ namespace XCore::HAL::XInsightsEvents
 
         [[nodiscard]] inline const ::XCore::Reflect::FName& RemSetSizeBytes() noexcept
         { static const ::XCore::Reflect::FName Name("remSetSizeBytes"); return Name; }
+
+        // Phase 5.g mark-phase payload keys (additive to spec §10.12).
+        [[nodiscard]] inline const ::XCore::Reflect::FName& ReachabilityIndex() noexcept
+        { static const ::XCore::Reflect::FName Name("reachabilityIndex"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& RootCount() noexcept
+        { static const ::XCore::Reflect::FName Name("rootCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& MarkedCount() noexcept
+        { static const ::XCore::Reflect::FName Name("markedCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& DurationUs() noexcept
+        { static const ::XCore::Reflect::FName Name("durationUs"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& GrayQueuePeak() noexcept
+        { static const ::XCore::Reflect::FName Name("grayQueuePeak"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SatbQueueDepth() noexcept
+        { static const ::XCore::Reflect::FName Name("satbQueueDepth"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& FinalMarkedCount() noexcept
+        { static const ::XCore::Reflect::FName Name("finalMarkedCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SatbResidual() noexcept
+        { static const ::XCore::Reflect::FName Name("satbResidual"); return Name; }
 
         // Allocator keys
         [[nodiscard]] inline const ::XCore::Reflect::FName& SizeClass() noexcept

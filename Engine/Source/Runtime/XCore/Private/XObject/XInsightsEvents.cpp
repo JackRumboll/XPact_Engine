@@ -107,6 +107,14 @@ namespace XCore::HAL::XInsightsEvents
         (void)GC::FullScanFallback();
         (void)GC::RememberedSetSaturation();
 
+        // Phase 5.g mark-phase events (additive to spec §10.12).
+        (void)GC::MarkStart();
+        (void)GC::MarkEnd();
+        (void)GC::FinalDrainStart();
+        (void)GC::FinalDrainEnd();
+        (void)GC::SafePointEntered();
+        (void)GC::SafePointExited();
+
         // Allocator events
         (void)Allocator::AllocationFailure();
         (void)Allocator::PoolGrew();
@@ -152,6 +160,16 @@ namespace XCore::HAL::XInsightsEvents
         (void)Keys::InstanceCount();
         (void)Keys::QuiescedThreadCount();
         (void)Keys::WaitDurationMs();
+
+        // Phase 5.g mark-phase keys (additive to spec §10.12).
+        (void)Keys::ReachabilityIndex();
+        (void)Keys::RootCount();
+        (void)Keys::MarkedCount();
+        (void)Keys::DurationUs();
+        (void)Keys::GrayQueuePeak();
+        (void)Keys::SatbQueueDepth();
+        (void)Keys::FinalMarkedCount();
+        (void)Keys::SatbResidual();
     }
 
 } // namespace XCore::HAL::XInsightsEvents

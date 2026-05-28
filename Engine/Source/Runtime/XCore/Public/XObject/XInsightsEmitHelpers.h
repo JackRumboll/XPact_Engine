@@ -138,6 +138,165 @@ namespace XCore::HAL::XInsightsEmitHelpers
     }
 
     // =================================================================
+    // GC.MarkStart -- emitted at the start of the mark phase (Phase 5.g).
+    //
+    // Additive to spec §10.12. Payload schema:
+    //   {cycleId:i64, reachabilityIndex:i64, rootCount:i64}
+    //
+    // ReachabilityIndex is 0/1/2 selecting which of XObject.
+    // ReachabilityFlag's bits 0..2 is "this-cycle's" mark per the
+    // rotating-flag scheme (spec §4.2.1).
+    //
+    // RootCount is the count of objects enqueued onto the gray queue
+    // during root enumeration (pinned roots + RootSpan typed entries +
+    // conservative-validated entries + StrongPtr-refcounted entries +
+    // Outer chains).
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCMarkStart(
+        ::std::int64_t CycleId,
+        ::std::int64_t ReachabilityIndex,
+        ::std::int64_t RootCount) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),           CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::ReachabilityIndex(), ReachabilityIndex);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::RootCount(),         RootCount);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::MarkStart(),
+            Payload);
+    }
+
+    // =================================================================
+    // GC.MarkEnd -- emitted at the end of the concurrent mark phase
+    // (Phase 5.g).
+    //
+    // Additive to spec §10.12. Payload schema:
+    //   {cycleId:i64, markedCount:i64, durationUs:i64, grayQueuePeak:i64}
+    //
+    // MarkedCount is the total objects whose ReachabilityFlag was
+    // transitioned from clear to set this cycle (the first-mark count;
+    // re-marks are NOT counted because the rotating-flag CAS short-
+    // circuits the visit).
+    //
+    // GrayQueuePeak is the maximum observed depth of the gray queue
+    // across the mark phase, useful for sizing.
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCMarkEnd(
+        ::std::int64_t CycleId,
+        ::std::int64_t MarkedCount,
+        ::std::int64_t DurationUs,
+        ::std::int64_t GrayQueuePeak) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),       CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::MarkedCount(),   MarkedCount);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::DurationUs(),    DurationUs);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::GrayQueuePeak(), GrayQueuePeak);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::MarkEnd(),
+            Payload);
+    }
+
+    // =================================================================
+    // GC.FinalDrainStart -- emitted at the start of final-mark drain
+    // (Phase 5.g).
+    //
+    // The final drain is the synchronous-with-mutator drain of SATB
+    // log + dirty-card re-scan that ends the mark phase. Spec §4.8
+    // budget: 1-3 ms.
+    //
+    // Payload schema: {cycleId:i64, satbQueueDepth:i64, dirtyCardCount:i64}
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCFinalDrainStart(
+        ::std::int64_t CycleId,
+        ::std::int64_t SatbQueueDepth,
+        ::std::int64_t DirtyCardCount) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),        CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::SatbQueueDepth(), SatbQueueDepth);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::DirtyCardCount(), DirtyCardCount);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::FinalDrainStart(),
+            Payload);
+    }
+
+    // =================================================================
+    // GC.FinalDrainEnd -- emitted at the end of final-mark drain
+    // (Phase 5.g).
+    //
+    // Payload schema:
+    //   {cycleId:i64, finalMarkedCount:i64, satbResidual:i64,
+    //    durationUs:i64}
+    //
+    // FinalMarkedCount is the additional objects marked during the
+    // final drain (over and above the concurrent-mark count).
+    // SatbResidual is the count of SATB entries that arrived AFTER the
+    // drain completed (should typically be 0 because the mark phase
+    // sets g_XGCIsConcurrentMarkActive to false BEFORE drain end).
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCFinalDrainEnd(
+        ::std::int64_t CycleId,
+        ::std::int64_t FinalMarkedCount,
+        ::std::int64_t SatbResidual,
+        ::std::int64_t DurationUs) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),          CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::FinalMarkedCount(), FinalMarkedCount);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::SatbResidual(),     SatbResidual);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::DurationUs(),       DurationUs);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::FinalDrainEnd(),
+            Payload);
+    }
+
+    // =================================================================
+    // GC.SafePointEntered / GC.SafePointExited -- safe-point pause
+    // boundary events (Phase 5.g).
+    //
+    // The safe-point handshake is the synchronous-with-mutator window
+    // during which the root snapshot is taken + dirty cards are
+    // captured. Spec §4.8 budget: 50-200 us.
+    //
+    // SafePointEntered payload: {cycleId:i64}
+    // SafePointExited payload:  {cycleId:i64, durationUs:i64}
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCSafePointEntered(
+        ::std::int64_t CycleId) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(), CycleId);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::SafePointEntered(),
+            Payload);
+    }
+
+    XPACT_FORCEINLINE void EmitGCSafePointExited(
+        ::std::int64_t CycleId,
+        ::std::int64_t DurationUs) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),    CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::DurationUs(), DurationUs);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::SafePointExited(),
+            Payload);
+    }
+
+    // =================================================================
     // GC.RememberedSetSaturation -- emitted when the card table's
     // dirty-card count crosses the 50% saturation threshold (Phase
     // 5.f's FXObjectGCCardTable).

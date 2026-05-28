@@ -3333,6 +3333,416 @@
 # extension is one instruction.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.g -- Collector mark phase.
+#
+# Per XCoreXObject Rev 4 §4 (GC Collector Algorithm) + §4.2 (phase
+# structure) + §4.3 (mostly-concurrent SATB) + §4.4 (worker-pool
+# concurrency) + §4.5 (card-table generational scan-reduction) +
+# §4.7 (trigger heuristic) + §4.8 (acceptance: pause budget breakdown)
+# + §10.12 (XInsights events). Phase 5.g ships the MARK PHASE of the
+# non-moving precise mostly-concurrent mark-and-sweep collector;
+# Phase 5.h ships sweep + deferred destruction.
+#
+# Phase 5.g adds these PUBLIC headers:
+#
+#   Public/XObject/FXObjectCollector.h     -- the process-singleton
+#                                              collector state machine.
+#                                              EXGCPhase / EXGCOptions /
+#                                              EXGCTriggerReason enums.
+#                                              Singleton Get(), __Init,
+#                                              Shutdown, __ResetForTests,
+#                                              CollectGarbage(Opts),
+#                                              Trigger(Reason), IsMarking /
+#                                              IsMarkingActive probes
+#                                              (consumed by the
+#                                              XGCWriteBarrier hot path),
+#                                              GetCycleCounter,
+#                                              GetCurrentReachabilityIndex,
+#                                              CurrentCycleReachabilityMask,
+#                                              MarkObject (atomic
+#                                              fetch_or first-mark), and
+#                                              IsMarked (atomic probe).
+#                                              Also exports namespace-
+#                                              scope globals
+#                                              g_XGCSafePointRequested
+#                                              (atomic bool) and
+#                                              g_CurrentReachabilityIndex
+#                                              (atomic uint8 cycling
+#                                              0/1/2).
+#   Public/XObject/FXGrayQueue.h           -- the GC mark-phase gray
+#                                              queue. Per-thread bounded
+#                                              LIFO (256 entries) +
+#                                              FXGrayOverflowList process-
+#                                              singleton lock-protected
+#                                              spill aggregator.
+#                                              GetThreadGrayQueue() TLS
+#                                              accessor via
+#                                              TModuleSafeThreadLocal
+#                                              (mirrors FXObjectSatbQueue
+#                                              Phase 5.f pattern).
+#   Public/XObject/FXSweepCandidateQueue.h -- Phase 5.g end-of-mark
+#                                              producer; Phase 5.h sweep
+#                                              consumer. Process-
+#                                              singleton SPSC queue of
+#                                              int32 InternalIndex values
+#                                              pending sweep. Append,
+#                                              AppendBatch, DrainAll
+#                                              (template), Size,
+#                                              IsEmpty, __ResetForTests.
+#
+# Phase 5.g adds these PRIVATE .cpp bodies (XBT auto-discovers them):
+#
+#   Private/XObject/FXObjectCollector.cpp     -- collector state-machine
+#                                                  body + sub-phase
+#                                                  bodies (EnterIdle /
+#                                                  EnterTriggering /
+#                                                  EnterSafePointHandshake /
+#                                                  EnterRootEnumeration /
+#                                                  EnterConcurrentMark /
+#                                                  EnterFinalMarkDrain /
+#                                                  EnterSweepHandoff) +
+#                                                  mark inner loop
+#                                                  (DrainGrayQueue uses
+#                                                  WalkSchemaRefs Phase
+#                                                  5.g' template) +
+#                                                  SATB drain +
+#                                                  dirty-card re-scan
+#                                                  + saturation full-
+#                                                  heap fallback +
+#                                                  end-of-mark candidate
+#                                                  enumeration. Also
+#                                                  defines the namespace-
+#                                                  scope externs
+#                                                  g_XGCSafePointRequested
+#                                                  + g_CurrentReachabilityIndex.
+#   Private/XObject/FXGrayQueue.cpp           -- Push/Pop hot-paths
+#                                                  + global overflow
+#                                                  list AppendBatch /
+#                                                  PullBatch bodies +
+#                                                  TLS accessor + spawn
+#                                                  fallback.
+#   Private/XObject/FXSweepCandidateQueue.cpp -- Append/AppendBatch
+#                                                  + DrainAll bodies +
+#                                                  heap-grown buffer
+#                                                  management.
+#
+# Phase 5.g MODIFIES the following existing files:
+#
+#   Public/XObject/XInsightsEvents.h        -- adds six new GC events
+#                                                (MarkStart, MarkEnd,
+#                                                 FinalDrainStart,
+#                                                 FinalDrainEnd,
+#                                                 SafePointEntered,
+#                                                 SafePointExited) plus
+#                                                eight new payload keys
+#                                                (ReachabilityIndex,
+#                                                 RootCount, MarkedCount,
+#                                                 DurationUs, GrayQueuePeak,
+#                                                 SatbQueueDepth,
+#                                                 FinalMarkedCount,
+#                                                 SatbResidual). These
+#                                                are ADDITIVE to spec
+#                                                §10.12 (the three
+#                                                spec-canonical events
+#                                                CycleComplete +
+#                                                FullScanFallback +
+#                                                RememberedSetSaturation
+#                                                are unchanged).
+#   Public/XObject/XInsightsEmitHelpers.h   -- adds six new helper
+#                                                functions
+#                                                (EmitGCMarkStart /
+#                                                 EmitGCMarkEnd /
+#                                                 EmitGCFinalDrainStart /
+#                                                 EmitGCFinalDrainEnd /
+#                                                 EmitGCSafePointEntered /
+#                                                 EmitGCSafePointExited).
+#   Private/XObject/XInsightsEvents.cpp     -- extends
+#                                                PrewarmAtPostStaticInit
+#                                                to touch the new
+#                                                accessors so their
+#                                                magic-statics are
+#                                                eagerly interned.
+#
+# Phase 5.g adds these TEST .cpp files (per-suite subdirs):
+#
+#   Tests/XObject/FXObjectCollector.Tests/SingletonAndPhase.cpp
+#   Tests/XObject/FXObjectCollector.Tests/MarkObjectFirstMark.cpp
+#   Tests/XObject/FXObjectCollector.Tests/CollectGarbageEmptyHeap.cpp
+#   Tests/XObject/FXObjectCollector.Tests/WriteBarrierIsMarkingActive.cpp
+#   Tests/XObject/FXObjectCollector.Tests/PinnedRootSurvives.cpp
+#   Tests/XObject/FXGrayQueue.Tests/PushPopRoundTrip.cpp
+#   Tests/XObject/FXGrayQueue.Tests/OverflowSpill.cpp
+#   Tests/XObject/FXSweepCandidateQueue.Tests/AppendDrain.cpp
+#
+# JUDGEMENT CALL (Phase 5.g / safe-point handshake MVP scope).
+#
+# Per Rev 2 FIX-A-MED-36 + spec §4.7: the MVP is a "dedicated marker
+# thread; post-XTaskGraph: worker-pool integration". Phase 5.g
+# implements the MVP. The safe-point handshake scope:
+#
+#   * CollectGarbage is callable ONLY from the main thread. The main
+#     thread IS at safe-point by virtue of having called the API.
+#
+#   * The Phase 5.g dedicated marker thread is the consumer of the
+#     safe-point (it runs the mark phase). It does NOT participate
+#     as a mutator.
+#
+#   * Worker mutators are absent in the current build:
+#       - FXObjectAllocator runs synchronously on the calling thread.
+#       - No slab-coalesce background thread exists.
+#       - The Phase 5.f card-table maintenance is synchronous-on-store
+#         (the write barrier dirties cards inline; no background
+#         scrubber).
+#     The g_XGCSafePointRequested flag is set/cleared by the
+#     collector; the documented future-work hook (poll loop over
+#     registered mutators) is the natural extension point when
+#     XTaskGraph integration lands.
+#
+# The full XTaskGraph-integrated handshake (every worker thread polls
+# safe-point at back-edges; collector waits for all-quiesced before
+# proceeding) is post-System-8 work. Phase 5.g documents the MVP
+# scope at FXObjectCollector.h's SAFE-POINT HANDSHAKE block.
+#
+# JUDGEMENT CALL (Phase 5.g / FXGrayQueue Chase-Lev deque vs
+# bounded-LIFO + global overflow).
+#
+# Two principled implementation options for the work-stealing gray
+# queue:
+#
+#   1. Chase-Lev work-stealing deque -- lock-free; owner pushes/pops
+#      from the bottom (LIFO); stealers pop from the top (FIFO).
+#      Canonical for work-stealing schedulers (TBB, Cilk, Tokio).
+#      Pros: zero contention in steady state. Cons: non-trivial
+#      memory-ordering invariants; ~400 LoC of careful CAS-loop code.
+#
+#   2. Per-thread bounded LIFO + global MPSC overflow list -- TLS
+#      256-entry buffer (matches FXObjectSatbQueue's discipline) +
+#      global FCriticalSection-protected vector for spill aggregation.
+#      Pros: simple; bounded latency for the local case; the global
+#      list IS the natural termination-detection surface. Cons: not
+#      lock-free in the overflow path.
+#
+# Phase 5.g ships OPTION 2 (bounded LIFO + overflow). Per Prime
+# Directive: the MVP marker thread is the SOLE worker (one TLS
+# queue). Work-stealing across workers is post-System-8 gated on
+# XTaskGraph integration. The Chase-Lev complexity is unwarranted
+# for a one-worker MVP. When multi-worker mark ships, the existing
+# global overflow list IS the natural integration point; a follow-
+# up phase can layer a Chase-Lev deque on top without changing the
+# Push/Pop API surface or the consumer pattern.
+#
+# JUDGEMENT CALL (Phase 5.g / additive GC events vs spec §10.12).
+#
+# The spec §10.12 table enumerates three GC events:
+#   * CycleComplete
+#   * FullScanFallback
+#   * RememberedSetSaturation
+#
+# The Phase 5.g prompt requested six MORE events:
+#   * MarkStart / MarkEnd
+#   * FinalDrainStart / FinalDrainEnd
+#   * SafePointEntered / SafePointExited
+#
+# Phase 5.g ships ALL nine (the three spec events + six prompt
+# additions). Justification (Prime Directive + spec §4.8):
+#
+#   * The mark phase is the single most expensive GC sub-phase. The
+#     spec's `CycleComplete` aggregates mark/sweep timings but does
+#     NOT expose per-sub-phase pause-budget breakdowns. The spec
+#     §4.8 acceptance table itemises mark / safe-point / final-drain
+#     budgets independently; per-sub-phase events are required to
+#     verify those budgets are honoured at runtime.
+#
+#   * The events are ADDITIVE: the spec-canonical events remain
+#     unchanged in name + payload. Downstream consumers compatible
+#     with the §10.12 baseline are not broken.
+#
+#   * The spec-side editorial pass can adopt the new events into
+#     §10.12 without churn (the FName accessor surface is forward-
+#     compatible).
+#
+# Documented at:
+#   * Public/XObject/XInsightsEvents.h Phase 5.g comment block.
+#   * Public/XObject/XInsightsEmitHelpers.h per-event docstring.
+#
+# JUDGEMENT CALL (Phase 5.g / non-ABI-locked singleton types).
+#
+# Phase 5.g introduces three new types:
+#   * FXObjectCollector
+#   * FXGrayQueue + FXGrayOverflowList
+#   * FXSweepCandidateQueue
+#
+# NONE of these are added to the Contract Rev 13.9 ABI-lock set
+# (ContractSurface.cs AbiTypeSizes + AbiLayoutPins.cs). Rationale:
+#
+#   * All three are process-singleton runtime types. They live
+#     entirely within XCore.dll; XHT does NOT emit them in .gen.cpp;
+#     consumers never reach into their layout.
+#
+#   * The spec §11.3 explicitly enumerates the ABI-lock set: XObject
+#     header, FXObjectArrayEntry, handles, FStruct, FClass,
+#     FXObjectLifecycleTable, FXObjectRefSchema, XGCRootSpan. The
+#     collector + queues are NOT in that set.
+#
+#   * Adding them would force every patched DLL to ABI-match their
+#     layouts -- a constraint with NO benefit (no patched DLL holds
+#     a reference into these singletons' member fields; consumers
+#     access them only through accessor methods).
+#
+# The FXGrayQueue size lock IS asserted at the header (2056 bytes;
+# matches FXObjectSatbQueue) so accidental layout drift is caught at
+# compile time. This is the principled posture for a process-internal
+# type: a size lock at the declaration site, not a contract surface
+# pin.
+#
+# JUDGEMENT CALL (Phase 5.g / int32 InternalIndex vs XObject*
+# in FXSweepCandidateQueue).
+#
+# Two principled options for the sweep-candidate queue element type:
+#
+#   1. XObject*    -- 8 bytes per entry; pointer-stable; the sweep
+#                      consumer dereferences to read class / flags /
+#                      schema.
+#   2. int32 InternalIndex -- 4 bytes per entry; the sweep consumer
+#                              fetches FXObjectArrayEntry via Array[]
+#                              indexing, then dereferences the entry's
+#                              Object pointer.
+#
+# Phase 5.g ships OPTION 2 (int32). Justification:
+#
+#   * The sweep phase needs to access the FXObjectArrayEntry for
+#     state bit manipulation (set PendingDestroy, read RootPin,
+#     read RefCount). It fetches the entry via Array[index] which
+#     is faster than dereferencing the XObject* to read InternalIndex
+#     back (the InternalIndex is at XObject@8 -- a load through the
+#     XObject pointer is a 1-2 cycle hit on the L1d cache; the
+#     int32 path skips the indirection).
+#
+#   * Memory footprint: 4 bytes vs 8 bytes per entry. At 50k
+#     candidates the queue is 200 KB vs 400 KB. Within budget either
+#     way; the smaller variant is principled.
+#
+#   * The int32 is the canonical identity throughout FXObjectArray's
+#     API surface (AllocateEntry returns int32; FreeEntry takes
+#     int32; GetObjectAtIndexUnchecked takes int32). Using int32
+#     in the queue is consistent with the rest of the API.
+#
+# JUDGEMENT CALL (Phase 5.g / cycle counter width).
+#
+# uint32_t for the cycle counter. Justification (per prompt's corner
+# case + spec §4.2.1):
+#
+#   * uint32 supports 4 billion cycles. At 1 cycle/sec sustained
+#     (an aggressive cadence; production typically <1 cycle/sec)
+#     the wraparound is at ~136 years. Far beyond any production
+#     uptime.
+#
+#   * Wraparound is BENIGN: the cycle counter is used modulo 3 to
+#     select the reachability bit. The ONLY observable effect of
+#     wrap is one cycle where the rotation re-uses bit N twice.
+#     The spec §4.2.1 explicitly contemplates this -- the rotating-
+#     flag scheme is correctness-preserving across counter wrap.
+#
+#   * uint64 would double the atomic-load cost on 32-bit ARM (older
+#     mobile targets) for no benefit. The Quest 3 Cortex-A78 is
+#     64-bit so this isn't a current concern, but the principled
+#     posture matches the spec's documented uint32 width.
+#
+# JUDGEMENT CALL (Phase 5.g / MarkObject double-push protection).
+#
+# MarkObject uses fetch_or on the atomic ReachabilityFlag. The
+# canonical pattern (per prompt's corner case):
+#
+#   const uint32_t Mask = CurrentCycleReachabilityMask();
+#   const uint32_t Old = obj->ReachabilityFlag.fetch_or(Mask,
+#       std::memory_order_acq_rel);
+#   return (Old & Mask) == 0;
+#
+# fetch_or atomicity guarantees the RMW sequence linearises. Two
+# threads concurrently marking the same object: one returns Old-
+# WITHOUT-bit (true; first-mark; pushes to gray queue); the other
+# returns Old-WITH-bit (false; not first-mark; skips push). Double-
+# push is structurally impossible; the bit ends set regardless of
+# race direction; the queue sees exactly one push.
+#
+# This is the canonical correct pattern (Boehm "Threads cannot be
+# implemented as a library"; ISO C++ atomics). Phase 5.g ships the
+# canonical pattern.
+#
+# JUDGEMENT CALL (Phase 5.g / thread-death-during-mark).
+#
+# MVP scope: the dedicated marker thread is the sole worker; it
+# lives for the engine's lifetime. There is no thread-death-during-
+# mark scenario in Phase 5.g. The FXGrayQueue header documents the
+# contract for future multi-worker integration: on thread death,
+# the dying thread's TLS gray queue MUST be drained into the global
+# overflow list before the thread exits. Phase 5.g leaves the hook
+# as a documented future-work item; the dedicated-marker-thread
+# discipline is sufficient for the MVP.
+#
+# JUDGEMENT CALL (Phase 5.g / termination detection).
+#
+# Spec §4.4: "mark phase ends when all gray queues + SATB queues are
+# empty AND no dirty cards remain to scan". Phase 5.g MVP is single-
+# worker, so the termination predicate reduces to:
+#
+#   while (TLS-gray non-empty OR global-overflow non-empty OR
+#          SATB-log non-empty OR per-thread-SATB non-empty OR
+#          dirty-cards present):
+#     drain everything; iterate
+#
+# The fixed-point iteration is bounded by the heap committed-
+# capacity (no infinite loops; every iteration makes monotonic
+# progress on the total marked set; the schema-walk visitor only
+# pushes UNmarked objects).
+#
+# The Dijkstra-Scholten style "active worker count" termination
+# detection (per prompt's corner case) is for the multi-worker
+# case (post-System-8 XTaskGraph integration). Single-worker MVP
+# termination is straightforward iteration-to-fixpoint.
+#
+# JUDGEMENT CALL (Phase 5.g / dirty-card re-scan strategy).
+#
+# Spec §4.5: at end-of-mark, walk every dirty card; for each
+# XObject whose first cache line falls within the card, re-walk its
+# schema to discover new references. Clear cards on visit.
+#
+# Phase 5.g implementation: the card table is INDEXED BY HEAP-
+# ADDRESS, not by XObject*. To resolve "which XObjects fall in card
+# N", we walk FXObjectArray and test each XObject's address against
+# the card bounds.
+#
+# This is O(N * dirty-cards) in the worst case; for the typical 50k
+# objects + <5% dirty cards (the saturation threshold is 50% per
+# spec §4.5), the walk is sub-millisecond.
+#
+# FUTURE OPTIMISATION (post-System-8): maintain a per-card LIVELY
+# LIST of XObject pointers; the dirty-card walk becomes O(card-list
+# entries) instead of O(N). The current implementation is sufficient
+# for the Foundation Prototype acceptance gate.
+#
+# JUDGEMENT CALL (Phase 5.g / FEvent member type).
+#
+# FEvent (HAL/FEvent.h) is a heap-allocated abstract class with a
+# protected ctor + factory methods (CreateAutoReset /
+# CreateManualReset). Direct value-storage as a member is not
+# possible.
+#
+# Phase 5.g stores the trigger event as FEvent*:
+#   * Allocated in __Init via FEvent::CreateAutoReset() (lazily;
+#     only when the marker thread is actually spawned).
+#   * Freed in dtor via FEvent::Destroy.
+#   * Trigger() / Wait() called through the pointer.
+#
+# Alternative (FEventPtr unique-pointer wrapper from FEvent.h) was
+# considered. The raw pointer + dtor cleanup is principled because
+# the FXObjectCollector singleton's lifetime IS the process lifetime
+# (function-local-static); the dtor runs at process teardown and
+# IS the correct release point. The unique-pointer's RAII wrapping
+# would add complexity without benefit.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
