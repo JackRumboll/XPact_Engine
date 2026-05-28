@@ -6,6 +6,7 @@
 // =====================================================================
 
 #include "XObject/FXObjectArray.h"
+#include "XObject/FXObjectHotReloadState.h"
 #include "XObject/XObject.h"
 
 #include "HAL/FMemory.h"
@@ -280,6 +281,17 @@ namespace XCore
     {
         XPACT_CHECK(OutSerialNumber != nullptr);
 
+        // Hot-reload gate (per spec §9.2 + Phase 5.j). When XLiveCoding
+        // opens the quiesce window, FXObjectArray AllocLock is quiesced
+        // (no new ReserveSlot / ReleaseSlot during cascade). Spin-wait
+        // until FinishHotReloadCascade clears the flag. The wait is
+        // bounded by §11 acceptance criterion (e) cascade timeout
+        // (<120 s nominal).
+        if (::XCore::IsHotReloadInProgress())
+        {
+            ::XCore::WaitWhileHotReloadInProgress();
+        }
+
         ::XCore::HAL::FScopedWriteLock WriteLock(m_lock);
 
         ::int32 Index;
@@ -354,6 +366,12 @@ namespace XCore
     // =================================================================
     ::int32 FXObjectArray::AllocateEntry(XObject* ForObject) noexcept
     {
+        // Hot-reload gate -- mirror of ReserveSlot's wait.
+        if (::XCore::IsHotReloadInProgress())
+        {
+            ::XCore::WaitWhileHotReloadInProgress();
+        }
+
         ::XCore::HAL::FScopedWriteLock WriteLock(m_lock);
 
         ::int32 Index;
@@ -396,6 +414,15 @@ namespace XCore
     void FXObjectArray::FreeEntry(::int32 InternalIndex) noexcept
     {
         XPACT_CHECK(InternalIndex > 0);
+
+        // Hot-reload gate -- mirror of ReserveSlot's wait. FreeEntry
+        // mutates the SerialNumber + free-list, which would race
+        // against the cascade's atomic ClassPrivate stores; the
+        // quiesce flag forces ordering.
+        if (::XCore::IsHotReloadInProgress())
+        {
+            ::XCore::WaitWhileHotReloadInProgress();
+        }
 
         ::XCore::HAL::FScopedWriteLock WriteLock(m_lock);
 
@@ -971,6 +998,15 @@ namespace XCore
     void FXObjectArray::ReleaseSlot(::int32 InternalIndex) noexcept
     {
         XPACT_CHECK(InternalIndex > 0);
+
+        // Hot-reload gate -- mirror of ReserveSlot's wait. ReleaseSlot
+        // is the sweep-side slot release; the cascade's atomic
+        // ClassPrivate stores would race against the slot SerialNumber
+        // bump.
+        if (::XCore::IsHotReloadInProgress())
+        {
+            ::XCore::WaitWhileHotReloadInProgress();
+        }
 
         ::XCore::HAL::FScopedWriteLock WriteLock(m_lock);
 

@@ -28,6 +28,7 @@
 #include "XObject/FXObjectArray.h"
 #include "XObject/FXObjectArrayEntry.h"
 #include "XObject/FXObjectGCCardTable.h"
+#include "XObject/FXObjectHotReloadState.h"
 #include "XObject/FXObjectLifecycleTable.h"
 #include "XObject/FXObjectSatbQueue.h"
 #include "XObject/FXObjectSchemaWalker.h"
@@ -251,6 +252,22 @@ void FXObjectCollector::__ResetForTests() noexcept
 // =====================================================================
 void FXObjectCollector::CollectGarbage(EXGCOptions Opts) noexcept
 {
+    // Hot-reload gate (per spec §9.2 + Phase 5.j). XLiveCoding's
+    // BeginHotReloadQuiesce sets g_XHotReloadInProgress to block new
+    // cycles from starting. The synchronous CollectGarbage path must
+    // refuse to run during the quiesce window (mid-cascade ClassPrivate
+    // rebinds would race against the GC's schema walk).
+    //
+    // The refusal is silent: callers that explicitly invoke
+    // CollectGarbage during a hot-reload cascade are presumed to be
+    // diagnostic / test code that can tolerate a no-op return. The
+    // production GC path uses Trigger which goes through the same
+    // gate.
+    if (::XCore::IsHotReloadInProgress())
+    {
+        return;
+    }
+
     // Lock-acquire serialises against a concurrent marker-thread cycle.
     // The lock is FCriticalSection (recursive on Win64); a re-entrant
     // CollectGarbage call (e.g., from inside a visitor lambda) would
@@ -268,6 +285,20 @@ void FXObjectCollector::CollectGarbage(EXGCOptions Opts) noexcept
 // =====================================================================
 void FXObjectCollector::Trigger(EXGCTriggerReason Reason) noexcept
 {
+    // Hot-reload gate (per spec §9.2 + Phase 5.j). XLiveCoding's
+    // BeginHotReloadQuiesce sets g_XHotReloadInProgress to block new
+    // cycles. We refuse to set m_triggerPending or wake the marker
+    // thread; the cascade's FinishHotReloadCascade will Trigger a
+    // post-cascade cycle on our behalf (per spec §9.2 step 5).
+    //
+    // The MarkerThreadMain loop ALSO consults this flag at each
+    // wake-up boundary (below) so any pending trigger that was queued
+    // BEFORE the quiesce flag was set is also gated.
+    if (::XCore::IsHotReloadInProgress())
+    {
+        return;
+    }
+
     // Coalesce: if a trigger is already pending, ignore. The marker
     // thread will run one cycle and observe the next Trigger after it
     // returns to the wait. This bounds the per-cycle trigger spam to
@@ -322,6 +353,18 @@ void FXObjectCollector::MarkerThreadMain() noexcept
         if (m_shutdownRequested.load(::std::memory_order_acquire))
         {
             return;
+        }
+
+        // Hot-reload gate (per spec §9.2 + Phase 5.j). If a trigger
+        // raced against BeginHotReloadQuiesce (the trigger was queued
+        // before the flag was set + the marker thread wakes after the
+        // flag was set), we MUST NOT start the cycle. Clear the
+        // pending flag + loop back to wait. FinishHotReloadCascade
+        // will issue a fresh Trigger when the cascade is done.
+        if (::XCore::IsHotReloadInProgress())
+        {
+            m_triggerPending.store(false, ::std::memory_order_release);
+            continue;
         }
 
         // Clear pending; the cycle will service the requested run.
