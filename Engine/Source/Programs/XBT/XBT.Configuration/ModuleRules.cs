@@ -249,6 +249,42 @@ public class ModuleRules
     public List<string> PrivateDefinitions { get; init; } = new();
 
     // -----------------------------------------------------------------
+    // Additional libraries (Contract Section 9.1; Phase 5 test-link wiring)
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Module-relative or absolute paths to additional libraries the
+    /// linker must include on this module's link line. Format:
+    /// platform-specific (e.g. <c>"lib/Win64/foo.lib"</c> on Win64;
+    /// <c>"lib/Linux/libfoo.a"</c> on Linux/Android). BuildMode
+    /// resolves module-relative entries against the module's
+    /// <c>DescriptorPath</c> parent directory at link-emit time
+    /// and passes the resolved absolute list to the toolchain via
+    /// <see cref="ModuleRules.AdditionalLibraries"/> (consumers should
+    /// pre-resolve before calling LinkModule / LinkExecutable; absolute
+    /// entries pass through unchanged). Used by Test modules to pull
+    /// in static archives that the per-cpp executables need (e.g.
+    /// Sleef as an import lib), and by ThirdParty wrappers that
+    /// re-export a pre-built archive.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Both XMSVCToolChain and XClangToolChain consume this list at
+    /// <c>LinkModule</c> + <c>LinkExecutable</c> emission time and
+    /// append it AFTER the produced object files but BEFORE the
+    /// system default libs. This ordering matches the MSVC / clang
+    /// driver convention (linker walks args left-to-right; later
+    /// names resolve earlier-named symbols).
+    /// </para>
+    /// <para>
+    /// Empty by default. Production callers populate this from the
+    /// <c>additional_libraries</c> TOML field (see
+    /// <see cref="BuildTomlParser"/>).
+    /// </para>
+    /// </remarks>
+    public List<string> AdditionalLibraries { get; init; } = new();
+
+    // -----------------------------------------------------------------
     // Compile environment (Contract Section 9.1)
     // -----------------------------------------------------------------
 

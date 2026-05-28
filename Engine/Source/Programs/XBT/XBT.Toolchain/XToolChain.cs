@@ -115,11 +115,98 @@ public abstract class XToolChain
     /// Produce the link action for a module. One
     /// <see cref="XActionType.LinkModuleAction"/> per module.
     /// </summary>
+    /// <param name="additionalLibraries">
+    /// Optional pre-resolved absolute paths to additional libraries the
+    /// link must include (e.g. dependency module import libs, vendored
+    /// static archives). The toolchain appends these to the link line
+    /// after the per-source object files but before the system default
+    /// libs. BuildMode pre-resolves <see cref="ModuleRules.AdditionalLibraries"/>
+    /// + transitive dependency module artefacts here. When null or empty,
+    /// the link line only carries the toolchain's intrinsic system-lib
+    /// set (libpaths + DefaultSystemLibs).
+    /// </param>
+    /// <param name="additionalPrerequisites">
+    /// Optional pre-resolved absolute paths to additional action-graph
+    /// prerequisites (typically the producer-visible <c>.dll</c> paths
+    /// for transitive dependency modules; on Win64 the .lib appears on
+    /// the link line but the .dll is the action-graph producer output
+    /// because link.exe writes the .lib only when exports exist).
+    /// These paths land in
+    /// <see cref="IExternalAction.PrerequisiteItems"/> but do NOT
+    /// appear on the link command line; they exist purely to drive
+    /// the topological sort.
+    /// </param>
     public abstract IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,
         IReadOnlyList<FileItem> objectFiles,
-        string outputDir);
+        string outputDir,
+        IReadOnlyList<string>? additionalLibraries = null,
+        IReadOnlyList<string>? additionalPrerequisites = null);
+
+    /// <summary>
+    /// Produce a link action that builds an EXECUTABLE (not a shared
+    /// library) from a single object file plus the consumed module
+    /// imports + additional libraries. One
+    /// <see cref="XActionType.LinkModuleAction"/> per test
+    /// translation unit. Phase 5 test-module wiring per
+    /// <c>/Documents/XBT.html</c> Section 5.3 (test executables).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The MSVC difference vs <see cref="LinkModule"/>:
+    /// <list type="bullet">
+    ///   <item>No <c>/DLL</c> flag (default is executable).</item>
+    ///   <item><c>/SUBSYSTEM:CONSOLE</c> + <c>/ENTRY:mainCRTStartup</c>
+    ///   so <c>int main()</c> binds correctly.</item>
+    ///   <item><c>/OUT:&lt;name&gt;.exe</c> instead of
+    ///   <c>/OUT:&lt;name&gt;.dll</c>.</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// The Clang difference: no <c>-shared</c>; <c>-o &lt;name&gt;.exe</c>
+    /// on Windows, <c>-o &lt;name&gt;</c> on Linux/Android.
+    /// </para>
+    /// <para>
+    /// Re-uses the existing <see cref="XActionType.LinkModuleAction"/>
+    /// slot intentionally. A new slot would rotate the
+    /// <see cref="ActionHistory.CurrentVersion"/> hash and invalidate
+    /// every cache entry across the engine; the executable-vs-shared
+    /// distinction is captured by the action's
+    /// <see cref="IExternalAction.CommandVersion"/> (which hashes
+    /// <see cref="IExternalAction.ResponseFileContents"/> per
+    /// <see cref="ExternalAction.ComputeCommandVersion"/> item 4) and
+    /// by the <see cref="IExternalAction.ProducedItems"/> extension
+    /// (<c>.exe</c> vs <c>.dll</c>).
+    /// </para>
+    /// </remarks>
+    /// <param name="module">The owning test module.</param>
+    /// <param name="target">The target driving the build.</param>
+    /// <param name="objectFile">
+    /// The single <c>.obj</c> / <c>.o</c> produced from a test
+    /// translation unit (one test cpp = one obj = one executable).
+    /// </param>
+    /// <param name="exeName">
+    /// Output executable name (without extension). The toolchain
+    /// appends the platform's executable extension (<c>.exe</c> on
+    /// Win64; bare name on Linux/Android).
+    /// </param>
+    /// <param name="outputDir">Absolute path to the output directory.</param>
+    /// <param name="additionalLibraries">
+    /// Pre-resolved absolute paths to additional libraries the test
+    /// executable must link against. Production callers pass the
+    /// union of the test module's transitive dependency module import
+    /// libs + the test module's own
+    /// <see cref="ModuleRules.AdditionalLibraries"/>.
+    /// </param>
+    public abstract IExternalAction LinkExecutable(
+        ModuleRules module,
+        TargetRules target,
+        FileItem objectFile,
+        string exeName,
+        string outputDir,
+        IReadOnlyList<string>? additionalLibraries = null,
+        IReadOnlyList<string>? additionalPrerequisites = null);
 
     /// <summary>
     /// Produce the per-module PCH generation action. Returns the

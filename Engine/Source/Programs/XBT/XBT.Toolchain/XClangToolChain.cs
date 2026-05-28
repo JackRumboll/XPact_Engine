@@ -1115,7 +1115,9 @@ public sealed class XClangToolChain : XToolChain
         ModuleRules module,
         TargetRules target,
         IReadOnlyList<FileItem> objectFiles,
-        string outputDir)
+        string outputDir,
+        IReadOnlyList<string>? additionalLibraries = null,
+        IReadOnlyList<string>? additionalPrerequisites = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -1189,16 +1191,44 @@ public sealed class XClangToolChain : XToolChain
             rspArgs.Add(obj.FullPath);
         }
 
-        // NOTE: ModuleRules in XBT.Configuration does not yet expose an
-        // AdditionalLibraries collection. When that field lands, append
-        // its contents to rspArgs here.
+        // Additional libraries (transitive dependency module artefacts +
+        // module-declared additional_libraries pre-resolved by
+        // BuildMode). Sorted ordinal so two builds with the same set
+        // produce byte-identical bodies.
+        if (additionalLibraries is not null && additionalLibraries.Count > 0)
+        {
+            List<string> sortedLibs = new(additionalLibraries);
+            sortedLibs.Sort(StringComparer.Ordinal);
+            foreach (string lib in sortedLibs)
+            {
+                rspArgs.Add(lib);
+            }
+        }
+
+        // Prerequisite list: the sorted .o set + additionalPrerequisites
+        // (the producer-visible .so paths). additionalLibraries goes
+        // into the response file but not into prereqs since on
+        // Linux/Android the .so doubles as both linker input and
+        // producer output anyway — additionalPrerequisites will
+        // typically duplicate additionalLibraries on those platforms,
+        // and the prereq list dedupes via the sort + ExternalAction.Create
+        // unique-path check.
+        List<FileItem> prereqs = new(sortedObjs);
+        if (additionalPrerequisites is not null)
+        {
+            foreach (string p in additionalPrerequisites)
+            {
+                prereqs.Add(FileItem.GetItemByPath(p));
+            }
+        }
+        prereqs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
 
         string responseFileContents = FormatResponseFile(rspArgs);
 
         return ExternalAction.Create(new ExternalAction
         {
             ActionType = XActionType.LinkModuleAction,
-            PrerequisiteItems = sortedObjs,
+            PrerequisiteItems = prereqs,
             ProducedItems = new[] { FileItem.GetItemByPath(soPath) },
             CommandPath = _clangPath,
             // CommandArguments deliberately empty: ProcessActionRunner
@@ -1219,6 +1249,101 @@ public sealed class XClangToolChain : XToolChain
             CacheKeyComponents = BuildLinkCacheKeyComponents(module, target, androidTriple),
             // Audit fix R5-C2: clang's linker driver writes -o <so>
             // directly to the final path.
+            bProducerWritesFinalPath = true,
+        });
+    }
+
+    /// <summary>
+    /// Produce a per-test-cpp executable link action for Clang. Mirrors
+    /// <see cref="LinkModule"/> but emits the executable flag set
+    /// (no <c>-shared</c>; <c>-o &lt;name&gt;</c> with no extension
+    /// on Linux/Android; <c>.exe</c> extension on Windows where Clang
+    /// is used as a fallback toolchain).
+    /// </summary>
+    /// <inheritdoc/>
+    public override IExternalAction LinkExecutable(
+        ModuleRules module,
+        TargetRules target,
+        FileItem objectFile,
+        string exeName,
+        string outputDir,
+        IReadOnlyList<string>? additionalLibraries = null,
+        IReadOnlyList<string>? additionalPrerequisites = null)
+    {
+        ArgumentNullException.ThrowIfNull(module);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(objectFile);
+        ArgumentException.ThrowIfNullOrEmpty(exeName);
+        ArgumentException.ThrowIfNullOrEmpty(outputDir);
+
+        List<string> rspArgs = new();
+        // NO -shared flag (executable).
+        rspArgs.Add("-fno-ident");
+        rspArgs.Add("-Wl,--build-id=none");
+
+        // Android target triple (same gate as LinkModule).
+        string? androidTriple = null;
+        if (_platform == Platform.Android)
+        {
+            androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
+            rspArgs.Add($"--target={androidTriple}");
+        }
+
+        // Output path: bare executable name on Linux/Android; .exe on
+        // Windows (Clang-on-Windows is the fallback driver for cross-
+        // compile scenarios that don't use cl.exe).
+        string fullExeName = _platform == Platform.Win64 ? exeName + ".exe" : exeName;
+        string exePath = Path.Combine(outputDir, fullExeName);
+        rspArgs.Add("-o");
+        rspArgs.Add(exePath);
+
+        if (module.SimPath)
+        {
+            rspArgs.Add("-Wl,--no-undefined");
+        }
+
+        rspArgs.Add(objectFile.FullPath);
+
+        if (additionalLibraries is not null && additionalLibraries.Count > 0)
+        {
+            List<string> sortedLibs = new(additionalLibraries);
+            sortedLibs.Sort(StringComparer.Ordinal);
+            foreach (string lib in sortedLibs)
+            {
+                rspArgs.Add(lib);
+            }
+        }
+
+        List<FileItem> prereqs = new() { objectFile };
+        if (additionalPrerequisites is not null)
+        {
+            foreach (string p in additionalPrerequisites)
+            {
+                prereqs.Add(FileItem.GetItemByPath(p));
+            }
+        }
+        prereqs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        string responseFileContents = FormatResponseFile(rspArgs);
+
+        return ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.LinkModuleAction,
+            PrerequisiteItems = prereqs,
+            ProducedItems = new[] { FileItem.GetItemByPath(exePath) },
+            CommandPath = _clangPath,
+            CommandArguments = Array.Empty<string>(),
+            ResponseFileContents = responseFileContents,
+            WorkingDirectory = _repoRoot,
+            CommandDescription = "LinkExe",
+            StatusDescription = fullExeName,
+            Module = module.Name,
+            Tier = module.Tier.ToString(),
+            SimPath = module.SimPath,
+            Configuration = target.Configuration,
+            Platform = target.Platform,
+            Weight = 4.0,
+            CacheKeyComponents = BuildLinkCacheKeyComponents(module, target, androidTriple),
             bProducerWritesFinalPath = true,
         });
     }
@@ -1453,6 +1578,13 @@ public sealed class XClangToolChain : XToolChain
         // The XSimPathMathOverrides.h include gate per Section 4.3:
         //   -include XSimPathMathOverrides.h
         //
+        // ThirdParty sim-path modules (e.g. Sleef) skip the include
+        // gate: the override exists so consumers' std::sin/cos/sqrt
+        // calls redirect to Sleef wrappers; Sleef IS the wrapper
+        // implementation and does not need to redirect to itself.
+        // See XMSVCToolChain.GetCompileArguments_SimPath for the
+        // full rationale.
+        //
         // Android ARM64 also gets -mllvm -enable-fp-contract=false to
         // suppress NEON FMA per Section 4.2 ARM64 row.
         List<string> flags = new()
@@ -1461,8 +1593,12 @@ public sealed class XClangToolChain : XToolChain
             "-fno-fast-math",
             "-fno-finite-math-only",
             "-mno-fma",
-            "-include", "XSimPathMathOverrides.h",
         };
+        if (module.ModuleType != ModuleType.ThirdParty)
+        {
+            flags.Add("-include");
+            flags.Add("XSimPathMathOverrides.h");
+        }
 
         if (_platform == Platform.Android)
         {

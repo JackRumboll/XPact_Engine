@@ -94,6 +94,7 @@ public static class BuildTomlParser
             "private_include_paths",
             "public_definitions",
             "private_definitions",
+            "additional_libraries",
         };
 
     /// <summary>
@@ -166,6 +167,7 @@ public static class BuildTomlParser
             "private_include_paths",
             "public_definitions",
             "private_definitions",
+            "additional_libraries",
         };
 
     /// <summary>
@@ -487,6 +489,12 @@ public static class BuildTomlParser
             PrivateIncludePaths = ReadStringList(model, "private_include_paths", sourcePath),
             PublicDefinitions = ReadStringList(model, "public_definitions", sourcePath),
             PrivateDefinitions = ReadStringList(model, "private_definitions", sourcePath),
+            // Phase 5 test-link wiring: optional list of library paths
+            // appended verbatim to the link line. Module-relative entries
+            // are NOT resolved here; BuildMode resolves them against the
+            // module's descriptor parent directory before passing to the
+            // toolchain. Empty default keeps existing fixtures compiling.
+            AdditionalLibraries = ReadStringList(model, "additional_libraries", sourcePath),
         };
         // Audit fix R8-M3: inject the descriptor content hash via the
         // in-assembly setter. DescriptorContentHash is private-set so

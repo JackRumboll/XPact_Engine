@@ -288,6 +288,12 @@ public static class BuildTomlSerializer
                     EmitStringArrayField(sb, key, r.PrivateDefinitions);
                 }
                 break;
+            case "additional_libraries":
+                if (emitDefaults || r.AdditionalLibraries.Count > 0)
+                {
+                    EmitStringArrayField(sb, key, r.AdditionalLibraries);
+                }
+                break;
             default:
                 // Should be impossible: keys originate from
                 // KnownTopLevelKeys above. Throw to surface any drift.

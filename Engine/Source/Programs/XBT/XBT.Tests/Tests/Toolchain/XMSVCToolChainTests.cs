@@ -889,6 +889,167 @@ public sealed class XMSVCToolChainTests : IDisposable
         Assert.Contains("\"\"\n", body);
     }
 
+    // =================================================================
+    // Phase 5 test-link wiring: LinkExecutable + LinkModule.additionalLibraries
+    // =================================================================
+
+    /// <summary>
+    /// LinkExecutable emits the executable flag set: no <c>/DLL</c>;
+    /// <c>/SUBSYSTEM:CONSOLE</c> + <c>/ENTRY:mainCRTStartup</c>;
+    /// <c>.exe</c> extension on the produced item.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_EmitsConsoleSubsystem_NotDll()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "MyTest.obj"));
+        IExternalAction link = _toolchain.LinkExecutable(
+            module, target, obj, exeName: "MyTest", outputDir: _scratchDir);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.DoesNotContain("/DLL", rsp.Split('\n'));
+        Assert.Contains("/SUBSYSTEM:CONSOLE", rsp);
+        Assert.Contains("/ENTRY:mainCRTStartup", rsp);
+
+        // Produced item carries the .exe extension.
+        Assert.Single(link.ProducedItems);
+        Assert.EndsWith("MyTest.exe", link.ProducedItems[0].FullPath);
+    }
+
+    /// <summary>
+    /// LinkExecutable carries the same reproducibility envelope as
+    /// LinkModule (the test exe must be cross-host bit-stable for the
+    /// per-test-cpp executable pattern to be cache-coherent).
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_ReproducibilityEnvelope_PresentInResponseFile()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "T.obj"));
+        IExternalAction link = _toolchain.LinkExecutable(
+            module, target, obj, exeName: "T", outputDir: _scratchDir);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains("/BREPRO", rsp);
+        Assert.Contains("/TIMESTAMP:0", rsp);
+        Assert.Contains("/INCREMENTAL:NO", rsp);
+        Assert.Contains("/cgthreads:8", rsp);
+    }
+
+    /// <summary>
+    /// LinkExecutable appends additional libraries (transitive dep
+    /// import libs + module-declared additional_libraries) AFTER the
+    /// .obj entry on the link line. The libs appear in the response
+    /// file body.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_AppendsAdditionalLibraries()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "T.obj"));
+        string libA = Path.Combine(_scratchDir, "lib", "XCore.lib");
+        string libB = Path.Combine(_scratchDir, "lib", "Sleef.lib");
+        IExternalAction link = _toolchain.LinkExecutable(
+            module, target, obj,
+            exeName: "T",
+            outputDir: _scratchDir,
+            additionalLibraries: new[] { libA, libB });
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains(libA, rsp);
+        Assert.Contains(libB, rsp);
+    }
+
+    /// <summary>
+    /// LinkExecutable's PrerequisiteItems include the .obj plus any
+    /// additionalPrerequisites passed in (typically the producer-
+    /// visible .dll paths of transitive deps). additionalLibraries
+    /// reaches the linker via the response file but is NOT added to
+    /// prereqs because its .lib producer is conditional on exports.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_PrerequisitesIncludeObjAndAdditionalPrerequisites()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "T.obj"));
+        string dllA = Path.Combine(_scratchDir, "bin", "AAA.dll");
+        string dllB = Path.Combine(_scratchDir, "bin", "ZZZ.dll");
+
+        IExternalAction link = _toolchain.LinkExecutable(
+            module, target, obj,
+            exeName: "T",
+            outputDir: _scratchDir,
+            additionalLibraries: null,
+            additionalPrerequisites: new[] { dllB, dllA }); // reversed input
+
+        // PrerequisiteItems sorted ordinal: AAA.dll, T.obj, ZZZ.dll.
+        Assert.Equal(3, link.PrerequisiteItems.Count);
+        Assert.Contains(link.PrerequisiteItems, p => p.FullPath == dllA);
+        Assert.Contains(link.PrerequisiteItems, p => p.FullPath == dllB);
+        Assert.Contains(link.PrerequisiteItems, p => p.FullPath == obj.FullPath);
+    }
+
+    /// <summary>
+    /// LinkModule (the existing surface) accepts an additionalLibraries
+    /// list. The libs appear in the response file body AFTER the .obj
+    /// paths so symbol resolution proceeds left-to-right correctly.
+    /// </summary>
+    [Fact]
+    public void LinkModule_AppendsAdditionalLibraries_AfterObjs()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        string libA = Path.Combine(_scratchDir, "lib", "XCore.lib");
+        IExternalAction link = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            additionalLibraries: new[] { libA });
+
+        string rsp = link.ResponseFileContents!;
+        // The .obj path appears before the library on the link line
+        // (left-to-right walk; .obj references pull in lib symbols).
+        int objIdx = rsp.IndexOf(obj.FullPath, StringComparison.Ordinal);
+        int libIdx = rsp.IndexOf(libA, StringComparison.Ordinal);
+        Assert.True(objIdx >= 0, ".obj path absent from response file body.");
+        Assert.True(libIdx >= 0, "library path absent from response file body.");
+        Assert.True(objIdx < libIdx,
+            $".obj (idx {objIdx}) must precede library (idx {libIdx}) on the link line.");
+    }
+
+    /// <summary>
+    /// LinkExecutable + LinkModule produce DIFFERENT response file
+    /// bodies (and thus distinct CommandVersions) for the same .obj
+    /// input. The executable flag set is part of the cache key so a
+    /// switch from production-link to test-link forces a re-link.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_DistinctFromLinkModule_OnSameObj()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Shared.obj"));
+        IExternalAction asDll = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir);
+        IExternalAction asExe = _toolchain.LinkExecutable(
+            module, target, obj, exeName: "Shared", outputDir: _scratchDir);
+
+        Assert.NotEqual(asDll.ResponseFileContents, asExe.ResponseFileContents);
+        Assert.NotEqual(asDll.CommandVersion, asExe.CommandVersion);
+        // The produced extension differs (.dll vs .exe).
+        Assert.EndsWith(".dll", asDll.ProducedItems[0].FullPath);
+        Assert.EndsWith(".exe", asExe.ProducedItems[0].FullPath);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

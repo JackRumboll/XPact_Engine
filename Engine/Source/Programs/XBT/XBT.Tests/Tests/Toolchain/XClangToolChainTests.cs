@@ -851,6 +851,83 @@ public sealed class XClangToolChainTests : IDisposable
         Assert.Equal(Path.Combine(_scratchDir, "Foo.o"), objPath);
     }
 
+    // =================================================================
+    // Phase 5 test-link wiring: LinkExecutable + LinkModule.additionalLibraries
+    // =================================================================
+
+    /// <summary>
+    /// LinkExecutable for Linux emits an executable link (no
+    /// <c>-shared</c>) and the output has no extension on
+    /// Linux/Android.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_Linux_NoSharedFlag_BareNameOutput()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget(Platform.Linux);
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "MyTest.o"));
+        IExternalAction link = _linuxToolchain.LinkExecutable(
+            module, target, obj, exeName: "MyTest", outputDir: _scratchDir);
+
+        string rsp = link.ResponseFileContents!;
+        // Each line is a single arg; check membership not substring.
+        Assert.DoesNotContain("-shared", rsp.Split('\n'));
+
+        Assert.Single(link.ProducedItems);
+        string outPath = link.ProducedItems[0].FullPath;
+        // No .exe extension on Linux.
+        Assert.EndsWith("MyTest", outPath);
+        Assert.False(outPath.EndsWith(".exe", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// LinkExecutable appends additional libraries (transitive dep
+    /// import libs + module-declared additional_libraries) to the
+    /// link line after the .obj.
+    /// </summary>
+    [Fact]
+    public void LinkExecutable_AppendsAdditionalLibraries_Linux()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget(Platform.Linux);
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "T.o"));
+        string libA = Path.Combine(_scratchDir, "lib", "libXCore.so");
+        string libB = Path.Combine(_scratchDir, "lib", "libSleef.so");
+        IExternalAction link = _linuxToolchain.LinkExecutable(
+            module, target, obj,
+            exeName: "T",
+            outputDir: _scratchDir,
+            additionalLibraries: new[] { libA, libB });
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains(libA, rsp);
+        Assert.Contains(libB, rsp);
+    }
+
+    /// <summary>
+    /// LinkModule for Linux still emits <c>-shared</c>. The
+    /// additionalLibraries parameter passes through and lands in the
+    /// response file.
+    /// </summary>
+    [Fact]
+    public void LinkModule_Linux_StillEmitsShared_WithAdditionalLibs()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget(Platform.Linux);
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
+        string libA = Path.Combine(_scratchDir, "lib", "libXCore.so");
+        IExternalAction link = _linuxToolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            additionalLibraries: new[] { libA });
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains("-shared", rsp.Split('\n'));
+        Assert.Contains(libA, rsp);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

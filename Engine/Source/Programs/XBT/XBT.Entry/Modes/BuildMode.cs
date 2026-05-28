@@ -1336,6 +1336,19 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 reportActions,
                 effectiveIncludesByModule);
 
+        // Pre-pass: collect every module's directory so the per-module
+        // source enumeration can exclude files that live under a
+        // child / sibling module's directory. Without this gate the
+        // recursive walk under e.g. XCore/ also picks up files under
+        // XCore/Tests/ (a child module) and links them into XCore.dll,
+        // which produces LNK2005 "main already defined" collisions
+        // since every test cpp carries its own main().
+        List<string> allModuleDirs = new(targetModules.Count);
+        foreach (ModuleRecord rec in targetModules)
+        {
+            allModuleDirs.Add(Path.GetDirectoryName(rec.DescriptorPath)!);
+        }
+
         foreach (ModuleRecord rec in targetModules)
         {
             // Audit fix C9: cancellation point at every module iteration.
@@ -1344,9 +1357,22 @@ public sealed class BuildMode : IToolMode<BuildMode>
             ModuleRules module = rec.Rules;
             string moduleDir = Path.GetDirectoryName(rec.DescriptorPath)!;
 
-            // Enumerate the module's source files.
+            // Build the per-module child-dir exclusion list: every
+            // OTHER module's dir. The enumerator filters those before
+            // it sees them.
+            List<string> otherModuleDirs = new(allModuleDirs.Count - 1);
+            foreach (string d in allModuleDirs)
+            {
+                if (!string.Equals(d, moduleDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    otherModuleDirs.Add(d);
+                }
+            }
+
+            // Enumerate the module's source files (excluding files
+            // owned by child/sibling modules).
             (IReadOnlyList<FileItem> sourceFiles, IReadOnlyList<FileItem> headerFiles, IReadOnlyList<FileItem> csharpFiles) =
-                EnumerateModuleFiles(moduleDir);
+                EnumerateModuleFiles(moduleDir, otherModuleDirs);
             fileSetByModule[module.Name] = new ModuleFileSet(sourceFiles, headerFiles, csharpFiles);
             allSourceFiles.AddRange(sourceFiles);
             allSourceFiles.AddRange(headerFiles);
@@ -1482,47 +1508,99 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 }
             }
 
-            // Link action.
+            // Link action(s). Test modules emit ONE LinkExecutable per
+            // .obj (each test .cpp is a self-contained executable);
+            // non-test modules emit the existing single-LinkModule
+            // pattern. Phase 5 test-link wiring per
+            // <c>/Documents/XBT.html</c> Section 5.3 (test runners).
             if (objectFiles.Count > 0)
             {
                 string moduleBinDir = Path.Combine(engineRoot, "Binaries", target.Platform.ToString());
                 Directory.CreateDirectory(moduleBinDir);
-                IExternalAction link = toolchain.LinkModule(module, target, objectFiles, moduleBinDir);
-                actions.Add(link);
-                reportActions.Add(link);
 
-                // Phase 1g Fix B-2: post-link SleefFMACheck for sim-path
-                // modules. Per XCore-4a Rev 3 Section 17.3 C-extra,
-                // every sim-path linked artefact must be FMA-free.
-                // The scan runs synchronously after the link succeeds
-                // and aborts the build with exit code 41 on a hit.
-                //
-                // We register the verification as a follow-on closure
-                // tied to the link action's outputs; the runner invokes
-                // it after the link action completes. This integration
-                // is intentionally NOT a new XActionType slot because
-                // a slot addition rotates ActionHistory.CurrentVersion
-                // and invalidates every cache entry across the engine.
-                if (module.SimPath)
+                // Compute transitive dependency link artefacts:
+                // LinkInputs = paths the link command line names
+                // (.lib on Win64, .so on Linux/Android); ProducerArtefacts
+                // = paths the action graph's producer map keys on
+                // (.dll on Win64, .so on Linux/Android). The .lib /
+                // .so reaches the linker via additionalLibraries; the
+                // .dll / .so reaches the topo sort via
+                // additionalPrerequisites.
+                DependencyLinkArtefacts depArtefacts = ComputeDependencyLinkArtefacts(
+                    rec, moduleRecordByName, engineRoot, target.Platform);
+                IReadOnlyList<string> additionalLibsAbsolute =
+                    ResolveAdditionalLibraries(module.AdditionalLibraries, moduleDir);
+
+                List<string> linkLibraries = new(depArtefacts.LinkInputs.Count + additionalLibsAbsolute.Count);
+                linkLibraries.AddRange(depArtefacts.LinkInputs);
+                linkLibraries.AddRange(additionalLibsAbsolute);
+                IReadOnlyList<string> linkPrereqs = depArtefacts.ProducerArtefacts;
+
+                if (module.bIsTestModule)
                 {
-                    foreach (FileItem produced in link.ProducedItems)
+                    // Test module: per-cpp executable. Each .obj produces
+                    // its own .exe (named after the .cpp basename). The
+                    // test runner enumerates the manifest of test exes
+                    // to drive aggregate test execution.
+                    //
+                    // The test exe name is derived from the .obj path:
+                    // basename without extension. We use the .obj's
+                    // basename (rather than the .cpp's) so the per-test
+                    // disambiguation that the compile step applied via
+                    // ComposeObjectFilePath (Tests/HAL/.../CASContention.cpp
+                    // vs Tests/Containers/.../CASContention.cpp) is
+                    // preserved at the .exe level too.
+                    foreach (FileItem obj in objectFiles)
                     {
-                        // Only scan the primary linked binary (.dll / .so /
-                        // .lib / .a). Other artefacts (import libraries,
-                        // PDBs) are not disassemble-able for FMA purposes.
-                        string ext = Path.GetExtension(produced.FullPath);
-                        bool isLinkBinary = ext is ".dll" or ".so" or ".lib"
-                                                 or ".a"  or ".exe" or ".o";
-                        if (!isLinkBinary)
-                        {
-                            continue;
-                        }
+                        cancellationToken.ThrowIfCancellationRequested();
+                        string exeName = ComposeTestExecutableName(obj, moduleObjDir, module.Name);
+                        IExternalAction testLink = toolchain.LinkExecutable(
+                            module, target, obj, exeName, moduleBinDir, linkLibraries, linkPrereqs);
+                        actions.Add(testLink);
+                        reportActions.Add(testLink);
+                    }
+                }
+                else
+                {
+                    IExternalAction link = toolchain.LinkModule(
+                        module, target, objectFiles, moduleBinDir, linkLibraries, linkPrereqs);
+                    actions.Add(link);
+                    reportActions.Add(link);
 
-                        pendingSimPathArtefacts.Add(
-                            new SimPathArtefact(
-                                ArtefactPath: produced.FullPath,
-                                Platform: target.Platform,
-                                ModuleName: module.Name));
+                    // Phase 1g Fix B-2: post-link SleefFMACheck for sim-path
+                    // modules. Per XCore-4a Rev 3 Section 17.3 C-extra,
+                    // every sim-path linked artefact must be FMA-free.
+                    // The scan runs synchronously after the link succeeds
+                    // and aborts the build with exit code 41 on a hit.
+                    //
+                    // Test modules also produce sim-path artefacts when
+                    // module.SimPath is true; the per-test-exe variant
+                    // would multiply the FMA-check workload by ~120 for
+                    // XCore.Tests. Test-module sim-path artefacts are
+                    // covered by the static + per-cpp Sleef link
+                    // verification; the production sim-path FMA scan
+                    // remains a module-level gate.
+                    if (module.SimPath)
+                    {
+                        foreach (FileItem produced in link.ProducedItems)
+                        {
+                            // Only scan the primary linked binary (.dll / .so /
+                            // .lib / .a). Other artefacts (import libraries,
+                            // PDBs) are not disassemble-able for FMA purposes.
+                            string ext = Path.GetExtension(produced.FullPath);
+                            bool isLinkBinary = ext is ".dll" or ".so" or ".lib"
+                                                     or ".a"  or ".exe" or ".o";
+                            if (!isLinkBinary)
+                            {
+                                continue;
+                            }
+
+                            pendingSimPathArtefacts.Add(
+                                new SimPathArtefact(
+                                    ArtefactPath: produced.FullPath,
+                                    Platform: target.Platform,
+                                    ModuleName: module.Name));
+                        }
                     }
                 }
             }
@@ -2349,6 +2427,220 @@ public sealed class BuildMode : IToolMode<BuildMode>
     }
 
     /// <summary>
+    /// Compute the transitive set of dependency-module link
+    /// artefacts for <paramref name="activeRecord"/>'s link line. The
+    /// returned record carries TWO parallel lists:
+    /// <list type="bullet">
+    ///   <item><c>LinkInputs</c>: paths the link command line names
+    ///   (on Win64 the <c>.lib</c> import library; on Linux/Android
+    ///   the <c>.so</c> shared object). These flow into the
+    ///   toolchain's <c>additionalLibraries</c> parameter.</item>
+    ///   <item><c>ProducerArtefacts</c>: the action-graph-visible
+    ///   producer outputs (on Win64 the <c>.dll</c>; on Linux/Android
+    ///   the <c>.so</c> — same path as LinkInputs on those platforms).
+    ///   These flow into the toolchain's <c>additionalPrerequisites</c>
+    ///   parameter so the topological sort orders consumer links after
+    ///   producer links.</item>
+    /// </list>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On Win64 the consumer's link line names <c>XCore.lib</c> (the
+    /// import library that link.exe writes alongside <c>XCore.dll</c>
+    /// when the module has exported symbols). The action-graph
+    /// producer relationship sits on the <c>XCore.dll</c> output —
+    /// the .dll is ALWAYS produced; the .lib is produced only when
+    /// the module exports symbols. Mixing the two roles cleanly is
+    /// the split this record encodes: <c>LinkInputs</c> for the
+    /// linker command, <c>ProducerArtefacts</c> for the topo edge.
+    /// </para>
+    /// <para>
+    /// Walks the dependency closure exactly like
+    /// <see cref="ComputeEffectiveIncludePaths"/>: BFS through public +
+    /// private deps' edges, then through every reachable module's
+    /// PUBLIC deps. Per-edge <c>interface_module = true</c> dependencies
+    /// contribute no link artefact (header-only) and are skipped.
+    /// </para>
+    /// </remarks>
+    internal sealed record DependencyLinkArtefacts(
+        IReadOnlyList<string> LinkInputs,
+        IReadOnlyList<string> ProducerArtefacts);
+
+    internal static DependencyLinkArtefacts ComputeDependencyLinkArtefacts(
+        ModuleRecord activeRecord,
+        IReadOnlyDictionary<string, ModuleRecord> recordByName,
+        string engineRoot,
+        Platform platform)
+    {
+        ArgumentNullException.ThrowIfNull(activeRecord);
+        ArgumentNullException.ThrowIfNull(recordByName);
+        ArgumentException.ThrowIfNullOrEmpty(engineRoot);
+
+        string binDir = Path.Combine(engineRoot, "Binaries", platform.ToString());
+
+        List<string> linkInputs = new();
+        List<string> producerArtefacts = new();
+        HashSet<string> seenLinkInput = new(StringComparer.OrdinalIgnoreCase);
+        HashSet<string> seenProducer = new(StringComparer.OrdinalIgnoreCase);
+
+        HashSet<string> visitedModules = new(StringComparer.Ordinal)
+        {
+            activeRecord.Rules.Name,
+        };
+        Queue<ModuleDep> frontier = new();
+        foreach (ModuleDep dep in
+            activeRecord.Rules.PublicDependencyModuleNames
+                .Concat(activeRecord.Rules.PrivateDependencyModuleNames)
+                .OrderBy(d => d.Name, StringComparer.Ordinal))
+        {
+            frontier.Enqueue(dep);
+        }
+
+        while (frontier.Count > 0)
+        {
+            ModuleDep dep = frontier.Dequeue();
+            if (!visitedModules.Add(dep.Name))
+            {
+                continue;
+            }
+            // interface_module = true: header-only dep with no link artefact.
+            if (dep.InterfaceModule)
+            {
+                continue;
+            }
+            if (!recordByName.TryGetValue(dep.Name, out ModuleRecord? depRecord))
+            {
+                // Missing dep; tier validator already diagnosed.
+                continue;
+            }
+
+            (string linkInput, string producerArtefact) =
+                ComposeLinkAndProducerPaths(binDir, depRecord.Rules.Name, platform);
+            if (seenLinkInput.Add(linkInput))
+            {
+                linkInputs.Add(linkInput);
+            }
+            if (seenProducer.Add(producerArtefact))
+            {
+                producerArtefacts.Add(producerArtefact);
+            }
+
+            // Push the dep's PUBLIC deps onto the frontier for
+            // transitive closure (private deps stop propagating once
+            // they cross a module boundary).
+            foreach (ModuleDep nested in
+                depRecord.Rules.PublicDependencyModuleNames
+                    .OrderBy(d => d.Name, StringComparer.Ordinal))
+            {
+                if (!visitedModules.Contains(nested.Name))
+                {
+                    frontier.Enqueue(nested);
+                }
+            }
+        }
+
+        return new DependencyLinkArtefacts(linkInputs, producerArtefacts);
+    }
+
+    /// <summary>
+    /// Compose the (linker-input, producer-artefact) path pair for a
+    /// dependency module. Win64: linker input is the <c>.lib</c> import
+    /// library; producer artefact is the <c>.dll</c> (always written by
+    /// link.exe). Linux/Android: both paths are the same <c>.so</c>.
+    /// </summary>
+    private static (string LinkInput, string ProducerArtefact) ComposeLinkAndProducerPaths(
+        string binDir,
+        string moduleName,
+        Platform platform)
+    {
+        return platform switch
+        {
+            Platform.Win64 => (
+                Path.Combine(binDir, moduleName + ".lib"),
+                Path.Combine(binDir, moduleName + ".dll")),
+            Platform.Linux or Platform.Android => (
+                Path.Combine(binDir, "lib" + moduleName + ".so"),
+                Path.Combine(binDir, "lib" + moduleName + ".so")),
+            _ => (
+                Path.Combine(binDir, moduleName + ".lib"),
+                Path.Combine(binDir, moduleName + ".dll")),
+        };
+    }
+
+    /// <summary>
+    /// Resolve a module's <see cref="ModuleRules.AdditionalLibraries"/>
+    /// list into absolute paths. Module-relative entries (any path not
+    /// starting with a drive letter or "/") are joined against
+    /// <paramref name="moduleDir"/>; absolute entries pass through.
+    /// </summary>
+    private static IReadOnlyList<string> ResolveAdditionalLibraries(
+        IReadOnlyList<string> declared,
+        string moduleDir)
+    {
+        if (declared is null || declared.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+        List<string> resolved = new(declared.Count);
+        foreach (string entry in declared)
+        {
+            string trimmed = entry.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+            string absolute = Path.IsPathRooted(trimmed)
+                ? trimmed
+                : Path.GetFullPath(Path.Combine(moduleDir, trimmed));
+            resolved.Add(absolute);
+        }
+        return resolved;
+    }
+
+    /// <summary>
+    /// Compose the unique test executable name for a per-cpp object
+    /// file. Mirrors the disambiguation that
+    /// <see cref="XToolChain.ComposeObjectFilePath"/> applies at the
+    /// .obj layer: <c>{Module}_{relPathParts...}_{basename}</c> where
+    /// relPathParts is the .obj's parent directory relative to
+    /// <paramref name="moduleObjDir"/> with directory separators
+    /// replaced by underscores. Same-basename TUs in different
+    /// subdirectories get distinct .exe names without colliding.
+    /// </summary>
+    private static string ComposeTestExecutableName(
+        FileItem objectFile,
+        string moduleObjDir,
+        string moduleName)
+    {
+        string baseName = Path.GetFileNameWithoutExtension(objectFile.FullPath);
+        string objParent = Path.GetDirectoryName(objectFile.FullPath) ?? string.Empty;
+        string relParent;
+        try
+        {
+            relParent = Path.GetRelativePath(moduleObjDir, objParent);
+        }
+        catch
+        {
+            relParent = string.Empty;
+        }
+
+        // GetRelativePath returns "." when the parent is the obj dir;
+        // an absolute or "../" prefix means the .obj escaped — fall
+        // back to the bare basename in either case.
+        if (relParent is "." || relParent.Length == 0
+            || relParent.StartsWith("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(relParent))
+        {
+            return $"{moduleName}_{baseName}";
+        }
+
+        string flattened = relParent
+            .Replace(Path.DirectorySeparatorChar, '_')
+            .Replace(Path.AltDirectorySeparatorChar, '_');
+        return $"{moduleName}_{flattened}_{baseName}";
+    }
+
+    /// <summary>
     /// Resolve a module-relative include path to its canonical absolute
     /// form. Module-relative paths are simple subdirectory names (e.g.
     /// "Public", "Private/HAL") joined to the descriptor's parent dir;
@@ -2404,7 +2696,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
     /// </para>
     /// </remarks>
     private static (IReadOnlyList<FileItem> Sources, IReadOnlyList<FileItem> Headers, IReadOnlyList<FileItem> CSharpSources)
-        EnumerateModuleFiles(string moduleDir)
+        EnumerateModuleFiles(string moduleDir, IReadOnlyCollection<string>? childModuleDirs = null)
     {
         List<FileItem> sources = new();
         List<FileItem> headers = new();
@@ -2413,6 +2705,52 @@ public sealed class BuildMode : IToolMode<BuildMode>
         if (!Directory.Exists(moduleDir))
         {
             return (sources, headers, csharpSources);
+        }
+
+        // Audit fix: when a module's directory tree contains other
+        // module descriptors (e.g. XCore/Tests/XCore.Tests.Build.toml
+        // lives under XCore/), files under those child trees belong
+        // to the CHILD module, not the parent. Walking blindly with
+        // RecurseSubdirectories picks up the child's .cpp / .h files
+        // and links them into the parent's binary -- which causes
+        // LNK2005 "main already defined" collisions when the child
+        // is a test module of self-contained .cpp executables. The
+        // boundary check below excludes any path that lives under a
+        // sibling/child module's tree.
+        string normModuleDir = NormalizeForPrefix(moduleDir);
+        List<string>? normChildDirs = null;
+        if (childModuleDirs is not null && childModuleDirs.Count > 0)
+        {
+            normChildDirs = new List<string>(childModuleDirs.Count);
+            foreach (string c in childModuleDirs)
+            {
+                string normC = NormalizeForPrefix(c);
+                // Only include child dirs that are STRICTLY under
+                // moduleDir; sibling modules at the same depth don't
+                // appear in the recursive walk anyway.
+                if (normC.Length > normModuleDir.Length
+                    && normC.StartsWith(normModuleDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    normChildDirs.Add(normC);
+                }
+            }
+        }
+
+        bool BelongsToChild(string path)
+        {
+            if (normChildDirs is null)
+            {
+                return false;
+            }
+            string normPath = NormalizeForPrefix(path);
+            foreach (string c in normChildDirs)
+            {
+                if (normPath.StartsWith(c, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // Walk Public/Private/Internal subtrees + the module root.
@@ -2424,10 +2762,21 @@ public sealed class BuildMode : IToolMode<BuildMode>
         };
         foreach (string path in Directory.EnumerateFiles(moduleDir, "*.cpp", opts))
         {
+            if (BelongsToChild(path)) { continue; }
+            sources.Add(FileItem.GetItemByPath(path));
+        }
+        // Also enumerate .c sources so vendored C libraries (e.g.
+        // Sleef under Engine/Source/ThirdParty/Sleef/) build correctly.
+        // The toolchain treats them identically to .cpp at the
+        // CompileSource boundary — both produce .obj/.o artefacts.
+        foreach (string path in Directory.EnumerateFiles(moduleDir, "*.c", opts))
+        {
+            if (BelongsToChild(path)) { continue; }
             sources.Add(FileItem.GetItemByPath(path));
         }
         foreach (string path in Directory.EnumerateFiles(moduleDir, "*.h", opts))
         {
+            if (BelongsToChild(path)) { continue; }
             headers.Add(FileItem.GetItemByPath(path));
         }
         foreach (string path in Directory.EnumerateFiles(moduleDir, "*.cs", opts))
@@ -2441,6 +2790,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
             {
                 continue;
             }
+            if (BelongsToChild(path)) { continue; }
             csharpSources.Add(FileItem.GetItemByPath(path));
         }
         // Sort ordinal for deterministic order.
@@ -2448,6 +2798,20 @@ public sealed class BuildMode : IToolMode<BuildMode>
         headers.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         csharpSources.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         return (sources, headers, csharpSources);
+    }
+
+    /// <summary>
+    /// Normalize a directory path for prefix-based child-module
+    /// exclusion: trim trailing separators, append a single trailing
+    /// separator so prefix tests don't accidentally match siblings
+    /// (e.g. <c>XCoreTests/</c> as a prefix of <c>XCoreTestsX/</c>).
+    /// </summary>
+    private static string NormalizeForPrefix(string p)
+    {
+        string full = Path.GetFullPath(p);
+        char sep = Path.DirectorySeparatorChar;
+        full = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return full + sep;
     }
 
     /// <summary>
