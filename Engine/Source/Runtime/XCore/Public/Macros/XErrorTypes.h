@@ -99,14 +99,64 @@ namespace XCore
     };
 
     // -----------------------------------------------------------------
-    // ABI locks. All four enums are uint8-backed so Result<T, E> can
+    // FScenarioBoundaryError -- scenario-boundary mark-region clearing
+    // failure modes (XCoreXObject Rev 4 §3.6 + Foundation Prototype
+    // X11 per FIX-A-MIN-53).
+    //
+    // FXObjectAllocator::ReleaseClassPool returns Result<void,
+    // FScenarioBoundaryError>. The error variants describe WHY the
+    // sub-pool could NOT be released; the caller (XScenarios at scope
+    // close) falls back to a GC-driven collection per spec §4.7
+    // ("Pre-scenario-unload" trigger heuristic) when any variant fires.
+    //
+    // ENUM SHAPE (uint8-backed for the engine-wide ABI discipline; the
+    // variant is the principal payload; numeric counts/diagnostics
+    // ride alongside via the broader ReleaseClassPool emit path, NOT
+    // packed into the Result's E slot to keep the ABI surface small).
+    //
+    // VARIANTS:
+    //
+    //   * ReferenceFromOutsideSubpool -- at least one XObject NOT in
+    //                                     the ClassDescriptor sub-pool
+    //                                     references an XObject IN the
+    //                                     sub-pool. Releasing the
+    //                                     sub-pool would leave dangling
+    //                                     references; the spec's
+    //                                     reachability oracle has
+    //                                     vetoed the release.
+    //   * ClassNotRegistered          -- the ClassDescriptor was never
+    //                                     passed to RegisterClassPool
+    //                                     (or to AllocateRaw with that
+    //                                     class) so there is no
+    //                                     sub-pool to release.
+    //   * CollectorActive             -- ReleaseClassPool was called
+    //                                     while FXObjectCollector is
+    //                                     mid-mark; the spec §4.6
+    //                                     barrier forbids allocator
+    //                                     mutation across the mark
+    //                                     window.
+    //   * NullClassDescriptor         -- the ClassDescriptor argument
+    //                                     was nullptr (defence-in-depth;
+    //                                     normal callers pre-check).
+    // -----------------------------------------------------------------
+    enum class FScenarioBoundaryError : ::uint8
+    {
+        ReferenceFromOutsideSubpool, // at least one external XObject still references the sub-pool
+        ClassNotRegistered,          // ClassDescriptor has no registered sub-pool
+        CollectorActive,             // FXObjectCollector::IsMarking() is true at the call site
+        NullClassDescriptor,         // ClassDescriptor == nullptr
+    };
+
+    // -----------------------------------------------------------------
+    // ABI locks. All five enums are uint8-backed so Result<T, E> can
     // pack discriminator + error into 2 bytes (std::expected's
     // canonical layout when both T and E are trivially destructible
     // and the engine value is small).
     // -----------------------------------------------------------------
-    static_assert(sizeof(FParseError)      == 1, "FParseError ABI lock: uint8 underlying");
-    static_assert(sizeof(FBoundsError)     == 1, "FBoundsError ABI lock: uint8 underlying");
-    static_assert(sizeof(FStringError)     == 1, "FStringError ABI lock: uint8 underlying");
-    static_assert(sizeof(FDateRangeError)  == 1, "FDateRangeError ABI lock: uint8 underlying");
+    static_assert(sizeof(FParseError)            == 1, "FParseError ABI lock: uint8 underlying");
+    static_assert(sizeof(FBoundsError)           == 1, "FBoundsError ABI lock: uint8 underlying");
+    static_assert(sizeof(FStringError)           == 1, "FStringError ABI lock: uint8 underlying");
+    static_assert(sizeof(FDateRangeError)        == 1, "FDateRangeError ABI lock: uint8 underlying");
+    static_assert(sizeof(FScenarioBoundaryError) == 1, "FScenarioBoundaryError ABI lock: uint8 underlying");
 
 } // namespace XCore

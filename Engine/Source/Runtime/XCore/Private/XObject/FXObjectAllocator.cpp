@@ -77,6 +77,9 @@
 
 #include "XObject/FXObjectAllocator.h"
 #include "XObject/FXObjectArray.h"
+#include "XObject/FXObjectArrayEntry.h"     // Phase 5.i: ForEachObject visitor inspects entries.
+#include "XObject/FXObjectCollector.h"      // Phase 5.i: IsMarking() quiesce-check.
+#include "XObject/FXObjectSchemaWalker.h"   // Phase 5.i: WalkSchemaRefs for escape detection.
 #include "XObject/XObject.h"
 #include "XObject/XInsightsEmitHelpers.h"   // Phase 5.k: telemetry emit hooks.
 
@@ -1215,9 +1218,16 @@ namespace XCore
     // CoalesceIdleSlabs -- engineer-station-only slab reclaim.
     //
     // Phase 5.b acts ONLY on fully-empty slabs (LiveCellCount == 0).
-    // Returns the count of slabs released.
+    // Phase 5.i CHANGES the return semantic from int32 slab-count to
+    // int64 bytes-returned (the dimensionally-correct metric for the
+    // Foundation Prototype dashboard; bytes are what FMallocBinnedX
+    // actually returned to the OS).
+    //
+    // Also emits the IdleSlabCoalesced telemetry event (additive to
+    // §10.12 per Phase 5.i) when one or more slabs are released. The
+    // existing FragmentationThresholdCrossed emit is preserved.
     // =================================================================
-    ::int32 FXObjectAllocator::CoalesceIdleSlabs() noexcept
+    ::int64 FXObjectAllocator::CoalesceIdleSlabs() noexcept
     {
         if (m_state == nullptr)
         {
@@ -1258,7 +1268,8 @@ namespace XCore
             }
         }
 
-        ::int32 ReleasedCount = 0;
+        ::int32        ReleasedCount = 0;
+        ::std::int64_t ReleasedBytes = 0;
 
         for (::int32 sc = 0; sc < kFXObjectAllocatorNumNormalClasses; ++sc)
         {
@@ -1319,6 +1330,12 @@ namespace XCore
                     SweepClassPool(&m_state->NoClassPools[sc]);
 
                     // Free the slab's storage + control block.
+                    // Phase 5.i: account the slab bytes BEFORE the free
+                    // so the bytes-returned metric reflects the OS-
+                    // returned amount. The SlabBytes value is the
+                    // contracted per-size-class slab byte count (one
+                    // FMemory::Free returns exactly this much).
+                    ReleasedBytes += static_cast<::std::int64_t>(SizePool.SlabBytes);
                     SizePool.TotalCells -= Slab->NumCells;
                     ::XCore::HAL::FMemory::Free(Slab->OwnerClass);
                     ::XCore::HAL::FMemory::Free(Slab->Base);
@@ -1396,7 +1413,569 @@ namespace XCore
                 /*TotalAllocatedBytes=*/PostAllocatedBytes);
         }
 
-        return ReleasedCount;
+        // Phase 5.i: emit IdleSlabCoalesced when one or more slabs were
+        // released. Aggregate-emit (sizeClass = -1) because the body
+        // walks every size class; we do NOT separately emit per
+        // size-class to keep the event volume bounded (one emit per
+        // CoalesceIdleSlabs call). The slab-count + bytes-returned
+        // payload tells the consumer everything needed.
+        if (ReleasedCount > 0)
+        {
+            ::XCore::HAL::XInsightsEmitHelpers::EmitIdleSlabCoalesced(
+                /*SlabCount=*/    static_cast<::std::int64_t>(ReleasedCount),
+                /*BytesReturned=*/ReleasedBytes,
+                /*SizeClass=*/    -1);
+        }
+
+        return ReleasedBytes;
+    }
+
+    // =================================================================
+    // ReleaseClassPool -- scenario-boundary mark-region clearing
+    // (XCoreXObject Rev 4 §3.6 + Foundation Prototype X11 per
+    // FIX-A-MIN-53; Phase 5.i).
+    //
+    // The implementation uses the EXPLICIT-WALK escape-detection path
+    // (not the sweep-reuse path) for the following structural-
+    // correctness reasons documented at the Phase 5.i Build.toml block:
+    //
+    //   * The spec §3.6 wording is "walks FXObjectArray entries for
+    //     instances of cls and confirms each is reachable ONLY from
+    //     the scenario root". That phrasing names a DIRECT walk of
+    //     the object table + ref-slot inspection, NOT a sweep cycle.
+    //
+    //   * Running a full GC cycle just to detect escapes defeats the
+    //     purpose of ReleaseClassPool which is a fast BULK reclaim.
+    //     The spec §4.7 trigger heuristic IS that the caller runs a
+    //     pre-scenario-unload GC BEFORE calling ReleaseClassPool; at
+    //     that point the heap is in a post-mark known-reachable
+    //     state, and the explicit-walk is O(reachable * avg_refs).
+    //
+    //   * The sweep-reuse path (kEliminateGarbageRefs) would NULL
+    //     escape references rather than DETECTING them. The spec
+    //     X11 acceptance criterion is explicit: "on detected escape,
+    //     the sub-pool returns to free-list" -- detection precedes
+    //     destructive action, never co-occurs with it. Detection
+    //     vetos the release; we don't null-out user data.
+    //
+    // ALGORITHM:
+    //
+    //   1. Pre-check {ClassDescriptor != nullptr, !IsMarking()}.
+    //
+    //   2. Acquire EXCLUSIVE allocator lock + look up the sub-pool.
+    //
+    //   3. Collect every CELL currently owned by ClassDescriptor (the
+    //      union of {cells on ClassPool->ClassFreeListHead} +
+    //      {cells with OwnerClass == ClassDescriptor and OwnedCellCount
+    //      bookkeeping). The collection is sorted-by-base for the
+    //      escape-check binary search.
+    //
+    //   4. Release the allocator lock briefly to walk
+    //      FXObjectArray::ForEachObject for escape detection. (We
+    //      don't actually release; we hold our EXCLUSIVE lock and call
+    //      ForEachObject which acquires the array's SHARED lock --
+    //      consistent ordering since the array's lock is the inner
+    //      one). For each LIVE XObject:
+    //        a. If its class IS ClassDescriptor, skip (it's INSIDE
+    //           the sub-pool).
+    //        b. Otherwise walk its schema-refs via WalkSchemaRefs;
+    //           for each non-null ref, binary-search the sub-pool's
+    //           cell list. Hit -> escape detected; abort.
+    //
+    //   5. On no-escape: for each cell, release the FXObjectArray
+    //      slot via ReleaseSlot (this also lives behind the array's
+    //      EXCLUSIVE lock; we drop the allocator's EXCLUSIVE while
+    //      calling out and reacquire). Once every slot is released,
+    //      return every cell to the slab's UnassignedFreeListHead +
+    //      clear OwnerClass; the ClassPool->ClassFreeListHead is
+    //      cleared.
+    //
+    //   6. Emit PoolReleaseAtScenarioBoundary telemetry.
+    //
+    // The "drop-and-reacquire" lock pattern in step 5 is the engine-
+    // wide lock-discipline contract (calling FXObjectArray::ReleaseSlot
+    // would otherwise be re-entering its EXCLUSIVE lock while we hold
+    // ours). The pattern is sound here because:
+    //   * No other thread can ALLOCATE FROM the ClassDescriptor sub-
+    //     pool during the release (we hold the allocator lock when
+    //     gating new allocations; the brief release-during-ReleaseSlot
+    //     does NOT visit ClassDescriptor's free-list — we already
+    //     captured every cell in step 3).
+    //   * The slot release order is fixed (the cell list was captured
+    //     in step 3; we don't re-discover during the drop window).
+    //
+    // PERF: O(N_external_objects * avg_refs) for the walk +
+    // O(N_subpool_cells * log N_subpool_cells) for the cell sort +
+    // O(N_subpool_cells) for the release loop. Scenario unload is
+    // infrequent (engineer-station + trainee scenario boundaries);
+    // the costs are amortised against scene-load time.
+    // =================================================================
+    ::XCore::Result<void, ::XCore::FScenarioBoundaryError>
+    FXObjectAllocator::ReleaseClassPool(
+        const ::XCore::Reflect::FClass* ClassDescriptor) noexcept
+    {
+        // Pre-condition 1: ClassDescriptor non-null (defence-in-depth).
+        if (ClassDescriptor == nullptr)
+        {
+            return ::XCore::Unexpected(
+                ::XCore::FScenarioBoundaryError::NullClassDescriptor);
+        }
+
+        // Pre-condition 2: collector quiesce-check. The spec §4.6
+        // barrier forbids allocator mutation across the mark window.
+        // The Phase 5.h+ caller is expected to run the
+        // "Pre-scenario-unload" trigger (spec §4.7) and WAIT for the
+        // cycle to drain before invoking ReleaseClassPool. We defence-
+        // in-depth check here so a misuse surfaces as
+        // CollectorActive rather than as a heap corruption.
+        if (::XCore::FXObjectCollector::Get().IsMarking())
+        {
+            return ::XCore::Unexpected(
+                ::XCore::FScenarioBoundaryError::CollectorActive);
+        }
+
+        EnsureStateInitialised(m_state);
+
+        // -------------------------------------------------------------
+        // Step A (under EXCLUSIVE lock): collect every cell owned by
+        // ClassDescriptor + lookup the class sub-pool.
+        // -------------------------------------------------------------
+        struct FCellEntry
+        {
+            void*   Cell;        // cell base pointer
+            FSlab*  Slab;        // owning slab
+            ::int32 CellIndex;   // index within the slab
+            bool    bLive;       // true = currently allocated; false = on free-list
+        };
+
+        // Local dense list. Phase 5.i uses raw new/delete equivalent
+        // via FMemory::MallocOrAbort to stay within the engine-wide
+        // allocator discipline (no std::vector).
+        FCellEntry*    Cells       = nullptr;
+        ::int32        CellCount   = 0;
+        ::int32        CellCapacity= 0;
+        ::int32        SizeClassIndex = -1;
+        ::std::int64_t ReleasedBytes  = 0;
+
+        auto GrowCells = [&]()
+        {
+            const ::int32 NewCap =
+                (CellCapacity == 0) ? 64 : (CellCapacity * 2);
+            FCellEntry* NewBuf = static_cast<FCellEntry*>(
+                ::XCore::HAL::FMemory::MallocOrAbort(
+                    static_cast<::SIZE_T>(NewCap) * sizeof(FCellEntry),
+                    alignof(FCellEntry),
+                    ::XCore::HAL::FMemTag::XObject));
+            if (Cells != nullptr)
+            {
+                ::XCore::HAL::FPlatformMemory::Memcpy(
+                    NewBuf, Cells,
+                    static_cast<::SIZE_T>(CellCount) * sizeof(FCellEntry));
+                ::XCore::HAL::FMemory::Free(Cells);
+            }
+            Cells       = NewBuf;
+            CellCapacity= NewCap;
+        };
+
+        {
+            ::XCore::HAL::FScopedWriteLock WriteLock(m_state->Lock);
+
+            FClassPool* Pool = FindClassPoolUnderLock(m_state, ClassDescriptor);
+            if (Pool == nullptr)
+            {
+                // ClassDescriptor was never registered. Nothing to release.
+                return ::XCore::Unexpected(
+                    ::XCore::FScenarioBoundaryError::ClassNotRegistered);
+            }
+
+            SizeClassIndex = Pool->SizeClassIndex;
+            XPACT_CHECK(SizeClassIndex >= 0);
+            XPACT_CHECK(SizeClassIndex <  kFXObjectAllocatorNumNormalClasses);
+
+            FSizeClassPool& SizePool = m_state->SizeClasses[SizeClassIndex];
+
+            // First pass: enumerate every cell whose OwnerClass ==
+            // ClassDescriptor. Mark which are on the class free-list
+            // (bLive == false) vs which are currently allocated
+            // (bLive == true). The OwnedCellCount invariant says the
+            // total count equals Pool->OwnedCellCount.
+            //
+            // Detect free-list membership by walking the free-list
+            // first and tagging each cell's slab+index; then walk the
+            // OwnerClass tags and add the rest with bLive = true.
+            //
+            // For O(1) per-cell free-list-membership lookup we'd want
+            // a hash; at the Foundation Prototype sub-pool size
+            // (<=1000 cells per spec X11) the linear scan is fine.
+
+            // Walk the class free-list; for each chain node, find the
+            // owning slab + index and add as bLive=false.
+            {
+                void* Cursor = Pool->ClassFreeListHead;
+                while (Cursor != nullptr)
+                {
+                    // Reverse-lookup: binary search the SizePool slabs.
+                    FSlab* Found = nullptr;
+                    {
+                        ::int32 Lo = 0;
+                        ::int32 Hi = SizePool.SlabCount - 1;
+                        while (Lo <= Hi)
+                        {
+                            const ::int32 Mid = Lo + ((Hi - Lo) / 2);
+                            FSlab* Candidate = SizePool.Slabs[Mid];
+                            char* const SlabStart = static_cast<char*>(Candidate->Base);
+                            char* const SlabEnd   = SlabStart +
+                                (static_cast<::SIZE_T>(Candidate->NumCells) * SizePool.CellWidth);
+                            if (Cursor < SlabStart)
+                            {
+                                Hi = Mid - 1;
+                            }
+                            else if (Cursor >= SlabEnd)
+                            {
+                                Lo = Mid + 1;
+                            }
+                            else
+                            {
+                                Found = Candidate;
+                                break;
+                            }
+                        }
+                    }
+                    XPACT_CHECK(Found != nullptr);
+
+                    const ::SIZE_T CellOffset =
+                        static_cast<::SIZE_T>(
+                            static_cast<char*>(Cursor) -
+                            static_cast<char*>(Found->Base));
+                    const ::int32 CellIndex =
+                        static_cast<::int32>(CellOffset / SizePool.CellWidth);
+                    XPACT_CHECK(Found->OwnerClass[CellIndex] == ClassDescriptor);
+
+                    if (CellCount >= CellCapacity) GrowCells();
+                    Cells[CellCount] = FCellEntry{Cursor, Found, CellIndex, false};
+                    ++CellCount;
+
+                    Cursor = *reinterpret_cast<void**>(Cursor);
+                }
+            }
+
+            // Walk every slab's OwnerClass tags; for each cell tagged
+            // ClassDescriptor that we have NOT yet recorded (i.e.,
+            // not on the free-list), add as bLive=true.
+            //
+            // The "have we already recorded it" check is via the
+            // sorted-by-base cell list which we populate twice: once
+            // here in this loop (we just record everything tagged
+            // ClassDescriptor), then deduplicate. Simpler: tag the
+            // free-list cells with a SECOND pass after sort -- but
+            // an O(N) tag via std::set membership check is cleaner.
+            //
+            // Phase 5.i uses the SIMPLE approach: capture ALL cells
+            // first (free-list + live), then dedupe in a sort + unique
+            // pass. The dedupe predicate is by cell pointer equality.
+
+            // Save free-list count for the dedupe baseline. We'll skip
+            // free-list cells when re-scanning OwnerClass below.
+            // Simpler implementation: walk OwnerClass once, mark each
+            // cell as bLive=true initially; then mutate matching cells
+            // to bLive=false based on the free-list scan we already did.
+
+            // Actually re-cast: the free-list scan above already wrote
+            // bLive=false entries. We now want to ADD bLive=true
+            // entries for any OwnerClass==Class cells that are NOT in
+            // the free-list. Lookup is O(N) per cell -- but the total
+            // owned count is bounded by Pool->OwnedCellCount, so the
+            // upper bound is OwnedCellCount^2 which is bounded
+            // (X11 spec: ~1000 cells per scenario class).
+
+            const ::int32 FreeListEntryCount = CellCount;
+
+            for (::int32 si = 0; si < SizePool.SlabCount; ++si)
+            {
+                FSlab* Slab = SizePool.Slabs[si];
+                for (::int32 ci = 0; ci < Slab->NumCells; ++ci)
+                {
+                    if (Slab->OwnerClass[ci] != ClassDescriptor)
+                    {
+                        continue;
+                    }
+                    char* const CellPtr = static_cast<char*>(Slab->Base) +
+                        (static_cast<::SIZE_T>(ci) * SizePool.CellWidth);
+
+                    // Skip if already captured in the free-list scan.
+                    bool bAlreadyOnFreeList = false;
+                    for (::int32 fl = 0; fl < FreeListEntryCount; ++fl)
+                    {
+                        if (Cells[fl].Cell == static_cast<void*>(CellPtr))
+                        {
+                            bAlreadyOnFreeList = true;
+                            break;
+                        }
+                    }
+                    if (bAlreadyOnFreeList)
+                    {
+                        continue;
+                    }
+
+                    if (CellCount >= CellCapacity) GrowCells();
+                    Cells[CellCount] = FCellEntry{
+                        static_cast<void*>(CellPtr), Slab, ci, true};
+                    ++CellCount;
+                }
+            }
+
+            // Invariant: CellCount == Pool->OwnedCellCount.
+            // (Pool->OwnedCellCount = live + on-free-list; we've
+            // captured both.) The XPACT_CHECK in Dev/Debug catches
+            // any drift; in Shipping we trust the counters.
+            XPACT_CHECK(CellCount == Pool->OwnedCellCount);
+        } // Drop EXCLUSIVE allocator lock for the escape-detection walk.
+
+        // -------------------------------------------------------------
+        // Step B (no allocator lock): escape detection.
+        //
+        // Sort Cells by Cell pointer ascending so the visitor's per-
+        // ref check is a binary search.
+        //
+        // Insertion sort -- simple + sufficient at Foundation Prototype
+        // sub-pool size. O(N^2) worst case but bounded by the X11
+        // spec target of ~1000 cells per scenario class.
+        // -------------------------------------------------------------
+        for (::int32 i = 1; i < CellCount; ++i)
+        {
+            const FCellEntry Key = Cells[i];
+            ::int32 j = i - 1;
+            while (j >= 0 && Cells[j].Cell > Key.Cell)
+            {
+                Cells[j + 1] = Cells[j];
+                --j;
+            }
+            Cells[j + 1] = Key;
+        }
+
+        auto CellListContains = [&](void* Ptr) noexcept -> bool
+        {
+            if (Ptr == nullptr || CellCount == 0)
+            {
+                return false;
+            }
+            ::int32 Lo = 0;
+            ::int32 Hi = CellCount - 1;
+            while (Lo <= Hi)
+            {
+                const ::int32 Mid = Lo + ((Hi - Lo) / 2);
+                if (Cells[Mid].Cell == Ptr)
+                {
+                    return true;
+                }
+                if (Cells[Mid].Cell < Ptr)
+                {
+                    Lo = Mid + 1;
+                }
+                else
+                {
+                    Hi = Mid - 1;
+                }
+            }
+            return false;
+        };
+
+        // Walk every live XObject; skip those whose class IS
+        // ClassDescriptor (they are inside the sub-pool); for the rest,
+        // WalkSchemaRefs and check each ref against CellListContains.
+        bool bEscapeDetected = false;
+
+        ::XCore::FXObjectArray& Array = ::XCore::FXObjectArray::Get();
+        Array.ForEachObject(
+            [&](::int32 /*InternalIndex*/, ::XCore::XObject* Obj) noexcept
+            {
+                if (bEscapeDetected || Obj == nullptr)
+                {
+                    return;
+                }
+                const ::XCore::Reflect::FClass* ObjClass = Obj->GetClass();
+                if (ObjClass == ClassDescriptor)
+                {
+                    // Inside the sub-pool; refs into the sub-pool from
+                    // here are not escapes.
+                    return;
+                }
+
+                // FStruct base accessor (FClass IS-A FStruct).
+                const ::XCore::Reflect::FStruct* Struct =
+                    static_cast<const ::XCore::Reflect::FStruct*>(ObjClass);
+                if (Struct == nullptr)
+                {
+                    return;
+                }
+
+                ::XCore::WalkSchemaRefs(
+                    Struct,
+                    static_cast<const void*>(Obj),
+                    [&](::XCore::XObject* RefTarget) noexcept
+                    {
+                        if (bEscapeDetected || RefTarget == nullptr)
+                        {
+                            return;
+                        }
+                        // The ref target's payload IS the cell pointer
+                        // (XObject is placement-new'd at the cell base
+                        // by NewObject hot path). Check membership.
+                        if (CellListContains(static_cast<void*>(RefTarget)))
+                        {
+                            bEscapeDetected = true;
+                        }
+                    });
+            });
+
+        if (bEscapeDetected)
+        {
+            if (Cells != nullptr)
+            {
+                ::XCore::HAL::FMemory::Free(Cells);
+            }
+            return ::XCore::Unexpected(
+                ::XCore::FScenarioBoundaryError::ReferenceFromOutsideSubpool);
+        }
+
+        // -------------------------------------------------------------
+        // Step C: no escape detected; release every slot + return
+        // every cell to its slab's UnassignedFreeListHead.
+        //
+        // The slot release calls FXObjectArray::ReleaseSlot which
+        // takes the array's EXCLUSIVE lock. We hold NO allocator
+        // lock at this point (we dropped it after Step A). Per the
+        // engine-wide lock-discipline contract: each ReleaseSlot
+        // is an independent locked operation; we don't hold the
+        // allocator lock concurrently.
+        //
+        // After all slots are released we re-acquire the allocator
+        // lock and return cells to the slab's unassigned chains,
+        // clearing OwnerClass tags + Pool counters.
+        // -------------------------------------------------------------
+
+        ::std::int64_t ReleasedObjects = 0;
+
+        // Release every LIVE cell's FXObjectArray slot. (Free-list
+        // cells already have no FXObjectArray entry -- they were
+        // Deallocate'd via Phase 5.b's path, which leaves the
+        // FXObjectArray entry to be managed by the caller of
+        // Deallocate. ReleaseClassPool only releases slots for cells
+        // that are CURRENTLY LIVE in the FXObjectArray, i.e. bLive.)
+        for (::int32 i = 0; i < CellCount; ++i)
+        {
+            if (!Cells[i].bLive)
+            {
+                continue;
+            }
+            ::XCore::XObject* AsObject =
+                static_cast<::XCore::XObject*>(Cells[i].Cell);
+            const ::int32 InternalIndex = AsObject->GetInternalIndex();
+            if (InternalIndex > 0)
+            {
+                // ReleaseSlot bumps SerialNumber + nulls Object +
+                // clears entry-state bits per spec §4.2 step 7.
+                // SerialNumber bump satisfies X11 acceptance.
+                Array.ReleaseSlot(InternalIndex);
+                ++ReleasedObjects;
+            }
+        }
+
+        // Now re-acquire the allocator lock and return cells.
+        {
+            ::XCore::HAL::FScopedWriteLock WriteLock(m_state->Lock);
+
+            FClassPool* Pool = FindClassPoolUnderLock(m_state, ClassDescriptor);
+            // The pool must still exist; nothing between the prior
+            // lock-drop and this re-acquire can have unregistered it
+            // (no API supports unregistering a class).
+            XPACT_CHECK(Pool != nullptr);
+
+            FSizeClassPool& SizePool =
+                m_state->SizeClasses[Pool->SizeClassIndex];
+
+            const ::SIZE_T CellWidth = SizePool.CellWidth;
+
+            // For each cell: clear OwnerClass tag + thread onto its
+            // slab's UnassignedFreeListHead. Update counters.
+            for (::int32 i = 0; i < CellCount; ++i)
+            {
+                FSlab*  Slab = Cells[i].Slab;
+                const ::int32 CellIndex = Cells[i].CellIndex;
+                void*   Cell = Cells[i].Cell;
+
+                // The cell may have been a live cell (we just released
+                // its FXObjectArray slot but the cell's payload bytes
+                // may still hold the prior XObject; we zero them so
+                // the next AllocateRaw sees a clean cell).
+                if (Cells[i].bLive)
+                {
+                    --Slab->LiveCellCount;
+                    --SizePool.TotalLiveCells;
+                    --Pool->LiveCellCount;
+                }
+
+                // The next-free pointer overwrites the head of the
+                // cell. Compute the cell's bytes-to-clear: cell width
+                // minus the 8 bytes of the next-free pointer slot.
+                // We zero ALL of the cell (the unassigned chain
+                // overwrites the first 8; the rest we Memzero for
+                // hygiene to avoid leaking the prior payload).
+                ::XCore::HAL::FPlatformMemory::Memzero(Cell, CellWidth);
+
+                // Clear OwnerClass tag.
+                Slab->OwnerClass[CellIndex] = nullptr;
+
+                // Thread onto the slab's UnassignedFreeListHead
+                // (LIFO).
+                *reinterpret_cast<void**>(Cell) = Slab->UnassignedFreeListHead;
+                Slab->UnassignedFreeListHead   = Cell;
+
+                --Pool->OwnedCellCount;
+            }
+
+            // The class free-list is now empty (all its cells went to
+            // the slab unassigned chain).
+            Pool->ClassFreeListHead = nullptr;
+
+            // Invariant: Pool->OwnedCellCount == 0 + Pool->LiveCellCount
+            // == 0 at this point.
+            XPACT_CHECK(Pool->OwnedCellCount == 0);
+            XPACT_CHECK(Pool->LiveCellCount  == 0);
+
+            // Compute released bytes for telemetry.
+            ReleasedBytes =
+                static_cast<::std::int64_t>(CellCount) *
+                static_cast<::std::int64_t>(CellWidth);
+        }
+
+        if (Cells != nullptr)
+        {
+            ::XCore::HAL::FMemory::Free(Cells);
+        }
+
+        // -------------------------------------------------------------
+        // Step D: emit telemetry.
+        //
+        // The PoolReleaseAtScenarioBoundary event existed in Phase 5.k
+        // as a Phase-1 emit from EndScenarioBoundary with zero counts
+        // (the action was gated until Phase 5.h then 5.i). Phase 5.i
+        // populates the real counts at the ReleaseClassPool entry
+        // point.
+        //
+        // The ScenarioName field is NAME_None here because
+        // ReleaseClassPool is invoked PER-CLASS, not per-scope, and
+        // the per-class signature does not carry a scenario name.
+        // Callers (XScenarios) tag their scope at BeginScenarioBoundary
+        // and broadcast OnScenarioBoundary with the name; this emit
+        // documents the per-class release count.
+        // -------------------------------------------------------------
+        ::XCore::HAL::XInsightsEmitHelpers::EmitPoolReleaseAtScenarioBoundary(
+            /*ScenarioName=*/   ::XCore::Reflect::FName(),
+            /*ReleasedObjects=*/ReleasedObjects,
+            /*ReleasedBytes=*/  ReleasedBytes);
+
+        return ::XCore::Result<void, ::XCore::FScenarioBoundaryError>{};
     }
 
     // =================================================================

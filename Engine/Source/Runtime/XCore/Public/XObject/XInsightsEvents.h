@@ -330,6 +330,39 @@ namespace XCore::HAL::XInsightsEvents
             static const ::XCore::Reflect::FName Name("FragmentationThresholdCrossed");
             return Name;
         }
+
+        // -----------------------------------------------------------------
+        // Phase 5.i additive Allocator events (additive to spec §10.12).
+        //
+        // Spec §10.12 enumerates four Allocator events (AllocationFailure,
+        // PoolGrew, PoolReleaseAtScenarioBoundary, FragmentationThreshold
+        // Crossed). Phase 5.i adds one more event surfacing the idle-slab
+        // coalescence pass introduced per FIX-A-MED-24. Justification per
+        // Prime Directive: the spec §3.6 trailing prose names
+        // "PoolReleaseAtScenarioBoundary" as the umbrella telemetry for
+        // both scenario-boundary mark-region clearing AND idle slab
+        // coalescence, but the two have meaningfully different shapes
+        // (scenario boundary releases per-class sub-pools; idle coalesce
+        // releases whole slabs across size classes). Emitting them as
+        // SEPARATE events lets the consumer-side telemetry panel pivot
+        // on them independently; payload key set is also distinct.
+        //
+        // The spec-side editorial pass can adopt this event into §10.12
+        // without churn (the FName accessor surface is forward-compatible).
+        // -----------------------------------------------------------------
+
+        // IdleSlabCoalesced -- emitted from CoalesceIdleSlabs when one or
+        // more slabs are released back to FMallocBinnedX. Payload schema:
+        //   {slabCount:i64, bytesReturned:i64, sizeClass:i64}
+        // sizeClass is the size-class index whose slabs were released; or
+        // -1 sentinel meaning "across multiple size classes in this
+        // coalesce pass" (the canonical aggregate-emit posture, mirror
+        // of FragmentationThresholdCrossed's sentinel).
+        [[nodiscard]] inline const ::XCore::Reflect::FName& IdleSlabCoalesced() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("IdleSlabCoalesced");
+            return Name;
+        }
     } // namespace Allocator
 
     // =================================================================
@@ -489,6 +522,16 @@ namespace XCore::HAL::XInsightsEvents
 
         [[nodiscard]] inline const ::XCore::Reflect::FName& TotalAllocatedBytes() noexcept
         { static const ::XCore::Reflect::FName Name("totalAllocatedBytes"); return Name; }
+
+        // Phase 5.i additive Allocator payload keys.
+        // SlabCount    -- count of slabs released in one coalesce pass.
+        // BytesReturned-- bytes returned to FMallocBinnedX in one
+        //                 coalesce pass (sum of released slab sizes).
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SlabCount() noexcept
+        { static const ::XCore::Reflect::FName Name("slabCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& BytesReturned() noexcept
+        { static const ::XCore::Reflect::FName Name("bytesReturned"); return Name; }
 
         // HotReload keys
         [[nodiscard]] inline const ::XCore::Reflect::FName& ClassesReplaced() noexcept

@@ -126,20 +126,22 @@ int main()
     }
 
     // -----------------------------------------------------------------
-    // Phase 5.h gated path (SKIPPED). The actual mark-region-clearing
-    // on scope close requires the FXObjectCollector reachability
-    // oracle. Phase 5.b documents the API; the test for the release
-    // action will land alongside Phase 5.h.
+    // Phase 5.i NOTE: the mark-region-clearing ACTION moved out of
+    // EndScenarioBoundary into the per-class ReleaseClassPool entry
+    // point. The Begin/End scope bookkeeping remains a counter-bump
+    // for telemetry symmetry (XScenarios broadcasts via
+    // OnScenarioBoundary; the allocator's per-class release is via
+    // ReleaseClassPool).
     //
-    // SKIP rationale: the s_XObjectAllocator hook returns memory; the
-    // collector that detects "this scope's cells are unreferenced" has
-    // not been written. Calling EndScenarioBoundary today is a no-op
-    // for the heap; verifying that no-op behaviour is what Test 1-3
-    // above cover. Verifying the FUTURE batch-clear behaviour requires
-    // FXObjectCollector and is out-of-scope for Phase 5.b.
+    // The ReleaseClassPool tests cover the no-escape success path
+    // (ReleaseClassPool_NoEscape.cpp) and the escape-detection
+    // veto path (ReleaseClassPool_EscapeDetected.cpp). They live as
+    // separate test files because the FXObjectArray fixture setup is
+    // shared between them and distinct from the Begin/End scope
+    // bookkeeping covered here.
     // -----------------------------------------------------------------
-    std::cout << "SKIP: scenario-boundary batch-clear (Phase 5.h "
-                 "FXObjectCollector dependency)\n";
+    std::cout << "NOTE: scenario-boundary mark-region clearing "
+                 "covered by ReleaseClassPool tests (Phase 5.i)\n";
 
     Allocator.__ResetForTests();
 

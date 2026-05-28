@@ -15,9 +15,14 @@
 //      CoalesceIdleSlabs releases zero slabs (because at least one
 //      cell per slab is still live).
 //   2. After freeing ALL cells in a slab, CoalesceIdleSlabs releases
-//      that slab (returns count > 0).
+//      that slab (returns bytes > 0).
 //   3. Post-coalesce, allocating again triggers a fresh slab commit
 //      (and the new cell is non-null).
+//
+// PHASE 5.i: CoalesceIdleSlabs return type CHANGED from int32
+// slab-count to int64 bytes-returned. The test predicates are
+// updated to use the bytes-returned value (>= 1 slab worth of bytes
+// indicates at least one slab was released).
 //
 // =====================================================================
 
@@ -71,8 +76,8 @@ int main()
             Cells.push_back(Allocator.AllocateRaw(200, 8, &TestClass));
         }
 
-        const ::int32 Released = Allocator.CoalesceIdleSlabs();
-        Check(Released == 0,
+        const ::int64 ReleasedBytes = Allocator.CoalesceIdleSlabs();
+        Check(ReleasedBytes == 0,
               "CoalesceIdleSlabs released slabs while cells were live");
 
         for (void* Cell : Cells)
@@ -127,8 +132,10 @@ int main()
 
         // After freeing all 5, the slab's LiveCellCount == 0.
         // CoalesceIdleSlabs should release that slab.
-        const ::int32 Released = Allocator.CoalesceIdleSlabs();
-        Check(Released >= 1,
+        // Phase 5.i: return value is now bytes-returned; a class-5 slab
+        // is 64 KB so a successful release yields >= 64 KB.
+        const ::int64 ReleasedBytes = Allocator.CoalesceIdleSlabs();
+        Check(ReleasedBytes >= (::int64(64) << 10),
               "CoalesceIdleSlabs failed to release a fully-empty slab");
 
         // Verify TotalSlabBytes went down.

@@ -92,18 +92,33 @@
 //     them to the size-class free-list.
 //
 //   * Phase 5.b ships the scope bookkeeping + the per-cell tagging;
-//     the actual mark-region clearing requires the FXObjectCollector
-//     (Phase 5.h) so the SCAN over "escaped references" can run.
-//     Until then EndScenarioBoundary is documentation-only -- the
-//     scope name is captured for telemetry; the heap-side action is
-//     a no-op until 5.h provides the reachability oracle.
+//     Phase 5.i ships ReleaseClassPool (the per-class sub-pool
+//     release entry point XScenarios invokes at scenario unload).
+//     EndScenarioBoundary itself remains the scope-bookkeeping pop;
+//     the mark-region clearing ACTION lives in ReleaseClassPool
+//     (called by XScenarios per-class once the scenario is
+//     unloading; spec §3.6 + Foundation Prototype X11 per
+//     FIX-A-MIN-53).
+//
+//   * RELEASECLASSPOOL (Phase 5.i): walks the sub-pool's live cells,
+//     verifies no external XObject references any of them (explicit-
+//     walk escape detection via FXObjectArray::ForEachObject +
+//     WalkSchemaRefs; spec §3.6 "walks FXObjectArray entries for
+//     instances of cls and confirms each is reachable ONLY from the
+//     scenario root"), and on success returns every cell to the
+//     class sub-pool's free-list AND every FXObjectArray slot is
+//     released via FXObjectArray::ReleaseSlot (SerialNumber bumps
+//     per X11 acceptance). On escape detection returns
+//     Result::Err(FScenarioBoundaryError::ReferenceFromOutsideSubpool)
+//     and the caller falls back to GC-driven collection.
 //
 // COALESCENCE (per spec §3.6 + FIX-A-MED-24):
 //
 //   * CoalesceIdleSlabs is the engineer-station idle-time entry
 //     point. It walks the size-class pools, identifies under-
-//     utilised slabs (live count below a CVar-tunable threshold;
-//     default 25%), evacuates their cells to other slabs, and
+//     utilised slabs (live count == 0 in the Phase 5.b body; the
+//     partial-evacuation path is gated until the
+//     allocator/collector coordination evolves further), and
 //     returns the empty slab to FMallocBinnedX.
 //
 //   * Trainee builds never call this. Long-running engineer
@@ -113,15 +128,12 @@
 //     evacuated, and the evacuation rebinds the InternalIndex's
 //     entry's Object pointer to the new cell.
 //
-//   * Phase 5.b ships the slab-emptying scan + return-to-allocator
-//     path; cell evacuation (the actual MEMCPY + rebind of the
-//     FXObjectArray.Object pointer) is structurally implemented but
-//     gated until the FXObjectAllocator can coordinate with the
-//     GC (which prevents the collector from observing a mid-move
-//     state). Until 5.h ships, CoalesceIdleSlabs only returns
-//     fully-empty slabs (live count == 0) -- the evacuation path is
-//     covered by tests but the production trigger is documented as
-//     "Phase 5.h gated".
+//   * Phase 5.i changes the return type from int32 slab-count to
+//     int64 bytes-returned (the Foundation Prototype dashboard's
+//     canonical metric is bytes returned to OS, not slab count; the
+//     two are correlated but bytes is the dimensionally-correct
+//     output). The bytes-returned value is also emitted via the
+//     new IdleSlabCoalesced telemetry event.
 //
 // CONCURRENCY (per spec §3.7 + engine-wide lock-discipline FIX-R2-X-NEW):
 //
@@ -153,7 +165,9 @@
 // =====================================================================
 
 #include "Macros/XCoreTypes.h"
+#include "Macros/XErrorTypes.h"   // Phase 5.i: FScenarioBoundaryError for ReleaseClassPool.
 #include "Macros/XPactMacros.h"
+#include "Macros/XResult.h"       // Phase 5.i: Result<T, E> for ReleaseClassPool return.
 
 #include "HAL/FRWLock.h"
 #include "Reflection/FName.h"
@@ -375,16 +389,85 @@ namespace XCore
         // FMallocBinnedX (returns memory to the OS via the per-bin VM
         // decommit path). Phase 5.b acts ONLY on fully-empty slabs;
         // the partial-evacuation path (move live cells to another
-        // slab to free up THIS slab) is gated until Phase 5.h ships
-        // the GC coordination.
+        // slab to free up THIS slab) is gated until the allocator /
+        // collector co-ordination layer ships.
         //
         // Trainee builds never call this; long-running engineer
-        // sessions call it from an idle hook. Returns the count of
-        // slabs released.
+        // sessions call it from an idle hook.
+        //
+        // RETURN: bytes returned to FMallocBinnedX (Phase 5.i changed
+        // from int32 slab-count to int64 bytes-returned per the
+        // dispatch task wording; bytes is the dimensionally-correct
+        // metric for the Foundation Prototype dashboard). A return
+        // value of 0 means no slab was released. The bytes-returned
+        // value is also emitted via the IdleSlabCoalesced telemetry
+        // event.
         //
         // EXCLUSIVE lock acquired for the duration.
         // =============================================================
-        ::int32 CoalesceIdleSlabs() noexcept;
+        ::int64 CoalesceIdleSlabs() noexcept;
+
+        // =============================================================
+        // ReleaseClassPool -- scenario-boundary mark-region clearing
+        // (XCoreXObject Rev 4 §3.6 + Foundation Prototype X11 per
+        // FIX-A-MIN-53; Phase 5.i).
+        //
+        // Called by XScenarios at scenario unload, per-class for every
+        // scenario-scoped FClass. The protocol:
+        //
+        //   1. Pre-check: ClassDescriptor != nullptr +
+        //      FXObjectCollector::IsMarking() == false (the spec §4.6
+        //      barrier forbids allocator mutation across the mark
+        //      window; the caller is expected to invoke the trigger
+        //      heuristic's "Pre-scenario-unload" GC first per §4.7).
+        //
+        //   2. Look up the FClass's sub-pool (FindClassPoolUnderLock).
+        //      Sub-pool not registered -> return
+        //      Err(FScenarioBoundaryError::ClassNotRegistered).
+        //
+        //   3. Escape detection (the spec X11 invariant): walk every
+        //      LIVE XObject in FXObjectArray whose class != Class
+        //      Descriptor; for each, apply WalkSchemaRefs and check
+        //      whether any reference targets a cell in the
+        //      ClassDescriptor sub-pool. If ANY external reference is
+        //      found, return Err(FScenarioBoundaryError::
+        //      ReferenceFromOutsideSubpool). Caller falls back to
+        //      GC-driven collection.
+        //
+        //   4. On no-escape: for each cell currently OWNED by
+        //      ClassDescriptor (live OR on the class free-list),
+        //      release the cell's FXObjectArray slot via
+        //      FXObjectArray::ReleaseSlot (this bumps SerialNumber
+        //      per X11 acceptance), then return the cell run to the
+        //      size-class pool by threading the cells onto the
+        //      slab's UnassignedFreeListHead (so the next AllocateRaw
+        //      by ANY class can steal them); clear the per-cell
+        //      OwnerClass tag.
+        //
+        //   5. Emit Allocator.PoolReleaseAtScenarioBoundary telemetry
+        //      with the released-objects + released-bytes counts.
+        //
+        // RETURN: Result<void, FScenarioBoundaryError>. On success the
+        // value is void; on failure the variant identifies why the
+        // release was vetoed.
+        //
+        // CONCURRENCY: EXCLUSIVE lock acquired for the duration of
+        // the slot release + free-list integration. The escape-
+        // detection walk acquires the lock SHARED via the
+        // FXObjectArray::ForEachObject visitor (its own internal
+        // SHARED lock); the allocator's own lock is held EXCLUSIVE
+        // through the post-escape-check release. The two locks form
+        // a consistent ordering (allocator's EXCLUSIVE outside,
+        // FXObjectArray's SHARED inside the visitor); we never invert.
+        //
+        // FALLBACK: on Err return the caller (XScenarios) drops the
+        // scenario root and lets the next GC cycle reclaim the
+        // scenario's cells the slow way. The fallback is sound but
+        // forfeits the O(1) bulk-release optimisation.
+        // =============================================================
+        [[nodiscard]] ::XCore::Result<void, ::XCore::FScenarioBoundaryError>
+            ReleaseClassPool(
+                const ::XCore::Reflect::FClass* ClassDescriptor) noexcept;
 
         // =============================================================
         // Scenario boundary scope.

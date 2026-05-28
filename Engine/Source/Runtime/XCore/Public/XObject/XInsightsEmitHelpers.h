@@ -496,6 +496,40 @@ namespace XCore::HAL::XInsightsEmitHelpers
     }
 
     // =================================================================
+    // Allocator.IdleSlabCoalesced -- emitted from CoalesceIdleSlabs
+    // when one or more slabs are released back to FMallocBinnedX
+    // (XCoreXObject Rev 4 §3.6 + FIX-A-MED-24; Phase 5.i additive).
+    //
+    // Payload schema:
+    //   {slabCount:i64, bytesReturned:i64, sizeClass:i64}
+    //
+    // SizeClass is -1 sentinel for aggregate-emit across multiple
+    // size classes in a single coalesce pass; mirrors the sentinel
+    // convention used by EmitFragmentationThresholdCrossed.
+    //
+    // bytesReturned is the sum of released slab byte sizes; the
+    // canonical "how much heap did we release" metric for the
+    // engineer-station idle-time dashboard.
+    // =================================================================
+    XPACT_FORCEINLINE void EmitIdleSlabCoalesced(
+        ::std::int64_t SlabCount,
+        ::std::int64_t BytesReturned,
+        ::std::int32_t SizeClass) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::SlabCount(),     SlabCount);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::BytesReturned(), BytesReturned);
+        Payload.Add(
+            ::XCore::HAL::XInsightsEvents::Keys::SizeClass(),
+            static_cast<::std::int64_t>(SizeClass));
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryAllocator(),
+            ::XCore::HAL::XInsightsEvents::Allocator::IdleSlabCoalesced(),
+            Payload);
+    }
+
+    // =================================================================
     // HotReload.CascadeApplied -- emitted from Phase 5.j hot-reload
     // path. Phase 5.k publishes the helper for forward compatibility.
     //

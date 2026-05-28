@@ -3987,6 +3987,221 @@
 #     the SWEEP itself; the drain is already split off correctly.
 #
 # =====================================================================
+# XCoreXObject Phase 5.i -- Scenario-boundary mark-region clearing +
+#                            idle slab coalescence.
+#
+# Per XCoreXObject Rev 4 §3.6 (fragmentation discipline; the third
+# layered defence) + §4.7 (trigger heuristic: "Pre-scenario-unload")
+# + §10.12 (XInsights events) + §11.5 Phase 5.i scope + Foundation
+# Prototype X11 acceptance criterion per FIX-A-MIN-53 + FIX-A-MED-24
+# (idle slab coalescence; engineer-station-only CVar-tunable).
+#
+# Phase 5.i ships the FXObjectAllocator::ReleaseClassPool entry point
+# (the scenario-boundary mark-region clearing public surface), changes
+# CoalesceIdleSlabs return semantics from int32 slab-count to int64
+# bytes-returned (the Foundation Prototype dashboard's canonical
+# metric), adds the IdleSlabCoalesced telemetry event (additive to
+# spec §10.12), and ships the OnScenarioBoundary multicast delegate
+# (forward commitment: XScenarios broadcasts; XCoreXObject subscribes).
+#
+# Phase 5.i adds these PUBLIC headers:
+#
+#   Public/XObject/XCoreDelegates_OnScenarioBoundary.h
+#                                              -- multicast delegate
+#                                                  declared at XCore::
+#                                                  CoreDelegates scope.
+#                                                  Mirror of the
+#                                                  OnClassReplaced
+#                                                  delegate's shape +
+#                                                  semantics. Subscribe
+#                                                  / Unsubscribe /
+#                                                  Broadcast with
+#                                                  FScenarioBoundaryContext
+#                                                  payload ({FName
+#                                                  ScenarioName,
+#                                                  EScenarioBoundaryPhase
+#                                                  Phase}).
+#
+# Phase 5.i adds these PRIVATE .cpp bodies (XBT auto-discovers them):
+#
+#   Private/XObject/XCoreDelegates_OnScenarioBoundary.cpp
+#                                              -- delegate body
+#                                                  (Subscribe + Unsubscribe
+#                                                  + Broadcast under
+#                                                  FCriticalSection;
+#                                                  snapshot-then-release
+#                                                  Broadcast pattern;
+#                                                  magic-static singleton).
+#
+# Phase 5.i MODIFIES the following existing files:
+#
+#   Public/Macros/XErrorTypes.h               -- adds FScenarioBoundaryError
+#                                                  enum (uint8-backed; 4
+#                                                  variants: ReferenceFromOutsideSubpool,
+#                                                  ClassNotRegistered,
+#                                                  CollectorActive,
+#                                                  NullClassDescriptor).
+#                                                  ABI lock 1 byte.
+#   Public/XObject/FXObjectAllocator.h        -- declares ReleaseClassPool
+#                                                  (returns Result<void,
+#                                                  FScenarioBoundaryError>);
+#                                                  changes CoalesceIdleSlabs
+#                                                  return type from int32
+#                                                  to int64 (bytes
+#                                                  returned). Adds the
+#                                                  XResult.h + XErrorTypes.h
+#                                                  includes.
+#   Private/XObject/FXObjectAllocator.cpp     -- implements ReleaseClassPool
+#                                                  via the explicit-walk
+#                                                  escape-detection path
+#                                                  (see judgement-call
+#                                                  block below); updates
+#                                                  CoalesceIdleSlabs to
+#                                                  return int64 bytes +
+#                                                  emit IdleSlabCoalesced
+#                                                  telemetry. Adds includes
+#                                                  for FXObjectArrayEntry,
+#                                                  FXObjectCollector,
+#                                                  FXObjectSchemaWalker.
+#   Public/XObject/XInsightsEvents.h          -- adds the IdleSlabCoalesced
+#                                                  Allocator event +
+#                                                  SlabCount / BytesReturned
+#                                                  payload keys.
+#   Public/XObject/XInsightsEmitHelpers.h     -- adds EmitIdleSlabCoalesced
+#                                                  helper.
+#
+# Phase 5.i adds these TEST .cpp files (per-suite subdirs):
+#
+#   Tests/XObject/FXObjectAllocator.Tests/ReleaseClassPool_NoEscape.cpp
+#   Tests/XObject/FXObjectAllocator.Tests/ReleaseClassPool_EscapeDetected.cpp
+#   Tests/XObject/FXObjectAllocator.Tests/CoalesceIdleSlabs_LeavesBusy.cpp
+#   Tests/XObject/XCoreDelegates_OnScenarioBoundary.Tests/SubscribeBroadcastUnsubscribe.cpp
+#
+# (The existing FXObjectAllocator.Tests/CoalesceIdleSlabs.cpp +
+# ScenarioBoundary.cpp tests are also UPDATED to reflect the new
+# CoalesceIdleSlabs return type and the Phase 5.i ReleaseClassPool
+# action's new home.)
+#
+# JUDGEMENT CALL (Phase 5.i / escape detection: EXPLICIT WALK vs
+# SWEEP-REUSE).
+#
+# The dispatch task posed two options for the escape-detection pass
+# at the heart of ReleaseClassPool:
+#
+#   (a) EXPLICIT WALK: visit every reachable XObject whose class !=
+#       ClassDescriptor, walk its schema-vector refs via
+#       WalkSchemaRefs, binary-search each ref against the sub-pool
+#       cell list. Hit -> escape detected.
+#
+#   (b) SWEEP-REUSE: mark the ClassDescriptor sub-pool cells as
+#       garbage, run a sweep pass with kEliminateGarbageRefs, and
+#       if the sweep nulls ANY reference, that's the escape.
+#
+# Phase 5.i ships OPTION (a). Justification per Prime Directive:
+#
+#   * The spec §3.6 wording is "walks FXObjectArray entries for
+#     instances of cls and confirms each is reachable ONLY from the
+#     scenario root". That phrasing names a DIRECT walk of the object
+#     table + ref-slot inspection, NOT a sweep cycle.
+#
+#   * Running a full GC cycle just to detect escapes defeats the
+#     purpose of ReleaseClassPool which is a fast BULK reclaim. The
+#     spec §4.7 trigger heuristic IS that the caller runs a
+#     pre-scenario-unload GC BEFORE calling ReleaseClassPool; at that
+#     point the heap is in a post-mark known-reachable state, and
+#     the explicit-walk is O(reachable * avg_refs).
+#
+#   * The sweep-reuse path (kEliminateGarbageRefs) would NULL escape
+#     references rather than DETECTING them. The spec X11 acceptance
+#     criterion is explicit: "on detected escape, the sub-pool
+#     returns to free-list" -- detection precedes destructive action,
+#     never co-occurs with it. Detection vetoes the release; we don't
+#     null out user data.
+#
+#   * The explicit walk is O(N_external_objects * avg_refs) which at
+#     Foundation Prototype scale (50k objects, 5-10 refs each) is
+#     ~250k pointer dereferences -- microseconds. Scenario unload is
+#     infrequent (engineer-station + trainee scenario boundaries);
+#     the cost is amortised against scene-load time.
+#
+# JUDGEMENT CALL (Phase 5.i / CoalesceIdleSlabs return type change).
+#
+# Phase 5.b shipped CoalesceIdleSlabs returning int32 slab-count.
+# Phase 5.i CHANGES the return type to int64 bytes-returned. The
+# change is structurally correct (bytes is the dimensionally-correct
+# Foundation Prototype dashboard metric), and the existing tests are
+# updated minimally (the predicate `Released >= 1` becomes
+# `ReleasedBytes >= 1 slab worth`).
+#
+# Alternative considered (rejected): add a sibling method
+# `CoalesceIdleSlabsAdvanced()` returning a struct {SlabCount,
+# BytesReturned} while preserving the int32 return. Rejected because
+# (a) the dispatch prompt explicitly specifies int64 BytesReturnedToOS
+# as the return type, (b) the int32 slab-count is less useful than
+# bytes (any consumer that wants the count can divide bytes by slab
+# size), and (c) the change is back-compat-clean (the existing
+# predicate `>= 1` still holds with bytes since one slab is >= 64 KB).
+#
+# JUDGEMENT CALL (Phase 5.i / lock-discipline for ReleaseClassPool).
+#
+# ReleaseClassPool must:
+#   1. Hold the allocator EXCLUSIVE lock while inspecting + capturing
+#      the sub-pool's cell list (so concurrent allocators don't see a
+#      mid-mutation state).
+#   2. Walk FXObjectArray via ForEachObject (which acquires the array's
+#      SHARED lock internally).
+#   3. Call FXObjectArray::ReleaseSlot per cell (which acquires the
+#      array's EXCLUSIVE lock).
+#   4. Re-acquire the allocator EXCLUSIVE lock to thread cells onto
+#      the slab's UnassignedFreeListHead + update counters.
+#
+# The lock discipline: the allocator's lock is held EXCLUSIVE during
+# step (1), DROPPED before step (2)+(3), then RE-ACQUIRED for step
+# (4). This is the "drop-and-reacquire" pattern documented in the
+# implementation. Justification: the cell list captured in step (1)
+# is the COMPLETE description of what we're going to release; no
+# other thread can add cells to the ClassDescriptor sub-pool during
+# the drop window (no API supports that without first registering
+# the class, which is also EXCLUSIVE-locked). Concurrent allocators
+# against OTHER classes are allowed; they may even allocate cells
+# from the same SLAB as our sub-pool (size-class shared slabs), but
+# they cannot disturb the cells WE captured.
+#
+# The pattern is consistent with the engine-wide lock-discipline
+# contract: we never hold two locks across a function-call boundary
+# that the contract is designed to prevent.
+#
+# JUDGEMENT CALL (Phase 5.i / XScenarios integration is FORWARD
+# COMMITMENT only).
+#
+# XScenarios (the higher-level system that owns scenario lifecycle)
+# does NOT exist yet (Master Plan post-foundation). Phase 5.i ships
+# the API surface XScenarios will call:
+#
+#   * FXObjectAllocator::ReleaseClassPool(cls) is the public per-
+#     class release entry XScenarios invokes at scenario unload.
+#   * GetOnScenarioBoundary() is the multicast delegate XScenarios
+#     broadcasts on scenario transitions; consumers (including the
+#     FXObjectCollector for pre-emptive GC trigger per §4.7) subscribe.
+#
+# Phase 5.i does NOT wire the FXObjectCollector subscription. That
+# wiring is part of the engine-bootstrap evolution; until XScenarios
+# exists there is nothing to broadcast. The delegate is testable
+# stand-alone (the OnScenarioBoundary.Tests prove
+# Subscribe/Broadcast/Unsubscribe round-trip independent of any
+# broadcaster).
+#
+# JUDGEMENT CALL (Phase 5.i / per-FClass sub-pool data structure).
+#
+# Phase 5.b shipped the sub-pool as FClassPool {Class, SizeClassIndex,
+# ClassFreeListHead, LiveCellCount, OwnedCellCount}. Phase 5.i does
+# NOT extend the FClassPool struct: the existing fields suffice for
+# ReleaseClassPool's collection step (we walk every slab's OwnerClass
+# tags + the class free-list to enumerate every owned cell). The
+# additional bookkeeping for FIX-A-MIN-40 sub-pool REBIND lives at
+# Phase 5.j; Phase 5.i ships ONLY the release surface.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
