@@ -2314,6 +2314,334 @@
 # ships the pass correctness against the synthetic surface.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.l (Foundation Prototype harness) adds the
+# Tests/FoundationPrototype/ tree. Per the Phase 5.l dispatch the
+# harness is TEST-ONLY (no production code); per criterion / per gate
+# it covers the Master Plan §11 Step 5.5 acceptance ladder against
+# the producer phases Phase 5.a through Phase 5.k (all shipped at
+# commit c806c4d through 814e7b9 / a6f1021 / 44feff9).
+#
+# DIRECTORY LAYOUT:
+#
+#   Tests/FoundationPrototype/Phase5LCommon.h
+#                                         -- shared test-harness scaffold
+#                                            (P5L_CHECK macro, BenchNs
+#                                            micro-benchmark helper,
+#                                            Phase5L::CreateAndBind +
+#                                            ReleaseAndDeallocate
+#                                            synthetic XObject helpers,
+#                                            P5L_REQUIRES_QUEST3_HARDWARE_
+#                                            OR_SKIP gate, P5L_SKIP_AND_
+#                                            PASS for deferred tests).
+#                                            Header-only; no production
+#                                            code.
+#
+#   Tests/FoundationPrototype/Phase5LSummary.cpp
+#                                         -- standalone documentation
+#                                            aggregator. Prints the
+#                                            full coverage matrix
+#                                            (criterion <-> test TU <->
+#                                            status). Runs after the
+#                                            individual harness TUs.
+#
+# CRITERION (a)-(i) TESTS (one .cpp per criterion):
+#
+#   * CriterionA_GCPauseBudget.Tests/CriterionA_GCPauseBudget.cpp
+#                                         -- LIVE (scaled). 5s CI / 60s
+#                                            Quest 3; 1k allocations
+#                                            per 100ms tick (~10k/s);
+#                                            measure p99 pause across
+#                                            synchronous GC cycles.
+#                                            Win64 gate: p99 < 50ms
+#                                            (regression detection).
+#                                            Quest 3 gate: p99 < 5ms
+#                                            (spec acceptance).
+#
+#   * CriterionB_FullHeapScanFallback.Tests/CriterionB_FullHeapScan
+#     Fallback.cpp
+#                                         -- LIVE (scaled). 10k objects
+#                                            CI / 100k Quest 3; ~25%
+#                                            root-pinned. Force-full-
+#                                            scan via EXGCOptions::
+#                                            kForceFullScan. Win64 gate:
+#                                            pause < 200ms; Quest 3
+#                                            gate: < 50ms (spec).
+#
+#   * CriterionC_CrossArchDeterminism.Tests/CriterionC_CrossArchDeter
+#     minism.cpp
+#                                         -- DEFERRED (XIL2CPP + hardware).
+#                                            Needs sim-path serial
+#                                            executor (System 8) +
+#                                            XIL2CPP-emitted sim-path
+#                                            TUs (System 6) + cross-
+#                                            arch CI shard. X-DET
+#                                            invariant guards covered
+#                                            in XDET_DeterminismGuards
+#                                            .Tests.
+#
+#   * CriterionD_SingleMethodHotPatch.Tests/CriterionD_SingleMethod
+#     HotPatch.cpp
+#                                         -- DEFERRED (XLiveCoding).
+#                                            Needs the XLiveCoding DLL
+#                                            hot-swap producer (System
+#                                            5). XCoreXObject side
+#                                            covered by Phase 5.j
+#                                            tests + X6 wrapper.
+#
+#   * CriterionE_CascadeHotPatch.Tests/CriterionE_CascadeHotPatch.cpp
+#                                         -- DEFERRED (XLiveCoding).
+#                                            Same envelope as criterion
+#                                            (d). XCoreXObject coordinator
+#                                            pieces covered by Phase 5.j.
+#
+#   * CriterionF_ReflectionRoundTrip.Tests/CriterionF_ReflectionRound
+#     Trip.cpp
+#                                         -- LIVE. FProperty SetValue /
+#                                            GetValue / Identical round-
+#                                            trip for FIntProperty +
+#                                            FInt64Property + FFloat
+#                                            Property + FBoolProperty +
+#                                            FNameProperty + FStrProperty.
+#                                            The XCore-4b primitive
+#                                            FProperty layer IS the
+#                                            bottom of the XPropertyEditor
+#                                            stack; the full editor +
+#                                            XIL2CPP-transpiled-property
+#                                            gate runs when those
+#                                            producers ship.
+#
+#   * Criterion (g) -- no dedicated TU; the static_asserts at spec §11.3
+#                       + the X1_XObjectSizeofLocks.Tests cover the
+#                       deterministic codegen invariant (the XObject
+#                       ABI shape pinning ensures XIL2CPP can emit
+#                       deterministic code against it).
+#
+#   * CriterionH_FragmentationBudget.Tests/CriterionH_FragmentationBudget
+#     .cpp
+#                                         -- LIVE (scaled). 30s CI / 4hr
+#                                            Quest 3; 4-class continuous
+#                                            -load. Bounded-ring retention
+#                                            mimics typical scene churn.
+#                                            Win64 gate: < 50% (regression
+#                                            detection); Quest 3 gate:
+#                                            < 15% at 4hr (spec).
+#
+#   * CriterionI_EditorColdStart.Tests/CriterionI_EditorColdStart.cpp
+#                                         -- DEFERRED (editor). Needs
+#                                            editor binary (System 10+).
+#                                            X7 covers the lazy-CDO
+#                                            precondition.
+#
+# XCOREXOBJECT GATES X1-X12 + X-* TESTS:
+#
+#   * X1_XObjectSizeofLocks.Tests/X1_XObjectSizeofLocks.cpp
+#                                         -- LIVE. sizeof(XObject) == 56,
+#                                            alignof == 8, all per-member
+#                                            offsetof locks, FXObjectArray
+#                                            Entry sizeof == 32, non-
+#                                            polymorphism trait.
+#
+#   * X2_NewObjectLatency.Tests/X2_NewObjectLatency.cpp
+#                                         -- LIVE. NewObject+Deallocate
+#                                            10k-iter benchmark via
+#                                            kRing-size bounded retention.
+#                                            Win64 gate: < 1500ns per
+#                                            pair; Quest 3 gate: < 1000ns
+#                                            (per spec target of 500ns
+#                                            NewObject-alone on Quest 3).
+#
+#   * X3_XWeakPtrGetLatency.Tests/X3_XWeakPtrGetLatency.cpp
+#                                         -- LIVE. 100k-iter XWeakPtr::
+#                                            Get() benchmark. Win64 gate:
+#                                            < 30ns; Quest 3 gate: < 50ns
+#                                            (per spec target of 8ns
+#                                            Win64 / 15ns Quest 3).
+#
+#   * X4_WriteBarrierCost.Tests/X4_WriteBarrierCost.cpp
+#                                         -- LIVE. 1M-iter XPACT_GC_STORE
+#                                            benchmark. Win64 gate:
+#                                            < 50ns; Quest 3 gate: < 75ns
+#                                            (per spec target ~5 cycles
+#                                            ~ 2-3ns).
+#
+#   * X5_CardTableSaturation.Tests/X5_CardTableSaturation.cpp
+#                                         -- LIVE (scaled). 1000 instances
+#                                            * 5 refs * 10M random writes;
+#                                            measure dirty card fraction.
+#                                            CI gates: card-table book-
+#                                            keeping correctness; Quest 3
+#                                            gate: dirty < 50% in typical
+#                                            scene.
+#
+#   * X6_HotReloadXObjectKeySurvives.Tests/X6_HotReloadXObjectKey
+#     Survives.cpp
+#                                         -- LIVE. 10k-instance class
+#                                            replacement; assert 100% Key
+#                                            resolution survival. The
+#                                            canonical X6 acceptance
+#                                            wrapper around the Phase 5.j
+#                                            producer.
+#
+#   * X7_CDOLazyConstruction.Tests/X7_CDOLazyConstruction.cpp
+#                                         -- LIVE. Sub-test A: timing
+#                                            (< 5ms CI; < 1ms spec).
+#                                            Sub-test B: 8-thread race
+#                                            against a fresh FClass;
+#                                            assert single observed
+#                                            CDO pointer.
+#
+#   * X8_FXObjectArrayContention.Tests/X8_FXObjectArrayContention.cpp
+#                                         -- LIVE. Single-thread baseline
+#                                            vs 4-thread contended path;
+#                                            assert ratio < 10x (CI;
+#                                            spec is 1-in-1000 contention).
+#
+#   * X9_ConservativeScanningCorrectness.Tests/X9_Conservative
+#     ScanningCorrectness.cpp
+#                                         -- LIVE. 5000 real XObjects +
+#                                            5000 non-XObject candidates;
+#                                            assert ValidateConservative
+#                                            Candidate accepts only the
+#                                            former + rejects only the
+#                                            latter. Per spec §13.2 +
+#                                            FIX-A-MED-35 four-gate order.
+#
+#   * X10_PreciseStackScanning.Tests/X10_PreciseStackScanning.cpp
+#                                         -- DEFERRED (XIL2CPP). Needs
+#                                            XIL2CPP-emitted FStackRoot
+#                                            Entry tables (System 6).
+#                                            Phase 5.e XStackRootScaffold
+#                                            ing.Tests covers the
+#                                            structural half.
+#
+#   * X11_ScenarioBoundaryReclaim.Tests/X11_ScenarioBoundaryReclaim.cpp
+#                                         -- LIVE (scaled). 10-class * 10-
+#                                            instance matrix; ReleaseClass
+#                                            Pool + per-class SerialNumber
+#                                            bump verification. Spec scale
+#                                            is 100 classes * 10 instances;
+#                                            Phase 5.i producer ships
+#                                            the no-escape + escape-
+#                                            detected acceptance.
+#
+#   * X12_LeakTrackerAccuracy.Tests/X12_LeakTrackerAccuracy.cpp
+#                                         -- LIVE (config-gated).
+#                                            FLeakTracker live-allocation
+#                                            count round-trip via
+#                                            CreateAndBind + Release
+#                                            AndDeallocate; injected
+#                                            leaks (1, 5, 50, 500)
+#                                            produce monotonic count
+#                                            growth. Gated on XPACT_
+#                                            LEAK_TRACKING_ENABLED.
+#
+#   * XDET_DeterminismGuards.Tests/XDET_DeterminismGuards.cpp
+#                                         -- LIVE (happy-path).
+#                                            GetSerialNumber + GetType
+#                                            Hash(XObjectKey) accessors
+#                                            from non-sim-path TU.
+#                                            Sim-path negative gate
+#                                            deferred to ::XCore::HAL
+#                                            ::IsSimPathTU runtime probe.
+#
+#   * XNEW_SimPathNewObjectGuards.Tests/XNEW_SimPathNewObjectGuards
+#     .cpp
+#                                         -- LIVE (happy-path). New
+#                                            ObjectImpl from main + worker
+#                                            threads. Sim-path negative
+#                                            gate deferred to IsSimPathTU
+#                                            + IsSimPathThread probes.
+#
+#   * XINIT_InitPhaseGate.Tests/XINIT_InitPhaseGate.cpp
+#                                         -- LIVE. Pre-PostStaticInit
+#                                            TryNewObjectImpl returns
+#                                            kInvalidPhase; post-PostStatic
+#                                            Init succeeds.
+#
+#   * XINITOBJ_FXObjectInitializerDestructor.Tests/XINITOBJ_FXObject
+#     InitializerDestructor.cpp
+#                                         -- LIVE. Hand-crafted FClass
+#                                            with PostInitProperties slot;
+#                                            verify single fire + 5x
+#                                            fires + Self pointer +
+#                                            ClassPrivate + NamePrivate
+#                                            identity assertions per
+#                                            spec §13.2.
+#
+#   * XSCHEMA_SchemaVectorPerformance.Tests/XSCHEMA_SchemaVector
+#     Performance.cpp
+#                                         -- LIVE (scaled). Synthetic
+#                                            5-ref schema * 10k instances;
+#                                            measure walker throughput
+#                                            (refs/ms). Win64 gate:
+#                                            > 10k refs/ms; Quest 3 gate:
+#                                            > 4k refs/ms (spec).
+#
+#   * XINITEAGER_EagerCDOOrdering.Tests/XINITEAGER_EagerCDOOrdering
+#     .cpp
+#                                         -- LIVE. 4-class EnqueueEager
+#                                            CDO + idempotency + Drain
+#                                            (count == 4) + cached
+#                                            GetClassDefaultObject second-
+#                                            call invariant.
+#
+# JUDGEMENT CALL (Phase 5.l / scaled-down CI workloads). Several
+# acceptance gates have hardware-required acceptance criteria (50k+
+# XObject populations, 60s+ workloads, 4hr soaks) that are inappropriate
+# for CI per-test budgets. The Phase 5.l harness ships SCALED-DOWN
+# variants that:
+#
+#   1. Exercise the algorithm at a smaller scale (preserves dispatch
+#      paths + bookkeeping correctness).
+#   2. Use a regression-detection threshold on Win64 (catches real
+#      bugs; less strict than the spec target).
+#   3. Apply the spec hard target only on XPACT_PLATFORM_ANDROID
+#      (Quest 3 ARM64; the hardware acceptance step).
+#
+# Per the dispatch task's "scale up to 1M+ for the real perf gates"
+# wording, the iteration counts are TUNABLE within the test file
+# bodies; the SCALED defaults are CI-budget-friendly. The full-scale
+# runs happen on Quest 3 hardware (manual or hardware-CI).
+#
+# JUDGEMENT CALL (Phase 5.l / deferred-criterion stubs). Criteria (c),
+# (d), (e), (i), and X10 require producer systems that ship AFTER
+# XCoreXObject:
+#
+#   * (c) -- XIL2CPP + sim-path serial executor + cross-arch CI shard.
+#   * (d) -- XLiveCoding's DLL hot-swap.
+#   * (e) -- XLiveCoding's cascade protocol.
+#   * (i) -- the editor binary.
+#   * X10 -- XIL2CPP-emitted FStackRootEntry tables.
+#
+# These tests ship as P5L_SKIP_AND_PASS stubs that:
+#
+#   1. BUILD successfully on every platform (CI catches build
+#      regressions in the harness header chain).
+#   2. EMIT a structured SKIP diagnostic naming the unshipped producer.
+#   3. RETURN 0 so the test runner ranks the file as PASSED.
+#
+# When the producer ships, the test body is filled in by replacing
+# the P5L_SKIP_AND_PASS body with the documented live test scenario.
+# The deferral is honest: the criterion CANNOT be exercised until the
+# producer ships; pretending otherwise would mask the real gap.
+#
+# JUDGEMENT CALL (Phase 5.l / no production code). The dispatch task
+# explicitly states "DO NOT add production code. Phase 5.l is harness-
+# only." Every file under Tests/FoundationPrototype/ is either a test
+# TU or a header-only test scaffold. No new symbol declarations under
+# Public/ or Private/ XCore source. The harness CONSUMES every API
+# the prior 13 phases ship; missing APIs are documented as follow-ups,
+# not invented here.
+#
+# JUDGEMENT CALL (Phase 5.l / Phase5LCommon.h placement). The shared
+# header lives under Tests/FoundationPrototype/Phase5LCommon.h (not
+# Public/). Header-only; the test TUs include via the relative
+# "../Phase5LCommon.h" form. This matches the locale_stub.cpp pattern
+# established in Phase 5.b tests and keeps the test-only header out
+# of the Public/ namespace that production consumers see.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"
