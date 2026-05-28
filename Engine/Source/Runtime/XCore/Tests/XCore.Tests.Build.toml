@@ -1431,6 +1431,146 @@
 # The stub is a test-harness convenience only.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.c (object handles) adds these test folders:
+#
+# Tests/XObject/XObjectKey.Tests/ (5 tests; XCoreXObject Rev 4 §6.4):
+#
+#   * SizeofAndAlignof.cpp      -- sizeof == 8 + alignof == 4 +
+#                                   offsetof InternalIndex@0 /
+#                                   SerialNumber@4 verified at the
+#                                   test-link site.
+#   * Construction.cpp          -- default / nullptr / from-XObject*
+#                                   ctors + copy.
+#   * Resolution.cpp            -- Resolve() returns the bound object
+#                                   when live; nullptr when freed; nullptr
+#                                   on slot reuse with SerialNumber bump.
+#   * EqualityHash.cpp          -- bytewise operator== via std::bit_cast<
+#                                   uint64> per Rev 1 HIGH-1;
+#                                   GetTypeHash determinism + non-
+#                                   collision smoke test.
+#   * SimPathHashGuard.cpp      -- documents the FIX-A-CRIT-2 SIMPATH-
+#                                   FORBIDDEN-READ guard on GetTypeHash;
+#                                   non-sim-path happy path verified;
+#                                   sim-path negative test deferred to
+#                                   the phase that lands ::XCore::HAL::
+#                                   IsSimPathTU.
+#
+# Tests/XObject/XPtr.Tests/ (6 tests; XCoreXObject Rev 4 §6.1):
+#
+#   * SizeofAndAlignof.cpp      -- sizeof == 8 + alignof == 8 +
+#                                   offsetof Ptr@0 + trivially-
+#                                   copyable + standard-layout traits.
+#   * Construction.cpp          -- default / nullptr / from-T* /
+#                                   assignment / copy / move surface.
+#                                   Uses a sentinel non-null
+#                                   ClassPrivate to satisfy the Dev
+#                                   IsValidLowLevel check on the from-
+#                                   T* ctor.
+#   * Resolution.cpp            -- Get() returns the captured T* verbatim;
+#                                   re-assign rebinds; null-assign clears.
+#   * OperatorArrow.cpp         -- operator-> + operator* through the
+#                                   GetInternalIndex / GetClass surface.
+#   * Comparison.cpp            -- XPtr-vs-XPtr / XPtr-vs-T* / T*-vs-XPtr
+#                                   / XPtr-vs-nullptr / nullptr-vs-XPtr.
+#   * NoSelfRoot.cpp            -- XPtr ctor / copy / dtor do NOT touch
+#                                   the FXObjectArrayEntry refcount
+#                                   field (the observable proxy for
+#                                   the non-self-rooting contract);
+#                                   full collector-roundtrip
+#                                   verification deferred to Phase 5.g+.
+#
+# Tests/XObject/XWeakPtr.Tests/ (5 tests; XCoreXObject Rev 4 §6.2):
+#
+#   * SizeofAndAlignof.cpp      -- sizeof == 8 + alignof == 4 +
+#                                   offsetof + trivial traits.
+#   * Construction.cpp          -- default / nullptr / from-T* /
+#                                   raw{int32,uint32} / copy / T*
+#                                   assignment.
+#   * Resolution.cpp            -- Get() returns the bound T* when
+#                                   live + matching Serial; nullptr
+#                                   on FreeEntry SerialNumber bump;
+#                                   nullptr on BeginDestroyed flag
+#                                   per spec §6.2 reference impl.
+#   * Equality.cpp              -- bytewise operator== captures
+#                                   {Index, Serial}; differing Index
+#                                   or Serial produces non-equality.
+#   * NoSelfRoot.cpp            -- XWeakPtr ctor / copy / dtor do NOT
+#                                   touch the refcount field
+#                                   (strictly non-rooting; contrasts
+#                                   with XStrongPtr).
+#
+# Tests/XObject/XSoftPtr.Tests/ (4 tests; XCoreXObject Rev 4 §6.3):
+#
+#   * SizeofAndAlignof.cpp      -- Phase 5.c snapshot sizeof == 16
+#                                   (8 FSoftObjectPath placeholder +
+#                                   8 CachedRef XWeakPtr); alignof == 8;
+#                                   NOT in the ABI-lock set per spec
+#                                   §6.3 (size grows when Layer 9
+#                                   ships the full FSoftObjectPath
+#                                   impl).
+#   * Construction.cpp          -- default / nullptr / from-Path /
+#                                   from-T* (CachedRef populated;
+#                                   Path stays null at Phase 5.c
+#                                   pending the Layer 9 path emitter).
+#   * LazyResolve.cpp           -- cache-fast-path Get() returns the
+#                                   pointee via the CachedRef when
+#                                   set; Path-only soft-ptr's Get()
+#                                   returns nullptr (Phase 5.c
+#                                   resolver is a stub; Layer 9
+#                                   ships the real path-to-XObject
+#                                   resolver).
+#   * Reset.cpp                 -- Reset() clears both Path and
+#                                   CachedRef.
+#
+# Tests/XObject/XStrongPtr.Tests/ (6 tests; XCoreXObject Rev 4 §6.5):
+#
+#   * SizeofAndAlignof.cpp      -- sizeof == 8 + alignof == 8 +
+#                                   offsetof Ptr@0 + NOT trivially-
+#                                   copyable (ctor/dtor touch
+#                                   refcount; the documented contrast
+#                                   with XPtr's POD-likeness).
+#   * RefCountBumpOnConstruct.cpp
+#                              -- ctor bumps FXObjectArrayEntry refcount;
+#                                  dtor restores; multiple XStrongPtrs
+#                                  count linearly.
+#   * RefCountDecOnDestruct.cpp -- 5 nested ctors + 5 dtors -> back to 0.
+#                                  Reset / Reset(nullptr) also decrement.
+#   * CopyBumpsRefCount.cpp     -- copy ctor + copy-assign bump; self-
+#                                  assignment is net-zero.
+#   * MoveDoesNotBump.cpp       -- move ctor + move-assign keep the
+#                                  refcount unchanged; source becomes
+#                                  null without ReleaseRef.
+#   * AssignReleaseAndBump.cpp  -- assigning across two distinct
+#                                  objects releases the destination's
+#                                  prior pointee and bumps the new
+#                                  target; refcount visible on both
+#                                  slots; spec §6.5 release-then-bump
+#                                  discipline verified.
+#
+# JUDGEMENT CALL (Phase 5.c tests / sentinel ClassPrivate).
+#
+# XPtr<T>::XPtr(T*) and XStrongPtr<T>::XStrongPtr(T*) ctors call
+# XObject::IsValidLowLevel as the spec §6.1 / §6.5 Dev pointer-validity
+# check. IsValidLowLevel returns FALSE when ClassPrivate == nullptr;
+# the XPACT_CHECK in the ctor fires + aborts in Dev/Debug. Stack-local
+# XObjects in tests have ClassPrivate == nullptr by default. The
+# tests use a bogus non-null sentinel address for ClassPrivate
+# (`reinterpret_cast<const FClass*>(&u64_storage)`) to satisfy the
+# check without bringing up a real FClass instance. The sentinel is
+# NEVER dereferenced; only the non-nullness matters.
+#
+# JUDGEMENT CALL (Phase 5.c tests / XStrongPtr refcount observability).
+#
+# The spec §6.5 refcount lives in FXObjectArrayEntry::StateBits bits
+# 32..55 (24 bits; per Phase 5.c bit-layout pinning in FXObjectArray.h).
+# Tests use FXObjectArray::GetRefCount(InternalIndex) to read the
+# field directly. GetRefCount is a Phase 5.c-added diagnostic API
+# whose result is a snapshot at the load moment; the tests do all
+# refcount observations between known-synchronous mutations so the
+# snapshot is stable.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

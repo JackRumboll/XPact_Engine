@@ -47,6 +47,7 @@
 // =====================================================================
 
 #include "Macros/XCoreTypes.h"
+#include "Macros/XPactMacros.h"   // XPACT_FORCEINLINE used in operator==/IsNull bodies
 
 #include <cstddef>
 #include <type_traits>

@@ -1875,6 +1875,225 @@
 # via std::atomic_ref<FnPtr>::store(memory_order_release).
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.c -- Object handle family (XCoreXObject Rev 4 §6).
+#
+# Ships the five user-facing handles + the FXObjectArray refcount API
+# they depend on. Per spec §6 "Four handle types cover the spectrum of
+# XObject reference semantics" (XStrongPtr is the fifth, added per
+# Rev 2 FIX-A-MIN-38 / ALT-HANDLE-2).
+#
+# Phase 5.c adds these PUBLIC headers:
+#
+#   Public/XObject/XObjectKey.h               -- 8-byte stable identity
+#                                                handle. {InternalIndex,
+#                                                SerialNumber} layout
+#                                                matches XWeakPtr; ABI-
+#                                                compatible but
+#                                                semantically distinct.
+#                                                Resolve() routes
+#                                                through FXObjectArray;
+#                                                GetTypeHash via XXH3-64
+#                                                with SIMPATH-FORBIDDEN-
+#                                                READ guard hook (per
+#                                                FIX-A-CRIT-2; spec
+#                                                §6.4).
+#
+#   Public/XObject/XPtr.h                     -- 8-byte strong typed
+#                                                pointer. Thin wrapper
+#                                                around T*; raw-pointer-
+#                                                compatible per the
+#                                                load-bearing
+#                                                FObjectProperty payload
+#                                                contract (spec §6.1
+#                                                trailing prose). Non-
+#                                                self-rooting: rooting
+#                                                comes from the container
+#                                                the XPtr lives in
+#                                                (property scan or
+#                                                XGCRootSpan).
+#
+#   Public/XObject/XWeakPtr.h                 -- 8-byte weak typed
+#                                                pointer. {Index, Serial}
+#                                                handle; Get() routes
+#                                                through FXObjectArray's
+#                                                GetObjectAtIndex
+#                                                (SerialNumber-checked).
+#                                                Strictly non-rooting:
+#                                                does NOT keep pointee
+#                                                alive (spec §6.2).
+#                                                BeginDestroyed flag
+#                                                suppresses Get() per
+#                                                spec §6.2 ref impl.
+#
+#   Public/XObject/XSoftPtr.h                 -- variable-size path-
+#                                                based soft reference.
+#                                                At Phase 5.c: 16 bytes
+#                                                (8 FSoftObjectPath
+#                                                placeholder + 8
+#                                                CachedRef XWeakPtr).
+#                                                NOT in the ABI-lock
+#                                                set per spec §6.3 (size
+#                                                grows when Layer 9
+#                                                ships the full
+#                                                FSoftObjectPath impl).
+#                                                Get() returns nullptr
+#                                                from the path stub
+#                                                until Layer 9 ships
+#                                                the asset registry.
+#
+#   Public/XObject/XStrongPtr.h               -- 8-byte self-rooting
+#                                                strong pointer
+#                                                (XCoreXObject Rev 4
+#                                                §6.5 / Rev 2
+#                                                FIX-A-MIN-38). Mirrors
+#                                                UE TStrongObjectPtr.
+#                                                Ctor bumps refcount in
+#                                                FXObjectArrayEntry::
+#                                                StateBits; dtor releases.
+#                                                Copy bumps; move
+#                                                preserves.
+#
+# Phase 5.c adds this PRIVATE .cpp body:
+#
+#   Private/XObject/XObjectHandles.cpp        -- non-inline bodies for
+#                                                XObjectKey (ctor +
+#                                                IsValid + Resolve +
+#                                                GetTypeHash). XPtr /
+#                                                XWeakPtr / XSoftPtr /
+#                                                XStrongPtr bodies are
+#                                                header-inline (template
+#                                                instantiations).
+#
+# Phase 5.c MODIFIES the following existing files:
+#
+#   Public/XObject/FXObjectArray.h            -- adds:
+#                                                  * AddRef / ReleaseRef /
+#                                                    GetRefCount API
+#                                                    (XStrongPtr's
+#                                                    refcount path).
+#                                                  * StateBits bit
+#                                                    layout constants
+#                                                    pinned (kFXObject
+#                                                    ArrayRefCountShift /
+#                                                    Bits / Mask /
+#                                                    Unit / Max +
+#                                                    the kFXObjectArray
+#                                                    *Bit flag constants
+#                                                    for bits 1, 2, 3,
+#                                                    7 per spec §3.3 +
+#                                                    Phase 5.a docstring).
+#
+#   Private/XObject/FXObjectArray.cpp         -- implements AddRef /
+#                                                ReleaseRef /
+#                                                GetRefCount. CAS-loop
+#                                                atomic on the 64-bit
+#                                                StateBits word; Dev/
+#                                                Debug overflow +
+#                                                underflow XPACT_CHECKs;
+#                                                Shipping saturation
+#                                                fallback.
+#
+#   Public/XObject/XPactVerifyXObjectLayout.h -- extends the
+#                                                XPACT_VERIFY_XOBJECT_
+#                                                LAYOUT macro with pins
+#                                                for XObjectKey @ 8
+#                                                bytes, XPtr<XObject>
+#                                                @ 8 bytes, XWeakPtr
+#                                                <XObject> @ 8 bytes,
+#                                                XStrongPtr<XObject>
+#                                                @ 8 bytes + offsetof
+#                                                contracts + the
+#                                                XPACT_XOBJECTKEY /
+#                                                XWEAKPTR / XPTR_LAYOUT_
+#                                                TAG string-equality
+#                                                contract checks.
+#                                                XSoftPtr is
+#                                                deliberately OUTSIDE
+#                                                the macro pin set per
+#                                                spec §6.3 (variable-
+#                                                size).
+#
+# JUDGEMENT CALL (Phase 5.c / XPtr / XStrongPtr layout per spec).
+#
+# The Phase 5.c dispatch wording proposed an {Index, Serial} layout
+# for XPtr / XStrongPtr (mirroring XObjectKey / XWeakPtr). Per Prime
+# Directive ("Use the thing that is correct not the thing that is
+# easier") this implementation follows the SPEC (XCoreXObject Rev 4
+# §6.1 / §6.5) which uses raw T* layout for XPtr + XStrongPtr. The
+# spec §6.1 trailing prose makes this load-bearing: the
+# FObjectProperty payload contract reads XPtr-shaped slots via
+# `*reinterpret_cast<XObject**>(...)`; an {Index, Serial} layout
+# would break that ABI contract. The XPACT_XPTR_LAYOUT_TAG also
+# documents "Ptr@0 (raw T* compatible); ABI-equivalent to T*".
+#
+# XStrongPtr (Rev 2 FIX-A-MIN-38 / ALT-HANDLE-2) uses the same raw-T*
+# layout per spec §6.5 code body; the refcount path uses the
+# pointee's InternalIndex extracted at construction time, NOT a
+# captured Index field on the handle.
+#
+# JUDGEMENT CALL (Phase 5.c / refcount bit placement in StateBits).
+#
+# Spec §6.5 says "8-byte StateBits has a refcount sub-field" but does
+# not pin the exact bit positions. Phase 5.c allocates bits 32..55
+# (24 bits = 16M strong-refs per object) for the refcount, leaving:
+#   * bits 0..7   for the existing GC-flag bit assignments (bits 1, 2,
+#                  3, 7 per spec §3.3 + FIX-A-HIGH-19)
+#   * bits 8..31  for future GC scheme extensions
+#   * bits 56..63 for the future remote-handle bookkeeping
+#
+# The 24-bit width is excessive for realistic workloads (typical:
+# 1..10 holds; pathological: ~1k) but lets the GC-flag region (low
+# 32 bits) and the refcount region (high 24 bits) mutate independently
+# without cache-line ping-pong between the GC mark thread and the
+# refcount-mutating application threads (both regions are within the
+# same 64-bit word so the atomic CAS-loop preserves all bits, but the
+# separation aids reasoning + future per-half independence if needed).
+#
+# JUDGEMENT CALL (Phase 5.c / FXObjectArray::AddRef does NOT bind
+# refcount-to-rooting-in-collector).
+#
+# Spec §6.5 says "the GC walk treats refcount > 0 entries as root-
+# pinned". The collector body lands at Phase 5.h+; Phase 5.c ships
+# the refcount API + the unit-test verification that the refcount
+# does bump. The "treat as root-pinned" wiring happens when the
+# collector mark phase actually exists; Phase 5.c is a prerequisite
+# (the API surface + observable refcount state) but cannot exercise
+# the full root-pinning roundtrip.
+#
+# JUDGEMENT CALL (Phase 5.c / XSoftPtr resolve stub).
+#
+# Spec §6.3 describes XSoftPtr's Resolve as routing through the asset
+# registry's path-to-XObject resolver (Layer 9). Phase 5.c ships:
+#   * The struct layout + the API surface.
+#   * The lazy-CachedRef cache pattern (avoids repeated path
+#     resolution; populates on first successful Get()).
+#   * A per-T-instantiation static-inline ResolveSyncToXObject_Internal
+#     stub returning nullptr.
+#
+# The stub posture means XSoftPtr's Get() returns the pointee when
+# the from-T* ctor populated CachedRef (the early-load case); soft-
+# ptrs constructed from a Path-only handle return nullptr until
+# Layer 9 ships the asset-registry resolver. The tests document this
+# Phase 5.c posture explicitly.
+#
+# JUDGEMENT CALL (Phase 5.c / XStrongPtr-bodies in header).
+#
+# The XStrongPtr ctor / dtor / copy / move bodies are
+# XPACT_FORCEINLINE in the header (alongside the class definition)
+# even though the bodies route through FXObjectArray::AddRef /
+# ReleaseRef (non-trivial functions). The principled reasons:
+#   1. Templated bodies must be header-visible for instantiation at
+#      the call site (FORCEINLINE doesn't change this; the *body*
+#      itself must be available).
+#   2. The forwarding to FXObjectArray's non-inline AddRef / ReleaseRef
+#      means the only inline cost is the InternalIndex extract + the
+#      null-check; the heavy lifting is in the .cpp.
+#   3. UE TStrongObjectPtr / std::shared_ptr both follow the same
+#      pattern (header-template bodies; out-of-line ref-count
+#      manipulation in the underlying allocator).
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

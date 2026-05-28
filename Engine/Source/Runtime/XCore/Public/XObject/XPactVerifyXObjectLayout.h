@@ -55,6 +55,10 @@
 #include "XObject/XObject.h"                  // sizeof(XObject) + offsetof
 #include "XObject/EObjectFlags.h"             // EObjectFlags + bit positions
 #include "XObject/FXObjectArrayEntry.h"       // sizeof(FXObjectArrayEntry) + offsetof
+#include "XObject/XObjectKey.h"               // sizeof(XObjectKey) + offsetof (Phase 5.c)
+#include "XObject/XPtr.h"                     // sizeof(XPtr<XObject>) + offsetof (Phase 5.c)
+#include "XObject/XWeakPtr.h"                 // sizeof(XWeakPtr<XObject>) + offsetof (Phase 5.c)
+#include "XObject/XStrongPtr.h"               // sizeof(XStrongPtr<XObject>) (Phase 5.c)
 #include "Reflection/FStruct.h"               // sizeof(FStruct) + RefSchema offset (Rev 13.9 cascade)
 #include "Reflection/FClass.h"                // sizeof(FClass) + LifecycleTable offset (Rev 13.9 cascade)
 
@@ -77,13 +81,20 @@
 //   * Plugin-range bit-position locks for EObjectFlags (UserFlag_1..8
 //     occupy bits 24..31 per Rev 3 FIX-M-R2-2).
 //
-// PHASE 5.a NOTE: the spec §11.3 macro pins additional types
+// PHASE 5.c UPDATE: the object-handle pins (XObjectKey, XPtr<XObject>,
+// XWeakPtr<XObject>, XStrongPtr<XObject>) NOW LANDED at Phase 5.c and
+// are wired into the macro body below. The remaining deferred pins
 // (FXObjectLifecycleTable @ 72 bytes, FXObjectRefSchema @ 24,
-// FXObjectRefSchemaOp @ 24, XObjectKey @ 8, XWeakPtr<XObject> @ 8,
-// XPtr<XObject> @ 8, XStrongPtr<XObject> @ 8) that are NOT yet C++-
-// real (they ship at Phase 5.d / 5.f / 5.g'+). Those pins are
-// COMMENTED OUT below; they activate once the corresponding types
-// ship and we revise this macro to include them.
+// FXObjectRefSchemaOp @ 24) ship at Phase 5.d / 5.g'+ and are
+// documented in the deferred-pins block at the bottom.
+//
+// XSoftPtr<XObject> is NOT pinned by this macro because spec §6.3
+// explicitly states XSoftPtr "is NOT in the ABI-lock set because its
+// size is necessarily variable; FSoftObjectProperty's storage in
+// reflected slots is its own bounded payload". The XSoftPtr.h
+// header's own static_assert documents the Phase 5.c snapshot size
+// (16 bytes) but it is intentionally outside the cross-DLL pin
+// surface.
 //
 // The macro is defined as a do-while(0) block wrapped in a struct
 // declaration so the static_asserts live at namespace scope (the
@@ -188,14 +199,67 @@
                       "root-pinned + hot-reload + garbage bits), _reserved@24; "                   \
                       "alignof = 8. Rev 3: rotating reachability flag moved to "                   \
                       "XObject header per FIX-M-R2-3."),                                           \
-                  "XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG string mismatch.")                          \
+                  "XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG string mismatch.");                         \
+    /* ===== Object handle pins (Phase 5.c per spec §6 + §11.3) ===== */                           \
+    static_assert(sizeof(::XCore::XObjectKey)                  ==  8,                              \
+                  "XObjectKey ABI lock (8 bytes; XCoreXObject Rev 4 §6.4).");                      \
+    static_assert(alignof(::XCore::XObjectKey)                 ==  4,                              \
+                  "XObjectKey ABI lock: 4-byte alignment.");                                       \
+    static_assert(offsetof(::XCore::XObjectKey, InternalIndex) ==  0,                              \
+                  "XObjectKey.InternalIndex offset lock.");                                        \
+    static_assert(offsetof(::XCore::XObjectKey, SerialNumber)  ==  4,                              \
+                  "XObjectKey.SerialNumber offset lock.");                                         \
+    static_assert(sizeof(::XCore::XPtr<::XCore::XObject>)      ==  8,                              \
+                  "XPtr<XObject> ABI lock (8 bytes; raw-T*-compatible; "                           \
+                  "XCoreXObject Rev 4 §6.1).");                                                    \
+    static_assert(alignof(::XCore::XPtr<::XCore::XObject>)     ==  8,                              \
+                  "XPtr<XObject> ABI lock: 8-byte alignment.");                                    \
+    static_assert(offsetof(::XCore::XPtr<::XCore::XObject>, Ptr) == 0,                             \
+                  "XPtr<XObject>.Ptr offset lock (reinterpret_cast-"                               \
+                  "compatible with XObject**).");                                                  \
+    static_assert(sizeof(::XCore::XWeakPtr<::XCore::XObject>)  ==  8,                              \
+                  "XWeakPtr<XObject> ABI lock (8 bytes; matches "                                  \
+                  "FWeakObjectPtr; XCoreXObject Rev 4 §6.2).");                                    \
+    static_assert(alignof(::XCore::XWeakPtr<::XCore::XObject>) ==  4,                              \
+                  "XWeakPtr<XObject> ABI lock: 4-byte alignment.");                                \
+    static_assert(offsetof(::XCore::XWeakPtr<::XCore::XObject>, InternalIndex) == 0,               \
+                  "XWeakPtr<XObject>.InternalIndex offset lock.");                                 \
+    static_assert(offsetof(::XCore::XWeakPtr<::XCore::XObject>, SerialNumber)  == 4,               \
+                  "XWeakPtr<XObject>.SerialNumber offset lock.");                                  \
+    static_assert(sizeof(::XCore::XStrongPtr<::XCore::XObject>) == 8,                              \
+                  "XStrongPtr<XObject> ABI lock (8 bytes; raw-T* storage; "                        \
+                  "XCoreXObject Rev 4 §6.5 / FIX-A-MIN-38).");                                     \
+    static_assert(alignof(::XCore::XStrongPtr<::XCore::XObject>) == 8,                             \
+                  "XStrongPtr<XObject> ABI lock: 8-byte alignment.");                              \
+    static_assert(offsetof(::XCore::XStrongPtr<::XCore::XObject>, Ptr) == 0,                       \
+                  "XStrongPtr<XObject>.Ptr offset lock.");                                         \
+    /* ===== Object-handle tag-string equality contract checks ===== */                            \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_XOBJECTKEY_LAYOUT_TAG,                                                 \
+                      "XObjectKey-v1: 8 bytes; InternalIndex@0 (int32), "                          \
+                      "SerialNumber@4 (uint32); ABI-compatible with XWeakPtr; "                    \
+                      "alignof = 4"),                                                              \
+                  "XPACT_XOBJECTKEY_LAYOUT_TAG string mismatch -- one of the "                     \
+                  "three sources (XReflectionRuntime.h / AbiLayoutPins.cs / "                      \
+                  "ContractSurface.cs) drifted from the contract.");                               \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_XWEAKPTR_LAYOUT_TAG,                                                   \
+                      "XWeakPtr-v1: 8 bytes; InternalIndex@0 (int32), "                            \
+                      "SerialNumber@4 (uint32); matches XCore-4b's "                               \
+                      "FWeakObjectPtr placeholder shape; alignof = 4"),                            \
+                  "XPACT_XWEAKPTR_LAYOUT_TAG string mismatch.");                                   \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_XPTR_LAYOUT_TAG,                                                       \
+                      "XPtr-v1: 8 bytes; Ptr@0 (raw T* compatible); "                              \
+                      "ABI-equivalent to T*; alignof = 8"),                                        \
+                  "XPACT_XPTR_LAYOUT_TAG string mismatch.")                                        \
     /* Deliberate no-semicolon terminator: the macro is used as                              */    \
     /*   `XPACT_VERIFY_XOBJECT_LAYOUT();`                                                    */    \
     /* at the call site; the trailing static_assert above ends with `)`                      */    \
     /* and the call-site semicolon closes it.                                                */
 
 // ---------------------------------------------------------------------
-// Phase 5.b+ deferred pins (documented here so the macro grows
+// Remaining deferred pins (documented here so the macro grows
 // idempotently as later phases ship):
 //
 //   * FXObjectLifecycleTable    (Phase 5.d):
@@ -204,14 +268,17 @@
 //       static_assert(sizeof(::XCore::Reflect::FXObjectRefSchema) == 24)
 //   * FXObjectRefSchemaOp       (Phase 5.g'):
 //       static_assert(sizeof(::XCore::Reflect::FXObjectRefSchemaOp) == 24)
-//   * XObjectKey                (Phase 5.f):
-//       static_assert(sizeof(::XCore::XObjectKey) == 8)
-//   * XWeakPtr<XObject>         (Phase 5.f):
-//       static_assert(sizeof(::XCore::XWeakPtr<::XCore::XObject>) == 8)
-//   * XPtr<XObject>             (Phase 5.f):
-//       static_assert(sizeof(::XCore::XPtr<::XCore::XObject>) == 8)
-//   * XStrongPtr<XObject>       (Phase 5.f):
-//       static_assert(sizeof(::XCore::XStrongPtr<::XCore::XObject>) == 8)
+//
+// Phase 5.c LANDED (in the macro above):
+//   * XObjectKey                @ 8 bytes
+//   * XPtr<XObject>             @ 8 bytes
+//   * XWeakPtr<XObject>         @ 8 bytes
+//   * XStrongPtr<XObject>       @ 8 bytes
+//   * XPACT_XOBJECTKEY_LAYOUT_TAG / XPACT_XWEAKPTR_LAYOUT_TAG /
+//     XPACT_XPTR_LAYOUT_TAG string-equality contract checks.
+//
+// XSoftPtr is deliberately OUTSIDE the macro pin set per spec §6.3
+// (variable-size; not part of the ABI-lock set).
 //
 // When each phase ships, append the matching static_assert to the
 // XPACT_VERIFY_XOBJECT_LAYOUT macro above. The macro is intentionally

@@ -479,4 +479,145 @@ namespace XCore
         return m_entries[InternalIndex].Object;
     }
 
+    // =================================================================
+    // AddRef -- XStrongPtr-side refcount increment (XCoreXObject Rev 4
+    // §3.3 + §6.5; Phase 5.c).
+    //
+    // CAS-loop atomic increment of the refcount sub-field in
+    // FXObjectArrayEntry::StateBits (bits 32..55). The CAS preserves
+    // every other bit in the 64-bit word (the GC-flag bits in the low
+    // half, the future remote-handle bits in the high byte) -- a
+    // straight fetch_add on the whole word would also work, but the
+    // CAS loop lets us guard against the 24-bit overflow case cleanly.
+    //
+    // No-op for the null sentinel (InternalIndex == 0). The Dev / Debug
+    // range check fires for genuinely-out-of-range indices.
+    // =================================================================
+    void FXObjectArray::AddRef(::int32 InternalIndex) noexcept
+    {
+        // Null sentinel: no-op. XStrongPtr<T>(nullptr) short-circuits
+        // before reaching here; this is defence-in-depth for any
+        // caller that arrives with index 0 (e.g., a freshly-zeroed
+        // XStrongPtr being destroyed).
+        if (InternalIndex == 0)
+        {
+            return;
+        }
+
+        XPACT_CHECK(InternalIndex > 0);
+        XPACT_CHECK(InternalIndex < m_committedCount.load(::std::memory_order_acquire));
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            const ::std::uint64_t CurrentCount =
+                (Old & kFXObjectArrayRefCountMask) >> kFXObjectArrayRefCountShift;
+
+            // Overflow guard (Dev/Debug). The 24-bit ceiling is
+            // 16 777 215; realistic workloads stay below 1k. Aborting
+            // here surfaces a real bug at the call site (XStrongPtr
+            // copy-cascade gone wrong, async I/O queue not draining,
+            // etc.). In Shipping the XPACT_CHECK is compiled out and
+            // the CAS loop saturates at the max.
+            XPACT_CHECK(CurrentCount < kFXObjectArrayRefCountMax);
+
+            if (CurrentCount >= kFXObjectArrayRefCountMax)
+            {
+                // Shipping-mode saturation: refuse to wrap. The
+                // resulting underflow-on-ReleaseRef would be a far
+                // worse failure mode (free-while-referenced; UAF).
+                return;
+            }
+
+            const ::std::uint64_t New = Old + kFXObjectArrayRefCountUnit;
+
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return;
+            }
+            // CAS failed; Old has been re-loaded with the freshest
+            // value; retry. Spurious-failure-safe.
+        }
+    }
+
+    // =================================================================
+    // ReleaseRef -- XStrongPtr-side refcount decrement.
+    //
+    // CAS-loop atomic decrement. The mirror of AddRef. Underflow is a
+    // bug (unbalanced ReleaseRef); aborts in Dev / Debug, saturates at
+    // zero in Shipping.
+    // =================================================================
+    void FXObjectArray::ReleaseRef(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex == 0)
+        {
+            return;
+        }
+
+        XPACT_CHECK(InternalIndex > 0);
+        XPACT_CHECK(InternalIndex < m_committedCount.load(::std::memory_order_acquire));
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            const ::std::uint64_t CurrentCount =
+                (Old & kFXObjectArrayRefCountMask) >> kFXObjectArrayRefCountShift;
+
+            // Underflow guard. ReleaseRef when refcount == 0 indicates
+            // unbalanced ReleaseRef / AddRef (a real bug at the call
+            // site). The XPACT_CHECK fires in Dev / Debug.
+            XPACT_CHECK(CurrentCount > 0);
+
+            if (CurrentCount == 0)
+            {
+                // Shipping-mode saturation: refuse to wrap to
+                // 16 777 215.
+                return;
+            }
+
+            const ::std::uint64_t New = Old - kFXObjectArrayRefCountUnit;
+
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return;
+            }
+        }
+    }
+
+    // =================================================================
+    // GetRefCount -- diagnostic / test read of the refcount sub-field.
+    //
+    // Atomic load + bit extract. No lock. The result is a snapshot
+    // valid at the load moment; production code should NOT depend on
+    // the value being stable past the call.
+    // =================================================================
+    ::uint32 FXObjectArray::GetRefCount(::int32 InternalIndex) const noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return 0;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return 0;
+        }
+        const ::std::uint64_t State =
+            m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+        return static_cast<::uint32>(
+            (State & kFXObjectArrayRefCountMask) >> kFXObjectArrayRefCountShift);
+    }
+
 } // namespace XCore

@@ -147,6 +147,75 @@ namespace XCore
     inline constexpr ::int32 kFXObjectArrayNullIndex = 0;
 
     // -----------------------------------------------------------------
+    // FXObjectArrayEntry::StateBits layout (Phase 5.c pins the bit
+    // assignments; Phase 5.a documented StateBits as "atomic uint64;
+    // pending-destroy + root-pinned + hot-reload + garbage bits"; the
+    // refcount sub-field for XStrongPtr lands at Phase 5.c per spec
+    // §3.3 + §6.5).
+    //
+    // The 64-bit StateBits word is partitioned as:
+    //
+    //   * bit 0       : RESERVED for future use (kept as zero-by-init;
+    //                    historical "kReachabilityFlag0" before Rev 3
+    //                    FIX-M-R2-3 moved reachability to XObject@36).
+    //   * bit 1       : kPendingDestroyBit (deferred-destroy queued)
+    //   * bit 2       : kRootPinnedBit     (mirror of EObjectFlags::
+    //                                        MarkAsRootSet for fast
+    //                                        root-scan)
+    //   * bit 3       : kHotReloadInProgressBit (XLiveCoding swap in
+    //                                              flight)
+    //   * bits 4..6   : RESERVED (zero-by-init)
+    //   * bit 7       : kGarbageBit (mirror of EObjectFlags::
+    //                                 MarkedAsGarbage for fast sweep-
+    //                                 time check per FIX-A-HIGH-19)
+    //   * bits 8..31  : RESERVED for future GC scheme extensions
+    //                    (zero-by-init).
+    //   * bits 32..55 : kRefCountField -- 24-bit XStrongPtr refcount
+    //                    (16 777 215 max strong-refs per object;
+    //                    overflow aborts in Dev/Debug per spec §6.5).
+    //   * bits 56..63 : RESERVED for future remote-handle bookkeeping
+    //                    (zero-by-init).
+    //
+    // The refcount placement at bits 32..55 separates the GC-flag
+    // tight-loop region (bits 0..31; read by the mark sweep + sweep
+    // discriminators on every entry visit) from the refcount region
+    // (bits 32..55; touched only by XStrongPtr ctor / dtor / copy /
+    // Reset). The two regions can therefore mutate independently
+    // without cache-line ping-pong between the GC mark thread and
+    // XStrongPtr-bearing application threads.
+    //
+    // Per Prime Directive: 24 bits = 16M strong-references per
+    // object is HIGHLY excessive for the realistic editor / async I/O
+    // / third-party hold scenarios (typical: 1..10 holds; pathological:
+    // ~1k). The 24-bit width is chosen so the field aligns to the
+    // upper-half of the 64-bit word, leaves headroom for the future
+    // remote-handle bookkeeping in bits 56..63, AND avoids overflow
+    // even under stress-test workloads that hammer the refcount path.
+    // The alternative (12-16 bits) would save bits but expose a real
+    // overflow risk under user-script abuse.
+    // -----------------------------------------------------------------
+
+    // Refcount field: bits 32..55 (24 bits).
+    inline constexpr ::std::uint32_t kFXObjectArrayRefCountShift = 32u;
+    inline constexpr ::std::uint32_t kFXObjectArrayRefCountBits  = 24u;
+    inline constexpr ::std::uint64_t kFXObjectArrayRefCountMask =
+        ((::std::uint64_t(1) << kFXObjectArrayRefCountBits) - 1u) << kFXObjectArrayRefCountShift;
+    inline constexpr ::std::uint64_t kFXObjectArrayRefCountUnit =
+        ::std::uint64_t(1) << kFXObjectArrayRefCountShift;
+    inline constexpr ::std::uint32_t kFXObjectArrayRefCountMax  =
+        static_cast<::std::uint32_t>((::std::uint64_t(1) << kFXObjectArrayRefCountBits) - 1u);
+
+    // Flag bits in the low half (per spec §3.3 + FIX-A-HIGH-19; Phase
+    // 5.c pins the assignments). The actual flag-mutation API lands
+    // alongside the collector body (Phase 5.h+); Phase 5.c only ships
+    // the refcount API. The constants are defined here so all
+    // FXObjectArray consumers see the canonical bit assignments.
+    inline constexpr ::std::uint64_t kFXObjectArrayPendingDestroyBit    = ::std::uint64_t(1) << 1;
+    inline constexpr ::std::uint64_t kFXObjectArrayRootPinnedBit        = ::std::uint64_t(1) << 2;
+    inline constexpr ::std::uint64_t kFXObjectArrayHotReloadInProgress  = ::std::uint64_t(1) << 3;
+    inline constexpr ::std::uint64_t kFXObjectArrayGarbageBit           = ::std::uint64_t(1) << 7;
+
+    // -----------------------------------------------------------------
     // FXObjectArray -- the process-singleton global object table.
     //
     // Accessed via `FXObjectArray::Get()`. The function-local static
@@ -283,6 +352,70 @@ namespace XCore
 
         [[nodiscard]] XObject* GetObjectAtIndexUnchecked(
             ::int32 InternalIndex) const noexcept;
+
+        // =============================================================
+        // Refcount API (XCoreXObject Rev 4 §3.3 + §6.5; Phase 5.c).
+        //
+        // XStrongPtr uses these to keep an XObject alive across GC
+        // cycles WITHOUT participating in property-scan / span-scan
+        // rooting. The refcount sub-field of FXObjectArrayEntry::
+        // StateBits is bumped on AddRef and decremented on ReleaseRef;
+        // the collector treats entries with non-zero refcount as
+        // root-pinned (per spec §6.5 trailing prose).
+        //
+        // CONCURRENCY: the refcount sub-field is mutated via atomic
+        // CAS-loop on the entire 8-byte StateBits word, so the
+        // mutations are lock-free + race-free against the GC-flag bits
+        // in the low half of the same word. The mutations do NOT
+        // acquire m_lock -- the FXObjectArrayEntry slot identity is
+        // already stable for the entry's lifetime (per the never-
+        // relocate invariant from spec §3.3 + §9.1), so atomic CAS on
+        // StateBits is sufficient.
+        //
+        // OVERFLOW DISCIPLINE: AddRef aborts in Dev / Debug if the
+        // refcount sub-field is about to overflow past
+        // kFXObjectArrayRefCountMax (16 777 215). In Shipping the CAS
+        // loop saturates (further AddRef calls become no-ops at the
+        // max; ReleaseRef saturates at 0). The realistic refcount
+        // ceiling is far below the 24-bit cap so the saturation
+        // posture is a defensive backstop, not a designed behaviour.
+        //
+        // UNDERFLOW DISCIPLINE: ReleaseRef aborts in Dev / Debug if
+        // the refcount is already zero (this indicates an unbalanced
+        // ReleaseRef -- a real bug). In Shipping the CAS loop short-
+        // circuits at zero so the underflow is benign.
+        //
+        // INDEX 0 (NULL SENTINEL): AddRef / ReleaseRef on index 0 are
+        // no-ops (the null sentinel cannot be refcount-pinned). The
+        // XStrongPtr<T>(nullptr) path short-circuits BEFORE reaching
+        // here, but the entry-point's own short-circuit is a defence-
+        // in-depth measure.
+        // =============================================================
+
+        // Bump the refcount of the FXObjectArrayEntry at InternalIndex.
+        //
+        // Pre-conditions:
+        //   * InternalIndex >= 0 (negative is rejected by XPACT_CHECK).
+        //   * InternalIndex within committed range (Dev/Debug check).
+        //
+        // No-op when InternalIndex == 0 (the null sentinel).
+        void AddRef(::int32 InternalIndex) noexcept;
+
+        // Decrement the refcount of the FXObjectArrayEntry at
+        // InternalIndex. Pre-conditions same as AddRef.
+        //
+        // No-op when InternalIndex == 0 (the null sentinel).
+        void ReleaseRef(::int32 InternalIndex) noexcept;
+
+        // Read the current refcount of the entry at InternalIndex.
+        // Returns 0 for the null sentinel and for out-of-range
+        // indices.
+        //
+        // Diagnostic / test API; production code should NOT depend on
+        // the snapshot value being stable past the call (the refcount
+        // may change between the read and the caller's next
+        // operation).
+        [[nodiscard]] ::uint32 GetRefCount(::int32 InternalIndex) const noexcept;
 
         // =============================================================
         // Counts.

@@ -303,13 +303,31 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
             // the first-match probe return the historical comment.
             // The fix: anchor the probe at `static_assert(sizeof(TYPE)`
             // so only real assert sites match.
+            //
+            // XCoreXObject Phase 5.c addendum: the object-handle types
+            // (XPtr, XWeakPtr, XStrongPtr, XSoftPtr) are C++ class
+            // templates -- their static_asserts pin
+            // `sizeof(XPtr<XObject>) == 8` etc. The Contract entry is
+            // named simply `XPtr` (the unspecialised template) but the
+            // C++ assert site MUST instantiate the template. We try
+            // BOTH the non-template literal probe AND the template-
+            // instantiation probe (`static_assert(sizeof(XPtr<`) so
+            // the validator handles both shapes uniformly. The bytes-
+            // check window is identical.
             string staticAssertProbe = "static_assert(sizeof(" + type + ")";
+            string templateInstantiationProbe = "static_assert(sizeof(" + type + "<";
             int sizeofIdx = allHeaders.IndexOf(staticAssertProbe, StringComparison.Ordinal);
+            if (sizeofIdx < 0)
+            {
+                sizeofIdx = allHeaders.IndexOf(templateInstantiationProbe, StringComparison.Ordinal);
+            }
             if (sizeofIdx < 0)
             {
                 failures.Add(string.Format(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    "No 'static_assert(sizeof({0}) == ...)' found in Reflection / XObject headers (Contract Rev 13.9 §11.2 / §11.3).",
+                    "No 'static_assert(sizeof({0}) == ...)' or "
+                    + "'static_assert(sizeof({0}<...>) == ...)' found in "
+                    + "Reflection / XObject headers (Contract Rev 13.9 §11.2 / §11.3).",
                     type));
                 continue;
             }

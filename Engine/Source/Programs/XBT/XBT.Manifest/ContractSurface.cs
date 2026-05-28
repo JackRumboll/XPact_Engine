@@ -529,11 +529,11 @@ public static class ContractSurface
         // skip them until their phase lands. Once a type ships, the
         // entry is REMOVED from the deferred map (which is the
         // checkpoint marker that the phase landed).
-        ("XObject", 56),                  // Phase 5.a   (this commit)
-        ("FXObjectArrayEntry", 32),       // Phase 5.a   (this commit)
-        ("XObjectKey", 8),                // Phase 5.f   (deferred)
-        ("XWeakPtr", 8),                  // Phase 5.f   (deferred)
-        ("XPtr", 8),                      // Phase 5.f   (deferred)
+        ("XObject", 56),                  // Phase 5.a   (shipped)
+        ("FXObjectArrayEntry", 32),       // Phase 5.a   (shipped)
+        ("XObjectKey", 8),                // Phase 5.c   (shipped)
+        ("XWeakPtr", 8),                  // Phase 5.c   (shipped)
+        ("XPtr", 8),                      // Phase 5.c   (shipped)
         ("FXObjectLifecycleTable", 72),   // Phase 5.d   (deferred)
         ("FXObjectRefSchema", 24),        // Phase 5.g'  (deferred)
     };
@@ -576,13 +576,16 @@ public static class ContractSurface
             // header + 8 slots * 8 bytes).
             { "FXObjectLifecycleTable", "Phase 5.d (XCoreXObject CDO + Initializer)" },
 
-            // Phase 5.f (object handles): the four handle types share
-            // the 8-byte {InternalIndex, SerialNumber} shape per
-            // XPACT_XOBJECTKEY_LAYOUT_TAG / XPACT_XWEAKPTR_LAYOUT_TAG /
-            // XPACT_XPTR_LAYOUT_TAG.
-            { "XObjectKey", "Phase 5.f (XCoreXObject object handles)" },
-            { "XWeakPtr",   "Phase 5.f (XCoreXObject object handles)" },
-            { "XPtr",       "Phase 5.f (XCoreXObject object handles)" },
+            // Phase 5.c (object handles): XObjectKey / XWeakPtr / XPtr
+            // SHIPPED -- their entries are removed from this deferred
+            // map. The XPACT_XOBJECTKEY_LAYOUT_TAG / XPACT_XWEAKPTR_
+            // LAYOUT_TAG / XPACT_XPTR_LAYOUT_TAG strings now match real
+            // C++ types whose ABI is pinned by the XPACT_VERIFY_XOBJECT_
+            // LAYOUT macro. XStrongPtr<T> also shipped at Phase 5.c
+            // (its sizeof is pinned by the verify macro but it does not
+            // have a separate Contract-surface tag string in §11.1
+            // because its layout matches XPtr's; the macro pin is
+            // sufficient).
 
             // Phase 5.g' (schema-vector GC walker): .rodata-resident
             // opcode array emitted by XHT per FClass for the fast-path
