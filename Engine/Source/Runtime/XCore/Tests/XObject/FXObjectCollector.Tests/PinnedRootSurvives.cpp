@@ -17,6 +17,8 @@
 // =====================================================================
 
 #include "HAL/FMemory.h"
+#include "XObject/EObjectFlags.h"
+#include "XObject/FXDeferredDestructionQueue.h"
 #include "XObject/FXObjectArray.h"
 #include "XObject/FXObjectCollector.h"
 #include "XObject/FXObjectGCCardTable.h"
@@ -43,6 +45,8 @@ namespace
 
 int main()
 {
+    using ::XCore::EObjectFlags;
+    using ::XCore::FXDeferredDestructionQueue;
     using ::XCore::FXObjectArray;
     using ::XCore::FXObjectCollector;
     using ::XCore::FXObjectGCCardTable;
@@ -56,6 +60,7 @@ int main()
     FXObjectArray::Get().__ResetForTests();
     FXObjectGCCardTable::Get().__ResetForTests();
     FXSweepCandidateQueue::Get().__ResetForTests();
+    FXDeferredDestructionQueue::Get().__ResetForTests();
     FXObjectCollector::Get().__ResetForTests();
 
     constexpr ::std::size_t kHeapBytes = 4 * 1024;
@@ -123,32 +128,47 @@ int main()
     }
 
     // -----------------------------------------------------------------
-    // Sweep candidate queue: ObjB should be enqueued (unreachable);
-    // ObjA should NOT (pinned + reachable).
+    // Sweep behaviour: ObjB should have been processed by the Phase
+    // 5.h sweep (BeginDestroy set + enqueued on deferred queue);
+    // ObjA should NOT (pinned + reachable; never reaches the sweep).
     //
-    // We don't have a peek API on the queue; we drain it and observe
-    // the indices.
+    // Phase 5.g shipped this test asserting the FXSweepCandidateQueue
+    // post-mark contents. Phase 5.h drains that queue inside the
+    // cycle so its post-cycle state is empty; we now observe the
+    // EQUIVALENT post-sweep state via:
+    //   * EObjectFlags::BeginDestroyed on ObjB (set by sweep).
+    //   * FXObjectArray's kPendingDestroyBit mirror on ObjB.
+    //   * FXDeferredDestructionQueue's pending count (one entry).
+    //   * ObjA's flags + state-bit are CLEAN.
     // -----------------------------------------------------------------
     {
-        bool FoundA = false;
-        bool FoundB = false;
-        const ::int32 IdxA = ObjA.InternalIndex;
-        const ::int32 IdxB = ObjB.InternalIndex;
-        FXSweepCandidateQueue::Get().DrainAll(
-            [&](::std::int32_t InternalIndex) noexcept
-            {
-                if (InternalIndex == IdxA) { FoundA = true; }
-                if (InternalIndex == IdxB) { FoundB = true; }
-            });
-        Check(!FoundA,
-              "Sweep candidate queue contains pinned ObjA (BUG: pinned object queued for sweep)");
-        Check(FoundB,
-              "Sweep candidate queue is missing unreachable ObjB (BUG: missed candidate)");
+        Check(!ObjA.HasAnyFlags(EObjectFlags::BeginDestroyed),
+              "Pinned ObjA was BeginDestroy'd (BUG: pinned object swept)");
+        Check(ObjB.HasAnyFlags(EObjectFlags::BeginDestroyed),
+              "Unreachable ObjB was NOT BeginDestroy'd (BUG: missed candidate)");
+
+        Check(!Array.IsPendingDestroyUnchecked(ObjA.InternalIndex),
+              "Pinned ObjA has kPendingDestroyBit set");
+        Check(Array.IsPendingDestroyUnchecked(ObjB.InternalIndex),
+              "Unreachable ObjB does NOT have kPendingDestroyBit set");
+
+        Check(FXDeferredDestructionQueue::Get().Size() == 1,
+              "FXDeferredDestructionQueue Size != 1 post-sweep");
+
+        // The candidate queue should be drained.
+        Check(FXSweepCandidateQueue::Get().IsEmpty(),
+              "FXSweepCandidateQueue is not empty post-sweep (Phase 5.h "
+              "should consume the queue as part of EnterSweep)");
     }
 
     // Cleanup.
     Check(XGCRoot::RemoveRoot(&ObjA),
           "RemoveRoot(ObjA) returned false");
+    // ObjB was sweep-processed but not deferred-drained (we want to
+    // skip the FXObjectAllocator::Deallocate path because ObjB is a
+    // stack XObject). Reset the deferred queue without dispatching its
+    // contents.
+    FXDeferredDestructionQueue::Get().__ResetForTests();
     Array.FreeEntry(ObjA.InternalIndex);
     Array.FreeEntry(ObjB.InternalIndex);
     FXObjectGCCardTable::Get().__ResetForTests();

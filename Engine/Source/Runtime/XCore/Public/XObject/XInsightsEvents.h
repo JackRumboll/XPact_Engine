@@ -213,6 +213,40 @@ namespace XCore::HAL::XInsightsEvents
             static const ::XCore::Reflect::FName Name("SafePointExited");
             return Name;
         }
+
+        // -----------------------------------------------------------------
+        // Phase 5.h sweep-phase events (additive to spec §10.12).
+        //
+        // The spec §10.12 table's `CycleComplete` event carries the
+        // aggregated sweep duration + reclaimed count but does NOT expose
+        // per-sub-phase pause-budget breakdowns for the SWEEP phase. The
+        // spec §4.8 acceptance table itemises sweep / deferred-destruction
+        // budgets independently; emitting per-sub-phase events lets the
+        // runtime telemetry verify each budget independently.
+        //
+        // The spec-side editorial pass can adopt these events into §10.12
+        // without churn (the FName accessor surface is forward-compatible).
+        // -----------------------------------------------------------------
+
+        // Sweep phase begin. Payload: {cycleId:i64, candidateCount:i64}.
+        // candidateCount is the number of InternalIndex entries the sweep
+        // is about to process (the FXSweepCandidateQueue's drained size).
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SweepStart() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("SweepStart");
+            return Name;
+        }
+
+        // Sweep phase end. Payload: {cycleId:i64, beginDestroyCount:i64,
+        // garbageRefsCleared:i64, durationUs:i64}.
+        // beginDestroyCount is the number of BeginDestroy dispatches that
+        // fired this sweep. garbageRefsCleared is the number of slots
+        // nulled by the kEliminateGarbageRefs pass.
+        [[nodiscard]] inline const ::XCore::Reflect::FName& SweepEnd() noexcept
+        {
+            static const ::XCore::Reflect::FName Name("SweepEnd");
+            return Name;
+        }
     } // namespace GC
 
     // =================================================================
@@ -414,6 +448,16 @@ namespace XCore::HAL::XInsightsEvents
 
         [[nodiscard]] inline const ::XCore::Reflect::FName& SatbResidual() noexcept
         { static const ::XCore::Reflect::FName Name("satbResidual"); return Name; }
+
+        // Phase 5.h sweep-phase payload keys (additive to spec §10.12).
+        [[nodiscard]] inline const ::XCore::Reflect::FName& CandidateCount() noexcept
+        { static const ::XCore::Reflect::FName Name("candidateCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& BeginDestroyCount() noexcept
+        { static const ::XCore::Reflect::FName Name("beginDestroyCount"); return Name; }
+
+        [[nodiscard]] inline const ::XCore::Reflect::FName& GarbageRefsCleared() noexcept
+        { static const ::XCore::Reflect::FName Name("garbageRefsCleared"); return Name; }
 
         // Allocator keys
         [[nodiscard]] inline const ::XCore::Reflect::FName& SizeClass() noexcept

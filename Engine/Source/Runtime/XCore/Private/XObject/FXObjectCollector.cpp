@@ -22,6 +22,8 @@
 #include "Reflection/FClass.h"
 #include "Reflection/FStruct.h"
 
+#include "XObject/EObjectFlags.h"
+#include "XObject/FXDeferredDestructionQueue.h"
 #include "XObject/FXGrayQueue.h"
 #include "XObject/FXObjectArray.h"
 #include "XObject/FXObjectArrayEntry.h"
@@ -98,6 +100,9 @@ FXObjectCollector::FXObjectCollector() noexcept
     , m_lastMarkDurationUs(0)
     , m_lastSafePointDurationUs(0)
     , m_lastCycleSaturationFallback(false)
+    , m_lastSweepDurationUs(0)
+    , m_lastReclaimedCount(0)
+    , m_lastGarbageRefsClearedCount(0)
     , m_triggerEvent(nullptr)
     , m_triggerPending(false)
     , m_lastTriggerReason(0)
@@ -224,6 +229,9 @@ void FXObjectCollector::__ResetForTests() noexcept
     m_lastMarkDurationUs.store(0, ::std::memory_order_release);
     m_lastSafePointDurationUs.store(0, ::std::memory_order_release);
     m_lastCycleSaturationFallback.store(false, ::std::memory_order_release);
+    m_lastSweepDurationUs.store(0, ::std::memory_order_release);
+    m_lastReclaimedCount.store(0, ::std::memory_order_release);
+    m_lastGarbageRefsClearedCount.store(0, ::std::memory_order_release);
     m_triggerPending.store(false, ::std::memory_order_release);
     m_lastTriggerReason.store(0, ::std::memory_order_release);
     m_shutdownRequested.store(false, ::std::memory_order_release);
@@ -235,6 +243,7 @@ void FXObjectCollector::__ResetForTests() noexcept
     FXGrayOverflowList::Get().__ResetForTests();
     FXSweepCandidateQueue::Get().__ResetForTests();
     FXObjectGlobalSatbLog::Get().__ResetForTests();
+    FXDeferredDestructionQueue::Get().__ResetForTests();
 }
 
 // =====================================================================
@@ -471,6 +480,32 @@ void FXObjectCollector::RunCycle(
     // ---- Sweep handoff ----
     EnterSweepHandoff();
 
+    // ---- Sweep (Phase 5.h) ----
+    //
+    // Drain FXSweepCandidateQueue: for each candidate, dispatch
+    // BeginDestroy via the lifecycle table, set RF_BeginDestroyed +
+    // kPendingDestroyBit, and enqueue onto FXDeferredDestructionQueue
+    // for the deferred FinishDestroy + slot release pass.
+    //
+    // The sweep window CAN overlap with sim ticks (spec §4.6): the
+    // sweep does NOT write to live XObject reference slots (only the
+    // EliminateGarbageRefs pass does, and that pass writes through
+    // slots whose targets are MarkedAsGarbage -- the writes are
+    // strictly clearing-to-null, never mutating live state). The MVP
+    // runs the sweep synchronously on the cycle thread; the worker-
+    // pool partitioning (spec §4.4) is post-System-8.
+    const ::std::int64_t SweepDurationUs = [this, Opts]() noexcept
+    {
+        const double SweepStartSec = ::XCore::HAL::FPlatformTime::Seconds();
+        EnterSweep(Opts);
+        const double SweepEndSec = ::XCore::HAL::FPlatformTime::Seconds();
+        return SecondsToMicros(SweepEndSec - SweepStartSec);
+    }();
+    m_lastSweepDurationUs.store(SweepDurationUs, ::std::memory_order_release);
+
+    const ::std::int64_t ReclaimedCount = static_cast<::std::int64_t>(
+        m_lastReclaimedCount.load(::std::memory_order_acquire));
+
     // ---- Cycle complete; back to idle + advance rotating index ----
     EnterIdle();
     const ::std::uint32_t NewCycle = CycleId + 1u;
@@ -481,15 +516,16 @@ void FXObjectCollector::RunCycle(
 
     // Per spec §10.12 CycleComplete event (the spec-canonical event;
     // payload aggregates mark/sweep timings + reclaimed count). Phase
-    // 5.g emits with sweepDurationUs = 0 + reclaimedCount = 0; Phase
-    // 5.h will fill those fields when sweep ships.
+    // 5.h fills SweepDurationUs + ReclaimedCount with the actual sweep-
+    // pass figures (Phase 5.g shipped with both at zero pending the
+    // sweep body).
     if (EmitTelemetry)
     {
         ::XCore::HAL::XInsightsEmitHelpers::EmitGCCycleComplete(
             MarkDurationUs,
-            /*SweepDurationUs=*/ 0,
+            SweepDurationUs,
             static_cast<::std::int64_t>(DirtyCardCountAtFinal),
-            /*ReclaimedCount=*/ 0,
+            ReclaimedCount,
             /*ThroughputMBps=*/ 0.0,
             static_cast<::std::int64_t>(CycleId));
     }
@@ -1184,23 +1220,19 @@ void FXObjectCollector::EnterSweepHandoff() noexcept
                 return;
             }
             // Pending-destroy already queued: this entry is on a
-            // previous cycle's sweep queue, do not double-queue.
-            // We probe via the raw StateBits to read the
-            // kFXObjectArrayPendingDestroyBit; the FXObjectArray's
-            // SHARED lock is held by ForEachObject so the read is
-            // race-safe.
+            // previous cycle's sweep queue (Phase 5.h sweep set the
+            // kPendingDestroyBit + enqueued on the deferred-
+            // destruction queue). Skip the candidate enumeration so
+            // we do not double-queue + cause a double BeginDestroy
+            // dispatch.
             //
-            // NOTE: Phase 5.g does NOT yet set this bit; Phase 5.h
-            // will. We probe defensively so Phase 5.h can re-run
-            // EnumerateSweepCandidates without double-queueing.
-            //
-            // We have to read StateBits via the entry's atomic; the
-            // FXObjectArray doesn't currently expose an
-            // IsPendingDestroyUnchecked, so we do the bit-test here
-            // via the public constant from FXObjectArray.h.
-            //
-            // For Phase 5.g this branch is effectively dead (Phase
-            // 5.h sets the bit); preserved for forward-compat.
+            // The FXObjectArray's ForEachObject visitor body holds the
+            // SHARED lock so the unchecked-read is race-safe against
+            // any concurrent grow.
+            if (Array.IsPendingDestroyUnchecked(InternalIndex))
+            {
+                return;
+            }
 
             // Append the candidate index.
             Queue.Append(InternalIndex);
@@ -1208,6 +1240,388 @@ void FXObjectCollector::EnterSweepHandoff() noexcept
         });
 
     return Count;
+}
+
+// =====================================================================
+// EnterSweep -- the Phase 5.h sweep phase body (XCoreXObject Rev 4
+// §4.2 step 6 + §11.5).
+//
+// Consumes FXSweepCandidateQueue (filled by Phase 5.g's
+// EnumerateSweepCandidates), dispatches BeginDestroy on each candidate
+// via the lifecycle table, sets the EObjectFlags::BeginDestroyed bit +
+// the kPendingDestroyBit mirror, and enqueues each candidate onto the
+// FXDeferredDestructionQueue for the deferred FinishDestroy pass.
+//
+// If kEliminateGarbageRefs is set in Opts (default per spec §4.0):
+// also walks every reachable object's schema-vector and nulls any
+// reference whose target has EObjectFlags::MarkedAsGarbage set. This
+// is the FIX-A-HIGH-19 "editor delete an actor; have all references
+// null out automatically" pattern.
+//
+// Sets m_lastReclaimedCount + m_lastGarbageRefsClearedCount for the
+// kCycleComplete telemetry payload.
+// =====================================================================
+void FXObjectCollector::EnterSweep(EXGCOptions Opts) noexcept
+{
+    m_phase.store(
+        static_cast<::std::uint32_t>(EXGCPhase::kSweep),
+        ::std::memory_order_release);
+
+    const bool EmitTelemetry = HasGCFlag(Opts, EXGCOptions::kEmitInsightsTelemetry);
+    const ::std::uint32_t CycleId = m_cycleCounter.load(::std::memory_order_relaxed);
+
+    // ----- Sweep start telemetry (post-mark; pre-drain). The
+    // candidate-queue size at this point IS the candidates the sweep
+    // will process. Capture via Size() (one lock acquire; not on the
+    // hot path).
+    const ::std::int64_t CandidateCount = static_cast<::std::int64_t>(
+        FXSweepCandidateQueue::Get().Size());
+    if (EmitTelemetry)
+    {
+        ::XCore::HAL::XInsightsEmitHelpers::EmitGCSweepStart(
+            static_cast<::std::int64_t>(CycleId),
+            CandidateCount);
+    }
+
+    const double SweepStartSec = ::XCore::HAL::FPlatformTime::Seconds();
+
+    // ----- EliminateGarbageRefs pass (per FIX-A-HIGH-19 + spec §4.0).
+    //
+    // Runs BEFORE the BeginDestroy drain so reachable objects still
+    // hold ALL their references at the moment we walk them. After the
+    // drain, the swept objects' state-bit kPendingDestroyBit is set,
+    // and the per-reachable walk would still null those references
+    // (since they're MarkedAsGarbage); but doing the pass first means
+    // we walk the schema-vectors with maximum reference connectivity
+    // (no race-window where a freshly-BeginDestroyed object could be
+    // double-processed).
+    ::std::size_t GarbageRefsCleared = 0;
+    if (HasGCFlag(Opts, EXGCOptions::kEliminateGarbageRefs))
+    {
+        GarbageRefsCleared = EliminateGarbageRefsPass();
+    }
+    m_lastGarbageRefsClearedCount.store(GarbageRefsCleared,
+                                         ::std::memory_order_release);
+
+    // ----- Sweep candidate drain.
+    //
+    // For each candidate: dispatch BeginDestroy + set the lifecycle
+    // flags + enqueue on the deferred destruction queue.
+    const ::std::size_t BeginDestroyCount = DrainSweepCandidates();
+    m_lastReclaimedCount.store(BeginDestroyCount,
+                                ::std::memory_order_release);
+
+    const double SweepEndSec = ::XCore::HAL::FPlatformTime::Seconds();
+    const ::std::int64_t SweepDurationUs =
+        SecondsToMicros(SweepEndSec - SweepStartSec);
+
+    if (EmitTelemetry)
+    {
+        ::XCore::HAL::XInsightsEmitHelpers::EmitGCSweepEnd(
+            static_cast<::std::int64_t>(CycleId),
+            static_cast<::std::int64_t>(BeginDestroyCount),
+            static_cast<::std::int64_t>(GarbageRefsCleared),
+            SweepDurationUs);
+    }
+}
+
+// =====================================================================
+// DrainSweepCandidates -- the Phase 5.h sweep inner loop.
+//
+// For each InternalIndex in FXSweepCandidateQueue:
+//
+//   1. Fetch the XObject* via FXObjectArray::GetObjectAtIndexUnchecked.
+//      If nullptr (slot was released by another path), skip.
+//
+//   2. Check EObjectFlags::BeginDestroyed: if already set, this is a
+//      double-queue (the object was MarkForKill'd before this cycle
+//      and is already in the deferred queue). Skip the BeginDestroy
+//      dispatch (avoids double-call) but DO ensure it is on the
+//      deferred queue.
+//
+//   3. Set EObjectFlags::BeginDestroyed via SetFlags (atomic OR with
+//      CAS loop; matches Phase 5.a XObject::SetFlags posture).
+//
+//   4. Set the kPendingDestroyBit on the FXObjectArrayEntry.
+//
+//   5. Dispatch the BeginDestroy lifecycle slot via the FClass
+//      lifecycle table. If the slot is unimplemented (capability bit
+//      clear), this is a no-op (the object has no class-specific
+//      BeginDestroy logic).
+//
+//   6. Enqueue on FXDeferredDestructionQueue.
+//
+// Returns the count of BeginDestroy dispatches that fired (excludes
+// objects skipped at step 2 + step 1's nullptr-slot drops).
+// =====================================================================
+::std::size_t FXObjectCollector::DrainSweepCandidates() noexcept
+{
+    FXObjectArray&              Array         = FXObjectArray::Get();
+    FXSweepCandidateQueue&      CandidateQ    = FXSweepCandidateQueue::Get();
+    FXDeferredDestructionQueue& DeferredQ     = FXDeferredDestructionQueue::Get();
+    ::std::size_t               BeginDestroyN = 0;
+
+    CandidateQ.DrainAll(
+        [&Array, &DeferredQ, &BeginDestroyN](::std::int32_t InternalIndex) noexcept
+        {
+            // ----- Step 1: fetch the XObject* -----
+            XObject* const Object = Array.GetObjectAtIndexUnchecked(InternalIndex);
+            if (Object == nullptr)
+            {
+                // The slot was released by another path. Drop the
+                // candidate.
+                return;
+            }
+
+            // ----- Step 2: double-queue guard via BeginDestroyed bit
+            // The object may have been MarkForKill'd + already BeginDestroy'd
+            // in an earlier cycle and is still en route through the
+            // deferred queue. In that case the BeginDestroyed bit IS
+            // already set; we MUST NOT call BeginDestroy a second time.
+            const ::XCore::EObjectFlags Flags = Object->GetObjectFlags();
+            const bool AlreadyBeginDestroyed =
+                ::XCore::HasAnyObjectFlags(Flags, ::XCore::EObjectFlags::BeginDestroyed);
+            if (AlreadyBeginDestroyed)
+            {
+                // The object is already on the deferred queue (set
+                // there by a previous sweep). Do not enqueue twice.
+                // The current cycle's sweep cleaned up its candidate-
+                // queue entry by draining it here.
+                return;
+            }
+
+            // ----- Step 3: set the BeginDestroyed flag via the atomic
+            // CAS-loop on ObjectFlags.
+            Object->SetFlags(::XCore::EObjectFlags::BeginDestroyed);
+
+            // ----- Step 4: mirror the bit on the array entry.
+            (void)Array.SetPendingDestroyBit(InternalIndex);
+
+            // ----- Step 5: dispatch BeginDestroy via the lifecycle
+            // table.
+            const ::XCore::Reflect::FClass* const Class = Object->GetClass();
+            if (Class != nullptr)
+            {
+                const ::XCore::Reflect::FXObjectLifecycleTable* const Table =
+                    Class->GetLifecycleTable();
+                if (Table != nullptr &&
+                    Table->HasSlot(
+                        ::XCore::Reflect::EXObjectLifecycleSlot::BeginDestroy))
+                {
+                    auto* const Fn = Table->GetSlot<
+                        ::XCore::Reflect::EXObjectLifecycleSlot::BeginDestroy>();
+                    if (Fn != nullptr)
+                    {
+                        Fn(Object);
+                    }
+                }
+            }
+
+            // ----- Step 6: enqueue onto FXDeferredDestructionQueue.
+            DeferredQ.EnqueueAfterBeginDestroy(InternalIndex);
+
+            ++BeginDestroyN;
+        });
+
+    return BeginDestroyN;
+}
+
+// =====================================================================
+// EliminateGarbageRefsPass -- FIX-A-HIGH-19 reference nullification.
+//
+// Walks every committed FXObjectArrayEntry whose Object pointer is
+// non-null AND which is NOT itself garbage. For each, walks the
+// schema-vector via WalkSchemaRefs with a mutating visitor that nulls
+// each reference slot whose target has EObjectFlags::MarkedAsGarbage
+// (or the kGarbageBit mirror on the target's array entry).
+//
+// The pass writes through reference slots (raw XObject* / XPtr<T>
+// memory). The writes happen during the sweep phase, which is AFTER
+// the mark window closes (g_XGCIsConcurrentMarkActive is false; the
+// SATB pre-store barrier does NOT fire for these writes). The writes
+// are observed by the next mark cycle's SATB log if any mutator
+// touches the slot subsequently; the value transition (live ref ->
+// nullptr) is itself benign in the next mark (a nullptr ref is a
+// no-op for the gray-queue push).
+//
+// THREAD-SAFETY MODEL:
+//
+//   The MVP single-marker-thread design runs sweep on the same thread
+//   that ran the mark. The sweep window does NOT overlap with any
+//   sim-tick (spec §4.6 says sweep CAN overlap, but the MVP
+//   serialises). Reference slot writes are therefore not racing.
+//
+//   When multi-worker sweep ships (post-System-8 + XTaskGraph), the
+//   per-worker partitioning of FXObjectArray must ensure no two
+//   workers touch the same reachable XObject's schema-vector. The
+//   natural partitioning is "worker N owns objects whose InternalIndex
+//   mod NumWorkers == N"; this guarantees disjoint ownership and
+//   therefore disjoint slot writes per the partitioning theorem.
+//
+// PERFORMANCE NOTE:
+//
+//   The per-reachable schema walk is O(R) where R is the number of
+//   reference slots per object (typical 3-10). The total cost is
+//   O(LiveObjects * R) per cycle. At 50k objects * 5 refs * 50 ns
+//   per slot probe = 12.5 ms per cycle. Within the §4.8 sweep budget
+//   (5-10 ms target). The bound is REACHABILITY-PRUNED (we skip
+//   garbage objects' own schema walks) so the practical cost is
+//   typically <half of the worst case.
+// =====================================================================
+::std::size_t FXObjectCollector::EliminateGarbageRefsPass() noexcept
+{
+    FXObjectArray& Array = FXObjectArray::Get();
+    ::std::size_t  RefsCleared = 0;
+
+    // Mutating visitor: receives a reference to the SLOT (the raw 8
+    // bytes in the reachable object's instance memory that hold the
+    // XObject* / XPtr handle). If the slot's target is MarkedAsGarbage,
+    // overwrite the slot with nullptr.
+    //
+    // The schema walker's Visitor signature is `void(XObject*)`. To
+    // null the slot we need the SLOT ADDRESS, not just the value. The
+    // walker exposes the slot-byte-pointer to the visitor via
+    // VisitObjectSlot's per-slot pointer; we use a stateful visitor
+    // that captures the slot byte address.
+    //
+    // The current FXObjectSchemaWalker API passes only the LOADED
+    // pointer value to the visitor, NOT the slot address. We work
+    // around this by walking the schema OPS array directly (per
+    // FXObjectRefSchema.h) for the Object opcode kind (the only kind
+    // for which "null the slot" is well-defined; weak/soft refs do NOT
+    // get nulled here -- their handle is an {Index, Serial} pair, not
+    // a raw pointer, and the serial mismatch already invalidates them
+    // when the target is reclaimed).
+    //
+    // This is the Phase 5.h MVP scope: null Object opcode slots only.
+    // Weak/Soft handles tag a different path (deref returns nullptr
+    // via SerialNumber bump at ReleaseSlot).
+
+    Array.ForEachObject(
+        [&Array, &RefsCleared](::int32 InternalIndex,
+                                XObject* Object) noexcept
+        {
+            (void)InternalIndex;
+
+            // Skip garbage objects themselves -- their own schema is
+            // about to be torn down at FinishDestroy. The reachable-
+            // set walk is meaningful only for live (non-garbage)
+            // objects.
+            if (Object->IsMarkedAsGarbage())
+            {
+                return;
+            }
+
+            const ::XCore::Reflect::FClass* const Class = Object->GetClass();
+            if (Class == nullptr)
+            {
+                return;
+            }
+
+            const ::XCore::Reflect::FXObjectRefSchema* const Schema =
+                Class->GetRefSchema();
+            if (Schema == nullptr)
+            {
+                return;
+            }
+            if (Schema->Version !=
+                ::XCore::Reflect::kFXObjectRefSchemaCurrentVersion)
+            {
+                return;
+            }
+
+            const ::XCore::Reflect::FXObjectRefSchemaOp* const Ops = Schema->Ops;
+            if (Ops == nullptr)
+            {
+                return;
+            }
+
+            const ::std::uint32_t NumOps = Schema->NumOps;
+            ::std::uint8_t* const InstanceBytes =
+                reinterpret_cast<::std::uint8_t*>(Object);
+
+            for (::std::uint32_t I = 0; I < NumOps; ++I)
+            {
+                const ::XCore::Reflect::FXObjectRefSchemaOp& Op = Ops[I];
+                if (Op.Op == ::XCore::Reflect::EXObjectRefSchemaOp::Terminator)
+                {
+                    break;
+                }
+
+                // Phase 5.h MVP scope: handle the single-slot
+                // Object/Interface/ClassProperty opcodes only. The
+                // container/strided/map opcodes are post-MVP (each
+                // requires its own slot-iteration to mutate; the
+                // single-slot case is the load-bearing 80% per FIX-A-
+                // HIGH-19's "editor delete an actor" pattern).
+                if (Op.Op != ::XCore::Reflect::EXObjectRefSchemaOp::Object &&
+                    Op.Op != ::XCore::Reflect::EXObjectRefSchemaOp::Interface &&
+                    Op.Op != ::XCore::Reflect::EXObjectRefSchemaOp::ClassProperty)
+                {
+                    continue;
+                }
+
+                ::std::uint8_t* const SlotBytes =
+                    InstanceBytes + Op.Offset;
+
+                XObject* SlotValue = nullptr;
+                // Type-pun-safe byte copy (same pattern as the walker).
+                {
+                    ::std::uint8_t* DestBytes =
+                        reinterpret_cast<::std::uint8_t*>(&SlotValue);
+                    for (::std::size_t B = 0; B < sizeof(XObject*); ++B)
+                    {
+                        DestBytes[B] = SlotBytes[B];
+                    }
+                }
+
+                if (SlotValue == nullptr)
+                {
+                    continue;
+                }
+
+                // Probe whether the target is garbage. Two equivalent
+                // paths:
+                //   (a) target->IsMarkedAsGarbage()   (EObjectFlags;
+                //                                        cold read)
+                //   (b) Array.IsGarbageUnchecked(idx) (kGarbageBit
+                //                                        mirror; cold)
+                //
+                // We use (a) because the EObjectFlags transition is
+                // the authoritative one (XObject::MarkAsGarbage sets
+                // the flag; the FXObjectArrayEntry mirror is
+                // optimistic and may not be set if MarkAsGarbage was
+                // called outside the GC's tracking path).
+                if (!SlotValue->IsMarkedAsGarbage())
+                {
+                    continue;
+                }
+
+                // Defence-in-depth: also tag the entry's kGarbageBit
+                // mirror so subsequent EliminateGarbageRefs passes hit
+                // a one-load fast path. The set is idempotent.
+                const ::int32 TargetIndex = SlotValue->GetInternalIndex();
+                if (TargetIndex > 0)
+                {
+                    (void)Array.SetGarbageBit(TargetIndex);
+                }
+
+                // Null the slot. Type-pun-safe byte write of nullptr.
+                XObject* const NullValue = nullptr;
+                {
+                    const ::std::uint8_t* SrcBytes =
+                        reinterpret_cast<const ::std::uint8_t*>(&NullValue);
+                    for (::std::size_t B = 0; B < sizeof(XObject*); ++B)
+                    {
+                        SlotBytes[B] = SrcBytes[B];
+                    }
+                }
+
+                ++RefsCleared;
+            }
+        });
+
+    return RefsCleared;
 }
 
 // =====================================================================

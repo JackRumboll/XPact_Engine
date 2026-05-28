@@ -3743,6 +3743,250 @@
 # would add complexity without benefit.
 #
 # =====================================================================
+# XCoreXObject Phase 5.h -- Sweep + deferred destruction.
+#
+# Per XCoreXObject Rev 4 §2.5 (lifecycle dispatch call sites) + §4.2
+# (phase structure steps 6-7: Sweep + Deferred destruction) + §4.6
+# (sim-path / GC boundary) + §10.12 (XInsights events) + §11.5 (Phase
+# 5.h scope). Phase 5.h ships the SWEEP PHASE of the collector + the
+# deferred-destruction queue + BeginDestroy / FinishDestroy lifecycle
+# dispatch + the EliminateGarbageRefs option pass (FIX-A-HIGH-19).
+#
+# Phase 5.h adds these PUBLIC headers:
+#
+#   Public/XObject/FXDeferredDestructionQueue.h
+#                                            -- process-singleton
+#                                                lifecycle queue holding
+#                                                objects whose
+#                                                BeginDestroy has been
+#                                                called and which are
+#                                                waiting for
+#                                                IsReadyForFinishDestroy
+#                                                to return true (or for
+#                                                the per-object timeout
+#                                                to elapse). Drained one-
+#                                                pass-per-frame from the
+#                                                sim-tick boundary.
+#                                                Public surface:
+#                                                EnqueueAfterBeginDestroy,
+#                                                DrainOnePassWithBudget,
+#                                                Size, IsEmpty,
+#                                                __ResetForTests, +
+#                                                last-pass diagnostics.
+#
+# Phase 5.h adds these PRIVATE .cpp bodies (XBT auto-discovers them):
+#
+#   Private/XObject/FXDeferredDestructionQueue.cpp
+#                                            -- queue body + drain pass
+#                                                with budget enforcement
+#                                                + per-entry timeout
+#                                                policy.
+#
+# Phase 5.h MODIFIES the following existing files:
+#
+#   Public/XObject/FXObjectArray.h          -- adds SetPendingDestroyBit
+#                                                / ClearPendingDestroyBit
+#                                                / IsPendingDestroyUnchecked
+#                                                / SetGarbageBit /
+#                                                IsGarbageUnchecked /
+#                                                GetStateBits / ReleaseSlot
+#                                                (the sweep-side surface
+#                                                per spec §4.2 step 7).
+#   Private/XObject/FXObjectArray.cpp       -- implements those bodies
+#                                                + ReleaseSlot's
+#                                                SerialNumber-bump +
+#                                                state-bit clear.
+#   Public/XObject/FXObjectCollector.h      -- adds EXGCPhase::kSweep
+#                                                + kDeferredDestruction
+#                                                states; adds
+#                                                GetLastSweepDurationUs
+#                                                / GetLastReclaimedCount
+#                                                / GetLastGarbageRefsClearedCount
+#                                                diagnostics; declares
+#                                                EnterSweep /
+#                                                DrainSweepCandidates /
+#                                                EliminateGarbageRefsPass.
+#   Private/XObject/FXObjectCollector.cpp   -- implements EnterSweep
+#                                                (calls EliminateGarbage
+#                                                RefsPass + DrainSweep
+#                                                Candidates); the
+#                                                latter dispatches
+#                                                BeginDestroy via the
+#                                                lifecycle table, sets
+#                                                EObjectFlags::Begin
+#                                                Destroyed + the
+#                                                kPendingDestroyBit
+#                                                mirror, and enqueues on
+#                                                FXDeferredDestructionQueue.
+#                                                Updates RunCycle to
+#                                                invoke EnterSweep +
+#                                                fill the kCycleComplete
+#                                                payload's SweepDurationUs
+#                                                + ReclaimedCount fields
+#                                                with the actual sweep
+#                                                figures.
+#   Public/XObject/XInsightsEvents.h        -- adds two new GC events
+#                                                (SweepStart, SweepEnd)
+#                                                + three new payload
+#                                                keys (CandidateCount,
+#                                                BeginDestroyCount,
+#                                                GarbageRefsCleared).
+#   Public/XObject/XInsightsEmitHelpers.h   -- adds EmitGCSweepStart /
+#                                                EmitGCSweepEnd helpers.
+#
+# Phase 5.h adds these TEST .cpp files (per-suite subdirs):
+#
+#   Tests/XObject/FXDeferredDestructionQueue.Tests/EnqueueDrain.cpp
+#   Tests/XObject/FXObjectCollector.Tests/SweepReclaim.cpp
+#   Tests/XObject/FXObjectCollector.Tests/EliminateGarbageRefs.cpp
+#   Tests/XObject/FXObjectCollector.Tests/BeginDestroyDispatch.cpp
+#   Tests/XObject/FXObjectCollector.Tests/SerialNumberBumpsOnSweep.cpp
+#
+# JUDGEMENT CALL (Phase 5.h / FXDeferredDestructionQueue as a separate
+# singleton vs member of FXObjectCollector).
+#
+# Two principled options:
+#
+#   1. Make the deferred-destruction queue an internal member of
+#      FXObjectCollector (matches the FXObjectCollector::EnumerateSweep
+#      Candidates pattern where the cycle-end enumeration is a member
+#      method).
+#   2. Make it a separate process-singleton (matches the FXSweepCandidate
+#      Queue + FXObjectGCCardTable pattern where independent queues +
+#      bookkeeping types live alongside the collector).
+#
+# Phase 5.h ships OPTION 2. Justification per Prime Directive:
+#
+#   * The deferred-destruction queue has DIFFERENT lifecycle cadence
+#     from the collector. The collector RUNS at GC trigger boundaries;
+#     the deferred queue DRAINS at sim-tick boundaries. Coupling them
+#     into a single class would muddle the lifecycle responsibilities.
+#
+#   * The deferred queue carries per-entry state (FirstSeenSeconds for
+#     the timeout policy). It is a STORAGE type with its own
+#     correctness invariants; making it a separate singleton lets us
+#     test the queue surface independently of the collector cycle.
+#
+#   * The Phase 5.h test suite exercises the deferred queue directly
+#     (FXDeferredDestructionQueue.Tests/EnqueueDrain.cpp) without
+#     touching the collector at all. The separation enables this.
+#
+#   * Future XTaskGraph integration: the deferred drain can move to a
+#     dedicated worker thread independently of the collector's marker
+#     thread. The separate-singleton posture is the natural surface for
+#     that evolution.
+#
+# JUDGEMENT CALL (Phase 5.h / FXObjectArray::ReleaseSlot vs FreeEntry).
+#
+# Phase 5.b ships FreeEntry as the synchronous-destroy entry point
+# (test harness; legacy synchronous teardown). Phase 5.h's sweep needs
+# a SLOT-RELEASE entry that is functionally identical (bump
+# SerialNumber + push onto free list + null Object) but documented as
+# the sweep-side surface per spec §4.2 step 7.
+#
+# We ship BOTH names:
+#
+#   * FreeEntry  -- Phase 5.b synchronous-destroy (legacy + tests).
+#   * ReleaseSlot -- Phase 5.h sweep-side (the deferred-destruction
+#                     queue's drain pass calls this).
+#
+# ReleaseSlot is NOT a thin wrapper that forwards to FreeEntry:
+# ReleaseSlot ALSO clears the entry-state bits (kPendingDestroyBit,
+# kGarbageBit, kRootPinnedBit, kHotReloadInProgress) that pertained to
+# the prior bound object. FreeEntry leaves those bits untouched
+# (Phase 5.b never set them); the Phase 5.h sweep DOES set them and
+# must clear them at release-time so the next AllocateEntry observes
+# a freshly-zero entry state.
+#
+# The dual-name posture lets audit + telemetry distinguish "GC
+# reclaimed this slot" from "synchronous destroy"; matches the spec's
+# §4.2 step 7 wording.
+#
+# JUDGEMENT CALL (Phase 5.h / EliminateGarbageRefs MVP scope).
+#
+# The EliminateGarbageRefsPass body walks reachable XObjects' schema-
+# vectors. Per spec §4.0 + FIX-A-HIGH-19: any reference whose target
+# has RF_MarkedAsGarbage is nulled in-place.
+#
+# Phase 5.h MVP scope handles ONLY the single-slot opcodes (Object,
+# Interface, ClassProperty). The container/strided/map opcodes
+# (ArrayOfObject, ArrayOfStruct, MapOfObject_KeyValue, SetOfObject)
+# are post-MVP. Justification:
+#
+#   * The single-slot case IS the load-bearing 80% per FIX-A-HIGH-19's
+#     "editor delete an actor; have references null out automatically"
+#     pattern. A deleted XActor is referenced by its container objects
+#     (XScenarioNode, XComponent attachment lists) via SINGLE-SLOT
+#     XObject* fields; the container opcodes hold collections of
+#     references but the "delete one actor; null its references" is
+#     mostly served by the single-slot case.
+#
+#   * The container opcodes require per-element iteration to mutate
+#     slots, with care for the GC-aware vs non-GC TArray
+#     specialisation distinction (TArray<XPtr<T>> stores via the non-
+#     GC TArrayCore layout; TArray<XObject*> stores via the GC-aware
+#     spec with a m_rootSpan tail). The walker template only reads
+#     references via byte copies; mutation requires the slot ADDRESS
+#     not just the value -- a separate visitor pattern.
+#
+#   * Phase 5.h ships the principled MVP. The container opcodes' slot-
+#     nulling can be added in a follow-up phase without breaking the
+#     EliminateGarbageRefsPass surface; the single-slot case is the
+#     load-bearing path.
+#
+# JUDGEMENT CALL (Phase 5.h / Sweep events additive to spec §10.12).
+#
+# The spec §10.12 table's `CycleComplete` event carries aggregated
+# sweep duration + reclaimed count but does NOT expose per-sub-phase
+# pause-budget breakdowns. Phase 5.h adds two NEW events (SweepStart,
+# SweepEnd) + three NEW payload keys (CandidateCount,
+# BeginDestroyCount, GarbageRefsCleared) for per-sub-phase telemetry.
+#
+# Following the Phase 5.g additive-events posture: the new events are
+# additive; the spec-canonical `CycleComplete` carries the aggregate
+# figures as before (Phase 5.h fills the SweepDurationUs +
+# ReclaimedCount fields with the actual sweep figures rather than the
+# Phase 5.g placeholders of zero). Downstream consumers compatible
+# with §10.12 are not broken.
+#
+# JUDGEMENT CALL (Phase 5.h / per-object timeout = 1 second).
+#
+# Per spec §4.2 step 7 trailing prose: "or after a per-object
+# timeout". Phase 5.h sets the timeout to 1.0 seconds of wall time
+# across drain passes. Justification:
+#
+#   * Most lifecycle hooks complete in microseconds; the
+#     IsReadyForFinishDestroy slot is typically a one-cycle bool-load
+#     of a "deferred refs cleared" flag.
+#
+#   * 1 second tolerates any legitimate "wait for async I/O to release
+#     file handles" pattern while bounding worst-case slot-release
+#     latency to a fraction of a second (not perceptible at sim-tick
+#     granularity).
+#
+#   * Configurable as a future tuneable (no runtime CVar discipline
+#     per XCore-4a; constexpr constant for MVP per
+#     kFXDeferredDestructionTimeoutSeconds).
+#
+# JUDGEMENT CALL (Phase 5.h / sweep runs serialised with cycle on MVP).
+#
+# Per spec §4.6 the sweep + deferred-destruction CAN overlap with sim
+# ticks (they don't write to live XObject reference slots). Phase 5.h
+# MVP runs the sweep synchronously on the cycle thread (the same
+# thread that ran the mark phase). Justification:
+#
+#   * The MVP single-marker-thread design (per Rev 2 FIX-A-MED-36)
+#     makes the serialised sweep the principled scope.
+#
+#   * The worker-pool partitioning of FXObjectArray (spec §4.4)
+#     requires XTaskGraph integration; post-System-8 work.
+#
+#   * The deferred drain DOES run on a different cadence (sim-tick
+#     boundary) -- the queue is the explicit hand-off point between
+#     the cycle thread and the sim-tick thread. The MVP serialises
+#     the SWEEP itself; the drain is already split off correctly.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

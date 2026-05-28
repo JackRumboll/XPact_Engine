@@ -2218,6 +2218,102 @@
 # verification on Clang/GCC.
 #
 # =====================================================================
+# XCoreXObject Phase 5.h tests cover the sweep phase + deferred
+# destruction queue + BeginDestroy / FinishDestroy lifecycle dispatch
+# + EliminateGarbageRefs option pass (XCoreXObject Rev 4 §2.5 + §4.2
+# + §10.12 + §11.5; Phase 5.h XCore.Build.toml section above for the
+# full scope description).
+#
+# Tests/XObject/FXDeferredDestructionQueue.Tests/ (1 test):
+#
+#   * EnqueueDrain.cpp           -- producer/consumer queue surface
+#                                    (enqueue + drain + diagnostics)
+#                                    plus null-sentinel + negative-
+#                                    index guards. Uses stack XObjects
+#                                    that never reach FinishDestroy /
+#                                    Deallocate so the test focuses on
+#                                    the QUEUE surface independently of
+#                                    the lifecycle dispatch + allocator
+#                                    integration.
+#
+# Tests/XObject/FXObjectCollector.Tests/ (4 NEW tests, additive to
+# the 5 Phase 5.g tests):
+#
+#   * SweepReclaim.cpp           -- end-to-end Phase 5.h round trip:
+#                                    AllocateRaw -> ReserveSlot -> Bind
+#                                    Object -> CollectGarbage (unreach
+#                                    -> sweep enqueues on deferred
+#                                    queue + sets BeginDestroyed /
+#                                    PendingDestroy bits) -> Drain
+#                                    OnePassWithBudget (FinishDestroy
+#                                    dispatched + cell released + slot
+#                                    bumped). Verifies NumLive
+#                                    transitions + SerialNumber bump
+#                                    invalidates the captured serial.
+#   * EliminateGarbageRefs.cpp   -- hand-crafted FXObjectRefSchema with
+#                                    a single Object opcode at offset
+#                                    56 of an FContainer (XObject base
+#                                    + XObject* slot); Target is
+#                                    MarkedAsGarbage; sweep with
+#                                    kEliminateGarbageRefs runs the
+#                                    pass that nulls the Container's
+#                                    slot. Verifies the slot transitions
+#                                    to nullptr + GetLastGarbageRefs
+#                                    ClearedCount reports the clear.
+#   * BeginDestroyDispatch.cpp   -- FClass with a real LifecycleTable
+#                                    exposing only the BeginDestroy
+#                                    slot; verifies the slot fires
+#                                    exactly once when the sweep
+#                                    processes the unreachable XObject;
+#                                    verifies the BeginDestroyed +
+#                                    PendingDestroy bits are set;
+#                                    verifies a SECOND cycle does NOT
+#                                    re-dispatch (the spec corner-case
+#                                    "BeginDestroyed bit guard prevents
+#                                    double-call").
+#   * SerialNumberBumpsOnSweep.cpp -- captures an XWeakPtr against an
+#                                    allocator-allocated XObject; runs
+#                                    the full sweep + deferred drain;
+#                                    verifies XWeakPtr::Get() returns
+#                                    nullptr + GetObjectAtIndex with
+#                                    the stale serial returns nullptr;
+#                                    verifies slot reuse via Reserve
+#                                    Slot returns the same Internal
+#                                    Index but a new SerialNumber.
+#
+# JUDGEMENT CALL (Phase 5.h tests / stack XObjects in BeginDestroyDispatch).
+#
+# The BeginDestroyDispatch test verifies the SWEEP HALF of the Phase
+# 5.h cycle (BeginDestroy dispatch + state-bit transitions + queue
+# enqueue) but does NOT drain the deferred destruction queue. The
+# stack XObject is not allocator-allocated; the deferred drain would
+# call FXObjectAllocator::Deallocate which asserts "pointer not
+# recognised as any slab".
+#
+# The principled posture is to split the verification:
+#   * BeginDestroyDispatch covers the sweep-side path.
+#   * SweepReclaim + SerialNumberBumpsOnSweep cover the end-to-end
+#     deferred-drain path (using allocator-allocated XObjects).
+#
+# Both tests are correct as-shipped; the split exists because the
+# stack-XObject path is the canonical Phase 5.g test pattern + the
+# allocator-XObject path is the full Phase 5.h cycle pattern.
+#
+# JUDGEMENT CALL (Phase 5.h tests / hand-crafted FXObjectRefSchema vs
+# XHT-emitted).
+#
+# The EliminateGarbageRefs test uses a hand-crafted FXObjectRefSchema
+# with a single Object opcode (not XHT-emitted). Matches the Phase 5.g'
+# synthetic-schema posture: the runtime walker reads the .rodata-
+# resident schema bytes directly; the synthetic test surface exercises
+# the dispatch path without forcing the full XHT integration.
+#
+# The live FStruct integration where EliminateGarbageRefsPass is
+# invoked against an XHT-emitted FClass with multiple ref properties
+# lands as part of Phase 5.l Foundation Prototype testing; Phase 5.h
+# ships the pass correctness against the synthetic surface.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

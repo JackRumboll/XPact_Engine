@@ -487,6 +487,84 @@ namespace XCore
         [[nodiscard]] bool IsRootPinnedUnchecked(::int32 InternalIndex) const noexcept;
 
         // =============================================================
+        // Sweep-side StateBits API (XCoreXObject Rev 4 §4.2 step 6 +
+        // §11.5 Phase 5.h sweep consumer surface).
+        //
+        // The Phase 5.h sweep phase needs to:
+        //   1. Mark candidates as PendingDestroy (mirror of the
+        //      RF_BeginDestroyed EObjectFlags transition).
+        //   2. Read the PendingDestroy + Garbage mirror bits without
+        //      acquiring the array's lock (the sweep runs after the
+        //      mark window closes; the array structure is quiescent for
+        //      its duration).
+        //   3. Release a slot back to the LIFO free list AND bump the
+        //      SerialNumber so every in-flight XWeakPtr deref returns
+        //      nullptr on its next attempt.
+        //
+        // The bit accessors mirror the SetRootPin / ClearRootPin
+        // pattern (lock-free atomic CAS on the StateBits word). The
+        // unchecked-read variants are intended for the sweep loop
+        // body where the array is structurally quiescent.
+        // =============================================================
+
+        // Set the kPendingDestroyBit on the entry at InternalIndex.
+        // Atomic CAS; lock-free. Returns true iff the bit transitioned
+        // from clear to set; returns false on already-pending + on
+        // out-of-range / null sentinel index.
+        bool SetPendingDestroyBit(::int32 InternalIndex) noexcept;
+
+        // Clear the kPendingDestroyBit on the entry at InternalIndex.
+        // Atomic CAS; lock-free. Returns true iff the bit transitioned
+        // from set to clear; returns false on already-clear + on
+        // out-of-range / null sentinel index.
+        bool ClearPendingDestroyBit(::int32 InternalIndex) noexcept;
+
+        // Lock-free read of the kPendingDestroyBit. Pre-condition: the
+        // caller has established happens-before ordering against the
+        // array's grow (sweep runs post-mark with the array structure
+        // quiescent). UB on out-of-range index.
+        [[nodiscard]] bool IsPendingDestroyUnchecked(::int32 InternalIndex) const noexcept;
+
+        // Set the kGarbageBit on the entry at InternalIndex. Mirrors
+        // the EObjectFlags::MarkedAsGarbage transition for the fast
+        // sweep-time check per FIX-A-HIGH-19. Atomic CAS; lock-free.
+        // Returns true iff the bit transitioned from clear to set.
+        bool SetGarbageBit(::int32 InternalIndex) noexcept;
+
+        // Lock-free read of the kGarbageBit. UB on out-of-range index.
+        [[nodiscard]] bool IsGarbageUnchecked(::int32 InternalIndex) const noexcept;
+
+        // Snapshot read of the full 64-bit StateBits word for
+        // InternalIndex. SHARED-lock-acquired; returns 0 on null
+        // sentinel / out-of-range. Diagnostic + test API.
+        [[nodiscard]] ::std::uint64_t GetStateBits(::int32 InternalIndex) const noexcept;
+
+        // =============================================================
+        // ReleaseSlot -- the Phase 5.h sweep-side slot return.
+        //
+        // Per spec §4.2 step 7 (deferred destruction queue final action):
+        //   * Atomically set Object = nullptr.
+        //   * Bump SerialNumber so every XWeakPtr captured BEFORE the
+        //     release returns nullptr on its next deref.
+        //   * Clear the kPendingDestroyBit + kGarbageBit (the slot is
+        //     now free; the bits are entry-state, not the prior object's
+        //     state).
+        //   * Push the slot index onto the LIFO free list so the next
+        //     AllocateEntry consumes it (cache-warm; matches the
+        //     Phase 5.b FreeEntry posture).
+        //
+        // This is functionally equivalent to FreeEntry but the spec
+        // wording (§4.2 + §11.5) names ReleaseSlot as the sweep-callable
+        // entry point. The two names cover the same operation; ReleaseSlot
+        // is the canonical Phase 5.h surface, FreeEntry the Phase 5.b
+        // synchronous-destroy synonym. We keep both for API discovery
+        // clarity at call sites.
+        //
+        // EXCLUSIVE lock acquired.
+        // =============================================================
+        void ReleaseSlot(::int32 InternalIndex) noexcept;
+
+        // =============================================================
         // Counts.
         // =============================================================
 

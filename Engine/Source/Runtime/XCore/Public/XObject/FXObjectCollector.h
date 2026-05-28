@@ -245,7 +245,8 @@ namespace XCore
         kConcurrentMark      = 4,   // mark loop draining gray queue
         kFinalMarkDrain      = 5,   // SATB + dirty-card final drain
         kSweepHandoff        = 6,   // producing sweep-candidate queue
-        // kSweep, kDeferredDestruction land at Phase 5.h
+        kSweep               = 7,   // draining FXSweepCandidateQueue; dispatching BeginDestroy
+        kDeferredDestruction = 8,   // (intra-cycle) drain pass on FXDeferredDestructionQueue
     };
 
     // -----------------------------------------------------------------
@@ -516,6 +517,40 @@ namespace XCore
             return m_lastCycleSaturationFallback.load(::std::memory_order_acquire);
         }
 
+        // -------------------------------------------------------------
+        // Sweep-phase diagnostics (Phase 5.h).
+        //
+        // GetLastSweepDurationUs           -- microseconds spent in the
+        //                                       sweep body (sweep candidate
+        //                                       queue drain + EliminateGarbage
+        //                                       Refs pass) on the last cycle.
+        // GetLastReclaimedCount            -- number of slots that
+        //                                       transitioned through
+        //                                       BeginDestroy on the last
+        //                                       cycle. The actual slot
+        //                                       release count is observable
+        //                                       via FXDeferredDestructionQueue
+        //                                       across sim-tick drain passes.
+        // GetLastGarbageRefsClearedCount   -- number of XObject reference
+        //                                       slots nulled by the
+        //                                       kEliminateGarbageRefs pass on
+        //                                       the last cycle.
+        // -------------------------------------------------------------
+        [[nodiscard]] ::std::int64_t GetLastSweepDurationUs() const noexcept
+        {
+            return m_lastSweepDurationUs.load(::std::memory_order_acquire);
+        }
+
+        [[nodiscard]] ::std::size_t GetLastReclaimedCount() const noexcept
+        {
+            return m_lastReclaimedCount.load(::std::memory_order_acquire);
+        }
+
+        [[nodiscard]] ::std::size_t GetLastGarbageRefsClearedCount() const noexcept
+        {
+            return m_lastGarbageRefsClearedCount.load(::std::memory_order_acquire);
+        }
+
     private:
         FXObjectCollector() noexcept;
         ~FXObjectCollector() noexcept;
@@ -536,6 +571,7 @@ namespace XCore
         void EnterConcurrentMark() noexcept;
         void EnterFinalMarkDrain() noexcept;
         void EnterSweepHandoff() noexcept;
+        void EnterSweep(EXGCOptions Opts) noexcept;
 
         // -------------------------------------------------------------
         // RunCycle -- executes the full state-machine sequence. Called
@@ -588,6 +624,22 @@ namespace XCore
         ::std::size_t EnumerateSweepCandidates() noexcept;
 
         // -------------------------------------------------------------
+        // Phase 5.h sweep-phase sub-helpers.
+        // -------------------------------------------------------------
+
+        // Drain FXSweepCandidateQueue; for each candidate dispatch the
+        // BeginDestroy lifecycle slot + set EObjectFlags::BeginDestroyed
+        // + set kPendingDestroyBit + enqueue on FXDeferredDestructionQueue.
+        // Returns the count of BeginDestroy dispatches that fired.
+        ::std::size_t DrainSweepCandidates() noexcept;
+
+        // Walk every reachable XObject; for each schema-vector reference
+        // slot whose target has EObjectFlags::MarkedAsGarbage (or
+        // kGarbageBit on the array entry), null the slot in-place.
+        // Returns the count of slots nulled.
+        ::std::size_t EliminateGarbageRefsPass() noexcept;
+
+        // -------------------------------------------------------------
         // State.
         // -------------------------------------------------------------
 
@@ -608,6 +660,18 @@ namespace XCore
 
         // Last-cycle saturation-fallback flag.
         ::std::atomic<bool>            m_lastCycleSaturationFallback;
+
+        // Last-cycle sweep duration (microseconds; Phase 5.h).
+        ::std::atomic<::std::int64_t>  m_lastSweepDurationUs;
+
+        // Last-cycle reclaimed slot count (Phase 5.h). Bumps once per
+        // BeginDestroy dispatch in the sweep phase. The actual slot-
+        // release count is the FXDeferredDestructionQueue's province
+        // (it varies per sim-tick pass).
+        ::std::atomic<::std::size_t>   m_lastReclaimedCount;
+
+        // Last-cycle EliminateGarbageRefs count (Phase 5.h).
+        ::std::atomic<::std::size_t>   m_lastGarbageRefsClearedCount;
 
         // Trigger event the marker thread sleeps on. Heap-allocated
         // via FEvent::CreateAutoReset; freed in dtor via Destroy.

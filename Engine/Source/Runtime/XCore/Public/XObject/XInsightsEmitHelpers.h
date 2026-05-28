@@ -297,6 +297,51 @@ namespace XCore::HAL::XInsightsEmitHelpers
     }
 
     // =================================================================
+    // GC.SweepStart / GC.SweepEnd -- sweep-phase boundary events
+    // (Phase 5.h; additive to spec §10.12).
+    //
+    // SweepStart payload: {cycleId:i64, candidateCount:i64}.
+    // SweepEnd   payload: {cycleId:i64, beginDestroyCount:i64,
+    //                       garbageRefsCleared:i64, durationUs:i64}.
+    //
+    // CandidateCount is the size of FXSweepCandidateQueue at sweep
+    // start. BeginDestroyCount is the count of BeginDestroy dispatches.
+    // GarbageRefsCleared is the count of reference slots nulled by the
+    // kEliminateGarbageRefs pass.
+    // =================================================================
+    XPACT_FORCEINLINE void EmitGCSweepStart(
+        ::std::int64_t CycleId,
+        ::std::int64_t CandidateCount) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),        CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CandidateCount(), CandidateCount);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::SweepStart(),
+            Payload);
+    }
+
+    XPACT_FORCEINLINE void EmitGCSweepEnd(
+        ::std::int64_t CycleId,
+        ::std::int64_t BeginDestroyCount,
+        ::std::int64_t GarbageRefsCleared,
+        ::std::int64_t DurationUs) noexcept
+    {
+        ::XCore::HAL::FXInsightsPayload Payload;
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::CycleId(),            CycleId);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::BeginDestroyCount(),  BeginDestroyCount);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::GarbageRefsCleared(), GarbageRefsCleared);
+        Payload.Add(::XCore::HAL::XInsightsEvents::Keys::DurationUs(),         DurationUs);
+
+        ::XCore::HAL::XInsightsBridge::Emit(
+            ::XCore::HAL::XInsightsEvents::CategoryGC(),
+            ::XCore::HAL::XInsightsEvents::GC::SweepEnd(),
+            Payload);
+    }
+
+    // =================================================================
     // GC.RememberedSetSaturation -- emitted when the card table's
     // dirty-card count crosses the 50% saturation threshold (Phase
     // 5.f's FXObjectGCCardTable).

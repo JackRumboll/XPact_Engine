@@ -766,4 +766,267 @@ namespace XCore
         return (State & kFXObjectArrayRootPinnedBit) != 0u;
     }
 
+    // =================================================================
+    // SetPendingDestroyBit -- atomic CAS set of kFXObjectArrayPendingDestroyBit
+    // (XCoreXObject Rev 4 §4.2 step 6; Phase 5.h sweep consumer surface).
+    //
+    // Mirror of the kRootPinnedBit SetRootPin CAS shape. Returns true
+    // iff the bit transitioned from clear to set on this call.
+    // =================================================================
+    bool FXObjectArray::SetPendingDestroyBit(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return false;
+        }
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            if ((Old & kFXObjectArrayPendingDestroyBit) != 0u)
+            {
+                return false;
+            }
+            const ::std::uint64_t New = Old | kFXObjectArrayPendingDestroyBit;
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+    }
+
+    // =================================================================
+    // ClearPendingDestroyBit -- atomic CAS clear of the bit.
+    //
+    // Returns true iff the bit transitioned from set to clear. Used by
+    // ReleaseSlot when the deferred-destruction queue finalises and
+    // the slot returns to the free list.
+    // =================================================================
+    bool FXObjectArray::ClearPendingDestroyBit(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return false;
+        }
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            if ((Old & kFXObjectArrayPendingDestroyBit) == 0u)
+            {
+                return false;
+            }
+            const ::std::uint64_t New = Old & ~kFXObjectArrayPendingDestroyBit;
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+    }
+
+    // =================================================================
+    // IsPendingDestroyUnchecked -- lock-free read of kPendingDestroyBit.
+    //
+    // Mirrors the IsRootPinnedUnchecked posture: caller has established
+    // happens-before ordering against the array's grow (sweep runs post-
+    // mark with the structure quiescent). UB on out-of-range index.
+    // =================================================================
+    bool FXObjectArray::IsPendingDestroyUnchecked(::int32 InternalIndex) const noexcept
+    {
+        const ::std::uint64_t State =
+            m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+        return (State & kFXObjectArrayPendingDestroyBit) != 0u;
+    }
+
+    // =================================================================
+    // SetGarbageBit -- atomic CAS set of kFXObjectArrayGarbageBit.
+    //
+    // Mirrors the EObjectFlags::MarkedAsGarbage transition. Per FIX-A-
+    // HIGH-19: the sweep's kEliminateGarbageRefs pass reads this bit
+    // first (one-load probe) before consulting the XObject's
+    // ObjectFlags, so the per-candidate scan stays in the FXObjectArrayEntry
+    // cache line.
+    //
+    // Phase 5.h sets this bit at sweep enqueue time (the sweep is the
+    // sole writer of this bit on the GC side; XObject::MarkAsGarbage
+    // independently sets EObjectFlags::MarkedAsGarbage on the XObject
+    // header, and the next sweep observes that flag and propagates
+    // here).
+    // =================================================================
+    bool FXObjectArray::SetGarbageBit(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return false;
+        }
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            if ((Old & kFXObjectArrayGarbageBit) != 0u)
+            {
+                return false;
+            }
+            const ::std::uint64_t New = Old | kFXObjectArrayGarbageBit;
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+    }
+
+    // =================================================================
+    // IsGarbageUnchecked -- lock-free read of kGarbageBit.
+    // =================================================================
+    bool FXObjectArray::IsGarbageUnchecked(::int32 InternalIndex) const noexcept
+    {
+        const ::std::uint64_t State =
+            m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+        return (State & kFXObjectArrayGarbageBit) != 0u;
+    }
+
+    // =================================================================
+    // GetStateBits -- diagnostic / test snapshot of the full word.
+    //
+    // SHARED-lock-acquired (to coherently bound the index-range check
+    // against a concurrent grow). Returns 0 for the null sentinel + for
+    // out-of-range indices.
+    // =================================================================
+    ::std::uint64_t FXObjectArray::GetStateBits(::int32 InternalIndex) const noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return 0u;
+        }
+        ::XCore::HAL::FScopedReadLock ReadLock(m_lock);
+        if (InternalIndex >= m_committedCount.load(::std::memory_order_acquire))
+        {
+            return 0u;
+        }
+        return m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+    }
+
+    // =================================================================
+    // ReleaseSlot -- Phase 5.h sweep-side slot return (XCoreXObject Rev
+    // 4 §4.2 step 7).
+    //
+    // Called by the FXDeferredDestructionQueue's drain pass after
+    // FinishDestroy has completed for the slot's prior bound object.
+    // The slot is returned to the LIFO free list; SerialNumber is
+    // bumped so any in-flight XWeakPtr deref returns nullptr.
+    //
+    // The body is structurally identical to FreeEntry (which has been
+    // shipping since Phase 5.b) -- they perform the same operation. We
+    // keep both names because:
+    //
+    //   * FreeEntry is the Phase 5.b synchronous-destroy entry point
+    //     (legacy callers that don't route through the GC sweep,
+    //     primarily the test harness).
+    //
+    //   * ReleaseSlot is the spec-canonical sweep-side entry point per
+    //     §4.2 step 7 + §11.5. The Phase 5.h sweep + the deferred-
+    //     destruction queue's drain pass call this rather than FreeEntry
+    //     so audits + telemetry can distinguish "GC reclaimed this slot"
+    //     from "synchronous destroy".
+    //
+    // The implementation forwards to the FreeEntry mechanic, additionally
+    // clearing the PendingDestroy + Garbage bits (the entry-state bits
+    // pertain to the prior bound object; once the slot is on the free
+    // list those bits MUST be clear so the next AllocateEntry observes
+    // a freshly-zero entry state). FreeEntry alone does NOT clear those
+    // bits (Phase 5.b never set them).
+    //
+    // EXCLUSIVE lock acquired.
+    // =================================================================
+    void FXObjectArray::ReleaseSlot(::int32 InternalIndex) noexcept
+    {
+        XPACT_CHECK(InternalIndex > 0);
+
+        ::XCore::HAL::FScopedWriteLock WriteLock(m_lock);
+
+        XPACT_CHECK(InternalIndex < m_committedCount.load(::std::memory_order_relaxed));
+
+        // Bump SerialNumber (mirror of FreeEntry's invariant).
+        const bool bWasLive = (m_entries[InternalIndex].Object != nullptr);
+        ++m_entries[InternalIndex].SerialNumber;
+        if (m_entries[InternalIndex].SerialNumber == 0)
+        {
+            m_entries[InternalIndex].SerialNumber = 1;
+        }
+        m_entries[InternalIndex].Object = nullptr;
+
+        // Clear entry-state bits that pertained to the prior bound
+        // object. The refcount sub-field MUST be zero at this point
+        // (the sweep only enqueues objects with refcount == 0; we do
+        // not zero it defensively here so a misuse surfaces as a
+        // distinct symptom rather than silently corrupting the
+        // refcount discipline).
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        constexpr ::std::uint64_t kEntryStateClearMask =
+            kFXObjectArrayPendingDestroyBit |
+            kFXObjectArrayGarbageBit        |
+            kFXObjectArrayRootPinnedBit     |
+            kFXObjectArrayHotReloadInProgress;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            const ::std::uint64_t New = Old & ~kEntryStateClearMask;
+            if (Old == New)
+            {
+                break;
+            }
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                break;
+            }
+        }
+
+        if (bWasLive)
+        {
+            m_numLive.fetch_sub(1, ::std::memory_order_acq_rel);
+        }
+
+        // Push onto LIFO free list (mirror of FreeEntry).
+        if (m_freeListCount >= m_freeListCapacity)
+        {
+            GrowFreeListUnderLock();
+        }
+        m_freeList[m_freeListCount] = InternalIndex;
+        ++m_freeListCount;
+    }
+
 } // namespace XCore
