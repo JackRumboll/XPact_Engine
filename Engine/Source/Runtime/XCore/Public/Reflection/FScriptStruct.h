@@ -2,8 +2,19 @@
 #pragma once
 
 // =====================================================================
-// FScriptStruct.h -- the 120-byte CppStructOps-bearing FStruct subclass
-// (XCore-4b §7.2 + §11.3; FIX-R2-MAJ-2).
+// FScriptStruct.h -- the 136-byte CppStructOps-bearing FStruct subclass
+// (XCore-4b §7.2 + §11.3; FIX-R2-MAJ-2; XCoreXObject Phase 5.a' Rev
+// 13.9 cascade).
+// =====================================================================
+//
+// REV 13.9 CASCADE (XCoreXObject Phase 5.a' Contract prerequisite):
+//
+//   FScriptStruct cascades +8 bytes from FStruct's RefSchema appendage
+//   (FStruct 112 -> 120). FScriptStruct's own body (Capabilities +
+//   _padCapabilities + CppOpsTable = 16 bytes) is unchanged; sizeof
+//   grows from 128 to 136. All FScriptStruct-specific offsets shift
+//   by +8.
+//
 // =====================================================================
 //
 // XCore-4b Rev 3, Section 7.2 ("FScriptStruct: adopt FakeVTable pattern
@@ -13,10 +24,11 @@
 //
 // SPEC DRIFT (Phase 4b.5 audit-corrected; see FStruct.h SPEC DRIFT
 // NOTICE for the root cause): FStruct = 112 (not 104) because
-// XCore-4a TArray = 24 (not 16). FScriptStruct = 112 + 16 = 128.
-// The ICppStructOps 16-byte body (Capabilities@104 -> @112 etc.)
-// shifts by +8 relative to the spec; per-member relative offsets
-// within the body are unchanged.
+// XCore-4a TArray = 24 (not 16). FScriptStruct (Phase 4b.5) = 112 + 16
+// = 128. Phase 5.a' Rev 13.9 cascade: FStruct = 120; FScriptStruct =
+// 120 + 16 = 136. The ICppStructOps 16-byte body (Capabilities@104 ->
+// @112 -> @120 etc.) shifts by +16 relative to the spec; per-member
+// relative offsets within the body are unchanged.
 //
 // FScriptStruct extends FStruct with an ICppStructOps handler table.
 // It is the runtime descriptor for non-XObject reflected structs:
@@ -31,22 +43,23 @@
 // Per-instance footprint collapses to 16 bytes (4-byte Capabilities
 // + 4-byte pad + 8-byte FakeVTable pointer).
 //
-// LAYOUT (Phase 4b.5 audit-corrected; spec said 120 with FStruct=104,
-// actually 128 with FStruct=112):
+// LAYOUT (Phase 5.a' Rev 13.9 cascade; spec said 120 with FStruct=104,
+// Phase 4b.5 had 128 with FStruct=112, now 136 with FStruct=120):
 //
 //   struct alignas(8) FScriptStruct : FStruct {
-//       // FStruct base @ 0-111 (112 bytes; was spec-asserted 104)
-//       uint32                          Capabilities;     // 112  +4
-//       uint32                          _padCapabilities; // 116  +4
-//       const FCppStructOpsFakeVTable*  CppOpsTable;      // 120  +8
+//       // FStruct base @ 0-119 (120 bytes; Phase 5.a' Rev 13.9: 112+8 RefSchema)
+//       uint32                          Capabilities;     // 120  +4
+//       uint32                          _padCapabilities; // 124  +4
+//       const FCppStructOpsFakeVTable*  CppOpsTable;      // 128  +8
 //   };
 //
-// sizeof(FScriptStruct) == 128.
+// sizeof(FScriptStruct) == 136.
 //
-// XPACT_FSCRIPTSTRUCT_LAYOUT_TAG (Rev 3 §11.6):
-//   "FScriptStruct-v3: 104 FStruct base + 16 ICppStructOps FakeVTable
-//    pattern = 120 bytes; per-subtype FCppStructOpsFakeVTable in .rodata
-//    at 136 bytes (8-byte header + 16 handler slots)"
+// XPACT_FSCRIPTSTRUCT_LAYOUT_TAG (Phase 5.a' Rev 13.9 cascade; v5):
+//   "FScriptStruct-v5 (Contract Rev 13.9 cascade): 120 FStruct base
+//    (with appended RefSchema@112) + 16 ICppStructOps FakeVTable
+//    pattern = 136 bytes; per-subtype FCppStructOpsFakeVTable in .rodata
+//    at 136 bytes (8-byte header + 16 handler slots) unchanged."
 //
 // HOT-RELOAD SAFETY:
 //
@@ -106,22 +119,28 @@ namespace XCore::Reflect
     // -----------------------------------------------------------------
     struct alignas(8) FScriptStruct : public FStruct
     {
-        // ---- ICppStructOps per-instance (offsets 104-119; 16 bytes) ----
+        // ---- ICppStructOps per-instance (offsets 120-135 after Rev
+        //      13.9 cascade; 16 bytes) ----
+        //
+        // Phase 5.a' Rev 13.9 cascade: every FScriptStruct-specific
+        // offset shifts +8 from the Phase 4b.5 baseline (FStruct base
+        // 112 -> 120 via the Rev 13.9 RefSchema appendage). The
+        // 16-byte ICppStructOps body itself is structurally unchanged.
 
         // Bitmask of populated handlers + capability-only declarations.
         // See ECppStructOpsCapability for bit assignments. The mask is
         // 32 bits (24 active + 8 reserved per Rev 3 FIX-R2-MED-1).
-        ::uint32                              Capabilities;       // 112  +4
+        ::uint32                              Capabilities;       // 120  +4
 
         // Pad to 8-byte boundary for CppOpsTable.
-        ::uint32                              _padCapabilities;   // 116  +4
+        ::uint32                              _padCapabilities;   // 124  +4
 
         // Pointer to the per-subtype FCppStructOpsFakeVTable in
         // `.rodata`. nullptr is structurally invalid (every
         // FScriptStruct subtype emits a CppOpsTable, even the no-op
         // "plain struct" case which gets a zero-Capabilities all-null
         // table).
-        const FCppStructOpsFakeVTable*        CppOpsTable;        // 120  +8
+        const FCppStructOpsFakeVTable*        CppOpsTable;        // 128  +8
 
         // -------------------------------------------------------------
         // Construction.
@@ -201,25 +220,35 @@ namespace XCore::Reflect
     };
 
     // ---------------------------------------------------------------------
-    // ABI locks (Phase 4b.5 audit-corrected; see SPEC DRIFT notice above).
+    // ABI locks (Phase 4b.5 audit-corrected baseline 128 + Phase 5.a'
+    // Contract Rev 13.9 cascade per XCoreXObject Rev 4 §11.2 = 136 total).
+    //
+    // The cascade: FStruct base grew 112 -> 120 via the appended
+    // RefSchema pointer; FScriptStruct's own 16-byte body offsets shift
+    // by +8 wholesale.
     // ---------------------------------------------------------------------
-    static_assert(sizeof(FScriptStruct) == 128,
-                  "FScriptStruct ABI lock (audit-corrected): 128 bytes "
-                  "(112 FStruct base + 16 ICppStructOps FakeVTable pattern). "
-                  "Spec Rev 3 §7.2 declared 120 with FStruct=104; FStruct is "
-                  "actually 112 (audit per FStruct.h SPEC DRIFT NOTICE).");
+    static_assert(sizeof(FScriptStruct) == 136,
+                  "FScriptStruct ABI lock (Phase 5.a' Rev 13.9 cascade): "
+                  "136 bytes = 120 FStruct base (with appended RefSchema "
+                  "@ FStruct.112) + 16 ICppStructOps FakeVTable pattern. "
+                  "Phase 4b.5 baseline was 128 (112 FStruct + 16 body); "
+                  "Rev 13.9 micro-bump cascades +8 from FStruct growth.");
     static_assert(alignof(FScriptStruct) == 8,
                   "FScriptStruct ABI lock: 8-byte alignment per §7.2 alignas(8)");
 
-    // Member offsets locked per the audit-corrected layout.
-    static_assert(offsetof(FScriptStruct, Capabilities)     == 112,
-                  "FScriptStruct ABI lock (audit-corrected): Capabilities at "
-                  "offset 112 (spec said 104; +8 shift from FStruct=112)");
-    static_assert(offsetof(FScriptStruct, _padCapabilities) == 116,
-                  "FScriptStruct ABI lock (audit-corrected): _padCapabilities "
-                  "at offset 116 (spec said 108)");
-    static_assert(offsetof(FScriptStruct, CppOpsTable)      == 120,
-                  "FScriptStruct ABI lock (audit-corrected): CppOpsTable at "
-                  "offset 120 (spec said 112)");
+    // Member offsets locked per the Phase 5.a' Rev 13.9 cascade (each
+    // FScriptStruct-specific offset shifts +8 from the Phase 4b.5
+    // baseline because FStruct base grew by +8 via the Rev 13.9
+    // RefSchema appendage).
+    static_assert(offsetof(FScriptStruct, Capabilities)     == 120,
+                  "FScriptStruct ABI lock (Rev 13.9 cascade): Capabilities "
+                  "at offset 120 (Phase 4b.5: 112; +8 shift from FStruct "
+                  "base growing to 120 via Rev 13.9 RefSchema appendage)");
+    static_assert(offsetof(FScriptStruct, _padCapabilities) == 124,
+                  "FScriptStruct ABI lock (Rev 13.9 cascade): _padCapabilities "
+                  "at offset 124 (Phase 4b.5: 116)");
+    static_assert(offsetof(FScriptStruct, CppOpsTable)      == 128,
+                  "FScriptStruct ABI lock (Rev 13.9 cascade): CppOpsTable "
+                  "at offset 128 (Phase 4b.5: 120)");
 
 } // namespace XCore::Reflect

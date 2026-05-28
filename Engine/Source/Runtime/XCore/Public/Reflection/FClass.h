@@ -2,8 +2,38 @@
 #pragma once
 
 // =====================================================================
-// FClass.h -- the 200-byte XObject-class descriptor (XCore-4b §7.3 +
-// §11.3; FIX-R2-CRIT-1).
+// FClass.h -- the 240-byte XObject-class descriptor (XCore-4b §7.3 +
+// §11.3; FIX-R2-CRIT-1; XCoreXObject Rev 4 §2.4 + §11.2 Contract Rev
+// 13.9 micro-bump).
+// =====================================================================
+//
+// REV 13.9 ADDITION (XCoreXObject Phase 5.a' Contract prerequisite):
+//
+//   FClass grows by 16 bytes (224 -> 240) via TWO 8-byte appendages:
+//
+//     (a) FStruct base grows by 8 (112 -> 120) via the appended
+//         `RefSchema` field (per FStruct.h SPEC DRIFT NOTICE update);
+//         every FClass-specific offset therefore shifts by +8.
+//
+//     (b) FClass-specific itself grows by 8 (112 -> 120) via the
+//         appended `LifecycleTable` pointer at FClass-specific offset
+//         112 (FClass-absolute offset 232). The slot points at a
+//         .rodata-resident FXObjectLifecycleTable emitted by XHT per
+//         FClass; XCoreXObject's lifecycle dispatch (PostInitProperties,
+//         BeginDestroy, FinishDestroy, AddReferencedObjects, Serialize,
+//         PostLoad, PreSave) reads through this table instead of a
+//         per-class virtual.
+//
+//   Total: FClass 224 -> 240 (+16 bytes net per XCoreXObject Rev 4
+//   §11.2 cascade). The arithmetic correction over Rev 2's inconsistent
+//   232 figure is preserved at the spec (Rev 3 / FIX-C-R2-1).
+//
+//   Rationale (per XCoreXObject Rev 4 spec FIX-A-CRIT-3 / O1 arbitration):
+//   alternatives rejected per Prime Directive: parallel TMap lookup per
+//   lifecycle dispatch = wrong perf (hash probe per call); inline 8-slot
+//   table per FClass = 720 KB module footprint (8 fn ptrs * 10k classes).
+//   The 8-byte pointer is the right trade.
+//
 // =====================================================================
 //
 // XCore-4b Rev 3, Section 7.3 ("FClass") + Section 11.3 layout row
@@ -12,13 +42,15 @@
 // SPEC DRIFT (Phase 4b.5 audit-corrected; root cause documented in
 // FStruct.h SPEC DRIFT NOTICE): TArray = 24 bytes (not 16), so
 // ObjectRefProperties + ClassReps + NetFields each consume 8 more
-// bytes than the spec expected. Cascading totals:
+// bytes than the spec expected. Phase 5.a' Rev 13.9 micro-bump
+// cascades a further +16 bytes net. Cascading totals:
 //
-//     FStruct base   112 (was spec-asserted 104)
-//     FClass-specific 112 (was spec-asserted 96)
+//     FStruct base   120 (Phase 4b.5: 112; Phase 5.a' Rev 13.9: +8 RefSchema)
+//     FClass-specific 120 (Phase 4b.5: 112; Phase 5.a' Rev 13.9: +8 LifecycleTable)
 //        - +8 from ClassReps (24 vs 16)
 //        - +8 from NetFields (24 vs 16)
-//     Total          224 (was spec-asserted 200)
+//        - +8 from LifecycleTable (Rev 13.9 appendage at FClass-specific.112)
+//     Total          240 (was spec-asserted 200; Phase 4b.5: 224; Rev 13.9: 240)
 //
 // FClass extends FStruct and is the runtime descriptor for XObject-
 // derived classes (the C++ side; the C# transpilation produces matching
@@ -26,30 +58,39 @@
 // carries ~80 fields; XPact's FClass extends FStruct and consolidates
 // to the load-bearing subset.
 //
-// LAYOUT (Phase 4b.5 audit-corrected; spec said 200, actually 224):
+// LAYOUT (Phase 4b.5 audit-corrected baseline 224, Phase 5.a' Rev 13.9
+// micro-bump cascade to 240):
 //
 //   struct alignas(8) FClass : FStruct {
-//       // FStruct base @ 0-111 (112 bytes; was spec-asserted 104)
-//       void                          (*ClassConstructorFn)(void*, FFieldVariant);  // 112 +8
-//       void*                         (*ClassVTableHelperCtorCaller)(void*);        // 120 +8
-//       mutable std::atomic<FObject*> ClassDefaultObject;        // 128 +8 (lazy CDO)
-//       EClassFlags                   ClassFlags;                // 136 +8
-//       EClassCastFlags               ClassCastFlags;            // 144 +8
-//       const FClass*                 ClassWithin;               // 152 +8
-//       int32                         FirstOwnedClassRep;        // 160 +4
-//       int32                         ClassRepCount;             // 164 +4
-//       TArray<FRepRecord>            ClassReps;                 // 168 +24 (TArray=24)
-//       TArray<FField*>               NetFields;                 // 192 +24 (TArray=24)
-//       FName                         ClassConfigName;           // 216 +8
+//       // FStruct base @ 0-119 (120 bytes; Phase 4b.5: 112; Rev 13.9: +8 RefSchema appended)
+//       void                          (*ClassConstructorFn)(void*, FFieldVariant);  // 120 +8
+//       void*                         (*ClassVTableHelperCtorCaller)(void*);        // 128 +8
+//       mutable std::atomic<FObject*> ClassDefaultObject;        // 136 +8 (lazy CDO)
+//       EClassFlags                   ClassFlags;                // 144 +8
+//       EClassCastFlags               ClassCastFlags;            // 152 +8
+//       const FClass*                 ClassWithin;               // 160 +8
+//       int32                         FirstOwnedClassRep;        // 168 +4
+//       int32                         ClassRepCount;             // 172 +4
+//       TArray<FRepRecord>            ClassReps;                 // 176 +24 (TArray=24)
+//       TArray<FField*>               NetFields;                 // 200 +24 (TArray=24)
+//       FName                         ClassConfigName;           // 224 +8
+//       const FXObjectLifecycleTable* LifecycleTable;            // 232 +8 (Rev 13.9 appended)
 //   };
 //
-// sizeof(FClass) == 224.
+// sizeof(FClass) == 240.
 //
-// XPACT_FCLASS_LAYOUT_TAG (Rev 3 §11.6):
-//   "FClass-v3: 104 FStruct base + 96 FClass-specific = 200 bytes;
-//    ClassReps is TArray<FRepRecord> (16 bytes); NetFields is
-//    TArray<FField*> (16 bytes); ObjectRefProperties is dense TArray
-//    on FStruct (16 bytes)"
+// XPACT_FCLASS_LAYOUT_TAG (Rev 13.9 v6 per XCoreXObject Rev 4 §11.1):
+//   "FClass-v6 (Contract Rev 13.9 extension via XCoreXObject Rev 3):
+//    240 bytes = 120 FStruct base (with appended RefSchema@112) +
+//    120 FClass-specific (with appended LifecycleTable@FClass-specific.112
+//    = FClass-absolute.232). FClass-specific field layout (offsets
+//    relative to FStruct end at FClass-absolute 120):
+//    ClassConstructorFn@0, ClassVTableHelperCtorCaller@8,
+//    ClassDefaultObject@16, ClassFlags@24, ClassCastFlags@32,
+//    ClassWithin@40, FirstOwnedClassRep@48, ClassRepCount@52,
+//    ClassReps@56 (24 byte TArray<FRepRecord>), NetFields@80 (24
+//    byte TArray<FField*>), ClassConfigName@104, LifecycleTable@112
+//    (Rev 3 appended; FClass-absolute offset 232)."
 //
 // FIELD SUMMARY:
 //
@@ -155,6 +196,24 @@ namespace XCore::Reflect
     // opaque to FClass.
     struct FObject;
 
+    // FXObjectLifecycleTable -- the .rodata-resident per-FClass
+    // lifecycle dispatch table emitted by XHT for the Phase 5.a'
+    // Contract Rev 13.9 micro-bump (XCoreXObject Rev 4 §2.4 +
+    // §11.1 tag XPACT_XOBJECT_LIFECYCLE_TABLE_TAG). Full type ships
+    // at XCoreXObject (System 5); Phase 5.a' forward-declares so
+    // FClass can reference it as a pointer slot.
+    //
+    // The table is 72 bytes per FClass: 8-byte header (Capabilities
+    // bitmask + _padHeader) + 8 slots * 8 bytes for the lifecycle
+    // function-pointer dispatch (PostInitProperties, BeginDestroy,
+    // IsReadyForFinishDestroy, FinishDestroy, Serialize,
+    // AddReferencedObjects, PostLoad, PreSave). XCoreXObject's
+    // dispatcher reads the Capabilities bitmask first to gate which
+    // slots are populated; an unimplemented slot is the default no-op
+    // (per FIX-A-HIGH-13 the Serialize slot signature is
+    // void(*)(XObject*, FArchive&, const FArchiveContext*)).
+    struct FXObjectLifecycleTable;
+
     // -----------------------------------------------------------------
     // FClass -- 200-byte FStruct subclass for XObject-derived classes.
     //
@@ -237,13 +296,54 @@ namespace XCore::Reflect
 
         ::XCore::TArray<FField*> NetFields;                             // 192 +24
 
-        // ---- Class config name (offset 216; 8 bytes) ----
+        // ---- Class config name (FClass-absolute offset 224; 8 bytes) ----
         //
         // The .ini section name (Engine.ini, Game.ini, etc.) populated
         // from XCLASS(config = ...). NAME_None means "not config-
         // loaded".
+        //
+        // Phase 5.a' Rev 13.9 cascade: offset shifts from 216 -> 224
+        // because FStruct base grew by +8 (RefSchema appendage).
 
-        FName              ClassConfigName;                             // 216 +8
+        FName              ClassConfigName;                             // 224 +8
+
+        // ---- Lifecycle dispatch table (FClass-absolute offset 232;
+        //      8 bytes; Rev 13.9 addition per XCoreXObject Rev 4 §2.4) ----
+        //
+        // Rev 13.9 addition (XCoreXObject Phase 5.a' Contract
+        // prerequisite per XCoreXObject Rev 4 §2.4 / FIX-A-CRIT-3 /
+        // O1 arbitration). Populated by XCoreXObject's FClass::Link
+        // path for classes with non-trivial lifecycle hooks
+        // (PostInitProperties, BeginDestroy, FinishDestroy,
+        // AddReferencedObjects, Serialize, PostLoad, PreSave); nullptr
+        // for classes that use only default lifecycle behavior (no
+        // explicit hook implementations -- the dispatcher short-circuits
+        // on nullptr and runs the default no-op path).
+        //
+        // The LifecycleTable points at a constinit
+        // FXObjectLifecycleTable in the owning module's .rodata; XHT
+        // emits the table at .gen.cpp time alongside the FClass
+        // descriptor. XCoreXObject's lifecycle dispatch reads the
+        // table's Capabilities bitmask first to gate which slots are
+        // populated. The per-class table size is 72 bytes (8 header +
+        // 8 slots * 8 bytes); the ~10k-classes-per-project budget puts
+        // module-aggregate table footprint at ~720 KB, but the table
+        // is in .rodata (shared, demand-paged), so the resident-set
+        // cost is bounded by hot-class working set.
+        //
+        // FClass-specific offset 112 = FClass-absolute offset 232
+        // (120 FStruct base + 112 within FClass-specific). The slot
+        // is the load-bearing 8-byte append for Contract Rev 13.9
+        // micro-bump per XCoreXObject Rev 4 §11.2 (FClass-specific
+        // 112 -> 120 bytes; FClass total 224 -> 240 bytes; +16 net
+        // when combined with FStruct.RefSchema appendage).
+        //
+        // Hot-reload safety: the LifecycleTable pointer is per-FClass
+        // and per-module; an XHT-regenerated .gen.cpp publishes a new
+        // table, and FClass::Link rewrites the slot during the
+        // hot-reload cascade. The table itself is immutable .rodata.
+
+        const FXObjectLifecycleTable* LifecycleTable = nullptr;        // 232 +8
 
         // -------------------------------------------------------------
         // Construction.
@@ -269,6 +369,12 @@ namespace XCore::Reflect
             , ClassReps()
             , NetFields()
             , ClassConfigName()
+            , LifecycleTable(nullptr)   // Rev 13.9: populated by
+                                        // XCoreXObject FClass::Link
+                                        // for classes with non-trivial
+                                        // lifecycle hooks; nullptr
+                                        // default for programmatic
+                                        // ctor path.
         {
         }
 
@@ -287,6 +393,12 @@ namespace XCore::Reflect
             , ClassReps()
             , NetFields()
             , ClassConfigName()
+            , LifecycleTable(nullptr)   // Rev 13.9: populated by
+                                        // XCoreXObject FClass::Link
+                                        // for classes with non-trivial
+                                        // lifecycle hooks; nullptr
+                                        // default for programmatic
+                                        // ctor path.
         {
         }
 
@@ -334,6 +446,16 @@ namespace XCore::Reflect
         [[nodiscard]] XPACT_FORCEINLINE ::int32 GetClassRepCount() const noexcept
         {
             return ClassRepCount;
+        }
+
+        // Rev 13.9 accessor for the per-class lifecycle dispatch
+        // table pointer. Returns nullptr for classes that use only
+        // the default no-op lifecycle path; the caller (XCoreXObject's
+        // lifecycle dispatcher) MUST check for nullptr before reading
+        // any slot.
+        [[nodiscard]] XPACT_FORCEINLINE const FXObjectLifecycleTable* GetLifecycleTable() const noexcept
+        {
+            return LifecycleTable;
         }
 
         // -------------------------------------------------------------
@@ -440,43 +562,76 @@ namespace XCore::Reflect
     };
 
     // ---------------------------------------------------------------------
-    // ABI locks (Phase 4b.5 audit-corrected; see SPEC DRIFT notice above).
+    // ABI locks (Phase 4b.5 audit-corrected baseline 224 + Phase 5.a'
+    // Contract Rev 13.9 micro-bump per XCoreXObject Rev 4 §11.2 / §11.3
+    // adding +16 bytes net = 240 total).
+    //
+    // Phase 5.a' cascade:
+    //   (a) FStruct base 112 -> 120 (RefSchema appended @ FStruct.112).
+    //       Every FClass-specific offset therefore shifts +8 from the
+    //       Phase 4b.5 baseline.
+    //   (b) LifecycleTable appended @ FClass-specific.112 = FClass-
+    //       absolute.232 (8 bytes; per FIX-A-CRIT-3 / O1 arbitration).
+    //
+    // Reference: XCoreXObject Rev 4 §11.3 XPACT_VERIFY_XOBJECT_LAYOUT
+    // pin set authoritatively names these offsets; this header is the
+    // C++ realization.
     // ---------------------------------------------------------------------
-    static_assert(sizeof(FClass) == 224,
-                  "FClass ABI lock (audit-corrected): 224 bytes "
-                  "(112 FStruct base + 112 FClass-specific). Spec Rev 3 §7.3 "
-                  "declared 200 with FStruct=104 + ClassReps/NetFields TArray=16; "
-                  "actuals: FStruct=112, TArray=24. See FStruct.h SPEC DRIFT.");
+    static_assert(sizeof(FClass) == 240,
+                  "FClass ABI lock (Contract Rev 13.9 micro-bump per "
+                  "XCoreXObject Rev 4 §11.2 / FIX-C-R2-1): 240 bytes = "
+                  "120 FStruct base (with appended RefSchema@112) + "
+                  "120 FClass-specific (with appended LifecycleTable "
+                  "@ FClass-specific.112 = FClass-absolute.232). +16 "
+                  "bytes net over the Phase 4b.5 baseline (224).");
     static_assert(alignof(FClass) == 8,
                   "FClass ABI lock: 8-byte alignment per §7.3 alignas(8)");
 
-    // Member offsets locked per the audit-corrected layout (every
-    // FClass member shifts by +8 vs spec because FStruct base grew
-    // by 8; ClassReps + NetFields shift by an additional +8 each due
-    // to TArray = 24).
-    static_assert(offsetof(FClass, ClassConstructorFn)           == 112,
-                  "FClass ABI lock (audit-corrected): ClassConstructorFn at "
-                  "offset 112 (spec said 104; +8 shift from FStruct=112)");
-    static_assert(offsetof(FClass, ClassVTableHelperCtorCaller)  == 120,
-                  "FClass ABI lock (audit-corrected): ClassVTableHelperCtorCaller at offset 120");
-    static_assert(offsetof(FClass, ClassDefaultObject)           == 128,
-                  "FClass ABI lock (audit-corrected): ClassDefaultObject at offset 128");
-    static_assert(offsetof(FClass, ClassFlags)                   == 136,
-                  "FClass ABI lock (audit-corrected): ClassFlags at offset 136");
-    static_assert(offsetof(FClass, ClassCastFlags)               == 144,
-                  "FClass ABI lock (audit-corrected): ClassCastFlags at offset 144");
-    static_assert(offsetof(FClass, ClassWithin)                  == 152,
-                  "FClass ABI lock (audit-corrected): ClassWithin at offset 152");
-    static_assert(offsetof(FClass, FirstOwnedClassRep)           == 160,
-                  "FClass ABI lock (audit-corrected): FirstOwnedClassRep at offset 160");
-    static_assert(offsetof(FClass, ClassRepCount)                == 164,
-                  "FClass ABI lock (audit-corrected): ClassRepCount at offset 164");
-    static_assert(offsetof(FClass, ClassReps)                    == 168,
-                  "FClass ABI lock (audit-corrected): ClassReps at offset 168");
-    static_assert(offsetof(FClass, NetFields)                    == 192,
-                  "FClass ABI lock (audit-corrected): NetFields at offset 192 "
-                  "(spec said 176; +16 shift from TArray=24 cascade)");
-    static_assert(offsetof(FClass, ClassConfigName)              == 216,
-                  "FClass ABI lock (audit-corrected): ClassConfigName at offset 216");
+    // Member offsets locked per the Rev 13.9 cascade (every FClass-
+    // specific offset shifts +8 from the Phase 4b.5 baseline because
+    // FStruct base grew by +8 via the appended RefSchema; ClassReps
+    // + NetFields shift by an additional +8 each due to TArray = 24;
+    // LifecycleTable is the new Rev 13.9 appendage at FClass-absolute
+    // offset 232).
+    static_assert(offsetof(FClass, ClassConstructorFn)           == 120,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassConstructorFn "
+                  "at offset 120 (Phase 4b.5: 112; +8 shift from "
+                  "FStruct base growing to 120 via Rev 13.9 RefSchema "
+                  "appendage)");
+    static_assert(offsetof(FClass, ClassVTableHelperCtorCaller)  == 128,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassVTableHelperCtorCaller at offset 128");
+    static_assert(offsetof(FClass, ClassDefaultObject)           == 136,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassDefaultObject at offset 136");
+    static_assert(offsetof(FClass, ClassFlags)                   == 144,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassFlags at offset 144");
+    static_assert(offsetof(FClass, ClassCastFlags)               == 152,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassCastFlags at offset 152");
+    static_assert(offsetof(FClass, ClassWithin)                  == 160,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassWithin at offset 160");
+    static_assert(offsetof(FClass, FirstOwnedClassRep)           == 168,
+                  "FClass ABI lock (Rev 13.9 cascade): FirstOwnedClassRep at offset 168");
+    static_assert(offsetof(FClass, ClassRepCount)                == 172,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassRepCount at offset 172");
+    static_assert(offsetof(FClass, ClassReps)                    == 176,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassReps at offset 176");
+    static_assert(offsetof(FClass, NetFields)                    == 200,
+                  "FClass ABI lock (Rev 13.9 cascade): NetFields at offset 200 "
+                  "(Phase 4b.5: 192; +8 shift from FStruct base growth)");
+    static_assert(offsetof(FClass, ClassConfigName)              == 224,
+                  "FClass ABI lock (Rev 13.9 cascade): ClassConfigName at offset 224");
+
+    // Phase 5.a' Rev 13.9 micro-bump pin per XCoreXObject Rev 4 §11.3
+    // (FIX-H-R2-2): LifecycleTable slot at FClass-absolute offset 232
+    // (= 120 FStruct base + 112 FClass-specific). Load-bearing for
+    // per-class lifecycle dispatch (PostInitProperties, BeginDestroy,
+    // FinishDestroy, AddReferencedObjects, Serialize, PostLoad,
+    // PreSave) without per-call hash-probe overhead.
+    static_assert(offsetof(FClass, LifecycleTable)              == 232,
+                  "FClass ABI lock (Rev 13.9 per XCoreXObject Rev 4 "
+                  "§11.3 / FIX-H-R2-2): LifecycleTable at FClass-"
+                  "absolute offset 232 (= 120 FStruct base + 112 "
+                  "FClass-specific offset). Appended after "
+                  "ClassConfigName@224 for the per-class lifecycle "
+                  "dispatch table per §2.4.");
 
 } // namespace XCore::Reflect

@@ -2,9 +2,33 @@
 #pragma once
 
 // =====================================================================
-// FStruct.h -- the 104-byte struct-with-properties descriptor base
-// (XCore-4b §7.1 + §11.3).
+// FStruct.h -- the 120-byte struct-with-properties descriptor base
+// (XCore-4b §7.1 + §11.3; XCoreXObject Rev 4 §7.4 + §11.2 Contract
+// Rev 13.9 micro-bump).
 // =====================================================================
+//
+// REV 13.9 ADDITION (XCoreXObject Phase 5.a' Contract prerequisite):
+//
+//   FStruct grows by 8 bytes (112 -> 120) via the appended
+//   `RefSchema` pointer at offset 112. The slot points at a
+//   .rodata-resident FXObjectRefSchema opcode vector emitted by XHT
+//   per FClass; XCoreXObject's schema-vector GC walker (§7.4 of the
+//   XCoreXObject Rev 4 spec) uses it as the fast-path replacement for
+//   the FProperty pointer-chase walk over ObjectRefProperties. The
+//   dense ObjectRefProperties TArray remains as the slow-path
+//   inspection surface (per XCore-4b FIX-13); both fields are
+//   populated at FClass::Link time. nullptr for FStructs without
+//   object-reference properties (e.g., FVector / FRotator -- no XObject
+//   references).
+//
+//   Rationale (per XCoreXObject Rev 4 spec FIX-A-CRIT-8 / UE-MISS-1):
+//   the linked-FProperty pointer chase at GC mark time is a cache-cold
+//   ~3000 refs/ms path on Quest 3; the dense opcode vector is
+//   prefetch-friendly and pushes to >4000 refs/ms. The slot is
+//   load-bearing for the §13 X-SCHEMA acceptance gate.
+//
+// =====================================================================
+//
 //
 // XCore-4b Rev 3, Section 7.1 ("FStruct (base)") + Section 11.3 layout
 // row `FStruct: 104 bytes`.
@@ -194,6 +218,20 @@ namespace XCore::Reflect
     // full type ships at Layer 9.
     struct FUnversionedStructSchema;
 
+    // FXObjectRefSchema -- the .rodata-resident packed opcode vector
+    // emitted by XHT per FClass for the schema-vector GC walker. Full
+    // type ships at XCoreXObject (System 5); Phase 5.a' forward-
+    // declares so FStruct can reference it as a pointer slot. The
+    // FStruct stores a const pointer to a constinit instance in the
+    // owning module's .rodata; XHT emits the vector at .gen.cpp time.
+    //
+    // Per XCoreXObject Rev 4 §7.4 + Contract Rev 13.9 §11.1 tag
+    // `XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG`: the 24-byte FXObjectRefSchema
+    // wraps a NumOps count + Version + Ops pointer to a contiguous
+    // array of FXObjectRefSchemaOp (24 bytes each). XHT populates
+    // both per FClass at compile time.
+    struct FXObjectRefSchema;
+
     // -----------------------------------------------------------------
     // FStruct -- 104-byte struct-with-properties descriptor base.
     //
@@ -344,7 +382,43 @@ namespace XCore::Reflect
         // through this slot must include the XSerialization header.
 
         void               (*SerializeStructFn)(
-            ::XCore::Serialization::FArchive& Ar, void* Instance);  // 96  +8
+            ::XCore::Serialization::FArchive& Ar, void* Instance);  // 104  +8
+
+        // ---- Schema-vector GC walker pointer (offset 112; 8 bytes;
+        //      Rev 13.9 addition per XCoreXObject Rev 4 §7.4) ----
+        //
+        // Rev 13.9 addition (XCoreXObject Phase 5.a' Contract
+        // prerequisite per XCoreXObject Rev 4 §7.4 schema-vector
+        // design). Populated by XHT-emitted .gen.cpp at FClass::Link
+        // time; nullptr for FStructs without object-reference
+        // properties (e.g., FVector / FRotator -- pure POD math
+        // structs with zero XObject references; XHT emits NO schema
+        // vector for those, and the slot stays nullptr).
+        //
+        // The RefSchema points at a constinit FXObjectRefSchema in
+        // the owning module's .rodata; the schema wraps a contiguous
+        // FXObjectRefSchemaOp[] array (one opcode per GC-ref slot in
+        // the struct's storage). XCoreXObject's collector mark phase
+        // iterates the opcode vector once per object instead of
+        // chasing the FProperty linked list. The schema vector is
+        // the fast-path; ObjectRefProperties remains as the slow-
+        // path inspection surface (editor introspection, leak
+        // tracker, etc.).
+        //
+        // The slot is the load-bearing 8-byte append for Contract
+        // Rev 13.9 micro-bump per XCoreXObject Rev 4 §11.2 (FStruct
+        // 112 -> 120 bytes; +8 net). Companion appendix on FClass-
+        // specific: LifecycleTable @ FClass-absolute offset 232
+        // (FClass 224 -> 240 bytes; +8 net). Together +16 bytes net
+        // across the Rev 13.9 micro-bump.
+        //
+        // Hot-reload safety: the RefSchema pointer is per-FStruct
+        // and per-module; an XHT-regenerated .gen.cpp publishes a
+        // new RefSchema, and FClass::Link rewrites the slot during
+        // the hot-reload cascade. The schema vector itself is
+        // immutable .rodata; consumers MUST NOT cache the underlying
+        // FXObjectRefSchemaOp* outside of one mark cycle.
+        const FXObjectRefSchema* RefSchema = nullptr;             // 112  +8
 
         // -------------------------------------------------------------
         // Construction.
@@ -378,6 +452,9 @@ namespace XCore::Reflect
             , _padSchema(0)
             , UnversionedSchema(nullptr)
             , SerializeStructFn(nullptr)
+            , RefSchema(nullptr)   // Rev 13.9: populated by XHT-emitted
+                                   // .gen.cpp; nullptr default for the
+                                   // identity / programmatic ctor path.
         {
         }
 
@@ -401,6 +478,9 @@ namespace XCore::Reflect
             , _padSchema(0)
             , UnversionedSchema(nullptr)
             , SerializeStructFn(nullptr)
+            , RefSchema(nullptr)   // Rev 13.9: populated by XHT-emitted
+                                   // .gen.cpp; nullptr default for the
+                                   // identity / programmatic ctor path.
         {
         }
 
@@ -482,6 +562,15 @@ namespace XCore::Reflect
         [[nodiscard]] XPACT_FORCEINLINE ::int32 GetSchemaVersion() const noexcept
         {
             return SchemaVersion;
+        }
+
+        // Rev 13.9 accessor for the schema-vector GC walker pointer.
+        // Returns nullptr for FStructs without object-reference
+        // properties; the caller (XCoreXObject's collector mark phase)
+        // MUST check for nullptr before iterating the opcode vector.
+        [[nodiscard]] XPACT_FORCEINLINE const FXObjectRefSchema* GetRefSchema() const noexcept
+        {
+            return RefSchema;
         }
 
         // -------------------------------------------------------------
@@ -593,27 +682,36 @@ namespace XCore::Reflect
     };
 
     // ---------------------------------------------------------------------
-    // ABI locks (Phase 4b.5 audit-corrected per SPEC DRIFT NOTICE above).
+    // ABI locks (Phase 4b.5 audit-corrected per SPEC DRIFT NOTICE above
+    // + Phase 5.a' Contract Rev 13.9 micro-bump per XCoreXObject Rev 4
+    // §11.2 / §11.3).
     //
-    // Spec Rev 3 §11.3 declared FStruct = 104 under the TArray=16 EBO
-    // assumption. Real XCore-4a TArray = 24 bytes (DefaultAllocator
-    // carries a 2-byte FMemTag with no padding hole to fold into).
-    // The asserts pin the ACTUAL sizes; the field offsets after
-    // ObjectRefProperties shift by +8 relative to the spec.
+    // Phase 4b.5 audit-correction history: spec Rev 3 §11.3 declared
+    // FStruct = 104 under the TArray=16 EBO assumption. Real XCore-4a
+    // TArray = 24 bytes (DefaultAllocator carries a 2-byte FMemTag with
+    // no padding hole to fold into). Phase 4b.5 baseline shipped FStruct
+    // at 112 bytes.
+    //
+    // Phase 5.a' Rev 13.9 micro-bump appends `const FXObjectRefSchema*
+    // RefSchema` at offset 112 (the schema-vector GC walker pointer
+    // per XCoreXObject Rev 4 §7.4 / FIX-A-CRIT-8 / UE-MISS-1). FStruct
+    // grows 112 -> 120 bytes (+8 net). All offsets up to and including
+    // SerializeStructFn@104 are preserved unchanged from the 4b.5
+    // baseline. The static_asserts below pin the new layout.
     // ---------------------------------------------------------------------
-    static_assert(sizeof(FStruct)  == 112,
-                  "FStruct ABI lock (audit-corrected): 112 bytes. "
-                  "Spec Rev 3 §7.1 declared 104 assuming TArray=16 EBO; "
-                  "actual XCore-4a TArray=24 (DefaultAllocator carries "
-                  "2-byte FMemTag with no padding hole). Phase 4b.5 ships "
-                  "the actual size; spec amendment requested.");
+    static_assert(sizeof(FStruct)  == 120,
+                  "FStruct ABI lock (Contract Rev 13.9 micro-bump per "
+                  "XCoreXObject Rev 4 §11.2): 120 bytes = 112 baseline "
+                  "(Phase 4b.5 audit-corrected) + 8 byte RefSchema "
+                  "pointer appended at offset 112. RefSchema is the "
+                  "schema-vector GC walker fast-path per "
+                  "XCoreXObject Rev 4 §7.4 / FIX-A-CRIT-8 / UE-MISS-1.");
     static_assert(alignof(FStruct) == 8,
                   "FStruct ABI lock: 8-byte alignment per §7.1 alignas(8)");
 
-    // Member offsets locked per the audit-corrected layout. Offsets
-    // up to and including ObjectRefProperties match the spec; offsets
-    // after ObjectRefProperties shift by +8 (TArray=24 vs spec's
-    // assumed TArray=16).
+    // Member offsets locked per the Phase 4b.5 audit-corrected layout
+    // (offsets 0..104 unchanged from the 4b.5 baseline) plus the
+    // Phase 5.a' Rev 13.9 appended RefSchema@112.
     static_assert(offsetof(FStruct, NamePrivate)        ==  0,
                   "FStruct ABI lock: NamePrivate at offset 0");
     static_assert(offsetof(FStruct, SuperStruct)        ==  8,
@@ -646,6 +744,16 @@ namespace XCore::Reflect
     static_assert(offsetof(FStruct, SerializeStructFn)  == 104,
                   "FStruct ABI lock (audit-corrected): SerializeStructFn "
                   "at offset 104 (spec said 96; +8 shift from TArray=24)");
+
+    // Phase 5.a' Rev 13.9 micro-bump pin per XCoreXObject Rev 4
+    // §11.3 (FIX-H-R2-1): RefSchema slot at offset 112 (appended
+    // after SerializeStructFn@104). Load-bearing for the
+    // schema-vector GC walker fast-path.
+    static_assert(offsetof(FStruct, RefSchema)          == 112,
+                  "FStruct ABI lock (Rev 13.9 per XCoreXObject Rev 4 "
+                  "§11.3 / FIX-H-R2-1): RefSchema at offset 112; "
+                  "appended after SerializeStructFn@104 for the "
+                  "schema-vector GC walker per §7.4.");
 
     // Type traits: FStruct is NOT trivially copyable (TArray + atomic)
     // and is NOT standard-layout because the std::atomic member has

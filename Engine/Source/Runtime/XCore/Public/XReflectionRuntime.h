@@ -249,14 +249,27 @@ namespace XPactDetail
         "FFakeVTable-v2: 8-byte header (Capabilities uint32 + _reservedHeader uint32) + 15 function-pointer slots (8 bytes each) = 128 bytes per FProperty subclass in .rodata; ConvertFromType is slot index 14 (the 15th and last; ESlot enum 0-indexed) per Rev 3 FIX-R2-HIGH-1"
 #endif
 
+// XCoreXObject Phase 5.a' Rev 13.9 micro-bump (per XCoreXObject Rev 4
+// §11.1 / §11.2): XPACT_FSTRUCT_LAYOUT_TAG bumped to v5 (RefSchema
+// appended at offset 112; sizeof 112 -> 120). The companion
+// XPACT_FCLASS_LAYOUT_TAG bump to v6 (LifecycleTable appended at
+// FClass-absolute offset 232; sizeof 224 -> 240) lands in the same
+// Rev 13.9 micro-bump cascade. XPACT_FSCRIPTSTRUCT_LAYOUT_TAG v5 is
+// the cascade follow-up (FStruct base growth +8 propagates).
+//
+// Three sources MUST stay byte-identical for the string content of
+// each macro:
+//   1. This file (XReflectionRuntime.h)
+//   2. Engine/Source/Programs/XHT/XHT.Emitter/AbiLayoutPins.cs
+//   3. Engine/Source/Programs/XBT/XBT.Manifest/ContractSurface.cs
 #ifndef XPACT_FSTRUCT_LAYOUT_TAG
     #define XPACT_FSTRUCT_LAYOUT_TAG \
-        "FStruct-v4: 112 bytes; ObjectRefProperties TArray @ offset 56 = 24 bytes; SchemaHash @ 80; SerializeStructFn @ 104"
+        "FStruct-v5 (Contract Rev 13.9 extension via XCoreXObject Rev 3): 120 bytes; Class@0 (8) + Owner@8 (8) + Next@16 (8) + Name@24 (8) + SuperStruct@32 (8) + ChildProperties@40 (8) + PropertyLink@48 (8) + ObjectRefProperties@56 (16 = TArray<FProperty*>) + SchemaHash@72 (8) + SchemaVersion@80 (4) + _pad@84 (4) + UnversionedSchema@88 (8) + SerializeStructFn@96 (8) + DestructorLink@104 (8) + RefSchema@112 (8). RefSchema is the fast-path GC walker pointer appended per FIX-A-CRIT-8 / UE-MISS-1. Conceptual layout name string -- the real field offsets per XCore-4b Rev 4 are: NamePrivate@0, SuperStruct@8, ChildProperties@16, PropertiesSize@24, MinAlignment@28, StructFlags@30, _padStructFlags@31, PropertyLink@32, DestructorLink@40, PostConstructLink@48, ObjectRefProperties@56 (24 byte TArray), SchemaHash@80, SchemaVersion@88, _padSchema@92, UnversionedSchema@96, SerializeStructFn@104, RefSchema@112 (Rev 3 appended)."
 #endif
 
 #ifndef XPACT_FSCRIPTSTRUCT_LAYOUT_TAG
     #define XPACT_FSCRIPTSTRUCT_LAYOUT_TAG \
-        "FScriptStruct-v4: 112 FStruct base + 16 ICppStructOps FakeVTable pattern = 128 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots)"
+        "FScriptStruct-v5 (Contract Rev 13.9 cascade): 120 FStruct base (with appended RefSchema@112) + 16 ICppStructOps FakeVTable pattern = 136 bytes; per-subtype FCppStructOpsFakeVTable in .rodata at 136 bytes (8-byte header + 16 handler slots) unchanged"
 #endif
 
 #ifndef XPACT_FCPPSTRUCTOPSFAKEVTABLE_LAYOUT_TAG
@@ -266,7 +279,7 @@ namespace XPactDetail
 
 #ifndef XPACT_FCLASS_LAYOUT_TAG
     #define XPACT_FCLASS_LAYOUT_TAG \
-        "FClass-v4: 112 FStruct base + 112 FClass-specific = 224 bytes; ClassReps is TArray<FRepRecord> (24 bytes); NetFields is TArray<FField*> (24 bytes); ObjectRefProperties is dense TArray on FStruct (24 bytes); reflects XCore-4a DefaultAllocator carrying 2-byte FMemTag for per-container memory attribution per Phase 4b.5 verification"
+        "FClass-v6 (Contract Rev 13.9 extension via XCoreXObject Rev 3): 240 bytes = 120 FStruct base (with appended RefSchema@112) + 120 FClass-specific (with appended LifecycleTable@112 relative to FClass-specific start = FClass-absolute offset 232). FClass-specific field layout (offsets relative to FStruct end at FClass-absolute 120): ClassConstructorFn@0, ClassVTableHelperCtorCaller@8, ClassDefaultObject@16, ClassFlags@24, ClassCastFlags@32, ClassWithin@40, FirstOwnedClassRep@48, ClassRepCount@52, ClassReps@56 (24 byte TArray<FRepRecord>), NetFields@80 (24 byte TArray<FField*>), ClassConfigName@104, LifecycleTable@112 (Rev 3 appended; FClass-absolute offset 232). Per XCore-4b Rev 4 §11.6 baseline (224 = 112 + 112) + Rev 13.9 micro-bump appends RefSchema@FStruct.112 (+8) and LifecycleTable@FClass-specific.112 (+8), yielding FClass total 240 bytes."
 #endif
 
 #ifndef XPACT_FREPRECORD_LAYOUT_TAG
@@ -292,6 +305,71 @@ namespace XPactDetail
 #ifndef XPACT_REPMETA_LAYOUT_TAG
     #define XPACT_REPMETA_LAYOUT_TAG \
         "RepMeta-v2: 15-condition ELifetimeCondition(1) + RepIndex(2) + RepNotifyFunc-as-FName(8); UE-equivalent pre-Iris set"
+#endif
+
+// =====================================================================
+// XCoreXObject Phase 5.a' Rev 13.9 micro-bump: 9 new XObject-side
+// addendum tags per XCoreXObject Rev 4 §11.1.
+//
+// These tags pin the byte layouts of the XObject-side ABI surface
+// that XCoreXObject (System 5; not yet shipped at Phase 5.a') will
+// introduce. They are added at Phase 5.a' (Contract prerequisite)
+// so the per-DLL static_assert pins XHT emits can verify against the
+// frozen layouts before XCoreXObject's runtime types land.
+//
+// Until XCoreXObject ships, the XObject / FXObjectArrayEntry /
+// XObjectKey / XWeakPtr / XPtr / FXObjectLifecycleTable /
+// FXObjectRefSchema / XGCCardTable types do NOT exist as concrete C++
+// types in this header; the tags are pure string-literal pins for the
+// downstream consumers (AbiLayoutPins.cs + ContractSurface.cs) and
+// the XHT-emit static_assert(CompileTimeStrEq(...)) calls that
+// reference them indirectly via the Contract surface.
+//
+// The three sources MUST stay byte-identical for the string content
+// of each macro:
+//   1. This file (XReflectionRuntime.h)
+//   2. Engine/Source/Programs/XHT/XHT.Emitter/AbiLayoutPins.cs
+//   3. Engine/Source/Programs/XBT/XBT.Manifest/ContractSurface.cs
+// =====================================================================
+
+#ifndef XPACT_XOBJECT_LAYOUT_TAG
+    #define XPACT_XOBJECT_LAYOUT_TAG \
+        "XObject-v2: 56 bytes; ClassPrivate@0, InternalIndex@8, SerialNumber@12, Outer@16, NamePrivate@24, ObjectFlags@32, ReachabilityFlag@36 (Rev 3 per FIX-M-R2-3 moved from FXObjectArrayEntry), _reservedCluster0@40, _reservedCluster1@48; alignof = 8; no virtuals on the GC-relevant surface (FakeVTable pattern). Rev 2: cluster reservation expanded to 16 bytes; remote-id reservation dropped (FIX-A-MIN-49 / O5). Rev 3: per-object reachability flag consumes former _padObjectFlags slot."
+#endif
+
+#ifndef XPACT_XGC_CARDTABLE_LAYOUT_TAG
+    #define XPACT_XGC_CARDTABLE_LAYOUT_TAG \
+        "XGCCardTable-v1: byte-per-card flat array; card size = 512 bytes; max heap = 4 GB; card table = 8 MB; clean = 0x00, dirty = 0x01"
+#endif
+
+#ifndef XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG
+    #define XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG \
+        "FXObjectArrayEntry-v1: 32 bytes; Object@0, SerialNumber@8, ClusterRootIndex@12, StateBits@16 (atomic; pending-destroy + root-pinned + hot-reload + garbage bits), _reserved@24; alignof = 8. Rev 3: rotating reachability flag moved to XObject header per FIX-M-R2-3."
+#endif
+
+#ifndef XPACT_XOBJECTKEY_LAYOUT_TAG
+    #define XPACT_XOBJECTKEY_LAYOUT_TAG \
+        "XObjectKey-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); ABI-compatible with XWeakPtr; alignof = 4"
+#endif
+
+#ifndef XPACT_XWEAKPTR_LAYOUT_TAG
+    #define XPACT_XWEAKPTR_LAYOUT_TAG \
+        "XWeakPtr-v1: 8 bytes; InternalIndex@0 (int32), SerialNumber@4 (uint32); matches XCore-4b's FWeakObjectPtr placeholder shape; alignof = 4"
+#endif
+
+#ifndef XPACT_XPTR_LAYOUT_TAG
+    #define XPACT_XPTR_LAYOUT_TAG \
+        "XPtr-v1: 8 bytes; Ptr@0 (raw T* compatible); ABI-equivalent to T*; alignof = 8"
+#endif
+
+#ifndef XPACT_XOBJECT_LIFECYCLE_TABLE_TAG
+    #define XPACT_XOBJECT_LIFECYCLE_TABLE_TAG \
+        "FXObjectLifecycleTable-v1: 72 bytes per FClass; 8-byte header (Capabilities@0 + _pad@4) + 8 slots * 8 bytes = 64 bytes; alignof = 8. Serialize slot signature: void(*)(XObject*, FArchive&, const FArchiveContext*) per FIX-A-HIGH-13."
+#endif
+
+#ifndef XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG
+    #define XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG \
+        "FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), _padTail@16; alignof = 8. FXObjectRefSchemaOp is 24 bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 (u16), Offset@4 (i32), StrideBytes@8 (i32), NestedSchema@16 (const FXObjectRefSchema*); alignof = 8 (4 bytes of pad at offset 12 to align NestedSchema to 8). Rev 3: 22 active opcodes (added Interface, ClassProperty, SoftClass, Delegate, MulticastInlineDelegate, MulticastSparseDelegate per FIX-H-R2-3)."
 #endif
 
 // =====================================================================

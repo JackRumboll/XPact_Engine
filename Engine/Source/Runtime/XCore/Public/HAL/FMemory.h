@@ -368,6 +368,92 @@ namespace XCore::HAL
         [[nodiscard]] static bool IsAlive() noexcept;
     };
 
+    // =====================================================================
+    // s_XObjectAllocator hook (Section 4.4) -- 3-arg signature per Phase
+    // 5.a' Contract Rev 13.9 prerequisite (XCoreXObject Rev 4 §1.4 +
+    // FIX-A-CRIT-4 follow-up).
+    //
+    // Rev 3 of XCore-4a documented the hook with a 2-arg signature
+    // `void* (*)(size_t Size, size_t Align) noexcept`. Rev 4 follow-up
+    // (Phase 5.a' Contract prerequisite per XCoreXObject Rev 4 §1.4)
+    // expands to 3 args:
+    //
+    //     void* (*)(size_t Size, size_t Align,
+    //               const ::XCore::Reflect::FClass* ClassDescriptor) noexcept
+    //
+    // The third argument is a forward-declared FClass pointer (XCore-4b
+    // type; XCore-4a depends on XCore-4b for the pointer-type-only
+    // forward declaration, which is fine -- XCore-4a/4b are part of the
+    // same XCore module and the dependency is a one-way pointer-only
+    // reference). XCoreXObject's FXObjectAllocator::AllocateRaw populates
+    // the hook via RegisterXObjectAllocator(); the FClass argument is
+    // load-bearing for type-segregated free-list lookup per XCoreXObject
+    // Rev 4 §3.4 ("size-class segregated free-lists + type-segregated
+    // within size class") to bound fragmentation per Foundation Prototype
+    // criterion (h) <15% wasted heap over 4 hours of continuous load on
+    // Quest 3.
+    //
+    // The hook is declared as a tentative-definition extern; until
+    // XCoreXObject ships (System 5), the symbol is supplied by a weak-
+    // symbol fallback that initializes to nullptr. An XCore-4a-only
+    // test build that attempts to construct an XObject-derived type
+    // aborts cleanly via the call-site XPACT_CHECK with the offending
+    // call-site stack trace per acceptance criterion A5 (fix C-8) +
+    // XCore-4a §4.4 + spec §17.1 A1.
+    //
+    // Caller obligation: pass nullptr for the FClass argument until
+    // XCoreXObject's FXObjectAllocator owns the hook. NewObject<T> in
+    // XCoreXObject Phase 5.b populates the real FClass; intermediate
+    // bootstrap callers (none exist at Phase 5.a') stay on nullptr.
+    // =====================================================================
+
+} // namespace XCore::HAL
+
+namespace XCore::Reflect
+{
+    // Forward declaration only. XCore-4b type; the FMemory side needs
+    // a pointer-only reference for the s_XObjectAllocator hook
+    // signature. Including FClass.h here would pull the full reflection
+    // surface into every FMemory consumer; the forward decl keeps the
+    // dependency boundary clean.
+    struct FClass;
+}
+
+namespace XCore::HAL
+{
+    // Tentative-definition extern. Strong definition lands at
+    // XCoreXObject (Phase 5.b) via FXObjectAllocator::AllocateRaw.
+    // Weak-symbol fallback (initialized to nullptr) ships alongside
+    // the XCore-4a-only test build per acceptance criterion A5.
+    extern void* (*s_XObjectAllocator)(
+        ::SIZE_T Size,
+        ::SIZE_T Align,
+        const ::XCore::Reflect::FClass* ClassDescriptor) noexcept;
+
+    // RegisterXObjectAllocator installs the strong implementation at
+    // XCoreXObject's PostStaticInit. Called exactly once per process
+    // lifetime; subsequent calls overwrite the slot (the spec invariant
+    // is one allocator per process, but the slot is mutable to support
+    // future hot-replace scenarios under XLiveCoding cascade).
+    //
+    // The function pointer signature MUST match s_XObjectAllocator's
+    // signature exactly; mismatches produce a compile error at the
+    // RegisterXObjectAllocator call site.
+    void RegisterXObjectAllocator(
+        void* (*Fn)(::SIZE_T Size, ::SIZE_T Align,
+                    const ::XCore::Reflect::FClass* ClassDescriptor) noexcept) noexcept;
+
+    // NewXObject is the public dispatch routine for the hook. Asserts
+    // s_XObjectAllocator != nullptr via XPACT_CHECK in Debug/Dev (per
+    // §4.4 fix C-8); abort path is clean (call-site attributable rather
+    // than generic nullptr segfault). Production callers (XCoreXObject's
+    // NewObject<T>) go through s_XObjectAllocator directly; this routine
+    // exists for the XCore-4a-only test build's defensive abort path.
+    void* NewXObject(
+        ::SIZE_T Size,
+        ::SIZE_T Align,
+        const ::XCore::Reflect::FClass* ClassDescriptor) noexcept;
+
 } // namespace XCore::HAL
 
 // =====================================================================

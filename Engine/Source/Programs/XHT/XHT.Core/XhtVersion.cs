@@ -22,16 +22,31 @@ namespace Simgenics.XPact.XHT.Core;
 /// <para>
 /// <b>ContractVersion pin.</b> <see cref="ContractVersion"/> is the
 /// auto-derived Contract identifier XHT reads + writes manifests
-/// against. The value <c>"13.8+d9514fb853e7dcc2"</c> is locked at
-/// Contract Rev 13.8 (the XCore-4b Phase 4b.7 Stage B addendum that
-/// freezes the reflection-type byte layouts via the
-/// <c>XPACT_*_LAYOUT_TAG</c> macro family). Hash history:
-/// <c>b04ae3cc84cdd9f3</c> covered Rev 13.2 / 13.3 / 13.4 / 13.5 /
-/// 13.6 / 13.7 (all wording-only after the Round-5a rotation);
-/// Rev 13.8 rotates the hash to <c>d9514fb853e7dcc2</c> because the
-/// addendum adds the 15 <c>AbiLayoutTags</c> entries + the 14
-/// <c>AbiTypeSizes</c> entries to <c>ContractSurface</c>
-/// (see <c>XBT.Manifest/ContractSurface.cs</c>).
+/// against. Locked at Contract Rev 13.9 (the XCoreXObject Phase 5.a'
+/// Contract prerequisite that micro-bumps the Stage B addendum: 3
+/// existing reflection-type tags update content + version int
+/// (<c>XPACT_FSTRUCT_LAYOUT_TAG</c> v4 -&gt; v5,
+/// <c>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</c> v4 -&gt; v5,
+/// <c>XPACT_FCLASS_LAYOUT_TAG</c> v4 -&gt; v6 with v5 skipped per
+/// FIX-N-R2-1); 8 new XObject-side tags join the addendum
+/// (XPACT_XOBJECT_LAYOUT_TAG, XPACT_XGC_CARDTABLE_LAYOUT_TAG,
+/// XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG, XPACT_XOBJECTKEY_LAYOUT_TAG,
+/// XPACT_XWEAKPTR_LAYOUT_TAG, XPACT_XPTR_LAYOUT_TAG,
+/// XPACT_XOBJECT_LIFECYCLE_TABLE_TAG,
+/// XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG); 7 new AbiTypeSizes rows for
+/// the same types; FStruct +8 -&gt; 120, FClass +16 -&gt; 240,
+/// FScriptStruct +8 -&gt; 136 cascade.
+/// </para>
+/// <para>
+/// Hash history: <c>b04ae3cc84cdd9f3</c> covered Rev 13.2 / 13.3 /
+/// 13.4 / 13.5 / 13.6 / 13.7 (all wording-only after the Round-5a
+/// rotation); <c>d9514fb853e7dcc2</c> covered Rev 13.8 (Stage B
+/// addendum adding the 15 AbiLayoutTags + 14 AbiTypeSizes entries
+/// to ContractSurface); Rev 13.9 rotates the hash to a new value
+/// derived deterministically by canonicalization (the live value is
+/// logged by
+/// <c>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</c>
+/// per the established Rev 13.7 / Rev 13.8 cadence).
 /// </para>
 /// <para>
 /// <b>Schema-mismatch detection.</b> This constant is the
@@ -54,23 +69,30 @@ public static class XhtVersion
 
     /// <summary>
     /// The Contract version string XHT reads + writes manifests against.
-    /// Locked at Contract Rev 13.8 (XCore-4b Phase 4b.7 Stage B
-    /// addendum); the hash <c>d9514fb853e7dcc2</c> reflects the
-    /// addendum's contribution of the <c>AbiLayoutTags</c> +
-    /// <c>AbiTypeSizes</c> tables to the canonical contract surface
-    /// (see <c>XBT.Manifest/ContractSurface.cs</c>).
+    /// Locked at Contract Rev 13.9 (XCoreXObject Phase 5.a' Contract
+    /// micro-bump prerequisite per XCoreXObject Rev 4 §11.2 / §11.3);
+    /// the hash <c>381d8ef7a7770d9b</c> reflects the addendum's
+    /// contribution of the 3 updated existing reflection-type tag
+    /// contents + 3 updated existing AbiTypeSizes rows (FStruct 112
+    /// -&gt; 120, FClass 224 -&gt; 240, FScriptStruct 128 -&gt; 136)
+    /// + 8 new XObject-side layout tags + 7 new AbiTypeSizes rows on
+    /// top of the Rev 13.8 baseline, via
+    /// <c>Simgenics.XPact.XBT.Manifest.ContractVersion.ComputeStructureHash</c>
+    /// canonicalization (see <c>XBT.Manifest/ContractSurface.cs</c>).
     /// </summary>
     /// <remarks>
-    /// XCore-4b Subagent A FIX-A7 PENDING-BUMP: the
-    /// <c>XPACT_FPROPERTY_LAYOUT_TAG</c> string content changed (wording
-    /// only; byte sizes unchanged). XBT's canonicalisation will rotate
-    /// this hash on the next <c>xbt manifest-emit</c> run because the
-    /// AbiLayoutTags table feeds the StructureHash. Until XBT
-    /// re-canonicalises, the existing hash value is preserved here +
-    /// in the ~20 test fixtures that pin the literal. Do NOT
-    /// hand-rotate; let XBT compute the new hash deterministically.
+    /// Rev 13.9 hash derived by running
+    /// <c>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</c>
+    /// after the Phase 5.a' Contract surface delta landed. The
+    /// canonicalization algorithm is unchanged from Rev 13.8 (no
+    /// <c>ContractVersion.cs</c> code edit was required); the
+    /// additional canonical bytes from the 11 layout-tag additions
+    /// (3 updated + 8 new) + 10 type-size additions (3 updated + 7
+    /// new) rotated the BLAKE3 digest deterministically. Do NOT
+    /// hand-rotate; further surface changes must be re-derived the
+    /// same way.
     /// </remarks>
-    public const string ContractVersion = "13.8+d9514fb853e7dcc2";
+    public const string ContractVersion = "13.9+381d8ef7a7770d9b";
 
     /// <summary>
     /// The .NET runtime XHT is currently running on. Surfaced for

@@ -161,10 +161,12 @@ int main()
     static_assert(alignof(FName) == 4,
                   "FName alignof != 4; ABI broken");
     // FStruct / FClass / FEnum / FInterface sizes per Phase 4b.5
-    // audit-corrected values.
-    static_assert(sizeof(FStruct) == 112,         "FStruct sizeof != 112 (audit-corrected)");
-    static_assert(sizeof(FClass) == 224,          "FClass sizeof != 224 (audit-corrected)");
-    static_assert(sizeof(FScriptStruct) == 128,   "FScriptStruct sizeof != 128 (audit-corrected)");
+    // audit-corrected values + Phase 5.a' Contract Rev 13.9 micro-bump
+    // (FStruct +8 RefSchema; FClass-specific +8 LifecycleTable; +16
+    // net in FClass total) per XCoreXObject Rev 4 §11.2 / §11.3.
+    static_assert(sizeof(FStruct) == 120,         "FStruct sizeof != 120 (Rev 13.9 micro-bump)");
+    static_assert(sizeof(FClass) == 240,          "FClass sizeof != 240 (Rev 13.9 micro-bump)");
+    static_assert(sizeof(FScriptStruct) == 136,   "FScriptStruct sizeof != 136 (Rev 13.9 cascade)");
     static_assert(sizeof(FEnum) == 72,            "FEnum sizeof != 72 (audit-corrected)");
     static_assert(sizeof(FInterface) == 64,       "FInterface sizeof != 64 (audit-corrected)");
 

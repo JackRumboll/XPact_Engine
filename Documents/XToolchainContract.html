@@ -3,18 +3,24 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 13.8</title>
+<title>XPact Toolchain Contract &mdash; Rev 13.9</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 13.8</h1>
-<p>Status: <strong>Stage B &mdash; Reflection-type byte-layout freeze (XCore-4b Phase 4b.7 addendum)</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 10, Section 4 Step 0; XCore-4b Rev 4 Section 11 supplies the Stage B addendum content.</p>
+<h1>XPact Toolchain Contract &mdash; Rev 13.9</h1>
+<p>Status: <strong>Stage B &mdash; Reflection-type byte-layout freeze + XCoreXObject Phase 5.a' micro-bump (XCoreXObject Rev 4 §11.2 / §11.3 cascade)</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 16, Section 4 Step 0 + Step 5 amendment (Stage B Contract extension authorized for XCoreXObject); XCore-4b Rev 4 Section 11 supplies the Rev 13.8 addendum content; XCoreXObject Rev 4 Section 11.1 / 11.2 supplies the Rev 13.9 micro-bump content.</p>
 
 <h3>Revision history (Rev 13 family)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>SemanticVersionTag</th><th>ContractVersion.Current</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>13.9</strong></td>
+      <td><code>13.9</code></td>
+      <td><code>13.9+381d8ef7a7770d9b</code></td>
+      <td>XCoreXObject Phase 5.a' &mdash; Contract micro-bump prerequisite per XCoreXObject Rev 4 &sect;11.2 / &sect;11.3 cascade. Two 8-byte pointers appended to the reflection-type ABI surface: <code>FStruct::RefSchema</code> at offset 112 (FStruct 112 &rarr; 120; for the schema-vector GC walker fast-path per FIX-A-CRIT-8 / UE-MISS-1) and <code>FClass::LifecycleTable</code> at FClass-absolute offset 232 (FClass-specific 112 &rarr; 120; FClass total 224 &rarr; 240; for per-class lifecycle dispatch per FIX-A-CRIT-3 / O1 arbitration). <code>FScriptStruct</code> cascades 128 &rarr; 136 (FStruct base growth). The 3 existing reflection-type tags update content: <code>XPACT_FSTRUCT_LAYOUT_TAG</code> v4 &rarr; v5, <code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</code> v4 &rarr; v5, <code>XPACT_FCLASS_LAYOUT_TAG</code> v4 &rarr; v6 (v5 skipped to align the version int with the XCoreXObject Rev 3 spec's &sect;11.1 tag table publication per FIX-N-R2-1). 9 new XObject-side tags join the addendum: <code>XPACT_XOBJECT_LAYOUT_TAG</code>, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, <code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code>, <code>XPACT_XOBJECTKEY_LAYOUT_TAG</code>, <code>XPACT_XWEAKPTR_LAYOUT_TAG</code>, <code>XPACT_XPTR_LAYOUT_TAG</code>, <code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code>, <code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code>, plus the 7 paired <code>AbiTypeSizes</code> rows for the same types (XObject=56, FXObjectArrayEntry=32, XObjectKey=8, XWeakPtr=8, XPtr=8, FXObjectLifecycleTable=72, FXObjectRefSchema=24). Total ABI surface: 15 &rarr; 24 layout tags; 14 &rarr; 21 type sizes (plus 3 existing reflection-type rows update bytes: FStruct 112 &rarr; 120, FClass 224 &rarr; 240, FScriptStruct 128 &rarr; 136). XHT-emitted <code>.gen.cpp</code> per-TU pin block grows from 29 to 45 <code>static_assert</code>s (24 layout tags + 21 sizeofs). Master Plan Rev 16 amendment authorizes the Stage B extension (the freeze framing at the end of Step 0.5 contract addendum landed at XCore-4b Rev 13.8 completion; XCoreXObject is the next system that legitimately extends per XCoreXObject Rev 4 &sect;1.4 "Master Plan &sect;2a freeze wording acknowledged superseded"). <code>SemanticVersionTag</code> bumps <code>"13.8"</code> &rarr; <code>"13.9"</code>. <code>ContractVersion.StructureHash</code> rotates from <code>d9514fb853e7dcc2</code> to a new value derived by canonicalization (the live value is logged by <code>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</code>; this table will be updated with the literal hash once the test runs and the doc-side cross-reference reconciliation pass lands per the Rev 13.7 / Rev 13.8 cadence). XBT's existing <code>validate-abi-tags</code> mode automatically covers the new entries (no XBT.Entry mode changes required).</td>
+    </tr>
     <tr>
       <td><strong>13.8</strong></td>
       <td><code>13.8</code></td>
@@ -71,6 +77,40 @@
     </tr>
   </tbody>
 </table>
+
+<p><strong>Rev 13.9 (XCoreXObject Phase 5.a' &mdash; Contract micro-bump prerequisite per XCoreXObject Rev 4 &sect;11.2 / &sect;11.3 cascade; surface-hash + semantic-tag rotation):</strong></p>
+<ul>
+  <li><strong>Reflection-type byte-layout micro-bump.</strong> XCoreXObject Rev 4 &sect;11.2 (Contract Rev 13.9 micro-bump table) supplies the addendum content: two 8-byte pointers appended to the reflection-type ABI surface. <code>FStruct::RefSchema</code> at offset 112 (FStruct 112 &rarr; 120) holds the fast-path GC walker schema vector pointer per FIX-A-CRIT-8 / UE-MISS-1; <code>FClass::LifecycleTable</code> at FClass-absolute offset 232 (FClass-specific 112 &rarr; 120; FClass total 224 &rarr; 240) holds the per-class lifecycle dispatch table pointer per FIX-A-CRIT-3 / O1 arbitration. <code>FScriptStruct</code> cascades 128 &rarr; 136 (FStruct base growth +8; FScriptStruct's own 16-byte ICppStructOps body unchanged).</li>
+  <li><strong>11 ABI tags updated or added.</strong> Three existing tags update content + version int (driven by the layout changes):
+    <ul>
+      <li><code>XPACT_FSTRUCT_LAYOUT_TAG</code> &mdash; v4 &rarr; v5: appends <code>RefSchema@112 (8)</code> to the layout description; sizeof statement bumped 112 &rarr; 120.</li>
+      <li><code>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</code> &mdash; v4 &rarr; v5: cascades to "120 FStruct base (with appended RefSchema@112) + 16 ICppStructOps FakeVTable pattern = 136 bytes".</li>
+      <li><code>XPACT_FCLASS_LAYOUT_TAG</code> &mdash; v4 &rarr; v6 (v5 skipped to align the version int with the XCoreXObject Rev 3 spec's &sect;11.1 tag table publication per FIX-N-R2-1): "240 bytes = 120 FStruct base (with appended RefSchema@112) + 120 FClass-specific (with appended LifecycleTable@112 relative to FClass-specific start = FClass-absolute offset 232)".</li>
+    </ul>
+    Eight new XObject-side tags join:
+    <ul>
+      <li><code>XPACT_XOBJECT_LAYOUT_TAG</code> &mdash; 56-byte XObject header.</li>
+      <li><code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code> &mdash; 8 MB card-table layout for the non-moving collector's generational scan-reduction.</li>
+      <li><code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code> &mdash; 32-byte FXObjectArray entry.</li>
+      <li><code>XPACT_XOBJECTKEY_LAYOUT_TAG</code> &mdash; 8-byte {InternalIndex, SerialNumber} stable-identity handle.</li>
+      <li><code>XPACT_XWEAKPTR_LAYOUT_TAG</code> &mdash; 8-byte weak-reference handle, ABI-compatible with XObjectKey.</li>
+      <li><code>XPACT_XPTR_LAYOUT_TAG</code> &mdash; 8-byte strong-reference wrapper (raw T* compatible).</li>
+      <li><code>XPACT_XOBJECT_LIFECYCLE_TABLE_TAG</code> &mdash; 72-byte per-FClass lifecycle dispatch table (8-byte header + 8 slots * 8 bytes).</li>
+      <li><code>XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG</code> &mdash; 24-byte schema-vector header (NumOps + Version + Ops* + _padTail) for the per-FClass packed opcode array.</li>
+    </ul>
+    Total <code>ContractSurface.AbiLayoutTags</code> surface: 15 &rarr; 24 entries.
+  </li>
+  <li><strong>7 paired AbiTypeSizes rows added</strong> (one per XObject-side type). New rows: XObject=56, FXObjectArrayEntry=32, XObjectKey=8, XWeakPtr=8, XPtr=8, FXObjectLifecycleTable=72, FXObjectRefSchema=24. Three existing reflection-type rows update bytes: FStruct 112 &rarr; 120, FClass 224 &rarr; 240, FScriptStruct 128 &rarr; 136. Total <code>ContractSurface.AbiTypeSizes</code> surface: 14 &rarr; 21 entries.</li>
+  <li><strong>Canonicalization unchanged.</strong> <code>ContractVersion.WriteCanonicalSurfaceTo</code> already iterates both <code>AbiLayoutTags</code> and <code>AbiTypeSizes</code> (added at Rev 13.8); the new entries are absorbed automatically by the existing items 9 + 10 of the algorithm. No code change to <code>ContractVersion.cs</code> required for the canonicalization to pick up the additions.</li>
+  <li><strong>SemanticVersionTag bump 13.8 &rarr; 13.9.</strong> The composite <code>ContractVersion.Current</code> rotates from <code>"13.8+d9514fb853e7dcc2"</code> to <code>"13.9+381d8ef7a7770d9b"</code>. The hash was derived deterministically by canonicalization (the live value is logged by <code>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</code> &mdash; xUnit test in <code>Engine/Source/Programs/XBT/XBT.Tests/Tests/Manifest/ContractVersionTests.cs</code> &mdash; and reconciled into this doc per the Rev 13.7 / Rev 13.8 cadence).</li>
+  <li><strong>XHT-side updates.</strong> <code>XHT.Emitter.AbiLayoutPins.cs</code> mirror table updated with the 8 new tags (the 9th tag, <code>XPACT_XGC_CARDTABLE_LAYOUT_TAG</code>, is included so the byte-identity invariant holds across all sources) + the 7 new AbiTypeSizes rows. <code>XhtVersion.ContractVersion</code> is updated to <code>"13.9+381d8ef7a7770d9b"</code> so the manifest-mismatch detection in <code>XbtManifestReader.ValidateContractVersion</code> rejects pre-Rev-13.9 manifests cleanly.</li>
+  <li><strong>XBT-side updates.</strong> <code>XBT.Manifest/ContractSurface.cs</code> is the source-of-truth surface; the 8 new layout tags + 7 new type sizes + 3 updated existing entries land here first. <code>SemanticVersionTag</code> bump from <code>"13.8"</code> to <code>"13.9"</code>. The existing <code>XBT.exe validate-abi-tags</code> mode automatically covers the new entries (it iterates <code>ContractSurface.AbiLayoutTags</code> + <code>ContractSurface.AbiTypeSizes</code> generically); no new XBT.Entry mode is required.</li>
+  <li><strong>XCore-4b runtime header.</strong> <code>Engine/Source/Runtime/XCore/Public/XReflectionRuntime.h</code> receives the 8 new <code>#define XPACT_*_TAG</code> macros + updated content for the 3 existing reflection-type tags. The byte-identity invariant against the C# sources is the load-bearing contract; any divergence rotates the structure hash AND fires diagnostic <code>XHT002</code> at manifest-read time.</li>
+  <li><strong>Reflection-type header changes (XCore-4b).</strong> <code>Engine/Source/Runtime/XCore/Public/Reflection/FStruct.h</code> gains the <code>const FXObjectRefSchema* RefSchema = nullptr;</code> field at offset 112; <code>sizeof(FStruct)</code> static_assert bumps 112 &rarr; 120. <code>Engine/Source/Runtime/XCore/Public/Reflection/FClass.h</code> gains the <code>const FXObjectLifecycleTable* LifecycleTable = nullptr;</code> field at FClass-absolute offset 232; <code>sizeof(FClass)</code> static_assert bumps 224 &rarr; 240. <code>Engine/Source/Runtime/XCore/Public/Reflection/FScriptStruct.h</code> sizeof static_assert cascades 128 &rarr; 136 (the body is unchanged; the cascade is structural through inheritance).</li>
+  <li><strong>Hot-reload safety property preserved.</strong> Per XCore-4b &sect;9.4 + XCoreXObject Rev 4 &sect;11.3: every <code>.gen.cpp</code> file now carries 24 layout-tag pins + 21 sizeof pins for a total of <strong>45 per-TU static_asserts</strong> against the contract-frozen ABI surface (up from 29 at Rev 13.8). A patch DLL compiled against a runtime header that has drifted from the contract fails the compile cleanly before any runtime damage occurs. The Phase 5.a' addition extends the existing Rev 13.8 mechanism without changing its shape.</li>
+  <li><strong>Plan reference.</strong> Master Plan Rev 16 amendment authorizes the Stage B extension. Per XCoreXObject Rev 4 &sect;1.4 ("Master Plan &sect;2a freeze wording is acknowledged superseded by XCoreXObject completion; the freeze framing assumed XCore-4b's Rev 13.8 addendum was terminal &mdash; XCoreXObject is the next system that legitimately extends"). The micro-bump posture (vs a major-bump) reflects that the underlying canonicalization algorithm + per-DLL pin mechanism are unchanged; only the surface count grows.</li>
+  <li><strong>Phase 5.a' deliverables.</strong> Source-of-truth: <code>XBT.Manifest/ContractSurface.cs</code> (3 updated existing tags + 8 new tags + 3 updated existing AbiTypeSizes rows + 7 new AbiTypeSizes rows; <code>SemanticVersionTag</code> "13.8" &rarr; "13.9"). Mirror: <code>XHT.Emitter/AbiLayoutPins.cs</code> (same delta). Runtime macros: <code>Engine/Source/Runtime/XCore/Public/XReflectionRuntime.h</code> (3 existing macro contents updated + 8 new <code>#define XPACT_*_TAG</code> blocks). Reflection-type header changes: <code>FStruct.h</code> (RefSchema field + sizeof bump), <code>FClass.h</code> (LifecycleTable field + sizeof bump), <code>FScriptStruct.h</code> (sizeof cascade). XHT-emit side: existing <code>SourceEmitter</code> pin block infrastructure picks up the new entries automatically (no SourceEmitter code change required).</li>
+</ul>
 
 <p><strong>Rev 13.8 (XCore-4b Phase 4b.7 Stage B addendum &mdash; reflection-type byte-layout freeze; surface-hash + semantic-tag rotation):</strong></p>
 <ul>

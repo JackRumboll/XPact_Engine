@@ -9,16 +9,19 @@
 // TU (not just at the header static_assert sites) to catch any
 // toolchain divergence.
 //
-// Phase 4b.5 audit-corrected sizes (see FStruct.h SPEC DRIFT NOTICE):
+// Phase 4b.5 audit-corrected sizes (see FStruct.h SPEC DRIFT NOTICE)
+// + Phase 5.a' Contract Rev 13.9 micro-bump (per XCoreXObject Rev 4
+// §11.2 / §11.3 cascade):
 //
 //   FRepRecord                16  (matches spec)
 //   FEnumValue                16  (matches spec)
 //   FFunctionDescriptor       16  (matches spec)
 //   FCppStructOpsFakeVTable  136  (matches spec)
-//   FStruct                  112  (spec said 104; actual TArray=24)
-//   FScriptStruct            128  (spec said 120; FStruct base = 112)
-//   FClass                   224  (spec said 200; FStruct base = 112 +
-//                                  ClassReps/NetFields TArray = 24 each)
+//   FStruct                  120  (Phase 4b.5: 112; Rev 13.9: +8 RefSchema)
+//   FScriptStruct            136  (Phase 4b.5: 128; Rev 13.9 cascade +8)
+//   FClass                   240  (Phase 4b.5: 224; Rev 13.9: +16 net =
+//                                  +8 FStruct.RefSchema + +8
+//                                  FClass-specific.LifecycleTable)
 //   FEnum                     72  (spec said 64; Values TArray = 24)
 //   FInterface                64  (spec said 56; InterfaceFunctions = 24)
 //
@@ -93,9 +96,10 @@ int main()
     Check(static_cast<std::uint32_t>(ECppOpSlot::Count) == 16, "ECppOpSlot::Count != 16");
 
     // -----------------------------------------------------------------
-    // FStruct (audit-corrected 112 bytes; spec said 104).
+    // FStruct (Phase 5.a' Rev 13.9: 120 bytes; Phase 4b.5 was 112;
+    // spec said 104).
     // -----------------------------------------------------------------
-    Check(sizeof(FStruct)  == 112, "sizeof(FStruct) != 112");
+    Check(sizeof(FStruct)  == 120, "sizeof(FStruct) != 120 (Rev 13.9 micro-bump)");
     Check(alignof(FStruct) == 8,   "alignof(FStruct) != 8");
     Check(offsetof(FStruct, NamePrivate)        ==   0, "FStruct::NamePrivate offset != 0");
     Check(offsetof(FStruct, SuperStruct)        ==   8, "FStruct::SuperStruct offset != 8");
@@ -111,32 +115,36 @@ int main()
     Check(offsetof(FStruct, SchemaVersion)      ==  88, "FStruct::SchemaVersion offset != 88 (audit)");
     Check(offsetof(FStruct, UnversionedSchema)  ==  96, "FStruct::UnversionedSchema offset != 96 (audit)");
     Check(offsetof(FStruct, SerializeStructFn)  == 104, "FStruct::SerializeStructFn offset != 104 (audit)");
+    Check(offsetof(FStruct, RefSchema)          == 112, "FStruct::RefSchema offset != 112 (Rev 13.9)");
 
     // -----------------------------------------------------------------
-    // FScriptStruct (audit-corrected 128 bytes; spec said 120).
+    // FScriptStruct (Phase 5.a' Rev 13.9 cascade: 136 bytes; Phase
+    // 4b.5 was 128; spec said 120).
     // -----------------------------------------------------------------
-    Check(sizeof(FScriptStruct)  == 128, "sizeof(FScriptStruct) != 128");
+    Check(sizeof(FScriptStruct)  == 136, "sizeof(FScriptStruct) != 136 (Rev 13.9 cascade)");
     Check(alignof(FScriptStruct) == 8,   "alignof(FScriptStruct) != 8");
-    Check(offsetof(FScriptStruct, Capabilities)     == 112, "FScriptStruct::Capabilities offset != 112 (audit)");
-    Check(offsetof(FScriptStruct, _padCapabilities) == 116, "FScriptStruct::_padCapabilities offset != 116");
-    Check(offsetof(FScriptStruct, CppOpsTable)      == 120, "FScriptStruct::CppOpsTable offset != 120 (audit)");
+    Check(offsetof(FScriptStruct, Capabilities)     == 120, "FScriptStruct::Capabilities offset != 120 (Rev 13.9 cascade)");
+    Check(offsetof(FScriptStruct, _padCapabilities) == 124, "FScriptStruct::_padCapabilities offset != 124 (Rev 13.9 cascade)");
+    Check(offsetof(FScriptStruct, CppOpsTable)      == 128, "FScriptStruct::CppOpsTable offset != 128 (Rev 13.9 cascade)");
 
     // -----------------------------------------------------------------
-    // FClass (audit-corrected 224 bytes; spec said 200).
+    // FClass (Phase 5.a' Rev 13.9: 240 bytes; Phase 4b.5 was 224;
+    // spec said 200).
     // -----------------------------------------------------------------
-    Check(sizeof(FClass)  == 224, "sizeof(FClass) != 224");
+    Check(sizeof(FClass)  == 240, "sizeof(FClass) != 240 (Rev 13.9 micro-bump)");
     Check(alignof(FClass) == 8,   "alignof(FClass) != 8");
-    Check(offsetof(FClass, ClassConstructorFn)          == 112, "FClass::ClassConstructorFn offset != 112 (audit)");
-    Check(offsetof(FClass, ClassVTableHelperCtorCaller) == 120, "FClass::ClassVTableHelperCtorCaller offset != 120");
-    Check(offsetof(FClass, ClassDefaultObject)          == 128, "FClass::ClassDefaultObject offset != 128");
-    Check(offsetof(FClass, ClassFlags)                  == 136, "FClass::ClassFlags offset != 136");
-    Check(offsetof(FClass, ClassCastFlags)              == 144, "FClass::ClassCastFlags offset != 144");
-    Check(offsetof(FClass, ClassWithin)                 == 152, "FClass::ClassWithin offset != 152");
-    Check(offsetof(FClass, FirstOwnedClassRep)          == 160, "FClass::FirstOwnedClassRep offset != 160");
-    Check(offsetof(FClass, ClassRepCount)               == 164, "FClass::ClassRepCount offset != 164");
-    Check(offsetof(FClass, ClassReps)                   == 168, "FClass::ClassReps offset != 168");
-    Check(offsetof(FClass, NetFields)                   == 192, "FClass::NetFields offset != 192 (audit)");
-    Check(offsetof(FClass, ClassConfigName)             == 216, "FClass::ClassConfigName offset != 216");
+    Check(offsetof(FClass, ClassConstructorFn)          == 120, "FClass::ClassConstructorFn offset != 120 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassVTableHelperCtorCaller) == 128, "FClass::ClassVTableHelperCtorCaller offset != 128 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassDefaultObject)          == 136, "FClass::ClassDefaultObject offset != 136 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassFlags)                  == 144, "FClass::ClassFlags offset != 144 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassCastFlags)              == 152, "FClass::ClassCastFlags offset != 152 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassWithin)                 == 160, "FClass::ClassWithin offset != 160 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, FirstOwnedClassRep)          == 168, "FClass::FirstOwnedClassRep offset != 168 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassRepCount)               == 172, "FClass::ClassRepCount offset != 172 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassReps)                   == 176, "FClass::ClassReps offset != 176 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, NetFields)                   == 200, "FClass::NetFields offset != 200 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, ClassConfigName)             == 224, "FClass::ClassConfigName offset != 224 (Rev 13.9 cascade)");
+    Check(offsetof(FClass, LifecycleTable)              == 232, "FClass::LifecycleTable offset != 232 (Rev 13.9 micro-bump)");
 
     // -----------------------------------------------------------------
     // FEnum (audit-corrected 72 bytes; spec said 64).
