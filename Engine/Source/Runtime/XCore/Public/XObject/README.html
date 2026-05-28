@@ -1,0 +1,121 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>XCore::XObject (Phase 5.a) -- XCoreXObject runtime types</title>
+</head>
+<body>
+
+<h1>XCore/XObject/ -- XCoreXObject (System 5) runtime types</h1>
+
+<p>This sub-folder hosts the runtime C++ types for <b>XCoreXObject</b>
+(System 5; see <code>Documents/XCoreXObject.html</code> Rev 4), the
+universal GC-managed gameplay-object substrate the engine builds on.
+It is the System-5 analog of the <code>Reflection/</code> sub-folder
+that hosts the XCore-4b reflection descriptors.</p>
+
+<h2>Phase 5.a deliverable (this commit)</h2>
+
+<p>Per the XCoreXObject Rev 4 spec, Phase 5.a ships the <b>XObject
+base type</b> and its immediate ABI-locked companions:</p>
+
+<ul>
+  <li><code>XObject.h</code> -- the 56-byte base for every reflected
+      gameplay type. <code>class XObject</code> with NO virtual
+      methods (hot-reload commitment + FakeVTable dispatch pattern).
+      ABI-locked at <code>XPACT_XOBJECT_LAYOUT_TAG</code>.</li>
+  <li><code>EObjectFlags.h</code> -- 32-bit lifecycle/policy bitmask
+      with bitwise-operator surface + UE-RF_* mapping documentation
+      (per spec §2.3 + §2.3.1).</li>
+  <li><code>FXObjectArrayEntry.h</code> -- 32-byte per-XObject
+      GC-state entry held in the global <code>FXObjectArray</code>
+      table. ABI-locked at
+      <code>XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG</code>. Per Rev 3
+      FIX-M-R2-3, the rotating reachability flag MOVED from this entry
+      to <code>XObject::ReachabilityFlag</code> (offset 36) to save
+      one cache miss per object marked in the GC inner loop.</li>
+  <li><code>XPactVerifyXObjectLayout.h</code> -- the build-time
+      <code>XPACT_VERIFY_XOBJECT_LAYOUT()</code> macro per spec §11.3.
+      XHT-emitted <code>.gen.cpp</code> files instantiate the macro to
+      verify the byte-layout contract against the per-DLL compile.</li>
+</ul>
+
+<p>The Phase 5.a private side
+(<code>Engine/Source/Runtime/XCore/Private/XObject/</code>):</p>
+
+<ul>
+  <li><code>XObject.cpp</code> -- non-inline body for
+      <code>SetFlags</code> / <code>ClearFlags</code> (CAS-loop atomic
+      OR/AND), <code>MarkAsGarbage</code> (non-sim-path guarded;
+      delegates to SetFlags), <code>GetFullName</code> (Outer-chain
+      walk with cycle-safety cap), and <code>IsValidLowLevel</code>
+      (defensive validity probe; Phase 5.a ships the no-FXObjectArray
+      subset).</li>
+</ul>
+
+<h2>Later-phase contents (NOT in this commit)</h2>
+
+<p>The full XCoreXObject runtime accumulates additional types across
+later phases of System 5:</p>
+
+<ul>
+  <li><b>Phase 5.b</b> -- <code>FXObjectAllocator</code>: the size-
+      class-pool allocator layered on FMallocBinnedX with FMemTag::
+      XObject attribution.</li>
+  <li><b>Phase 5.c</b> -- <code>FXObjectArray</code>: the global
+      sparse-array table holding <code>FXObjectArrayEntry</code>
+      records indexed by <code>XObject::InternalIndex</code>.</li>
+  <li><b>Phase 5.d</b> -- <code>FXObjectInitializer</code>,
+      <code>FXObjectLifecycleTable</code>: CDO + per-class lifecycle
+      dispatch (PostInitProperties, BeginDestroy, FinishDestroy,
+      AddReferencedObjects, Serialize, PostLoad, PreSave).</li>
+  <li><b>Phase 5.e+</b> -- <code>FXObjectCollector</code>: the
+      mostly-concurrent SATB GC mark/sweep algorithm.</li>
+  <li><b>Phase 5.f</b> -- <code>XObjectKey</code>, <code>XPtr</code>,
+      <code>XWeakPtr</code>, <code>XSoftPtr</code>,
+      <code>XStrongPtr</code>: the object-handle surface.</li>
+  <li><b>Phase 5.g'</b> -- <code>FXObjectRefSchema</code> +
+      <code>FXObjectRefSchemaOp</code>: the .rodata-resident packed
+      opcode vector emitted by XHT per FClass for the schema-vector GC
+      walker (UE-MISS-1 / FIX-A-CRIT-8 fast-path).</li>
+</ul>
+
+<p>Each later-phase deliverable extends the
+<code>XPACT_VERIFY_XOBJECT_LAYOUT()</code> macro with the new type's
+ABI pins. See the deferred-pins block in
+<code>XPactVerifyXObjectLayout.h</code> for the documented growth
+path.</p>
+
+<h2>Hot-reload commitment</h2>
+
+<p>Per the Prime Directive (<code>engineering_principles.md</code>) +
+the XCoreXObject spec hot-reload commitment: <b>no virtual methods on
+any type in this sub-folder</b>. Subclass behaviour is dispatched via
+the FClass's <code>FXObjectLifecycleTable</code> (FakeVTable pattern,
+inherited from XCore-4b's FProperty / FScriptStruct dispatch
+discipline). A patched DLL may change a user-class's lifecycle
+implementations without rewriting the XObject vtable -- there isn't
+one to rewrite.</p>
+
+<p>Standard C++ derivation IS permitted -- a user-class may declare
+its own virtual methods; the GC NEVER consults the user-class vtable.
+Only changes to XObject's OWN implicit destructor would matter, and
+XObject has none (the FakeVTable replaces it).</p>
+
+<h2>Cross-references</h2>
+
+<ul>
+  <li><code>Documents/XCoreXObject.html</code> Rev 4 -- authoritative
+      design spec.</li>
+  <li><code>Documents/XCore-4b.html</code> Rev 4 -- reflection
+      runtime that XCoreXObject extends; FClass / FStruct /
+      FFakeVTable / FName / FProperty descriptors live in
+      <code>Public/Reflection/</code>.</li>
+  <li><code>Documents/XCore-4a.html</code> Rev 3 -- platform substrate
+      (FMallocBinnedX, FMemTag, FLeakTracker, TArray, FAtomicInt32,
+      FRWLock) that this sub-folder layers on.</li>
+</ul>
+
+</body>
+</html>

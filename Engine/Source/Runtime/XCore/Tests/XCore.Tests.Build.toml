@@ -1133,6 +1133,163 @@
 #                                            visible in test output.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.a (XObject base type) adds the XObject.Tests/
+# folder:
+#
+#   * Tests/XObject/XObject.Tests/SizeofAndAlignof.cpp
+#                                         -- XCoreXObject Rev 4 §2.2 +
+#                                            §3.3 + §11.3 ABI lock
+#                                            runtime check: sizeof
+#                                            (XObject) == 56, sizeof
+#                                            (FXObjectArrayEntry) == 32,
+#                                            per-member offset locks
+#                                            for both types, per-field
+#                                            sizeof locks, + non-
+#                                            polymorphism trait check.
+#                                            The header static_asserts
+#                                            are the primary ABI lock;
+#                                            this runtime gate is the
+#                                            belt-and-braces CI artifact.
+#
+#   * Tests/XObject/XObject.Tests/EObjectFlagsBitwise.cpp
+#                                         -- XCoreXObject Rev 4 §2.3 +
+#                                            §2.3.1: bit-position locks
+#                                            for all 20 named lifecycle
+#                                            / policy / GC / hot-reload
+#                                            flags + 4 reserved slots
+#                                            (20-23) + 8 UserFlag
+#                                            plugin-range slots (24-31;
+#                                            Rev 3 per FIX-M-R2-2).
+#                                            Bitwise operator surface
+#                                            round-trip (|, &, ^, ~,
+#                                            |=, &=, ^=) +
+#                                            HasAnyObjectFlags /
+#                                            HasAllObjectFlags predicate
+#                                            helpers + enum-class
+#                                            equality.
+#
+#   * Tests/XObject/XObject.Tests/ObjectFlagsAtomicity.cpp
+#                                         -- XCoreXObject Rev 4 §2.3
+#                                            CAS-loop atomic mutation
+#                                            stress test: 8 threads each
+#                                            owning a disjoint UserFlag
+#                                            bit, 20000 iterations per
+#                                            thread, three sub-tests
+#                                            (Set/Clear parity, Set-only
+#                                            mutual exclusion, Set-vs-
+#                                            Clear cross-traffic). Final
+#                                            ObjectFlags state must match
+#                                            the per-thread parity --
+#                                            verifies no torn reads /
+#                                            lost updates under
+#                                            contention.
+#
+#   * Tests/XObject/XObject.Tests/LayoutVerifyMacro.cpp
+#                                         -- XCoreXObject Rev 4 §11.3
+#                                            XPACT_VERIFY_XOBJECT_LAYOUT
+#                                            macro compile-time pin
+#                                            verification. Instantiates
+#                                            the macro at namespace
+#                                            scope (mirrors the XHT-emit
+#                                            usage pattern); a failure
+#                                            in any internal static_assert
+#                                            stops compilation. main()
+#                                            does runtime belt-and-
+#                                            braces sizeof checks.
+#
+#   * Tests/XObject/XObject.Tests/MarkAsGarbageSimPathGuard.cpp
+#                                         -- XCoreXObject Rev 4 §4.2 +
+#                                            Rev 3 FIX-M-R2-10: non-sim-
+#                                            path happy path for
+#                                            MarkAsGarbage + MarkForKill
+#                                            alias + idempotency. The
+#                                            FULL sim-path negative
+#                                            test is deferred to the
+#                                            future phase that lands
+#                                            ::XCore::HAL::IsSimPathTU
+#                                            runtime probe; until then
+#                                            the static-analysis sim-
+#                                            path filter at the build
+#                                            level is the primary
+#                                            enforcement.
+#
+#   * Tests/XObject/XObject.Tests/GetSerialNumberSimPathGuard.cpp
+#                                         -- XCoreXObject Rev 4 §2.2 +
+#                                            FIX-A-CRIT-2: non-sim-path
+#                                            happy path for GetSerialNumber
+#                                            + GetInternalIndex (cross-
+#                                            arch determinism invariant
+#                                            documentation; same
+#                                            deferred-probe pattern as
+#                                            MarkAsGarbage).
+#
+#   * Tests/XObject/XObject.Tests/Construction.cpp
+#                                         -- XCoreXObject Rev 4 §2.2:
+#                                            default-ctor zero-init of
+#                                            every XObject field +
+#                                            consteval CDO bootstrap
+#                                            ctor exercised via a
+#                                            constinit XObject in
+#                                            static storage + field-
+#                                            write / accessor-read
+#                                            round-trip.
+#
+#   * Tests/XObject/XObject.Tests/GetFullNameWalk.cpp
+#                                         -- XCoreXObject Rev 4 §2.5:
+#                                            GetFullName Outer-chain
+#                                            materialisation for top-
+#                                            level / two-level /
+#                                            three-level chains + the
+#                                            NAME_None inner case +
+#                                            the fresh-XObject (no
+#                                            outer + no name) case.
+#                                            Cycle-detection cap not
+#                                            exercised at unit-test
+#                                            scale (the kMaxOuterDepth=
+#                                            64 cap would require 65+
+#                                            stack-allocated XObjects;
+#                                            the path is documented +
+#                                            implemented).
+#
+#   * Tests/XObject/XObject.Tests/IsValidLowLevel.cpp
+#                                         -- XCoreXObject Rev 4 §2.5:
+#                                            defensive validity probe
+#                                            for the Phase 5.a subset
+#                                            (no FXObjectArray cross-
+#                                            check; full cross-check
+#                                            wires in at Phase 5.c).
+#                                            Verifies default-ctor ->
+#                                            false (nullptr Class),
+#                                            non-null Class + default
+#                                            InternalIndex -> true,
+#                                            InternalIndex < INDEX_NONE
+#                                            -> false, positive
+#                                            InternalIndex -> true.
+#
+# JUDGEMENT CALL (Phase 5.a tests / sim-path negative gate deferral).
+#
+# The acceptance gate calls for compile-only tests verifying the
+# XPACT_CHECK_SL fires when GetSerialNumber / MarkAsGarbage is called
+# from a sim-path TU. The runtime probe (::XCore::HAL::IsSimPathTU)
+# does NOT exist at Phase 5.a -- the spec references it as a future-
+# phase symbol. The Phase 5.a deliverable ships the non-sim-path
+# happy-path tests + documentation of the sim-path invariant; the
+# negative-test path lands at the same time as the runtime probe
+# (likely Phase 5.e+ alongside FXObjectCollector).
+#
+# JUDGEMENT CALL (Phase 5.a tests / Foundation Prototype gate scope).
+#
+# The Foundation Prototype tests (X-DET, X-NEW, X-INIT, X-INIT-OBJ,
+# X-SCHEMA, X-INIT-EAGER per Master Plan §11 Step 5.5) depend on the
+# allocator (Phase 5.b), CDO + Initializer (Phase 5.d), and schema-
+# vector emit (Phase 5.g'). None of these can fully fire at Phase 5.a.
+# The test suite above is the maximal Phase 5.a coverage (ABI lock,
+# atomicity, sim-path documentation, constructor invariants); the
+# Foundation Prototype acceptance ladder integrates as the
+# corresponding upstream phases ship.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

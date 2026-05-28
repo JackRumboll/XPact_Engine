@@ -521,14 +521,76 @@ public static class ContractSurface
         // side type sizes (XObject heap surface; lands fully when
         // XCoreXObject ships). Until then these are pure pins for the
         // Contract canonicalization + XHT-emit static_asserts.
-        ("XObject", 56),
-        ("FXObjectArrayEntry", 32),
-        ("XObjectKey", 8),
-        ("XWeakPtr", 8),
-        ("XPtr", 8),
-        ("FXObjectLifecycleTable", 72),
-        ("FXObjectRefSchema", 24),
+        //
+        // The XCoreXObject phasing carves the deliverable across
+        // Phase 5.a..5.g'+ (per XCoreXObject Rev 4 §15); the
+        // AbiTypeSizes rows for types that ship in later phases are
+        // listed in AbiTypesDeferredUntilPhase so the validator can
+        // skip them until their phase lands. Once a type ships, the
+        // entry is REMOVED from the deferred map (which is the
+        // checkpoint marker that the phase landed).
+        ("XObject", 56),                  // Phase 5.a   (this commit)
+        ("FXObjectArrayEntry", 32),       // Phase 5.a   (this commit)
+        ("XObjectKey", 8),                // Phase 5.f   (deferred)
+        ("XWeakPtr", 8),                  // Phase 5.f   (deferred)
+        ("XPtr", 8),                      // Phase 5.f   (deferred)
+        ("FXObjectLifecycleTable", 72),   // Phase 5.d   (deferred)
+        ("FXObjectRefSchema", 24),        // Phase 5.g'  (deferred)
     };
+
+    /// <summary>
+    /// XCoreXObject Phase 5.a addendum: deferred-implementation map.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <see cref="AbiTypeSizes"/> table includes pins for every
+    /// type the contract surface promises -- including types that
+    /// ship in later phases of XCoreXObject (System 5 spans Phase
+    /// 5.a..5.g'+; see XCoreXObject Rev 4 §15 for the phasing).
+    /// </para>
+    /// <para>
+    /// Per Prime Directive: the contract entries cannot be silently
+    /// dropped while a phase is pending (the
+    /// <see cref="ContractVersion.StructureHash"/> derivation depends
+    /// on the canonical surface bytes; dropping an entry would
+    /// rotate the hash twice -- once on drop, once on re-add when
+    /// the phase ships). Instead, this table marks types as
+    /// "deferred until Phase X.Y" so the validate-abi-tags walker
+    /// can SKIP them until their phase lands.
+    /// </para>
+    /// <para>
+    /// CHECKPOINT MARKER: when a phase ships, the corresponding
+    /// entry is REMOVED from this table (proving the phase has
+    /// genuinely delivered the type's static_assert pin). The
+    /// validate-abi-tags walker then enforces the pin going forward.
+    /// </para>
+    /// <para>
+    /// The table is alphabetised by type name for diff stability.
+    /// </para>
+    /// </remarks>
+    public static readonly IReadOnlyDictionary<string, string> AbiTypesDeferredUntilPhase =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // Phase 5.d (CDO + Initializer): lifecycle dispatch table
+            // emitted by XHT per FClass. ABI lock: 72 bytes (8-byte
+            // header + 8 slots * 8 bytes).
+            { "FXObjectLifecycleTable", "Phase 5.d (XCoreXObject CDO + Initializer)" },
+
+            // Phase 5.f (object handles): the four handle types share
+            // the 8-byte {InternalIndex, SerialNumber} shape per
+            // XPACT_XOBJECTKEY_LAYOUT_TAG / XPACT_XWEAKPTR_LAYOUT_TAG /
+            // XPACT_XPTR_LAYOUT_TAG.
+            { "XObjectKey", "Phase 5.f (XCoreXObject object handles)" },
+            { "XWeakPtr",   "Phase 5.f (XCoreXObject object handles)" },
+            { "XPtr",       "Phase 5.f (XCoreXObject object handles)" },
+
+            // Phase 5.g' (schema-vector GC walker): .rodata-resident
+            // opcode array emitted by XHT per FClass for the fast-path
+            // GC scan (UE-MISS-1 / FIX-A-CRIT-8). ABI lock: 24 bytes
+            // per schema header (NumOps + Version + Ops + _padTail);
+            // 24 bytes per opcode.
+            { "FXObjectRefSchema", "Phase 5.g' (XCoreXObject schema-vector GC walker)" },
+        };
 
     /// <summary>
     /// Reflected enum surface. Lazily populated on first access from

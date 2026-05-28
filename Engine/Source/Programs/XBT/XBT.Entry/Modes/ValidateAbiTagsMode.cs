@@ -98,6 +98,16 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
             string engineRoot = options.EngineRoot ?? DiscoverEngineRoot();
             string runtimeHeaders = options.RuntimeHeaders
                 ?? Path.Combine(engineRoot, "Source", "Runtime", "XCore", "Public", "Reflection");
+            // XCoreXObject Phase 5.a addendum: the XObject base type +
+            // FXObjectArrayEntry static_asserts live under
+            // Public/XObject/ (the new System-5 sub-area). The
+            // validator must scan both Reflection/ AND XObject/ to
+            // find every pin contributed by Contract Rev 13.9. When
+            // the caller passes -RuntimeHeaders=<dir> the override is
+            // used as-is (the caller knows what they're doing); the
+            // default broadens to scan both subtrees.
+            string xobjectHeaders = options.RuntimeHeaders
+                ?? Path.Combine(engineRoot, "Source", "Runtime", "XCore", "Public", "XObject");
             string xreflectionRuntimeH = Path.Combine(
                 engineRoot, "Source", "Runtime", "XCore", "Public", "XReflectionRuntime.h");
 
@@ -107,12 +117,13 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
             // must appear in XReflectionRuntime.h (the canonical home
             // for the XPACT_*_LAYOUT_TAG macros) AND every contract-
             // frozen sizeof must appear in one of the F*.h headers in
-            // the reflection root.
+            // the reflection root OR in the new XObject/ sub-area
+            // (XCoreXObject Phase 5.a).
             cancellationToken.ThrowIfCancellationRequested();
             ValidateRuntimeMacros(xreflectionRuntimeH, failures);
 
             cancellationToken.ThrowIfCancellationRequested();
-            ValidateRuntimeSizeofs(runtimeHeaders, failures);
+            ValidateRuntimeSizeofs(runtimeHeaders, xobjectHeaders, failures);
 
             // Layer 2 (optional): generated-output sweep. The caller
             // points us at one or more XHT-output roots; we walk every
@@ -224,7 +235,7 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
     /// asserts may live in any file (e.g. <c>FName.h</c> for FName,
     /// <c>FClass.h</c> for FClass).
     /// </summary>
-    private static void ValidateRuntimeSizeofs(string reflectionDir, List<string> failures)
+    private static void ValidateRuntimeSizeofs(string reflectionDir, string xobjectDir, List<string> failures)
     {
         if (!Directory.Exists(reflectionDir))
         {
@@ -237,29 +248,68 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
 
         // Build a combined view of every .h file's text so the lookup
         // is one substring probe per (TypeName, bytes) pair.
+        // XCoreXObject Phase 5.a addendum: pull from Public/Reflection/
+        // AND Public/XObject/ so the XObject + FXObjectArrayEntry
+        // static_asserts (which live in the new XObject/ sub-area) are
+        // discoverable.
         StringBuilder combined = new();
         foreach (string file in Directory.EnumerateFiles(reflectionDir, "*.h", SearchOption.TopDirectoryOnly))
         {
             combined.Append(File.ReadAllText(file));
             combined.Append('\n');
         }
+        if (Directory.Exists(xobjectDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(xobjectDir, "*.h", SearchOption.TopDirectoryOnly))
+            {
+                combined.Append(File.ReadAllText(file));
+                combined.Append('\n');
+            }
+        }
         string allHeaders = combined.ToString();
 
         foreach ((string type, int bytes) in ContractSurface.AbiTypeSizes)
         {
+            // XCoreXObject Phase 5.a addendum: skip types whose
+            // implementation is deferred to a later XCoreXObject
+            // phase. The contract entry is RETAINED (the canonical
+            // surface bytes + StructureHash depend on it), but the
+            // runtime static_assert is not yet shippable. The phase
+            // landing the type REMOVES it from
+            // AbiTypesDeferredUntilPhase, at which point the
+            // validator starts enforcing the pin.
+            if (ContractSurface.AbiTypesDeferredUntilPhase.TryGetValue(type, out string? deferralReason))
+            {
+                Logger.Info(
+                    "validate-abi-tags: skipping '" + type + "' sizeof pin "
+                    + "(deferred until " + deferralReason + "). The contract "
+                    + "entry is retained for StructureHash stability; the "
+                    + "static_assert will be enforced once the type ships.",
+                    new DiagnosticContext { Action = "validate-abi-tags" });
+                continue;
+            }
+
             // Match patterns like
             //   static_assert(sizeof(FName)  == 8,
             //   static_assert(sizeof(FProperty) == 104,
             // The exact whitespace between sizeof, the type, and ==
             // varies across the corpus, so we probe for the
             // canonical-ish "sizeof(TYPE)" + "== N" pair separately.
-            string sizeofProbe = "sizeof(" + type + ")";
-            int sizeofIdx = allHeaders.IndexOf(sizeofProbe, StringComparison.Ordinal);
+            //
+            // Phase 5.a robustness: a `sizeof(FStruct)` mention in a
+            // comment that quotes a HISTORICAL size (e.g.,
+            // "// sizeof(FStruct) == 112." documenting the Phase 4b.5
+            // baseline before the Rev 13.9 cascade) would have made
+            // the first-match probe return the historical comment.
+            // The fix: anchor the probe at `static_assert(sizeof(TYPE)`
+            // so only real assert sites match.
+            string staticAssertProbe = "static_assert(sizeof(" + type + ")";
+            int sizeofIdx = allHeaders.IndexOf(staticAssertProbe, StringComparison.Ordinal);
             if (sizeofIdx < 0)
             {
                 failures.Add(string.Format(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    "No 'static_assert(sizeof({0}) == ...)' found in Reflection headers (Contract Rev 13.8 §11.2 / §11.3).",
+                    "No 'static_assert(sizeof({0}) == ...)' found in Reflection / XObject headers (Contract Rev 13.9 §11.2 / §11.3).",
                     type));
                 continue;
             }
@@ -274,7 +324,7 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
             {
                 failures.Add(string.Format(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    "static_assert(sizeof({0})) value drifted from Contract Rev 13.8: "
+                    "static_assert(sizeof({0})) value drifted from Contract Rev 13.9: "
                     + "expected '{1}' near the assert site.",
                     type,
                     eqProbe));

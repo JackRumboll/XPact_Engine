@@ -1506,6 +1506,183 @@
 # in Phase 4b.6.
 #
 # =====================================================================
+#
+# XCoreXObject (System 5) Phase 5.a -- XObject base type sub-folder.
+#
+# Per the XCoreXObject Rev 4 spec, System 5 grows a new sub-area under
+# XCore that hosts the runtime gameplay-object types (the GC-managed
+# XObject base + its companions). The sub-folder is the System-5
+# analog of the Reflection/ folder that hosts XCore-4b reflection
+# descriptors. See Public/XObject/README.html for the per-phase
+# deliverable summary; the Phase 5.a files are listed below.
+#
+# XBT auto-discovers .cpp files recursively (BuildMode.cs
+# EnumerateModuleFiles), so the new Public/XObject/ + Private/XObject/
+# sub-area requires no XBT.toml schema change beyond a documentation
+# entry. The XCore module's public_include_paths = ["Public"] already
+# covers the XObject/ headers.
+#
+# Phase 5.a (this commit) ships:
+#
+#   Public/XObject/XObject.h                  -- 56-byte XObject base
+#                                                type per XCoreXObject
+#                                                Rev 4 §2.2. Layout
+#                                                pinned by
+#                                                XPACT_XOBJECT_LAYOUT_TAG.
+#                                                ClassPrivate@0,
+#                                                InternalIndex@8,
+#                                                SerialNumber@12 (sim-
+#                                                path-forbidden read
+#                                                per FIX-A-CRIT-2),
+#                                                Outer@16, NamePrivate@24,
+#                                                ObjectFlags@32 (atomic
+#                                                uint32 EObjectFlags),
+#                                                ReachabilityFlag@36
+#                                                (Rev 3 per FIX-M-R2-3;
+#                                                moved here from
+#                                                FXObjectArrayEntry to
+#                                                save one cache miss
+#                                                per object marked),
+#                                                _reservedCluster0/1@40/48
+#                                                (Phase 2 UE FCluster
+#                                                shape reservation per
+#                                                FIX-A-MIN-49 / O5).
+#                                                NO virtual methods
+#                                                (hot-reload commitment
+#                                                + FakeVTable dispatch
+#                                                pattern). Consteval
+#                                                CDO bootstrap ctor.
+#
+#   Public/XObject/EObjectFlags.h             -- 32-bit lifecycle /
+#                                                policy bitmask enum.
+#                                                Bit positions locked
+#                                                per spec §2.3 +
+#                                                §2.3.1 UE RF_*
+#                                                mapping; bits 0-23
+#                                                engine-internal,
+#                                                bits 24-31 plugin
+#                                                user range (Rev 3
+#                                                per FIX-M-R2-2). Full
+#                                                bitwise operator
+#                                                surface (constexpr).
+#
+#   Public/XObject/FXObjectArrayEntry.h       -- 32-byte per-XObject
+#                                                GC-state entry per
+#                                                spec §3.3. Layout
+#                                                pinned by
+#                                                XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG.
+#                                                Object@0,
+#                                                SerialNumber@8,
+#                                                ClusterRootIndex@12,
+#                                                StateBits@16 (atomic
+#                                                uint64; Rev 3 retains
+#                                                pending-destroy +
+#                                                root-pinned + hot-
+#                                                reload + garbage
+#                                                bits only after the
+#                                                reachability flag
+#                                                relocation per
+#                                                FIX-M-R2-3),
+#                                                _reserved@24.
+#
+#   Public/XObject/XPactVerifyXObjectLayout.h -- the
+#                                                XPACT_VERIFY_XOBJECT_LAYOUT()
+#                                                macro per spec §11.3.
+#                                                Instantiated at
+#                                                namespace scope in
+#                                                XHT-emitted .gen.cpp
+#                                                to verify the ABI
+#                                                contract against the
+#                                                per-DLL compile. Pins
+#                                                XObject + FXObjectArrayEntry
+#                                                + the Rev 13.9 FStruct
+#                                                / FClass cascade
+#                                                offsets + the
+#                                                XPACT_*_LAYOUT_TAG
+#                                                string-equality checks
+#                                                against AbiLayoutPins.cs
+#                                                / ContractSurface.cs.
+#                                                Deferred-pins block
+#                                                documents the macro
+#                                                growth path for Phase
+#                                                5.b+ types
+#                                                (FXObjectLifecycleTable,
+#                                                FXObjectRefSchema,
+#                                                XObjectKey, XPtr /
+#                                                XWeakPtr /
+#                                                XStrongPtr).
+#
+#   Public/XObject/README.html                -- sub-folder scope
+#                                                documentation per
+#                                                Phase 5.a dispatch.
+#
+#   Private/XObject/XObject.cpp               -- non-inline body for
+#                                                SetFlags / ClearFlags
+#                                                (CAS-loop atomic
+#                                                OR/AND; memory_order_acq_rel
+#                                                on success +
+#                                                memory_order_acquire
+#                                                on failure per spec
+#                                                §2.3), MarkAsGarbage
+#                                                (delegates to SetFlags
+#                                                + non-sim-path
+#                                                invariant per spec
+#                                                §4.2 + Rev 3
+#                                                FIX-M-R2-10 -- the
+#                                                XPACT_CHECK_SL guard
+#                                                hook is in place but
+#                                                no-ops until the
+#                                                ::XCore::HAL::IsSimPathTU
+#                                                runtime probe ships
+#                                                in a later phase),
+#                                                GetFullName (Outer-
+#                                                chain walk with
+#                                                cycle-safety cap +
+#                                                FString append),
+#                                                IsValidLowLevel
+#                                                (defensive validity
+#                                                probe; Phase 5.a
+#                                                ships the no-
+#                                                FXObjectArray subset
+#                                                pending Phase 5.c).
+#
+# JUDGEMENT CALL (Phase 5.a / sim-path runtime probe deferral).
+#
+# The spec §2.2 + §4.2 describe XPACT_CHECK_SL(!::XCore::HAL::IsSimPathTU())
+# guards on GetSerialNumber + MarkAsGarbage. The runtime probe
+# (::XCore::HAL::IsSimPathTU) is NOT defined anywhere in the current
+# XCore-4a / XCore-4b surface; the spec references it as a future-
+# phase symbol. Phase 5.a ships the call-site invariant DOCUMENTATION
+# + the XPACT_CHECK_SL hook stub (currently no-op since the predicate
+# doesn't exist). The static-analysis sim-path filter at the build
+# level (XBT module-level sim_path = true gating + Sleef-style
+# banned-symbol checks) is the PRIMARY enforcement of the sim-path
+# discipline today; this runtime guard activates as defence-in-depth
+# once the probe ships. The TODO markers in XObject.cpp document the
+# exact wire-up sites for the future phase.
+#
+# JUDGEMENT CALL (Phase 5.a / FObject forward-decl reconciliation).
+#
+# The existing XCore-4b code (FClass.h, FObjectProperty.h, et al)
+# forward-declares an opaque `struct FObject;` in `namespace XCore::
+# Reflect` as a placeholder for the future XObject base type. The
+# spec uses the name `XObject` (not `FObject`) for the actual type;
+# Phase 5.a defines `XCore::XObject` per the spec authority. The
+# existing `XCore::Reflect::FObject` forward decls stay as opaque
+# pointer-only placeholders -- they're never instantiated, only
+# pointed to via opaque memcpy-style code in FObjectProperty's
+# dispatch slots. The FClass CDO slot
+# (`mutable std::atomic<FObject*> ClassDefaultObject`) currently
+# holds an opaque `FObject*`; when Phase 5.d wires the CDO eager-
+# init path, that slot will be reconciled with the real
+# `XCore::XObject*` type (either via a `using FObject = ::XCore::
+# XObject;` alias once XObject.h is includeable from FClass.h
+# without circular dependency, or via reinterpret_cast at the
+# CDO-set site). Phase 5.a does NOT touch FClass / FObjectProperty
+# / FDelegateProperty to avoid changing XCore-4b ABI scope; the
+# reconciliation is documented as a Phase 5.d follow-up.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
