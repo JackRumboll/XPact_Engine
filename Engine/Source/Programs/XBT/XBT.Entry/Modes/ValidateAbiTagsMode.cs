@@ -144,14 +144,14 @@ public sealed class ValidateAbiTagsMode : IToolMode<ValidateAbiTagsMode>
                     + ContractSurface.AbiLayoutTags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     + " layout tags and "
                     + ContractSurface.AbiTypeSizes.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    + " sizeof pins match Contract Rev 13.8 (XCore-4b Stage B addendum).",
+                    + " sizeof pins match Contract Rev 13.9 (XCore-4b Stage B addendum; XCoreXObject §14 extension).",
                     new DiagnosticContext { Action = "validate-abi-tags" });
                 return Task.FromResult(0);
             }
 
             StringBuilder sb = new();
             sb.AppendLine("validate-abi-tags: " + failures.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + " ABI-tag / sizeof drift(s) detected against Contract Rev 13.8:");
+                + " ABI-tag / sizeof drift(s) detected against Contract Rev 13.9:");
             foreach (string f in failures)
             {
                 sb.Append("  ").AppendLine(f);
