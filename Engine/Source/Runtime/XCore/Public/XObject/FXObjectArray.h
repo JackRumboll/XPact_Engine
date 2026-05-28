@@ -418,6 +418,75 @@ namespace XCore
         [[nodiscard]] ::uint32 GetRefCount(::int32 InternalIndex) const noexcept;
 
         // =============================================================
+        // RootPin API (XCoreXObject Rev 4 §5.1 / §5.2; Phase 5.e).
+        //
+        // XGCRoot::AddRoot / RemoveRoot (the native-code root-pin API
+        // per spec §5.2) routes through these. The kRootPinnedBit (bit
+        // 2 of the 8-byte StateBits word per Phase 5.c pinning) IS the
+        // per-entry pin state.
+        //
+        // SetRootPin: atomic CAS that sets the kRootPinnedBit. Returns
+        // true iff the bit transitioned from clear to set on this call;
+        // returns false if the bit was already set OR the index is
+        // out-of-range / null sentinel (defence-in-depth no-op).
+        //
+        // ClearRootPin: atomic CAS that clears the kRootPinnedBit.
+        // Returns true iff the bit transitioned from set to clear on
+        // this call; returns false if the bit was already clear OR the
+        // index is out-of-range / null sentinel.
+        //
+        // IsRootPinned: SHARED-lock-acquired read of the bit. Returns
+        // false for the null sentinel + for out-of-range indices.
+        //
+        // IsRootPinnedUnchecked: lock-free read of the bit. The caller
+        // is responsible for the happens-before ordering against the
+        // array's grow (used inside FXObjectArray::ForEachObject's
+        // shared-lock visitor body where the lock is already held).
+        // No range check; UB on invalid index. Intended ONLY for the
+        // GC mark sweep's root-iteration path per spec §5.5.
+        //
+        // CONCURRENCY: the SetRootPin / ClearRootPin CAS loops do NOT
+        // acquire m_lock. The FXObjectArrayEntry slot identity is
+        // already stable for the entry's lifetime (per the never-
+        // relocate invariant from spec §3.3 + §9.1); atomic CAS on
+        // StateBits is sufficient. The locked Is* variants exist for
+        // diagnostic / external callers who don't have a separate
+        // synchronisation contract; the Unchecked variant is the hot-
+        // path entry point.
+        //
+        // BIT-PIN SEMANTIC (Phase 5.e Prime Directive divergence from
+        // spec §5.2 wording): kRootPinnedBit is BINARY. Multiple
+        // callers wanting independent "keep alive" semantics MUST use
+        // XStrongPtr<T> (Phase 5.c) which uses the 24-bit refcount
+        // sub-field at bits 32..55. AddRoot is idempotent (second call
+        // returns false); the spec's "reference-counted" wording is
+        // overridden by Phase 5.e per the Prime Directive split between
+        // single-holder pin (XGCRoot) and multi-holder refcount
+        // (XStrongPtr).
+        // =============================================================
+
+        // Set the kRootPinnedBit on the entry at InternalIndex.
+        // Atomic CAS; lock-free. Returns true iff the bit transitioned
+        // from clear to set; returns false on already-pinned + on
+        // out-of-range / null sentinel index.
+        bool SetRootPin(::int32 InternalIndex) noexcept;
+
+        // Clear the kRootPinnedBit on the entry at InternalIndex.
+        // Atomic CAS; lock-free. Returns true iff the bit transitioned
+        // from set to clear; returns false on already-clear + on
+        // out-of-range / null sentinel index.
+        bool ClearRootPin(::int32 InternalIndex) noexcept;
+
+        // Lock-acquired read of the kRootPinnedBit.
+        [[nodiscard]] bool IsRootPinned(::int32 InternalIndex) const noexcept;
+
+        // Lock-free read of the kRootPinnedBit. Pre-condition: the
+        // caller is already under the m_lock SHARED (or stronger), OR
+        // the caller has otherwise established happens-before ordering
+        // against the array's grow. UB on invalid index.
+        [[nodiscard]] bool IsRootPinnedUnchecked(::int32 InternalIndex) const noexcept;
+
+        // =============================================================
         // Counts.
         // =============================================================
 

@@ -32,7 +32,17 @@
 //   CLASS_CompiledFromBlueprint 0x00040000  generated from Blueprint
 //   CLASS_MatchedSerializers    0x10000000  has matched C++/Blueprint serializers
 //
-// XPact additions (post-MVP placeholders; bits in upper half):
+// XPact additions:
+//
+//   CLASS_EagerCDO              0x0000000000000010  per Rev 3 FIX-H-R2-6;
+//                                                    eager CDO at PostStaticInit
+//                                                    (XCoreXObject Rev 4 §8.1 +
+//                                                    §8.1.1). Bit 4 was unused in
+//                                                    the UE EClassFlags layout
+//                                                    (CLASS_None@0, CLASS_Abstract@0,
+//                                                    Default/Config@1/2, Transient@3,
+//                                                    Native@5); Phase 5.d claims it
+//                                                    for the EagerCDO opt-in.
 //
 //   CLASS_GameDataClass         0x4000000000000000  game-system-data tag
 //   CLASS_ReplicationRoot       0x8000000000000000  network replication root
@@ -60,6 +70,17 @@ namespace XCore::Reflect
         CLASS_DefaultConfig         = 1ULL <<  1,
         CLASS_Config                = 1ULL <<  2,
         CLASS_Transient             = 1ULL <<  3,
+
+        // CDO construction policy (Rev 3 FIX-H-R2-6; per XCoreXObject
+        // Rev 4 §8.1.1). Opt-in eager construction at PostStaticInit
+        // boundary; default (flag clear) is lazy CDO construction on
+        // first GetClassDefaultObject call.
+        //
+        // Bit 4 was previously unused in the UE EClassFlags layout
+        // (CLASS_Abstract@0, CLASS_DefaultConfig@1, CLASS_Config@2,
+        // CLASS_Transient@3, CLASS_Native@5, no UE flag at bit 4).
+        // Phase 5.d claims it for XPact's EagerCDO opt-in.
+        CLASS_EagerCDO              = 1ULL <<  4,
 
         // Provenance.
         CLASS_Native                = 1ULL <<  5,

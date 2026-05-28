@@ -439,6 +439,42 @@ namespace XCore
         // large-object sentinel index returns 0.
         [[nodiscard]] static ::SIZE_T SizeClassToWidth(::int32 SizeClassIndex) noexcept;
 
+        // =============================================================
+        // IsHeapAddress -- conservative-root heap-range check
+        // (XCoreXObject Rev 4 §5.3 step 1 + Rev 2 FIX-A-MED-35;
+        // Phase 5.e).
+        //
+        // Returns true iff `Candidate` lies within any allocator-owned
+        // slab byte range. This is the FIRST gate in the Conservative
+        // root-span validation order per spec §5.3:
+        //
+        //   1. Heap-range check         (THIS METHOD)
+        //   2. FXObjectArray index-range check
+        //   3. Entry-bind check
+        //   4. SerialNumber match check
+        //
+        // The check NEVER dereferences `Candidate`. nullptr returns
+        // false (it cannot point into any slab).
+        //
+        // Implementation: binary search over every size-class pool's
+        // sorted-by-base slab array (mirror of Deallocate's reverse-
+        // lookup) + linear search over the large-slab list. SHARED
+        // lock acquired for the duration so the slab tables are
+        // consistent under concurrent allocate / coalesce.
+        //
+        // PERF: O(log N) over normal slabs (N = total slab count;
+        // typical <50) + O(M) over large slabs (M = typical <10). The
+        // Conservative span scan calls this once per aligned 8-byte
+        // word per span (typical ~1000 words per span); the per-word
+        // cost is ~10-20 cycles per spec §5.3 trailing prose.
+        //
+        // SAFETY INVARIANT (Prime Directive): this method MUST NOT
+        // dereference Candidate. The Conservative root protocol
+        // explicitly forbids dereferencing the candidate until ALL
+        // FOUR validation gates pass (spec §5.3 + Rev 2 FIX-A-MED-35).
+        // =============================================================
+        [[nodiscard]] bool IsHeapAddress(const void* Candidate) const noexcept;
+
     private:
         FXObjectAllocator() noexcept;
         ~FXObjectAllocator() noexcept;

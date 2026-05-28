@@ -59,6 +59,9 @@
 #include "XObject/XPtr.h"                     // sizeof(XPtr<XObject>) + offsetof (Phase 5.c)
 #include "XObject/XWeakPtr.h"                 // sizeof(XWeakPtr<XObject>) + offsetof (Phase 5.c)
 #include "XObject/XStrongPtr.h"               // sizeof(XStrongPtr<XObject>) (Phase 5.c)
+#include "XObject/FXObjectLifecycleTable.h"   // sizeof(FXObjectLifecycleTable) (Phase 5.d)
+#include "XObject/FXObjectGCCardTable.h"      // sizeof(FXObjectGCCardTable) (Phase 5.f)
+#include "XObject/FXObjectSatbQueue.h"        // sizeof(FXObjectSatbQueue) (Phase 5.f)
 #include "Reflection/FStruct.h"               // sizeof(FStruct) + RefSchema offset (Rev 13.9 cascade)
 #include "Reflection/FClass.h"                // sizeof(FClass) + LifecycleTable offset (Rev 13.9 cascade)
 
@@ -252,7 +255,75 @@
                       XPACT_XPTR_LAYOUT_TAG,                                                       \
                       "XPtr-v1: 8 bytes; Ptr@0 (raw T* compatible); "                              \
                       "ABI-equivalent to T*; alignof = 8"),                                        \
-                  "XPACT_XPTR_LAYOUT_TAG string mismatch.")                                        \
+                  "XPACT_XPTR_LAYOUT_TAG string mismatch.");                                       \
+    /* ===== Phase 5.d: FXObjectLifecycleTable (per spec §2.4 + §11.3 +                       */   \
+    /*       Contract Rev 13.9 XPACT_XOBJECT_LIFECYCLE_TABLE_TAG) ===== */                         \
+    static_assert(sizeof(::XCore::FXObjectLifecycleTable)      == 72,                              \
+                  "FXObjectLifecycleTable size lock (Phase 5.d): 8-byte "                          \
+                  "header (Capabilities@0 + _padHeader@4) + 8 slots * 8 "                          \
+                  "bytes = 72 bytes per FClass.");                                                 \
+    static_assert(alignof(::XCore::FXObjectLifecycleTable)     ==  8,                              \
+                  "FXObjectLifecycleTable alignof lock (Phase 5.d): 8 bytes "                      \
+                  "(matches FXObjectGenericFn alignment + Slots[] stride).");                      \
+    static_assert(offsetof(::XCore::FXObjectLifecycleTable, Capabilities) == 0,                    \
+                  "FXObjectLifecycleTable.Capabilities offset lock (Phase 5.d): "                  \
+                  "4-byte bitmask at offset 0 per "                                                \
+                  "XPACT_XOBJECT_LIFECYCLE_TABLE_TAG.");                                           \
+    static_assert(offsetof(::XCore::FXObjectLifecycleTable, _padHeader)   == 4,                    \
+                  "FXObjectLifecycleTable._padHeader offset lock (Phase 5.d): "                    \
+                  "4-byte alignment pad at offset 4.");                                            \
+    static_assert(offsetof(::XCore::FXObjectLifecycleTable, Slots)        == 8,                    \
+                  "FXObjectLifecycleTable.Slots offset lock (Phase 5.d): "                         \
+                  "8 function pointers * 8 bytes starting at offset 8 = "                          \
+                  "64-byte slot array; 8 + 64 = 72 total.");                                       \
+    static_assert(static_cast<::std::uint32_t>(                                                    \
+                      ::XCore::EXObjectLifecycleSlot::Count) == 8,                                 \
+                  "EXObjectLifecycleSlot count lock (Phase 5.d): 8 slots per "                     \
+                  "spec §2.4 + XPACT_XOBJECT_LIFECYCLE_TABLE_TAG.");                                \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_XOBJECT_LIFECYCLE_TABLE_TAG,                                           \
+                      "FXObjectLifecycleTable-v1: 72 bytes per FClass; "                           \
+                      "8-byte header (Capabilities@0 + _pad@4) + 8 slots "                         \
+                      "* 8 bytes = 64 bytes; alignof = 8. Serialize slot "                         \
+                      "signature: void(*)(XObject*, FArchive&, const "                             \
+                      "FArchiveContext*) per FIX-A-HIGH-13."),                                     \
+                  "XPACT_XOBJECT_LIFECYCLE_TABLE_TAG string mismatch -- one "                      \
+                  "of the three sources (XReflectionRuntime.h / "                                  \
+                  "AbiLayoutPins.cs / ContractSurface.cs) drifted from the "                       \
+                  "contract.");                                                                    \
+    /* ===== Phase 5.f: card-table + SATB queue pins (per spec §4.5 + §5.6) ===== */               \
+    static_assert(sizeof(::XCore::FXObjectGCCardTable)         == 112,                             \
+                  "FXObjectGCCardTable size lock (Phase 5.f): 40 bytes "                           \
+                  "scalar + 8 bytes pad + 64 bytes FRWLock = 112 bytes.");                         \
+    static_assert(alignof(::XCore::FXObjectGCCardTable)        ==  16,                             \
+                  "FXObjectGCCardTable alignof lock (Phase 5.f): 16 bytes "                        \
+                  "(dominated by FRWLock).");                                                      \
+    static_assert(::XCore::FXObjectGCCardTable::kCardSize      == 512,                             \
+                  "FXObjectGCCardTable::kCardSize lock (Phase 5.f; spec O2 "                       \
+                  "512-byte card).");                                                              \
+    static_assert(::XCore::FXObjectGCCardTable::kCardShift     ==   9,                             \
+                  "FXObjectGCCardTable::kCardShift lock (Phase 5.f; "                              \
+                  "log2(512) = 9).");                                                              \
+    static_assert(::XCore::FXObjectGCCardTable::kSaturationThresholdPercent == 50,                 \
+                  "FXObjectGCCardTable::kSaturationThresholdPercent lock "                         \
+                  "(Phase 5.f; Rev 3 FIX-N-R2-7 initial 50%).");                                   \
+    static_assert(sizeof(::XCore::FXObjectSatbQueue)           == 2056,                            \
+                  "FXObjectSatbQueue size lock (Phase 5.f): 256 * 8 bytes "                        \
+                  "entries + atomic<uint32> count + 4 bytes alignment pad "                        \
+                  "= 2056 bytes.");                                                                \
+    static_assert(alignof(::XCore::FXObjectSatbQueue)          ==   8,                             \
+                  "FXObjectSatbQueue alignof lock (Phase 5.f): 8 (matches "                        \
+                  "XObject* slot alignment).");                                                    \
+    static_assert(::XCore::FXObjectSatbQueue::kCapacity        == 256,                             \
+                  "FXObjectSatbQueue::kCapacity lock (Phase 5.f; spec O3 "                         \
+                  "256-entry per-thread queue).");                                                 \
+    /* ===== Card-table tag-string equality contract check (Phase 5.f) ===== */                    \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_XGC_CARDTABLE_LAYOUT_TAG,                                              \
+                      "XGCCardTable-v1: byte-per-card flat array; card "                           \
+                      "size = 512 bytes; max heap = 4 GB; card table = "                           \
+                      "8 MB; clean = 0x00, dirty = 0x01"),                                         \
+                  "XPACT_XGC_CARDTABLE_LAYOUT_TAG string mismatch.")                               \
     /* Deliberate no-semicolon terminator: the macro is used as                              */    \
     /*   `XPACT_VERIFY_XOBJECT_LAYOUT();`                                                    */    \
     /* at the call site; the trailing static_assert above ends with `)`                      */    \
@@ -262,8 +333,6 @@
 // Remaining deferred pins (documented here so the macro grows
 // idempotently as later phases ship):
 //
-//   * FXObjectLifecycleTable    (Phase 5.d):
-//       static_assert(sizeof(::XCore::FXObjectLifecycleTable) == 72)
 //   * FXObjectRefSchema         (Phase 5.g'):
 //       static_assert(sizeof(::XCore::Reflect::FXObjectRefSchema) == 24)
 //   * FXObjectRefSchemaOp       (Phase 5.g'):
@@ -276,6 +345,23 @@
 //   * XStrongPtr<XObject>       @ 8 bytes
 //   * XPACT_XOBJECTKEY_LAYOUT_TAG / XPACT_XWEAKPTR_LAYOUT_TAG /
 //     XPACT_XPTR_LAYOUT_TAG string-equality contract checks.
+//
+// Phase 5.d LANDED (in the macro above):
+//   * FXObjectLifecycleTable    @ 72 bytes (8 header + 8 slots * 8;
+//                                alignof 8)
+//   * EXObjectLifecycleSlot::Count == 8 lock
+//   * XPACT_XOBJECT_LIFECYCLE_TABLE_TAG string-equality contract check.
+//
+// Phase 5.f LANDED (in the macro above):
+//   * FXObjectGCCardTable       @ 112 bytes (40 scalar + 8 pad + 64
+//                                FRWLock; alignof 16)
+//   * FXObjectGCCardTable::kCardSize / kCardShift /
+//     kSaturationThresholdPercent locks
+//   * FXObjectSatbQueue         @ 2056 bytes (256 * 8 entries +
+//                                atomic<uint32> count + alignment pad;
+//                                alignof 8)
+//   * FXObjectSatbQueue::kCapacity lock
+//   * XPACT_XGC_CARDTABLE_LAYOUT_TAG string-equality contract check.
 //
 // XSoftPtr is deliberately OUTSIDE the macro pin set per spec §6.3
 // (variable-size; not part of the ABI-lock set).

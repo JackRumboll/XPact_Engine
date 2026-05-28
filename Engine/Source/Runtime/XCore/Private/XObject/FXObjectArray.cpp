@@ -620,4 +620,150 @@ namespace XCore
             (State & kFXObjectArrayRefCountMask) >> kFXObjectArrayRefCountShift);
     }
 
+    // =================================================================
+    // SetRootPin -- XGCRoot::AddRoot dispatch site (XCoreXObject Rev 4
+    // §5.1 / §5.2; Phase 5.e).
+    //
+    // Atomic OR with kFXObjectArrayRootPinnedBit. The CAS loop is the
+    // canonical bit-set pattern: load Old, mask the target bit, build
+    // New, CAS. Returns true iff the bit transitioned from clear to set
+    // on this call.
+    //
+    // INDEX 0 (NULL SENTINEL) + out-of-range indices are no-ops returning
+    // false; defence-in-depth for callers that arrive with a freshly-
+    // zeroed XObject or an unregistered InternalIndex.
+    //
+    // CONCURRENCY: lock-free CAS on the entry's StateBits word. Race-
+    // safe against:
+    //   * Concurrent ClearRootPin on the same entry (the bit ends in
+    //     one consistent state per atomic ordering rules).
+    //   * Concurrent AddRef / ReleaseRef on the same entry (these touch
+    //     bits 32..55; the OR operation's read-modify-write CAS preserves
+    //     both halves of the 64-bit word).
+    //   * Concurrent SetRootPin on the same entry from another caller
+    //     (the second caller observes the bit already set + returns
+    //     false).
+    // =================================================================
+    bool FXObjectArray::SetRootPin(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return false;
+        }
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            // If the bit is already set, this is a no-op idempotent
+            // call: return false (we did NOT transition; the caller
+            // observes "already pinned").
+            if ((Old & kFXObjectArrayRootPinnedBit) != 0u)
+            {
+                return false;
+            }
+            const ::std::uint64_t New = Old | kFXObjectArrayRootPinnedBit;
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return true;
+            }
+            // CAS failed: Old has been re-loaded with the freshest
+            // value; the loop re-checks the bit state. Spurious-
+            // failure-safe.
+        }
+    }
+
+    // =================================================================
+    // ClearRootPin -- XGCRoot::RemoveRoot dispatch site (Phase 5.e).
+    //
+    // Atomic AND with ~kFXObjectArrayRootPinnedBit. Returns true iff
+    // the bit transitioned from set to clear on this call. Mirror of
+    // SetRootPin.
+    // =================================================================
+    bool FXObjectArray::ClearRootPin(::int32 InternalIndex) noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        const ::int32 LocalCapacity = m_committedCount.load(::std::memory_order_acquire);
+        if (InternalIndex >= LocalCapacity)
+        {
+            return false;
+        }
+
+        ::std::atomic<::std::uint64_t>& StateBits = m_entries[InternalIndex].StateBits;
+        ::std::uint64_t Old = StateBits.load(::std::memory_order_relaxed);
+        for (;;)
+        {
+            // Already clear: idempotent no-op; return false (we did
+            // NOT transition).
+            if ((Old & kFXObjectArrayRootPinnedBit) == 0u)
+            {
+                return false;
+            }
+            const ::std::uint64_t New = Old & ~kFXObjectArrayRootPinnedBit;
+            if (StateBits.compare_exchange_weak(
+                    Old,
+                    New,
+                    ::std::memory_order_acq_rel,
+                    ::std::memory_order_acquire))
+            {
+                return true;
+            }
+        }
+    }
+
+    // =================================================================
+    // IsRootPinned -- SHARED-lock-acquired read of the kRootPinnedBit
+    // (Phase 5.e).
+    //
+    // The lock is required to make the index-range check + the atomic
+    // load coherent with a concurrent grow. The Unchecked variant
+    // below is the hot-path entry point for callers already under the
+    // shared lock (e.g., the ForEachObject visitor body).
+    // =================================================================
+    bool FXObjectArray::IsRootPinned(::int32 InternalIndex) const noexcept
+    {
+        if (InternalIndex <= 0)
+        {
+            return false;
+        }
+        ::XCore::HAL::FScopedReadLock ReadLock(m_lock);
+        if (InternalIndex >= m_committedCount.load(::std::memory_order_acquire))
+        {
+            return false;
+        }
+        const ::std::uint64_t State =
+            m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+        return (State & kFXObjectArrayRootPinnedBit) != 0u;
+    }
+
+    // =================================================================
+    // IsRootPinnedUnchecked -- lock-free read (Phase 5.e).
+    //
+    // Pre-condition: the caller has established happens-before ordering
+    // against the array's grow (typically by already holding m_lock in
+    // SHARED mode -- this is the ForEachRoot visitor body's context).
+    // UB on out-of-range index.
+    //
+    // The Unchecked variant is the hot-path entry point for GC mark
+    // root iteration (per XGCRoot::ForEachRoot template body).
+    // =================================================================
+    bool FXObjectArray::IsRootPinnedUnchecked(::int32 InternalIndex) const noexcept
+    {
+        const ::std::uint64_t State =
+            m_entries[InternalIndex].StateBits.load(::std::memory_order_acquire);
+        return (State & kFXObjectArrayRootPinnedBit) != 0u;
+    }
+
 } // namespace XCore

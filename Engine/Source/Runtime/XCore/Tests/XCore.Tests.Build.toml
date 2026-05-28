@@ -1571,6 +1571,489 @@
 # snapshot is stable.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.e (GC root protocol) adds these test folders:
+#
+# Tests/XObject/XGCRoot.Tests/ (6 tests; XCoreXObject Rev 4 §5.1 / §5.2):
+#
+#   * AddRootRemoveRoot.cpp     -- bit-pin round trip: AddRoot returns
+#                                   true on 0->1 transition; RemoveRoot
+#                                   returns true on 1->0; IsRooted
+#                                   reflects state across cycles.
+#   * IdempotentAddRoot.cpp     -- Phase 5.e bit-pin divergence pin:
+#                                   second AddRoot on already-pinned
+#                                   returns false; second RemoveRoot
+#                                   on already-clear returns false.
+#                                   Locks the spec-diverging contract.
+#   * GetRootedCount.cpp        -- linear-scan diagnostic counter
+#                                   tracks AddRoot / RemoveRoot
+#                                   transitions; idempotent operations
+#                                   do NOT bump.
+#   * ForEachRoot.cpp           -- visitor invoked once per pinned
+#                                   XObject; unpinned objects NOT
+#                                   visited.
+#   * NullSentinelHandling.cpp  -- nullptr / unregistered XObject /
+#                                   InternalIndex == 0 are all no-op
+#                                   defence-in-depth rejected by
+#                                   AddRoot / RemoveRoot / IsRooted.
+#   * ConcurrentAddRoot.cpp     -- 8-thread stress; the load-bearing
+#                                   race-safety invariant is
+#                                   sum(AddRoot transitions returned) -
+#                                   sum(RemoveRoot transitions returned)
+#                                   == final IsRooted bit. CAS-loop
+#                                   primitives preserve this under
+#                                   contention.
+#
+# Tests/XObject/XGCRootSpan.Tests/ (6 tests; XCoreXObject Rev 4 §5.3):
+#
+#   * SizeofAndAlignof.cpp      -- sizeof XGCRootSpan == 32; alignof
+#                                   == 8; offsetof + trivial traits.
+#   * AddRemoveSpan.cpp         -- registration round-trip:
+#                                   * First handle == 0; second == 1.
+#                                   * RemoveSpan reuses freed handle
+#                                     via free-list LIFO.
+#                                   * Idempotent RemoveSpan +
+#                                     out-of-range Remove are no-ops.
+#                                   * Malformed shape (non-8 stride;
+#                                     ByteLength %  stride; nullptr
+#                                     base + non-zero length) returns
+#                                     the sentinel invalid handle.
+#   * IterateTypedSpan.cpp      -- kObject span walk: visitor sees
+#                                   every non-null slot exactly once;
+#                                   nullptr slots filtered.
+#   * IterateConservativeSpan.cpp -- kConservative span walk: visitor
+#                                   sees only validated candidates
+#                                   (real heap XObjects); stack XObject
+#                                   address + garbage non-heap pointers
+#                                   skipped via the four-gate validator.
+#                                   GetConservativeSpanCount tracks the
+#                                   kConservative subset.
+#   * ConservativeBuildWarning.cpp -- compile-time existence test for
+#                                   the XPACT_GC_CONSERVATIVE_WARN
+#                                   macro. The macro MUST be expandable
+#                                   from any C++ statement context
+#                                   regardless of XPACT_SIMPATH setting.
+#                                   (Sim-path-positive smoke test --
+#                                   verifying the #pragma message
+#                                   appears in the build log -- is a
+#                                   build-system concern out of scope
+#                                   for the runtime test surface.)
+#   * GetSpanCount.cpp          -- both counters track AddSpan +
+#                                   RemoveSpan transitions; the
+#                                   typed-span removal does NOT
+#                                   change GetConservativeSpanCount.
+#
+# Tests/XObject/XGCConservativeValidate.Tests/ (5 tests;
+# XCoreXObject Rev 4 §5.3 + Rev 2 FIX-A-MED-35):
+#
+#   * ValidLiveXObject.cpp      -- happy-path round-trip:
+#                                   ValidateConservativeCandidate on a
+#                                   heap-allocated + array-registered
+#                                   XObject returns the same pointer.
+#                                   Multiple repeat calls each succeed
+#                                   independently.
+#   * OutOfHeapRange.cpp        -- gate 1 rejection: nullptr, stack
+#                                   XObject address, small numeric
+#                                   garbage, larger numeric garbage,
+#                                   non-XObject heap buffer (FMemory
+#                                   allocation outside the XObject
+#                                   allocator) -- all return nullptr.
+#                                   Critical: gate 1 NEVER dereferences
+#                                   the candidate.
+#   * OutOfIndexRange.cpp       -- gate 2 rejection: heap-allocated
+#                                   buffer stamped with bogus
+#                                   InternalIndex values (0, -1, huge,
+#                                   == Capacity boundary) all return
+#                                   nullptr.
+#   * SerialMismatch.cpp        -- gates 3+4 rejection: live XObject
+#                                   captured; FreeEntry bumps the
+#                                   entry's serial; re-allocation
+#                                   binds a different XObject; the
+#                                   captured-pre-Free pointer fails
+#                                   gate 3 (entry.Object != captured)
+#                                   or gate 4 (serial mismatch).
+#   * IntegrationOrder.cpp      -- composite scenario exercising each
+#                                   gate in spec order via a SINGLE
+#                                   live XObject whose
+#                                   (InternalIndex / SerialNumber /
+#                                   entry binding) is mutated between
+#                                   validation calls. Verifies that
+#                                   no false-positive accept escapes
+#                                   when a higher gate would otherwise
+#                                   reject.
+#
+# Tests/XObject/XStackRootScaffolding.Tests/ (3 tests;
+# XCoreXObject Rev 4 §5.3 / §5.4):
+#
+#   * RegisterMap.cpp           -- Register / Unregister round trip;
+#                                   GetRegisteredStackRootMapCount
+#                                   tracks transitions. Idempotent
+#                                   on duplicate Register + duplicate
+#                                   Unregister. nullptr is a no-op.
+#   * ForwardDeclShape.cpp      -- offsetof + trivial-traits for the
+#                                   FStackRootMap (24 byte) +
+#                                   FStackRootEntry (16 byte) structs.
+#                                   Pins the layout for the XIL2CPP
+#                                   System 6 emit.
+#   * EmptyMapHarness.cpp       -- iteration on empty registry =
+#                                   no-op visitor; iteration with
+#                                   empty-Safepoints maps invokes the
+#                                   visitor once per registered map.
+#                                   Validates the Phase 5.g consumer
+#                                   interface contract.
+#
+# JUDGEMENT CALL (Phase 5.e tests / heap-allocated XObject test pattern).
+#
+# The Conservative-validation tests need an XObject* that passes
+# IsHeapAddress (gate 1). Stack XObjects fail gate 1 by design; the
+# only way to get a passing-gate-1 candidate is FXObjectAllocator::
+# AllocateRaw. The tests use placement-new into the allocator-returned
+# storage + manual Deallocate / __ResetForTests at cleanup.
+#
+# This pattern requires the allocator to be initialised (FMemory::
+# __Init at test entry), but does NOT require a real FClass instance
+# (the allocator's bootstrap path accepts nullptr ClassDescriptor per
+# Phase 5.a' / 5.b dispatch). The placement-new'd XObject has
+# ClassPrivate == nullptr; this is fine for the Conservative-validator
+# tests because IsValidLowLevel is NOT called along the path (the
+# four-gate validator does not consult ClassPrivate).
+#
+# JUDGEMENT CALL (Phase 5.e tests / concurrent stress acceptance).
+#
+# The XGCRoot.Tests/ConcurrentAddRoot.cpp test verifies the bit-pin
+# CAS-loop primitives are race-safe under 8-thread contention. The
+# load-bearing invariant is:
+#
+#   NetTransitions (per-thread (AddRoot true returns -
+#                               RemoveRoot true returns)) ==
+#   FinalBitState (0 or 1)
+#
+# This is the bit-pin semantic's analog to the refcount semantic's
+# "every bump pairs with a release". A torn-bit read / lost
+# transition / double-counted transition would break the invariant.
+# 80 000 cycles per thread (8 threads * 10 000) is enough to expose
+# CAS-loop bugs on Win64 desktop in <100 ms; the test runtime is
+# dominated by thread-spawn + join overhead, not the inner loop.
+#
+# =====================================================================
+#
+# XCoreXObject Phase 5.f (card-table + SATB queue + write barrier)
+# adds these test folders:
+#
+# Tests/XObject/FXObjectGCCardTable.Tests/ (6 tests;
+# XCoreXObject Rev 4 §4.5 + §5.1):
+#
+#   * Initialize.cpp            -- Get() returns stable singleton;
+#                                   Initialize allocates the card
+#                                   array (TotalCards = ceil(Heap
+#                                   ByteSize / kCardSize)); re-Init
+#                                   with same range is idempotent;
+#                                   re-Init with new range replaces
+#                                   the array; __ResetForTests
+#                                   restores fresh state.
+#   * MarkCardDirty.cpp         -- MarkCardDirty maps address to
+#                                   card index; idempotent on the
+#                                   same card; different offsets in
+#                                   same card map to same card;
+#                                   card-boundary correct; out-of-
+#                                   range silently ignored.
+#   * MarkCardRangeDirty.cpp    -- Sub-card range marks 1 card;
+#                                   range crossing 1 boundary marks
+#                                   2; N-card range marks N; range
+#                                   clamped at both heap boundaries;
+#                                   zero-length range is no-op.
+#   * ForEachDirtyCardAndClear.cpp -- Visitor invoked exactly once per
+#                                   dirty card in ascending order;
+#                                   cards cleared after visit;
+#                                   empty table no-op; full-table
+#                                   stress.
+#   * Saturation.cpp            -- Empty table not saturated; below
+#                                   50% not saturated; at 50%
+#                                   saturated; above 50% saturated;
+#                                   post-clear not saturated.
+#   * ConcurrentMarkStress.cpp  -- 8 threads marking distinct cards
+#                                   = 512 final dirty; same-card
+#                                   stress bounded by [1, kNumThreads]
+#                                   over-count (race-correct);
+#                                   random-pattern stress does not
+#                                   crash.
+#
+# Tests/XObject/FXObjectSatbQueue.Tests/ (5 tests;
+# XCoreXObject Rev 4 §5.6 + Rev 2 FIX-A-MED-37):
+#
+#   * Push.cpp                  -- Fresh queue Size 0; Push bumps
+#                                   Size; Drain empties; re-Push
+#                                   works; IsFull predicate.
+#   * Capacity.cpp              -- kCapacity (256) fills queue;
+#                                   IsFull at capacity; one more
+#                                   Push triggers drain into global
+#                                   log; queue then has Size 1
+#                                   (the just-pushed entry); global
+#                                   log has the 256 drained entries.
+#   * DrainTo.cpp               -- Empty queue DrainTo no-op; Push
+#                                   8 + Drain visits in FIFO order;
+#                                   re-Push + re-Drain works.
+#   * PerThreadIsolation.cpp    -- GetThreadSatbQueue on different
+#                                   threads returns different
+#                                   instances; Push on one thread
+#                                   does NOT affect another's queue
+#                                   Size.
+#   * BlockOnFullDuringQuiesce.cpp -- queue at capacity + g_XGC
+#                                   AcceptDrains=false -> writer
+#                                   blocks; flag re-enabled -> writer
+#                                   unblocks; queue + log state
+#                                   post-resume consistent. Per Rev 2
+#                                   FIX-A-MED-37.
+#
+# Tests/XObject/XGC_WriteBarrier.Tests/ (5 tests;
+# XCoreXObject Rev 4 §4.3 + §5.2 + §10.7):
+#
+#   * BarrierNoOpWhenConcurrentMarkInactive.cpp -- g_XGCIsConcurrent
+#                                   MarkActive==false: SATB push
+#                                   NOT made; card dirty IS made.
+#   * BarrierPushesSatbWhenActive.cpp -- concurrent-mark active +
+#                                   non-null OLD: SATB push made;
+#                                   captured OLD value matches; card
+#                                   ALSO dirtied; null OLD does NOT
+#                                   push to SATB.
+#   * BarrierMarksCard.cpp      -- Barrier dirties card containing
+#                                   &slot (NOT card containing slot
+#                                   value); two writes in same card
+#                                   = 1 dirty entry; different
+#                                   cards = N entries; out-of-range
+#                                   silently ignored.
+#   * MacroExpansionEquivalent.cpp -- XPACT_GC_STORE expands to
+#                                   barrier + slot write; slot
+#                                   correctly updated post-macro;
+#                                   under concurrent-mark captures
+#                                   OLD value to SATB queue.
+#   * IntegrationWithAllocator.cpp -- Barrier across allocator boundary
+#                                   works: allocate cell + initialise
+#                                   card table to cell range + run
+#                                   barrier through XPACT_GC_STORE.
+#                                   Phase 5.f-scoped (card table is
+#                                   initialised for the test cell;
+#                                   full allocator integration is a
+#                                   forward commitment per the spec
+#                                   §5.1 reconciliation note).
+#
+# Tests/XObject/FXObjectGlobalSatbLog.Tests/ (3 tests;
+# XCoreXObject Rev 4 §4.3 + §5.6):
+#
+#   * AppendBatch.cpp           -- Empty log Size 0; AppendBatch
+#                                   accumulates; AppendBatch(0)
+#                                   no-op; large batch (300)
+#                                   triggers buffer-doubling grow.
+#   * DrainAll.cpp              -- Empty log DrainAll no-op; visitor
+#                                   visits each entry once; log
+#                                   empty after Drain; re-Append /
+#                                   re-Drain works; Drain after
+#                                   grow (500 entries) returns all
+#                                   500 + empties log.
+#   * ConcurrentAppend.cpp      -- 8 threads * 100 AppendBatches *
+#                                   16 entries = 12 800 final size;
+#                                   no torn pointers (drained
+#                                   pointers all fall in the
+#                                   sentinel array range).
+#
+# JUDGEMENT CALL (Phase 5.f tests / IntegrationWithAllocator scope).
+#
+# The IntegrationWithAllocator test manually initialises the card
+# table to cover the single test cell's address range. This is the
+# documented Phase 5.f scope: the FXObjectAllocator's slabs are NOT
+# auto-registered with the card table; the integration is a forward
+# commitment (Phase 5.f' / 5.h).
+#
+# The test verifies the barrier WORKS when the slot is in a card-
+# table-registered range. A future phase will integrate the card
+# table with the allocator's slab-registration path.
+#
+# JUDGEMENT CALL (Phase 5.f tests / BlockOnFullDuringQuiesce wall-
+# clock dependency).
+#
+# The test uses FPlatformProcess::Sleep + a 5-second deadline to
+# bound the wait. The Sleep is NOT sim-path; this test is non-sim-
+# path (the test module's `sim_path = false`). The 5-second deadline
+# is generous enough to absorb CI variability without producing
+# false negatives on slow runners.
+#
+# A determinism-bit-exact version of this test would require a
+# semaphore + signal-and-wait primitive without wall-clock time;
+# the test is verifying the spin-yield primitive's correctness,
+# which IS wall-clock-dependent by construction (the spin-yield is
+# bounded by the cascade timeout per Rev 2 FIX-A-MED-37). The wall-
+# clock dependency at this test scope is the contract being verified.
+#
+# JUDGEMENT CALL (Phase 5.f tests / ConcurrentAppend torn-pointer
+# assertion).
+#
+# The 8-thread AppendBatch stress drains the log post-stress and
+# asserts every drained pointer falls within the test's sentinel
+# array. This catches BOTH torn writes (a pointer with high bytes
+# from one batch + low bytes from another) AND drop-on-the-floor
+# bugs (a pointer that doesn't correspond to any thread's push).
+# The lock-protected AppendBatch + DrainAll path serialises both
+# operations; the test is a defence-in-depth assertion.
+#
+# =====================================================================
+#
+# XCoreXObject Phase 5.d (CDO + Initializer + FXObjectLifecycleTable)
+# adds these test folders:
+#
+# Tests/XObject/FXObjectLifecycleTable.Tests/ (4 tests; XCoreXObject
+# Rev 4 §2.4 + Contract Rev 13.9 XPACT_XOBJECT_LIFECYCLE_TABLE_TAG):
+#
+#   * SizeofAndAlignof.cpp    -- sizeof(FXObjectLifecycleTable) == 72;
+#                                 alignof == 8; offsetof Capabilities@0
+#                                 / _padHeader@4 / Slots@8; field-size
+#                                 locks; slot enum value locks;
+#                                 EXObjectLifecycleSlot::Count == 8.
+#   * Capabilities.cpp        -- per-bit ToUnderlying contract for all
+#                                 8 EXObjectLifecycleCapability values;
+#                                 HasCapability / HasSlot predicate
+#                                 truth tables for single-bit and
+#                                 multi-bit composed Capabilities words.
+#   * SlotsAreNull.cpp        -- aggregate-init produces empty table
+#                                 (Capabilities == 0; all 8 Slots[]
+#                                 nullptr); HasCapability returns false
+#                                 for every bit.
+#   * FakeVTablePattern.cpp   -- populate a custom table with 3 slot
+#                                 fn-pointers (PostInitProperties,
+#                                 BeginDestroy, IsReadyForFinishDestroy);
+#                                 dispatch via typed GetSlot<T>; the
+#                                 typed cast through FXObjectGenericFn
+#                                 round-trips correctly + the bool-
+#                                 return path works for
+#                                 IsReadyForFinishDestroy.
+#
+# Tests/XObject/FObjectInstancingGraph.Tests/ (3 tests; spec §8.4):
+#
+#   * RegisterAndGet.cpp      -- pair archetype with instance; lookup
+#                                 returns instance; nullptr lookups +
+#                                 overwrite semantics.
+#   * IsEmpty.cpp             -- fresh graph IsEmpty true; post-register
+#                                 IsEmpty false; nullptr-Instance
+#                                 register still bumps Num + Contains.
+#   * MultipleArchetypes.cpp  -- 64 pairs (exercises TMap grow path);
+#                                 every Get + Contains succeeds.
+#
+# Tests/XObject/FXObjectInitializer.Tests/ (5 tests; spec §8.4 +
+# §8.4.1 + Rev 3 FIX-M-R2-5 / FIX-M-R2-6):
+#
+#   * Construction.cpp        -- ctor binds Target/Class/Archetype;
+#                                 with-archetype variant; HasFiredPostInit
+#                                 false at fresh construction;
+#                                 InstancingGraph empty.
+#   * PostInitFiresOnce.cpp   -- bPostInitFired idempotency: single dtor
+#                                 fires exactly once; bit-clear table
+#                                 with populated slot is no-op (defence
+#                                 against mis-emitted tables); nullptr
+#                                 LifecycleTable is no-op.
+#   * CreateDefaultSubobject.cpp
+#                              -- CreateDefaultSubobjectImpl produces
+#                                  sub-object with correct Outer/Class/
+#                                  Name + DefaultSubObject flag +
+#                                  optional Transient.
+#   * NonCopyableNonMovable.cpp
+#                              -- static_assert: non-copyable +
+#                                  non-movable + non-polymorphic.
+#   * DestructorFiresPostInit.cpp
+#                              -- dtor dispatches PostInitProperties
+#                                  with Target as Self argument;
+#                                  capture verifies the threading.
+#   * CanonicalCtorSignatureExample.cpp
+#                              -- XCharacter : XActor : XObject hand-
+#                                  rolled hierarchy demonstrates the
+#                                  canonical const-ref Initializer
+#                                  signature compiles + CreateDefault
+#                                  Subobject through const-ref works
+#                                  from the user-class ctor body.
+#
+# Tests/XObject/NewObject.Tests/ (7 tests; spec §3.5):
+#
+#   * BasicConstruction.cpp   -- NewObjectImpl returns valid XObject
+#                                 with all header fields populated;
+#                                 FXObjectArray slot resolves back.
+#   * OuterChain.cpp          -- A -> B(A) -> C(B); GetOuter walk
+#                                 produces chain depth 3.
+#   * PostInitFires.cpp       -- single NewObject fires PostInit once;
+#                                 5 NewObjects fire 5 times; RF_NeedLoad
+#                                 bypass suppresses fire (X-INIT-OBJ).
+#   * TryNewObjectSuccess.cpp -- Try* happy path; Result.has_value() ==
+#                                 true; value() is the constructed
+#                                 XObject*.
+#   * TryNewObjectInvalidClass.cpp
+#                              -- nullptr Class -> kInvalidClass;
+#                                  CLASS_Abstract Class -> kAbstract
+#                                  Class.
+#   * PhaseGuardFires.cpp     -- pre-PostStaticInit Try* returns
+#                                 kInvalidPhase; post-advance succeeds
+#                                 (X-INIT).
+#   * SimPathGuard.cpp        -- non-sim-path happy path; sim-path
+#                                 negative test deferred to the phase
+#                                 that lands ::XCore::HAL::IsSimPathTU
+#                                 (X-NEW).
+#   * IntegrationWithAllocator.cpp
+#                              -- NewObject + FXObjectAllocator
+#                                  round-trip; FreeEntry + Deallocate
+#                                  release the slot.
+#
+# Tests/XObject/CDOManagement.Tests/ (6 tests; spec §8.1 + §8.2 +
+# Rev 3 FIX-H-R2-6):
+#
+#   * LazyCDOConstruction.cpp -- first GetClassDefaultObject constructs;
+#                                 second returns same cached pointer;
+#                                 FClass::GetCDO reflects publication.
+#   * CDOFlags.cpp            -- CDO carries ClassDefaultObject +
+#                                 ArchetypeObject + Public +
+#                                 MarkAsRootSet flags; NO Transient.
+#   * CDOName.cpp             -- ComposeCDOName produces
+#                                 "Default__<ClassName>"; CDO's
+#                                 NamePrivate matches.
+#   * EagerCDOEnqueue.cpp     -- IsEagerCDO predicate; queue Add for
+#                                 EagerCDO classes; idempotent re-Add;
+#                                 reject non-EagerCDO + nullptr.
+#   * DrainPendingEagerCDOs.cpp
+#                              -- empty Drain returns 0; 4-entry queue
+#                                  drains + materialises all 4 CDOs;
+#                                  post-Drain count == 0
+#                                  (X-INIT-EAGER).
+#   * CDORaceCondition.cpp    -- 8-thread concurrent GetClassDefaultObject;
+#                                 every thread observes the same CDO
+#                                 pointer; FClass::GetCDO matches
+#                                 (X7 acceptance gate prerequisite).
+#
+# JUDGEMENT CALL (Phase 5.d tests / FClass StaticClass() unavailability).
+#
+# Real XHT-emitted user classes ship a `static const FClass*
+# StaticClass()` method; until XHT-emit lands (Phase 5.f+), Phase 5.d
+# tests construct FClass instances directly via the explicit
+# `FClass(FName, FStruct*)` ctor (matches the XCore-4b
+# FStruct.Tests/FClassIsChildOf.cpp pattern). The CreateDefaultSubobject
+# tests use the type-erased CreateDefaultSubobjectImpl entry point
+# (which takes an FClass* directly) instead of the templated
+# CreateDefaultSubobject<T> (which requires T::StaticClass()).
+#
+# JUDGEMENT CALL (Phase 5.d tests / sim-path negative gate deferral).
+#
+# Same deferral as Phase 5.a's MarkAsGarbageSimPathGuard.cpp /
+# GetSerialNumberSimPathGuard.cpp: the runtime probe
+# ::XCore::HAL::IsSimPathTU does NOT exist yet; Phase 5.d tests verify
+# the non-sim-path happy path + document the invariant. The negative
+# test lands when the probe ships (likely Phase 5.e+ alongside
+# FXObjectCollector).
+#
+# JUDGEMENT CALL (Phase 5.d / FClass::ClassDefaultObject const-qualified).
+#
+# The FClass field type changed from `mutable std::atomic<FObject*>`
+# to `mutable std::atomic<const FObject*>` per Rev 3 FIX-M-R2-30 /
+# FIX-A-MED-30 immutable-CDO discipline. Existing callers of
+# FClass::GetCDO() and FClass::SetCDO() must compile against the new
+# const-qualified signature; the offsetof + sizeof ABI locks remain
+# unchanged (the const qualifier does not affect the pointer's
+# representation).
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

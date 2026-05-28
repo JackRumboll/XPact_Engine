@@ -76,6 +76,27 @@
 // =====================================================================
 
 #include "GC/XGCDeclarations.h"
+#include "XObject/XGCWriteBarrierStrongSymbolGate.h"
+
+// =====================================================================
+// PHASE 5.f STRONG-SYMBOL GATE.
+//
+// XCoreXObject Phase 5.f (Private/XObject/XGCWriteBarrier.cpp) ships
+// strong-symbol implementations of the four GC ABI symbols. The
+// XGCWriteBarrierStrongSymbolGate.h header defines
+// XPACT_HAS_XCOREXOBJECT_STRONG_GC = 1 unconditionally when included;
+// since the header lives under Public/XObject/ and is therefore part
+// of the same compile target as the stub, the gate fires whenever
+// Phase 5.f's strong-symbol TU is built alongside the stub.
+//
+// The entire weak-stub body below is #if-skipped when the gate fires.
+// On Clang/GCC the weak attribute would let the strong override win
+// anyway; the skip just keeps the stub bytes out of the binary. On
+// MSVC the skip is LOAD-BEARING (the stub is strong-linkage; a
+// duplicate strong-linkage definition is an LNK2005 link error).
+// =====================================================================
+
+#if !defined(XPACT_HAS_XCOREXOBJECT_STRONG_GC) || (XPACT_HAS_XCOREXOBJECT_STRONG_GC == 0)
 
 #if defined(__clang__) || defined(__GNUC__)
     #define XPACT_GC_WEAK_STUB [[gnu::weak]]
@@ -131,3 +152,5 @@ void XGC_WriteBarrier(void** /*Slot*/, void* /*NewValue*/) noexcept
 }
 
 } // extern "C"
+
+#endif // !XPACT_HAS_XCOREXOBJECT_STRONG_GC

@@ -472,6 +472,20 @@ public static class ContractSurface
             "XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG",
             "FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), _padTail@16; alignof = 8. FXObjectRefSchemaOp is 24 bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 (u16), Offset@4 (i32), StrideBytes@8 (i32), NestedSchema@16 (const FXObjectRefSchema*); alignof = 8 (4 bytes of pad at offset 12 to align NestedSchema to 8). Rev 3: 22 active opcodes (added Interface, ClassProperty, SoftClass, Delegate, MulticastInlineDelegate, MulticastSparseDelegate per FIX-H-R2-3)."
         ),
+        // -----------------------------------------------------------------
+        // XCoreXObject Phase 5.e (GC root protocol): XGCRootSpan tag.
+        //
+        // Pins the 32-byte XGCRootSpan struct layout. In addition to the
+        // existing XPACT_GC_ROOT_ABI_TAG ("Span-based v1") family-identifier
+        // tag (which advertises the protocol generation; pre-existing
+        // since XCore-4a), this LAYOUT_TAG pins the byte-exact struct
+        // layout that XHT emits per-DLL static_assert(CompileTimeStrEq(...))
+        // calls against.
+        // -----------------------------------------------------------------
+        (
+            "XPACT_XGC_ROOTSPAN_LAYOUT_TAG",
+            "XGCRootSpan-v1: 32 bytes; BaseAddress@0 (8), ByteLength@8 (8), ElementStride@16 (8), Kind@24 (1 uint8 EXGCRootSpanKind: kObject=0, kConservative=1), _pad@25 (7 bytes); alignof = 8. Phase 5.e per XCoreXObject Rev 4 §5.3 + Rev 2 FIX-A-HIGH-11. Conservative kind validates each aligned 8-byte word via the four-gate order (heap-range -> FXObjectArray index -> entry-bind -> SerialNumber match) per spec §5.3 + Rev 2 FIX-A-MED-35."
+        ),
     };
 
     /// <summary>
@@ -534,8 +548,10 @@ public static class ContractSurface
         ("XObjectKey", 8),                // Phase 5.c   (shipped)
         ("XWeakPtr", 8),                  // Phase 5.c   (shipped)
         ("XPtr", 8),                      // Phase 5.c   (shipped)
-        ("FXObjectLifecycleTable", 72),   // Phase 5.d   (deferred)
+        ("FXObjectLifecycleTable", 72),   // Phase 5.d   (shipped)
         ("FXObjectRefSchema", 24),        // Phase 5.g'  (deferred)
+        // XCoreXObject Phase 5.e (GC root protocol): XGCRootSpan ships.
+        ("XGCRootSpan", 32),              // Phase 5.e   (shipped)
     };
 
     /// <summary>
@@ -571,10 +587,15 @@ public static class ContractSurface
     public static readonly IReadOnlyDictionary<string, string> AbiTypesDeferredUntilPhase =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // Phase 5.d (CDO + Initializer): lifecycle dispatch table
-            // emitted by XHT per FClass. ABI lock: 72 bytes (8-byte
-            // header + 8 slots * 8 bytes).
-            { "FXObjectLifecycleTable", "Phase 5.d (XCoreXObject CDO + Initializer)" },
+            // Phase 5.d (CDO + Initializer + FXObjectLifecycleTable):
+            // SHIPPED at the XCoreXObject Phase 5.d implementation
+            // (the 72-byte lifecycle dispatch table, FXObjectInitializer
+            // with destructor-driven PostInitProperties, NewObject<T>
+            // hot path, lazy + eager CDO management). The entry is
+            // REMOVED from this deferred map; the validate-abi-tags
+            // walker now enforces the FXObjectLifecycleTable pin via
+            // the XPACT_VERIFY_XOBJECT_LAYOUT macro's Phase 5.d
+            // additions.
 
             // Phase 5.c (object handles): XObjectKey / XWeakPtr / XPtr
             // SHIPPED -- their entries are removed from this deferred

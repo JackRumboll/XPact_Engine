@@ -65,7 +65,7 @@
 //       // FStruct base @ 0-119 (120 bytes; Phase 4b.5: 112; Rev 13.9: +8 RefSchema appended)
 //       void                          (*ClassConstructorFn)(void*, FFieldVariant);  // 120 +8
 //       void*                         (*ClassVTableHelperCtorCaller)(void*);        // 128 +8
-//       mutable std::atomic<FObject*> ClassDefaultObject;        // 136 +8 (lazy CDO)
+//       mutable std::atomic<const FObject*> ClassDefaultObject;  // 136 +8 (lazy CDO; Phase 5.d const-qualified per Rev 3 FIX-M-R2-30 immutable-CDO discipline)
 //       EClassFlags                   ClassFlags;                // 144 +8
 //       EClassCastFlags               ClassCastFlags;            // 152 +8
 //       const FClass*                 ClassWithin;               // 160 +8
@@ -252,8 +252,26 @@ namespace XCore::Reflect
         // (rare; CDO requests typically serialise through the
         // XReflectionRuntime at PostStaticInit but the atomic is
         // defensive).
+        //
+        // PHASE 5.d (Rev 3 FIX-M-R2-30 / FIX-A-MED-30): the type IS
+        // `std::atomic<const FObject*>` -- the `const` qualification
+        // is the type-system enforcement of XCoreXObject Rev 4
+        // §8.1.1's immutable-CDO discipline. The CDO is constructed
+        // exactly once + read concurrently by editor / delta-
+        // serialisation / replication reconciliation; immutability
+        // eliminates the data-race surface that UE's mutable CDO
+        // exposes. UE 5.6+ ships an opt-in `UE_WITH_IMMUTABLE_CDO`;
+        // XPact's posture is "default + always".
+        //
+        // The stored type is `const FObject*` (FObject is the
+        // forward-declared placeholder that resolves to XCore::XObject
+        // at the XCoreXObject layer via reinterpret_cast at the CDO-
+        // set site -- XCoreXObject's CDO management owns the
+        // reconciliation). The byte layout is identical to the prior
+        // `FObject*` form (the const qualifier does not affect the
+        // pointer representation).
 
-        mutable ::std::atomic<FObject*> ClassDefaultObject;            // 128 +8
+        mutable ::std::atomic<const FObject*> ClassDefaultObject;      // 128 +8
 
         // ---- Class flags + cast acceleration (offsets 128-143; 16 bytes) ----
 
@@ -360,7 +378,7 @@ namespace XCore::Reflect
             : FStruct()
             , ClassConstructorFn(nullptr)
             , ClassVTableHelperCtorCaller(nullptr)
-            , ClassDefaultObject(nullptr)
+            , ClassDefaultObject(static_cast<const FObject*>(nullptr))
             , ClassFlags(EClassFlags::CLASS_None)
             , ClassCastFlags(EClassCastFlags::kNone)
             , ClassWithin(nullptr)
@@ -384,7 +402,7 @@ namespace XCore::Reflect
             : FStruct(InName, InSuper)
             , ClassConstructorFn(nullptr)
             , ClassVTableHelperCtorCaller(nullptr)
-            , ClassDefaultObject(nullptr)
+            , ClassDefaultObject(static_cast<const FObject*>(nullptr))
             , ClassFlags(InClassFlags)
             , ClassCastFlags(InClassCastFlags)
             , ClassWithin(nullptr)
@@ -463,10 +481,18 @@ namespace XCore::Reflect
         //
         // Returns the current CDO pointer (may be nullptr if not yet
         // populated). Per spec: lazy creation is the
-        // XReflectionRuntime's responsibility (System 5+); Phase 4b.5
-        // ships the accessor only.
+        // XReflectionRuntime's / XCoreXObject CDO management's
+        // responsibility (System 5+); Phase 4b.5 ships the accessor
+        // only.
+        //
+        // PHASE 5.d (Rev 3 FIX-M-R2-30): returns `const FObject*` so
+        // the immutable-CDO discipline is enforced at the type system
+        // level. Callers that need to MUTATE the CDO (rare; only the
+        // hot-reload cascade per spec §9.3) must use TryCAS-style
+        // pointer swap via the atomic's compare_exchange surface
+        // directly.
         // -------------------------------------------------------------
-        [[nodiscard]] XPACT_FORCEINLINE FObject* GetCDO() const noexcept
+        [[nodiscard]] XPACT_FORCEINLINE const FObject* GetCDO() const noexcept
         {
             return ClassDefaultObject.load(::std::memory_order_acquire);
         }
@@ -474,11 +500,18 @@ namespace XCore::Reflect
         // -------------------------------------------------------------
         // SetCDO -- atomic publish of the resolved CDO.
         //
-        // The XReflectionRuntime's CDO-init path calls this after
-        // constructing the singleton. Memory ordering is release so
-        // a subsequent GetCDO observes a fully-constructed object.
+        // The XCoreXObject CDO-management path (lazy first-construct
+        // OR DrainPendingEagerCDOs) calls this after constructing the
+        // singleton. Memory ordering is release so a subsequent
+        // GetCDO observes a fully-constructed object.
+        //
+        // PHASE 5.d (Rev 3 FIX-M-R2-30): accepts `const FObject*` --
+        // the type-system enforcement of immutable-CDO. The atomic
+        // store is the only legitimate write to the slot after the
+        // initial construction; hot-reload cascade publishes via
+        // compare_exchange to atomically swap the old/new CDO pair.
         // -------------------------------------------------------------
-        XPACT_FORCEINLINE void SetCDO(FObject* InCDO) noexcept
+        XPACT_FORCEINLINE void SetCDO(const FObject* InCDO) noexcept
         {
             ClassDefaultObject.store(InCDO, ::std::memory_order_release);
         }

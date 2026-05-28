@@ -373,6 +373,27 @@ namespace XPactDetail
 #endif
 
 // =====================================================================
+// XCoreXObject Phase 5.e Contract addendum: XGCRootSpan layout tag.
+//
+// The XGCRootSpan ABI is the C++ realisation of the XCore-4a §5.4
+// XGC root-span contract that XPACT_GC_ROOT_ABI_TAG (which holds the
+// "Span-based v1" identifier) advertises. Phase 5.e ships the concrete
+// 32-byte struct + the XGCRootSpanRegistry singleton that owns the
+// active-span table; this tag pins the byte layout for the per-DLL
+// static_assert(CompileTimeStrEq(...)) calls XHT emits.
+//
+// The three sources MUST stay byte-identical for the string content:
+//   1. This file (XReflectionRuntime.h)
+//   2. Engine/Source/Programs/XHT/XHT.Emitter/AbiLayoutPins.cs
+//   3. Engine/Source/Programs/XBT/XBT.Manifest/ContractSurface.cs
+// =====================================================================
+
+#ifndef XPACT_XGC_ROOTSPAN_LAYOUT_TAG
+    #define XPACT_XGC_ROOTSPAN_LAYOUT_TAG \
+        "XGCRootSpan-v1: 32 bytes; BaseAddress@0 (8), ByteLength@8 (8), ElementStride@16 (8), Kind@24 (1 uint8 EXGCRootSpanKind: kObject=0, kConservative=1), _pad@25 (7 bytes); alignof = 8. Phase 5.e per XCoreXObject Rev 4 §5.3 + Rev 2 FIX-A-HIGH-11. Conservative kind validates each aligned 8-byte word via the four-gate order (heap-range -> FXObjectArray index -> entry-bind -> SerialNumber match) per spec §5.3 + Rev 2 FIX-A-MED-35."
+#endif
+
+// =====================================================================
 // LEGACY SURFACE -- compatibility-shim for XHT-emitted code.
 //
 // The Section-10 emit symbols are flat (no namespace) so XHT-generated

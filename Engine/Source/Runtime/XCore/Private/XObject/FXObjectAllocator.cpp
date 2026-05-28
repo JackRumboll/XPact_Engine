@@ -466,6 +466,97 @@ namespace XCore
     }
 
     // =================================================================
+    // IsHeapAddress -- conservative-root heap-range check
+    // (XCoreXObject Rev 4 §5.3 step 1 + Rev 2 FIX-A-MED-35; Phase 5.e).
+    //
+    // Walks every size-class pool's sorted-by-base slab array via
+    // binary search; returns true on first slab whose byte range
+    // contains Candidate. Falls through to a linear scan of the
+    // large-slab list (large allocations are one slab per allocation
+    // with their own base + size).
+    //
+    // SHARED lock acquired so the slab tables are consistent under
+    // concurrent grow / coalesce.
+    //
+    // SAFETY: NEVER dereferences Candidate (per spec §5.3 invariant
+    // for the Conservative validation path). Pointer arithmetic on
+    // the slab Base / size is well-defined regardless of Candidate's
+    // value (subtraction between a non-pointer-into-the-array and an
+    // array-pointer is UB; we use std::less-equivalent via the
+    // standard pointer comparison rules, which on every supported
+    // platform compares the addresses bitwise).
+    //
+    // The pointer comparisons (`Candidate < SlabStart`, `>= SlabEnd`)
+    // mirror the Deallocate body pattern (lines 946-958); on Win64 /
+    // Linux-x86_64 / Android-ARM64 the C++ rules permit total-order
+    // pointer comparison even for unrelated pointers via the
+    // std::less template specialisation. We use the raw operator<
+    // here matching Deallocate; if a future platform tightens the
+    // standard's UB rules we switch to std::less<const void*>.
+    // =================================================================
+    bool FXObjectAllocator::IsHeapAddress(const void* Candidate) const noexcept
+    {
+        if (Candidate == nullptr || m_state == nullptr)
+        {
+            return false;
+        }
+
+        ::XCore::HAL::FScopedReadLock ReadLock(m_state->Lock);
+
+        // --- Normal-class pools: binary search per size class ---
+        for (::int32 sc = 0; sc < kFXObjectAllocatorNumNormalClasses; ++sc)
+        {
+            const FSizeClassPool& SizePool = m_state->SizeClasses[sc];
+            if (SizePool.SlabCount == 0)
+            {
+                continue;
+            }
+            ::int32 Lo = 0;
+            ::int32 Hi = SizePool.SlabCount - 1;
+            while (Lo <= Hi)
+            {
+                const ::int32 Mid = Lo + ((Hi - Lo) / 2);
+                const FSlab* Slab = SizePool.Slabs[Mid];
+                const char* const SlabStart = static_cast<const char*>(Slab->Base);
+                const char* const SlabEnd   = SlabStart +
+                    (static_cast<::SIZE_T>(Slab->NumCells) * SizePool.CellWidth);
+                const char* const C = static_cast<const char*>(Candidate);
+                if (C < SlabStart)
+                {
+                    Hi = Mid - 1;
+                }
+                else if (C >= SlabEnd)
+                {
+                    Lo = Mid + 1;
+                }
+                else
+                {
+                    return true;
+                }
+            }
+        }
+
+        // --- Large-slab list: linear search ---
+        for (::int32 i = 0; i < m_state->LargeSlabCount; ++i)
+        {
+            const FLargeSlab* Slab = m_state->LargeSlabs[i];
+            if (Slab == nullptr)
+            {
+                continue;
+            }
+            const char* const SlabStart = static_cast<const char*>(Slab->Base);
+            const char* const SlabEnd   = SlabStart + Slab->Size;
+            const char* const C = static_cast<const char*>(Candidate);
+            if (C >= SlabStart && C < SlabEnd)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // =================================================================
     // Helpers: per-FClass pool lookup + registration.
     //
     // The class-pool registry is a linear-search dynamic array. At
