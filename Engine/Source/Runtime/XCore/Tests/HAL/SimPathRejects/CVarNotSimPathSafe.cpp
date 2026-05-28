@@ -26,10 +26,15 @@ namespace
 {
     // Declare a non-SimPathSafe CVar; the default flags do not include
     // SimPathSafe.
-    ::XCore::HAL::FAutoConsoleVariable<::int32> g_nonSimPathCVar(
+    //
+    // FAutoConsoleVariable + ECVarFlags live in `XCore::Misc` (the
+    // canonical namespace per FAutoConsoleVariable.h and ECVarFlags.h);
+    // the test file's header includes are under `HAL/` for the path
+    // taxonomy, but the symbols themselves are not in `XCore::HAL`.
+    ::XCore::Misc::FAutoConsoleVariable<::int32> g_nonSimPathCVar(
         "test.NonSimPath", 0,
         "Test: not sim-path-safe",
-        ::XCore::HAL::ECVarFlags::Default);
+        ::XCore::Misc::ECVarFlags::Default);
 }
 
 int main()

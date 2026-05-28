@@ -163,8 +163,13 @@ FLocTableLoader::LoadFromFile(const ::XCore::FString& Path)
     const ::std::uint64_t EntryCount = Bytewise::ReadU64Le(Bytes + kLoctableHeaderSize);
 
     // Parse each entry.
-    ::XCore::TArray<FLocEntry, ::XCore::DefaultAllocator> Entries(
-        ::XCore::DefaultAllocator(::XCore::HAL::FMemTag::Localization));
+    // Uniform initialization (braces) avoids C++ most-vexing-parse: a
+    // parenthesized argument `DefaultAllocator(::XCore::HAL::FMemTag::Localization)`
+    // gets parsed as a function declaration (the qualified name is
+    // interpreted as a parameter name, which is illegal). Braces force
+    // direct-list-initialization unambiguously.
+    ::XCore::TArray<FLocEntry, ::XCore::DefaultAllocator> Entries{
+        ::XCore::DefaultAllocator{::XCore::HAL::FMemTag::Localization}};
 
     ::SIZE_T Cursor = kLoctableHeaderSize + 8u;
     const ::SIZE_T BufEnd = static_cast<::SIZE_T>(FileLen);

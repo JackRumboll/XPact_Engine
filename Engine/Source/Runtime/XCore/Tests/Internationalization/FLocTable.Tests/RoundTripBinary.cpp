@@ -47,8 +47,12 @@ int main()
     ::XCore::HAL::__AdvanceInitPhase(::XCore::HAL::EInitPhase::PostStaticInit);
 
     // ----- Build a small entries set -----
-    TArray<FLocEntry, DefaultAllocator> InEntries(
-        DefaultAllocator(::XCore::HAL::FMemTag::Localization));
+    // Uniform initialization (braces) avoids most-vexing-parse: a
+    // parenthesized `DefaultAllocator(::XCore::HAL::FMemTag::Localization)`
+    // gets parsed as a function declaration (the qualified enum value is
+    // illegal as a parameter name).
+    TArray<FLocEntry, DefaultAllocator> InEntries{
+        DefaultAllocator{::XCore::HAL::FMemTag::Localization}};
     InEntries.Emplace(MakeEntry("Ns1", "K1", "Value1"));
     InEntries.Emplace(MakeEntry("Ns1", "K2", "Value2"));
     InEntries.Emplace(MakeEntry("AnotherNs", "K1", "Different"));

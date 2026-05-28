@@ -656,16 +656,14 @@ namespace XCore
     using FXObjectPostLoadFn                  = ::XCore::Reflect::FXObjectPostLoadFn;
     using FXObjectConvertFromTypeFn           = ::XCore::Reflect::FXObjectConvertFromTypeFn;
 
-    // Re-export of the ToUnderlying overload (capability bitmask -> uint32).
-    //
-    // Note: XCore namespace already has a ToUnderlying(EObjectFlags) from
-    // EObjectFlags.h; the overload set is extended with the capability
-    // variant via a free function here. We use a regular function (not
-    // `using ::XCore::Reflect::ToUnderlying`) so the overload resolution
-    // doesn't ambiguate with the EObjectFlags overload.
-    [[nodiscard]] XPACT_FORCEINLINE constexpr ::std::uint32_t
-        ToUnderlying(EXObjectLifecycleCapability Value) noexcept
-    {
-        return ::XCore::Reflect::ToUnderlying(Value);
-    }
+    // Note: there is NO re-exported `ToUnderlying(EXObjectLifecycleCapability)`
+    // here. The canonical type `EXObjectLifecycleCapability` lives in
+    // `XCore::Reflect`, so ADL on a `XCore::Reflect::EXObjectLifecycleCapability`
+    // argument unambiguously finds `XCore::Reflect::ToUnderlying`. Adding a
+    // duplicate `XCore::ToUnderlying(EXObjectLifecycleCapability)` overload
+    // creates an ambiguity (XCore::ToUnderlying via name lookup vs.
+    // XCore::Reflect::ToUnderlying via ADL) and is therefore intentionally
+    // omitted. Call sites that bring `using ::XCore::ToUnderlying;` into
+    // scope (for the `EObjectFlags` overload) still get the capability
+    // overload through ADL on the argument type.
 } // namespace XCore

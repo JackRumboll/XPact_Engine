@@ -389,6 +389,24 @@ namespace XCore
         // increments; Phase 5.e ships the simple scan).
         [[nodiscard]] ::std::size_t GetConservativeSpanCount() const noexcept;
 
+        // =============================================================
+        // ValidateConservativeCandidate -- public wrapper around the
+        // private four-gate validator.
+        //
+        // The free function `XCore::ValidateConservativeCandidate`
+        // declared in XGCConservativeValidate.h is the consumer-facing
+        // API; it delegates to this method. Exposed publicly (rather
+        // than via `friend`) because the API surface is already
+        // intentionally exposed through the free function -- friending
+        // would add coupling without information-hiding benefit.
+        //
+        // No lock: the four-gate validator itself acquires the
+        // FXObjectArray SHARED lock for the heap-range / index /
+        // entry-bind / SerialNumber probes.
+        // =============================================================
+        [[nodiscard]] XObject* ValidateConservativeCandidate(
+            const void* Candidate) const noexcept;
+
     private:
         XGCRootSpanRegistry() noexcept;
         ~XGCRootSpanRegistry() noexcept;

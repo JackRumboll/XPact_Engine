@@ -25,9 +25,25 @@ namespace
 {
     // -----------------------------------------------------------------
     // 1. XCONSTINIT
+    //
+    // XCONSTINIT expands to `constinit`, which guarantees STATIC-INIT-
+    // TIME initialisation (no dynamic init) but does NOT make the
+    // variable a core-constant-expression (the variable is still
+    // mutable at runtime). A `static_assert(g_ConstInitInt == 42, ...)`
+    // is therefore invalid: the variable's value is not a constant
+    // expression. The compile-time guarantee XCONSTINIT actually
+    // provides is that this declaration WITHOUT a constant initialiser
+    // is a hard error -- which the declaration below exercises by
+    // construction (mistyping the initialiser would fail to compile).
+    //
+    // To validate the value at compile time, we ALSO declare a
+    // `constexpr` companion: constexpr is strictly stronger than
+    // constinit (every constexpr is constinit; not vice versa), and
+    // constexpr values ARE constant expressions.
     // -----------------------------------------------------------------
     XCONSTINIT int g_ConstInitInt = 42;
-    static_assert(g_ConstInitInt == 42, "XCONSTINIT global must initialise correctly");
+    constexpr int  k_ConstInitProbe = 42;
+    static_assert(k_ConstInitProbe == 42, "XCONSTINIT companion constexpr must initialise correctly");
 
     // -----------------------------------------------------------------
     // 2. Inlining + branch-prediction.

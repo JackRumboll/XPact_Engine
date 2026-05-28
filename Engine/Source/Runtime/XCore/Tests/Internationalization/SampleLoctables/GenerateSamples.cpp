@@ -83,8 +83,12 @@ extern "C" int XPact_GenerateSampleLoctables(const char* OutputDir)
 
     // ------- en-US.loctable -------
     {
-        TArray<FLocEntry, DefaultAllocator> Entries(
-            DefaultAllocator(::XCore::HAL::FMemTag::Localization));
+        // Uniform initialization (braces) avoids most-vexing-parse: a
+        // parenthesized `DefaultAllocator(::XCore::HAL::FMemTag::Localization)`
+        // gets parsed as a function declaration (the qualified enum value
+        // is illegal as a parameter name).
+        TArray<FLocEntry, DefaultAllocator> Entries{
+            DefaultAllocator{::XCore::HAL::FMemTag::Localization}};
 
         Entries.Emplace(MakeEntry("FTextTests", "Hello",     "Hello World"));
         Entries.Emplace(MakeEntry("FTextTests", "Bye",       "Goodbye"));
@@ -111,8 +115,10 @@ extern "C" int XPact_GenerateSampleLoctables(const char* OutputDir)
 
     // ------- ja-JP.loctable -------
     {
-        TArray<FLocEntry, DefaultAllocator> Entries(
-            DefaultAllocator(::XCore::HAL::FMemTag::Localization));
+        // Uniform initialization (braces) avoids most-vexing-parse;
+        // see comment on the en-US block above.
+        TArray<FLocEntry, DefaultAllocator> Entries{
+            DefaultAllocator{::XCore::HAL::FMemTag::Localization}};
 
         // UTF-8 byte sequences for Hiragana / Kanji.
         Entries.Emplace(MakeEntry("FTextTests", "Hello",     "\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf"));            // konnichi-wa

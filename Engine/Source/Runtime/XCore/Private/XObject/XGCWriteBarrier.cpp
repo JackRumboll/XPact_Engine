@@ -69,6 +69,32 @@
 #include "XObject/XGCWriteBarrier.h"
 
 // ---------------------------------------------------------------------
+// Macro vs. function-name collision.
+//
+// XGCWriteBarrier.h defines a function-style MACRO `XGC_WriteBarrier`
+// (line 248: `#define XGC_WriteBarrier(SLOT, NEW_VALUE) XPACT_GC_STORE(...)`)
+// for ergonomic call-site use in C++ code (barrier + store as a single
+// statement). XGCDeclarations.h declares an EXTERN "C" FUNCTION with
+// the same name, taking `(void** Slot, void* NewValue)`, that performs
+// only the barrier.
+//
+// Both forms are intentional (the header itself documents the
+// macro-vs-function-form distinction at lines 230-244 of
+// XGCWriteBarrier.h), but the macro shadows the function name at the
+// preprocessor level. The .cpp that DEFINES the function MUST undef
+// the macro first, otherwise the function header expands to a do/while
+// macro body.
+//
+// Call sites in XCore-4a's TArray.h fully-qualify the function as
+// `::XGC::XGC_WriteBarrier(...)` and DO NOT include XGCWriteBarrier.h
+// (only XGCDeclarations.h), so the macro is not in scope at those call
+// sites; only this TU sees the collision.
+// ---------------------------------------------------------------------
+#ifdef XGC_WriteBarrier
+#undef XGC_WriteBarrier
+#endif
+
+// ---------------------------------------------------------------------
 // XGC_WriteBarrier -- strong-symbol implementation.
 //
 // XCore-4a-side containers (TArray<XObject*> et al; see

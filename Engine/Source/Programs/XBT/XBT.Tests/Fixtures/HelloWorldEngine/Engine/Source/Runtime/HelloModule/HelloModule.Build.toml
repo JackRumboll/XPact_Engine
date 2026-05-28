@@ -4,3 +4,11 @@ name = "HelloModule"
 tier = "Engine"
 module_type = "Runtime"
 languages = "Cpp"
+
+# Public-facing headers live under Public/. Without this entry the
+# compiler does not see Hello.h on its include path, so Hello.cpp's
+# `#include "Hello.h"` fails with C1083. Single-element list because
+# the fixture has exactly one Public/ subtree.
+public_include_paths = [
+    "Public",
+]

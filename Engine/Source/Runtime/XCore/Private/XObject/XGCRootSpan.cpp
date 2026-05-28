@@ -460,10 +460,23 @@ namespace XCore
     }
 
     // =================================================================
+    // ValidateConservativeCandidate -- public member wrapper.
+    //
+    // Exposes the private Internal validator to callers outside the
+    // registry class without granting access to the rest of its
+    // private surface. Forwards verbatim; identical pre/postconditions.
+    // =================================================================
+    XObject* XGCRootSpanRegistry::ValidateConservativeCandidate(
+        const void* Candidate) const noexcept
+    {
+        return ValidateConservativeCandidateInternal(Candidate);
+    }
+
+    // =================================================================
     // ValidateConservativeCandidate -- public free function
     // (implementation of the XGCConservativeValidate.h declaration).
     //
-    // Routes through XGCRootSpanRegistry's private member so the
+    // Routes through XGCRootSpanRegistry's public wrapper so the
     // registry's per-Conservative-span scan path + the public API
     // share the same code.
     //
@@ -473,7 +486,7 @@ namespace XCore
     // =================================================================
     XObject* ValidateConservativeCandidate(const void* Candidate) noexcept
     {
-        return XGCRootSpanRegistry::Get().ValidateConservativeCandidateInternal(Candidate);
+        return XGCRootSpanRegistry::Get().ValidateConservativeCandidate(Candidate);
     }
 
 } // namespace XCore

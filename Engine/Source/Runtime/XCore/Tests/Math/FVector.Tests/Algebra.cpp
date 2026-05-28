@@ -24,7 +24,15 @@ namespace
         return (D < 0.0f ? -D : D) < Tol;
     }
 
-    [[nodiscard]] constexpr bool VecNearlyEqual(const ::XCore::FVector& A, const ::XCore::FVector& B, float Tol = 1.0e-5f) noexcept
+    // [[maybe_unused]]: VecNearlyEqual is kept available for future
+    // tolerance-based vector comparisons; the present compile-time
+    // identities don't need it, but removing the helper would force
+    // every future tolerance test to redefine it. The `[[maybe_unused]]`
+    // attribute is the canonical C++17 way to suppress the
+    // unreferenced-function warning (`(void)VecNearlyEqual;` triggers
+    // C4551 "function call missing argument list").
+    [[maybe_unused, nodiscard]]
+    constexpr bool VecNearlyEqual(const ::XCore::FVector& A, const ::XCore::FVector& B, float Tol = 1.0e-5f) noexcept
     {
         return NearlyEqual(A.X, B.X, Tol) && NearlyEqual(A.Y, B.Y, Tol) && NearlyEqual(A.Z, B.Z, Tol);
     }
@@ -194,6 +202,5 @@ int main()
         }
     }
 
-    (void)VecNearlyEqual;  // silence unused-warning
     return 0;
 }

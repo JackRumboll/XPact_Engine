@@ -97,7 +97,13 @@ int main()
             for (int I = 0; I < kRegistrationsPerThread; ++I)
             {
                 const FGuid Key = MakeThreadGuid(T, I);
-                const FName Friendly(static_cast<::uint32>((T << 16) | I), 0);
+                // Both args explicitly typed to disambiguate between
+                // FName(::uint32, ::uint32) and FName(::int32, ::int32):
+                // a bare integer literal `0` is `int`, which converts
+                // ambiguously to either signature when the first arg is
+                // already `::uint32`.
+                const FName Friendly(static_cast<::uint32>((T << 16) | I),
+                                     static_cast<::uint32>(0));
                 const ERegisterResult Result =
                     Registry.RegisterCustomVersion(Key, 1, Friendly);
                 if (Result != ERegisterResult::Registered)

@@ -112,7 +112,9 @@ namespace XCore
         }
 
         // Read the class's base name bytes + length.
-        const ::XCore::Reflect::FName ClassName = Class->GetName();
+        // FStruct's accessor is `GetFName()` (mirroring UE UObject's
+        // GetFName for typed FName retrieval); FClass inherits it.
+        const ::XCore::Reflect::FName ClassName = Class->GetFName();
         const char* const ClassBaseBytes        = ClassName.GetBaseBytes();
         const ::int32 ClassBaseLength            = ClassName.GetBaseLength();
 

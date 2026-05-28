@@ -111,6 +111,25 @@
     #include <source_location>
 #endif
 
+// ---------------------------------------------------------------------
+// OutputDebugStringA forward declaration -- file scope (Win32 only).
+//
+// Declared at the global namespace (NOT inside an anonymous namespace)
+// so the call site can reach it via `::OutputDebugStringA`. Hosting the
+// declaration inside `namespace XCore::Misc { namespace { ... } }` would
+// place the symbol in the TU-local anonymous namespace, which the
+// `::`-qualified call cannot find. The `extern "C"` keeps the C linkage
+// the Win32 ABI requires.
+//
+// Forward-declared (rather than `#include <debugapi.h>`) to avoid
+// dragging in <windows.h>'s ~500k lines of macro pollution (every
+// engine identifier `Far`, `Near`, `IN`, `OUT`, etc., would otherwise
+// be redefined / shadowed).
+// ---------------------------------------------------------------------
+#if defined(_WIN64) || defined(_WIN32)
+extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
+#endif
+
 namespace XCore::Misc
 {
 
@@ -393,13 +412,9 @@ namespace XCore::Misc
     // -----------------------------------------------------------------
     namespace
     {
-        // Forward declare OutputDebugStringA at file scope to avoid
-        // pulling in <Windows.h> (its half-million lines of macro
-        // pollution would conflict with engine identifiers; we only
-        // need this one symbol).
-#if defined(_WIN64) || defined(_WIN32)
-        extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
-#endif
+        // (OutputDebugStringA is forward-declared at file scope above so
+        // the `::OutputDebugStringA` call below finds it in the global
+        // namespace, not in this anonymous namespace.)
 
 #if XPACT_HAS_SOURCE_LOCATION
         void EmitDuplicateRegistrationDiagnostic(const char* Name,
