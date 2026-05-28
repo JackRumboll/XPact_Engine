@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Simgenics.XPact.XBT.ActionGraph;
 using Simgenics.XPact.XBT.Configuration;
 using Simgenics.XPact.XBT.Core;
@@ -596,6 +597,94 @@ public abstract class XToolChain
     {
         FPSemantics resolved = ResolveFPSemantics(module);
         return GetCompileArguments_FPSemantics(resolved);
+    }
+
+    /// <summary>
+    /// Format a list of linker arguments as a response file body. One
+    /// arg per line (LF terminators for cross-host determinism); args
+    /// containing whitespace or embedded quotes are wrapped in double
+    /// quotes with embedded quotes backslash-escaped. Both MSVC
+    /// <c>link.exe</c> and the Clang driver parse response files using
+    /// the CRT command-line rules captured here, so a single helper
+    /// covers both <see cref="XMSVCToolChain.LinkModule"/> and
+    /// <see cref="XClangToolChain.LinkModule"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why response files at all.</b> Modules with hundreds of object
+    /// files (e.g. XCore at 250+ TUs) blow past the host's process-spawn
+    /// command-line limit (~32 KB on Windows <c>CreateProcessW</c>;
+    /// 256 KiB on glibc Linux <c>execve</c>). The standard MSVC + Clang
+    /// fix is the <c>@response.rsp</c> indirection: the toolchain reads
+    /// the file at startup and substitutes its contents into the
+    /// argument stream. XBT applies the pattern unconditionally per the
+    /// Prime Directive (no command-line-length heuristic).
+    /// </para>
+    /// <para>
+    /// <b>Format.</b> One arg per line (the canonical MSVC convention,
+    /// matches how the VS IDE writes its .rsp sidecars). LF (not CRLF)
+    /// is used as the line terminator so the body's content hash is
+    /// identical between Windows and Linux runners; both link.exe and
+    /// clang accept either ending. Args containing whitespace (space,
+    /// tab, newline, CR) or an embedded double-quote are wrapped in
+    /// double quotes with embedded quotes prefixed by a backslash --
+    /// the CRT command-line parsing both link.exe and clang follow.
+    /// Empty args round-trip as <c>""</c>; a bare empty would otherwise
+    /// vanish under the consecutive-whitespace-collapses rule.
+    /// </para>
+    /// </remarks>
+    /// <param name="args">Argument list to serialize. Must not be null.</param>
+    /// <returns>The response file body as a UTF-8-safe string.</returns>
+    protected internal static string FormatResponseFile(IReadOnlyList<string> args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        StringBuilder sb = new();
+        foreach (string arg in args)
+        {
+            AppendResponseFileArg(sb, arg);
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Append <paramref name="arg"/> to <paramref name="sb"/>, quoting
+    /// it with double-quotes when it contains whitespace or an embedded
+    /// double-quote. Used by <see cref="FormatResponseFile"/>.
+    /// </summary>
+    private static void AppendResponseFileArg(StringBuilder sb, string arg)
+    {
+        if (string.IsNullOrEmpty(arg))
+        {
+            sb.Append("\"\"");
+            return;
+        }
+        bool needsQuoting = false;
+        for (int i = 0; i < arg.Length; i++)
+        {
+            char c = arg[i];
+            if (c is ' ' or '\t' or '\n' or '\r' or '"')
+            {
+                needsQuoting = true;
+                break;
+            }
+        }
+        if (!needsQuoting)
+        {
+            sb.Append(arg);
+            return;
+        }
+        sb.Append('"');
+        for (int i = 0; i < arg.Length; i++)
+        {
+            char c = arg[i];
+            if (c == '"')
+            {
+                sb.Append('\\');
+            }
+            sb.Append(c);
+        }
+        sb.Append('"');
     }
 }
 

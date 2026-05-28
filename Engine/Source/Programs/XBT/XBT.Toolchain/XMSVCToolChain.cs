@@ -951,6 +951,39 @@ public sealed class XMSVCToolChain : XToolChain
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// <b>Response-file pattern.</b> Modules with 250+ .obj files (e.g.
+    /// XCore) blow past Windows' ~32 KB <c>CreateProcessW</c> command-
+    /// line limit when their full link command is passed on argv. The
+    /// resulting <c>Win32Exception: filename or extension is too long</c>
+    /// is the textbook MSVC link failure and the canonical fix is the
+    /// <c>@response.rsp</c> indirection: emit the full arg list (envelope
+    /// flags + /LIBPATH + system libs + .obj paths + /OUT) into a
+    /// sibling file and pass only <c>@&lt;path&gt;</c> to link.exe.
+    /// </para>
+    /// <para>
+    /// XBT applies this UNCONDITIONALLY (no command-line-length
+    /// heuristic) per the Prime Directive: the conditional path adds
+    /// branch-coverage burden for no real benefit; the response file is
+    /// the right pattern for every link. The
+    /// <see cref="IExternalAction.ResponseFileContents"/> field carries
+    /// the body; <see cref="ProcessActionRunner"/> materializes it on
+    /// disk, appends <c>@&lt;path&gt;</c> after the toolchain's
+    /// <see cref="IExternalAction.CommandArguments"/>, and deletes it on
+    /// completion. The body participates in the action's
+    /// <c>CommandVersion</c> + <c>ActionHistory</c> cache key, so two
+    /// builds with identical bodies hit the cache and a single .obj
+    /// path change invalidates the link.
+    /// </para>
+    /// <para>
+    /// <see cref="IExternalAction.CommandArguments"/> remains empty: the
+    /// runner appends the <c>@&lt;rsp&gt;</c> indirection unconditionally
+    /// and link.exe accepts a command line consisting solely of the
+    /// indirection (it reads the response file as if its contents were
+    /// inserted at that point in the argument stream).
+    /// </para>
+    /// </remarks>
     public override IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,
@@ -962,13 +995,38 @@ public sealed class XMSVCToolChain : XToolChain
         ArgumentNullException.ThrowIfNull(objectFiles);
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
 
-        List<string> args = new();
-        args.Add("/nologo");
-        args.Add("/DLL");
-        args.Add("/BREPRO");
-        args.Add("/TIMESTAMP:0");
-        args.Add("/INCREMENTAL:NO");
-        args.Add($"/pathmap:{_repoRoot}=X:/R");
+        // Sort objectFiles up front so both the response file body AND
+        // the action's PrerequisiteItems sort-invariant hold against the
+        // same ordering. The caller is expected to pass a sorted list;
+        // we defensively sort here. The sorted order is also what the
+        // response file emits, so two builds with the same .obj set
+        // produce byte-identical response file content and hit the
+        // ActionHistory cache.
+        List<FileItem> sortedObjs = new(objectFiles);
+        sortedObjs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        // Response-file pattern: emit the full link arg list into a body
+        // string. ProcessActionRunner materializes it to disk and appends
+        // an "@<path>" indirection to CommandArguments before invoking
+        // link.exe; the body participates in CommandVersion + the
+        // ActionHistory cache key per ExternalAction.ComputeCommandVersion
+        // (so a .obj path or system-lib change invalidates the cached
+        // link, same as if these args were on the visible command line).
+        //
+        // Args are emitted ONE PER LINE for human readability when
+        // diagnosing a link failure. link.exe parses both whitespace-
+        // separated and newline-separated response files identically;
+        // newlines are the canonical MSVC convention (see
+        // /Documents/XBT.html Rev 4 Section 19.1).
+        List<string> rspArgs = new();
+
+        // === Reproducibility envelope (XBT.html Section 19.1) ===
+        rspArgs.Add("/nologo");
+        rspArgs.Add("/DLL");
+        rspArgs.Add("/BREPRO");
+        rspArgs.Add("/TIMESTAMP:0");
+        rspArgs.Add("/INCREMENTAL:NO");
+        rspArgs.Add($"/pathmap:{_repoRoot}=X:/R");
         // /cgthreads:8 pins the link-time codegen thread count (Contract
         // Section 2.1, Rev 13.2 audit fix). When LTO/WPO is active
         // (/GL + /LTCG), the default thread count is hardware-dependent
@@ -976,11 +1034,11 @@ public sealed class XMSVCToolChain : XToolChain
         // unconditionally is harmless when LTO is off and avoids a
         // conditional-emission branch that would have to track LTO
         // state from elsewhere.
-        args.Add("/cgthreads:8");
+        rspArgs.Add("/cgthreads:8");
 
         string dllName = module.Name + ".dll";
         string dllPath = Path.Combine(outputDir, dllName);
-        args.Add($"/OUT:{dllPath}");
+        rspArgs.Add($"/OUT:{dllPath}");
 
         // Library search paths: VCEnvironment.LibraryPaths is the composite
         // MSVC + Windows SDK path list constructed in a fixed order at
@@ -991,7 +1049,7 @@ public sealed class XMSVCToolChain : XToolChain
         // siblings) is a one-line change there, not here.
         foreach (string lp in _environment.LibraryPaths)
         {
-            args.Add($"/LIBPATH:{lp}");
+            rspArgs.Add($"/LIBPATH:{lp}");
         }
 
         // Standard system libraries the Win32 runtime needs. These are the
@@ -1001,25 +1059,21 @@ public sealed class XMSVCToolChain : XToolChain
         // a missing import.
         foreach (string sysLib in DefaultSystemLibs)
         {
-            args.Add(sysLib);
+            rspArgs.Add(sysLib);
         }
 
-        foreach (FileItem obj in objectFiles)
+        foreach (FileItem obj in sortedObjs)
         {
-            args.Add(obj.FullPath);
+            rspArgs.Add(obj.FullPath);
         }
 
         // NOTE: ModuleRules in XBT.Configuration does not yet expose an
         // AdditionalLibraries collection. When that field lands, append
-        // its contents to args here. Until then, link-line extras flow
+        // its contents to rspArgs here. Until then, link-line extras flow
         // through TargetRules and the per-DLL link command picks up the
         // system + import libraries from VCEnvironment.LibraryPaths.
 
-        // Sort objectFiles before constructing the action so the
-        // ExternalAction sort-invariant holds. The caller is expected to
-        // pass a sorted list; we defensively sort here.
-        List<FileItem> sortedObjs = new(objectFiles);
-        sortedObjs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+        string responseFileContents = FormatResponseFile(rspArgs);
 
         return ExternalAction.Create(new ExternalAction
         {
@@ -1027,7 +1081,16 @@ public sealed class XMSVCToolChain : XToolChain
             PrerequisiteItems = sortedObjs,
             ProducedItems = new[] { FileItem.GetItemByPath(dllPath) },
             CommandPath = _environment.LinkerPath,
-            CommandArguments = args,
+            // CommandArguments deliberately empty: ProcessActionRunner
+            // appends the "@<rsp-path>" indirection unconditionally when
+            // ResponseFileContents is non-null, and link.exe accepts a
+            // command line consisting solely of the indirection. Keeping
+            // CommandArguments empty avoids splitting envelope flags
+            // across two locations (rsp vs argv) which would confuse
+            // both the cache-key invariant and any future diagnostics
+            // that print the visible command line.
+            CommandArguments = Array.Empty<string>(),
+            ResponseFileContents = responseFileContents,
             WorkingDirectory = _repoRoot,
             CommandDescription = "Link",
             StatusDescription = dllName,

@@ -168,8 +168,12 @@ public sealed class XClangToolChainTests : IDisposable
 
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
         IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
-        Assert.Contains("-Wl,--build-id=none", link.CommandArguments);
-        Assert.Contains("-fno-ident", link.CommandArguments);
+        // Link args live in ResponseFileContents (unconditional response-
+        // file pattern); CommandArguments is empty and ProcessActionRunner
+        // appends "@<rsp>" to the visible command line.
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.Contains("-Wl,--build-id=none", link.ResponseFileContents!);
+        Assert.Contains("-fno-ident", link.ResponseFileContents!);
     }
 
     /// <summary>
@@ -220,10 +224,13 @@ public sealed class XClangToolChainTests : IDisposable
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.o"));
         IExternalAction link = _linuxToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
 
-        Assert.DoesNotContain(link.CommandArguments, a => a.StartsWith("--remap-file=", StringComparison.Ordinal));
+        // Link args live in ResponseFileContents (unconditional response-
+        // file pattern); CommandArguments is empty.
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.DoesNotContain("--remap-file=", link.ResponseFileContents!);
         Assert.DoesNotContain(
             "-fdebug-prefix-map=/home/user/repo=X:/R",
-            link.CommandArguments);
+            link.ResponseFileContents!);
     }
 
     /// <summary>
@@ -423,7 +430,11 @@ public sealed class XClangToolChainTests : IDisposable
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "XCore.o"));
         IExternalAction link = _androidToolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
 
-        Assert.Contains("--target=aarch64-linux-android24", link.CommandArguments);
+        // Link args (including the Android target triple) live in
+        // ResponseFileContents per the unconditional response-file
+        // pattern; CommandArguments is empty.
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.Contains("--target=aarch64-linux-android24", link.ResponseFileContents!);
     }
 
     /// <summary>
@@ -476,7 +487,10 @@ public sealed class XClangToolChainTests : IDisposable
         string expected = "--target=aarch64-linux-android21";
         Assert.Contains(expected, binding.Action.CommandArguments);
         Assert.Contains(expected, compile.CommandArguments);
-        Assert.Contains(expected, link.CommandArguments);
+        // Link args live in ResponseFileContents (unconditional response-
+        // file pattern); CommandArguments is empty.
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.Contains(expected, link.ResponseFileContents!);
     }
 
     /// <summary>

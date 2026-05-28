@@ -1090,6 +1090,27 @@ public sealed class XClangToolChain : XToolChain
     }
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// <para>
+    /// <b>Response-file pattern.</b> Modules with hundreds of .o files
+    /// blow past the host's <c>execve</c> ARG_MAX (256 KiB on glibc
+    /// Linux; ~32 KB on Windows <c>CreateProcessW</c>). The clang driver
+    /// accepts the <c>@response.rsp</c> indirection in the same way as
+    /// MSVC's link.exe: every arg in the file is inserted at that point
+    /// in the argument stream. XBT applies the pattern UNCONDITIONALLY
+    /// per the Prime Directive -- the right shape for every link --
+    /// rather than gating it on a per-host limit.
+    /// </para>
+    /// <para>
+    /// <see cref="IExternalAction.ResponseFileContents"/> carries the
+    /// body; <see cref="ProcessActionRunner"/> materializes it on disk
+    /// and appends <c>@&lt;path&gt;</c> after the toolchain's
+    /// <see cref="IExternalAction.CommandArguments"/> (left empty here).
+    /// The body participates in the action's <c>CommandVersion</c> + the
+    /// <see cref="ActionHistory"/> cache key per
+    /// <see cref="ExternalAction.ComputeCommandVersion"/>.
+    /// </para>
+    /// </remarks>
     public override IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,
@@ -1101,8 +1122,21 @@ public sealed class XClangToolChain : XToolChain
         ArgumentNullException.ThrowIfNull(objectFiles);
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
 
-        List<string> args = new();
-        args.Add("-shared");
+        // Sort objectFiles up front so both the response file body AND
+        // the action's PrerequisiteItems sort-invariant hold against the
+        // same ordering. The sorted order is what the response file
+        // emits, so two builds with the same .o set produce byte-
+        // identical response file content and hit the ActionHistory
+        // cache.
+        List<FileItem> sortedObjs = new(objectFiles);
+        sortedObjs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
+
+        // Response-file pattern: emit every link arg into a body string
+        // (one per line for human readability when diagnosing a link
+        // failure). ProcessActionRunner materializes it on disk and
+        // appends "@<path>" to the visible command line.
+        List<string> rspArgs = new();
+        rspArgs.Add("-shared");
         // Audit fix M1: <c>--remap-file=</c> is NOT a valid clang/lld
         // flag for source-path remapping. The Rev 13.1 emit was wrong;
         // ld.lld treats unknown options as a fatal error on recent
@@ -1114,8 +1148,8 @@ public sealed class XClangToolChain : XToolChain
         // deterministic via <c>-Wl,--build-id=none</c> + <c>-fno-ident</c>
         // (no embedded build-id, no GCC banner) which strip the only
         // host-dependent metadata clang otherwise injects.
-        args.Add("-fno-ident");
-        args.Add("-Wl,--build-id=none");
+        rspArgs.Add("-fno-ident");
+        rspArgs.Add("-Wl,--build-id=none");
 
         // === Android target triple (audit fix R8-C1) ===
         // Identical to the CompileSource / GeneratePCH emission. The
@@ -1126,13 +1160,13 @@ public sealed class XClangToolChain : XToolChain
         if (_platform == Platform.Android)
         {
             androidTriple = ComposeAndroidTargetTriple(target.Architecture, target.AndroidApiLevel);
-            args.Add($"--target={androidTriple}");
+            rspArgs.Add($"--target={androidTriple}");
         }
 
         string soName = "lib" + module.Name + ".so";
         string soPath = Path.Combine(outputDir, soName);
-        args.Add("-o");
-        args.Add(soPath);
+        rspArgs.Add("-o");
+        rspArgs.Add(soPath);
 
         // SimPath: link-time libm exclusion + Sleef vendoring. The Sleef
         // library itself is Phase 1.3 / Layer 5; until then we emit the
@@ -1147,21 +1181,19 @@ public sealed class XClangToolChain : XToolChain
             // library path. When Sleef integration lands the marker is
             // replaced with the real -lsleef -nostdlib++ posture per
             // Contract Section 4.3.)
-            args.Add("-Wl,--no-undefined");
+            rspArgs.Add("-Wl,--no-undefined");
         }
 
-        // Sort objectFiles before constructing the action so the
-        // ExternalAction sort-invariant holds.
-        List<FileItem> sortedObjs = new(objectFiles);
-        sortedObjs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
         foreach (FileItem obj in sortedObjs)
         {
-            args.Add(obj.FullPath);
+            rspArgs.Add(obj.FullPath);
         }
 
         // NOTE: ModuleRules in XBT.Configuration does not yet expose an
         // AdditionalLibraries collection. When that field lands, append
-        // its contents to args here.
+        // its contents to rspArgs here.
+
+        string responseFileContents = FormatResponseFile(rspArgs);
 
         return ExternalAction.Create(new ExternalAction
         {
@@ -1169,7 +1201,12 @@ public sealed class XClangToolChain : XToolChain
             PrerequisiteItems = sortedObjs,
             ProducedItems = new[] { FileItem.GetItemByPath(soPath) },
             CommandPath = _clangPath,
-            CommandArguments = args,
+            // CommandArguments deliberately empty: ProcessActionRunner
+            // appends the "@<rsp-path>" indirection unconditionally when
+            // ResponseFileContents is non-null. Clang's driver accepts a
+            // command line consisting solely of the indirection.
+            CommandArguments = Array.Empty<string>(),
+            ResponseFileContents = responseFileContents,
             WorkingDirectory = _repoRoot,
             CommandDescription = "Link",
             StatusDescription = soName,

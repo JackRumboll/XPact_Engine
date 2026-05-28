@@ -168,13 +168,18 @@ public sealed class XMSVCToolChainTests : IDisposable
         Assert.Contains("/Brepro", compile.CommandArguments);
         Assert.Contains(@"/pathmap:C:\repo=X:/R", compile.CommandArguments);
 
-        // Link.
+        // Link. The link action emits the full arg list (envelope flags
+        // + libpaths + system libs + .obj paths + /OUT) into
+        // ResponseFileContents per the unconditional response-file
+        // pattern; CommandArguments is empty and ProcessActionRunner
+        // appends "@<rsp>" before invoking link.exe.
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
         IExternalAction link = _toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
-        Assert.Contains("/BREPRO", link.CommandArguments);
-        Assert.Contains("/TIMESTAMP:0", link.CommandArguments);
-        Assert.Contains("/INCREMENTAL:NO", link.CommandArguments);
-        Assert.Contains("/cgthreads:8", link.CommandArguments);
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.Contains("/BREPRO", link.ResponseFileContents!);
+        Assert.Contains("/TIMESTAMP:0", link.ResponseFileContents!);
+        Assert.Contains("/INCREMENTAL:NO", link.ResponseFileContents!);
+        Assert.Contains("/cgthreads:8", link.ResponseFileContents!);
     }
 
     /// <summary>
@@ -294,10 +299,18 @@ public sealed class XMSVCToolChainTests : IDisposable
         FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
         IExternalAction link = toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
 
+        // The link action's full arg list lives in ResponseFileContents
+        // (envelope flags + /LIBPATH + system libs + .obj paths + /OUT)
+        // per the unconditional response-file pattern. CommandArguments
+        // is empty; ProcessActionRunner appends "@<rsp>" to the visible
+        // command line before invoking link.exe.
+        Assert.NotNull(link.ResponseFileContents);
+        string rsp = link.ResponseFileContents!;
+
         // Every LibraryPaths entry must appear as a /LIBPATH:<path> arg.
         foreach (string libPath in env.LibraryPaths)
         {
-            Assert.Contains($"/LIBPATH:{libPath}", link.CommandArguments);
+            Assert.Contains($"/LIBPATH:{libPath}", rsp);
         }
 
         // Default system libs must all be present.
@@ -308,7 +321,7 @@ public sealed class XMSVCToolChainTests : IDisposable
             "oleaut32.lib", "uuid.lib", "odbc32.lib", "odbccp32.lib",
         })
         {
-            Assert.Contains(sysLib, link.CommandArguments);
+            Assert.Contains(sysLib, rsp);
         }
     }
 
@@ -651,6 +664,229 @@ public sealed class XMSVCToolChainTests : IDisposable
             .FullPath;
 
         Assert.Equal(Path.Combine(_scratchDir, "Foo.obj"), objPath);
+    }
+
+    // ===== Response-file pattern (XCore.dll linker fix) =====
+
+    /// <summary>
+    /// Linker filename-too-long fix: <see cref="XMSVCToolChain.LinkModule"/>
+    /// emits the full argument list (envelope flags + /LIBPATH +
+    /// system libs + .obj paths + /OUT) into
+    /// <see cref="IExternalAction.ResponseFileContents"/> and leaves
+    /// <see cref="IExternalAction.CommandArguments"/> empty. The
+    /// <see cref="ProcessActionRunner"/> appends the <c>@&lt;rsp&gt;</c>
+    /// indirection unconditionally; link.exe parses the response file
+    /// at startup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Modules with 250+ object files (e.g. XCore at 481 actions) blew
+    /// past Windows' ~32 KB <c>CreateProcessW</c> command-line limit
+    /// before this fix, with the textbook
+    /// <c>Win32Exception: filename or extension is too long</c>. XBT
+    /// applies the response-file pattern unconditionally per the Prime
+    /// Directive -- the right shape for every link -- rather than gating
+    /// on per-host limits.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void LinkModule_UsesResponseFile_NotCommandArguments()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        IExternalAction link = _toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        // CommandArguments is empty; the runner appends "@<rsp>" at
+        // dispatch time. Keeping CommandArguments empty is the canonical
+        // signal that the action delegates its argument transport to the
+        // response file.
+        Assert.Empty(link.CommandArguments);
+
+        // ResponseFileContents holds the full link command body.
+        Assert.NotNull(link.ResponseFileContents);
+        Assert.NotEmpty(link.ResponseFileContents!);
+    }
+
+    /// <summary>
+    /// The response file body is line-oriented (one arg per line,
+    /// LF terminator). link.exe parses both whitespace-separated and
+    /// newline-separated response files identically; XBT uses the
+    /// newline form because it is the canonical MSVC convention and is
+    /// readable when diagnosing a link failure.
+    /// </summary>
+    [Fact]
+    public void LinkModule_ResponseFile_IsOneArgPerLine_LfTerminated()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        IExternalAction link = _toolchain.LinkModule(module, target, new[] { obj }, _scratchDir);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains('\n', rsp);
+        // CRLF is the host's Environment.NewLine on Windows but the body
+        // is LF-only so two builds on different hosts produce byte-
+        // identical content. Spot-check that no CR sneaks in.
+        Assert.DoesNotContain('\r', rsp);
+        // Each non-empty arg occupies a full line; tally distinct line
+        // count and cross-check against the spec-required floor (envelope
+        // flags + /OUT + at least one default system lib + the single
+        // .obj). Tight floor avoids brittling on future flag additions.
+        int lineCount = rsp.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+        Assert.True(lineCount >= 8,
+            $"Expected the response file body to contain at least 8 lines (envelope flags + /OUT + system libs + .obj); got {lineCount}.");
+    }
+
+    /// <summary>
+    /// A link command with 100+ object files materializes a response file
+    /// that contains every .obj path on its own line, with
+    /// <see cref="IExternalAction.CommandArguments"/> still empty. This
+    /// is the codified scenario the response-file pattern exists to
+    /// solve: the equivalent flat command line would exceed Windows'
+    /// 32 KB limit and fail at <c>CreateProcessW</c>.
+    /// </summary>
+    [Fact]
+    public void LinkModule_LongObjList_AllPathsInResponseFile_CmdArgsEmpty()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        // 200 synthetic .obj paths, each one moderately long, mirror the
+        // XCore.dll shape that exposed the original failure (250+ .obj
+        // files yielding a >32 KB link command line). Path stems include
+        // an index so the entries are unique and sort-stable.
+        const int objCount = 200;
+        FileItem[] objs = new FileItem[objCount];
+        int totalArgBytes = 0;
+        for (int i = 0; i < objCount; i++)
+        {
+            string objPath = Path.Combine(
+                _scratchDir, "obj",
+                $"Some_Module_With_A_Modest_Name_{i:D4}.cpp.obj");
+            objs[i] = FileItem.GetItemByPath(objPath);
+            totalArgBytes += objPath.Length + 1; // +1 for the line terminator
+        }
+
+        IExternalAction link = _toolchain.LinkModule(module, target, objs, _scratchDir);
+
+        // The visible command line is empty -- the runner is responsible
+        // for appending the "@<rsp>" indirection at dispatch time.
+        Assert.Empty(link.CommandArguments);
+
+        // Every synthetic .obj path appears on its own line in the
+        // response file body.
+        string rsp = link.ResponseFileContents!;
+        for (int i = 0; i < objCount; i++)
+        {
+            string expected = objs[i].FullPath;
+            Assert.Contains(expected, rsp);
+        }
+
+        // Cross-check that the response file would, in fact, have
+        // exceeded the typical command-line limit if it had been passed
+        // on argv. The threshold guarantees the test is exercising the
+        // limit-busting regime rather than a fits-comfortably case.
+        Assert.True(totalArgBytes > 10_000,
+            $"Expected the .obj arg block alone to exceed 10 KB; got {totalArgBytes} bytes.");
+
+        // The response file body itself is correspondingly large.
+        Assert.True(rsp.Length > 10_000,
+            $"Expected the response file body to reflect the long arg list; got {rsp.Length} chars.");
+    }
+
+    /// <summary>
+    /// The response file body is sorted by .obj path (ordinal). Two
+    /// link calls with the same .obj set must produce byte-identical
+    /// response file content so the ActionHistory cache hits when
+    /// nothing changed. The body participates in
+    /// <see cref="ExternalAction.ComputeCommandVersion"/>'s hash per
+    /// item 4, so any reordering rotates the action key and forces a
+    /// re-link.
+    /// </summary>
+    [Fact]
+    public void LinkModule_ResponseFile_IsDeterministicAcrossCalls()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem[] objsForward = new[]
+        {
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "A.obj")),
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "B.obj")),
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "C.obj")),
+        };
+        FileItem[] objsReversed = new[]
+        {
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "C.obj")),
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "B.obj")),
+            FileItem.GetItemByPath(Path.Combine(_scratchDir, "A.obj")),
+        };
+
+        IExternalAction linkForward = _toolchain.LinkModule(module, target, objsForward, _scratchDir);
+        IExternalAction linkReversed = _toolchain.LinkModule(module, target, objsReversed, _scratchDir);
+
+        // LinkModule defensively sorts its .obj list internally, so the
+        // input order at the call site does not affect the response file
+        // content. Two calls with the same .obj set produce byte-
+        // identical bodies regardless of caller-supplied order.
+        Assert.Equal(linkForward.ResponseFileContents, linkReversed.ResponseFileContents);
+    }
+
+    /// <summary>
+    /// The response file body participates in
+    /// <see cref="IExternalAction.CommandVersion"/> per
+    /// <see cref="ExternalAction.ComputeCommandVersion"/> item 4. A
+    /// change to any .obj path rotates the version hash, which
+    /// invalidates the cached link. Without this property, two distinct
+    /// link inputs would silently alias to the same cache entry.
+    /// </summary>
+    [Fact]
+    public void LinkModule_ResponseFileBody_FlowsIntoCommandVersion()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem objA = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        FileItem objB = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Bar.obj"));
+
+        IExternalAction linkA = _toolchain.LinkModule(module, target, new[] { objA }, _scratchDir);
+        IExternalAction linkB = _toolchain.LinkModule(module, target, new[] { objB }, _scratchDir);
+
+        Assert.NotEqual(linkA.ResponseFileContents, linkB.ResponseFileContents);
+        Assert.NotEqual(linkA.CommandVersion, linkB.CommandVersion);
+    }
+
+    /// <summary>
+    /// <see cref="XToolChain.FormatResponseFile"/> quotes args containing
+    /// whitespace with double-quotes and escapes any embedded double
+    /// quote with a backslash. Path-with-space inputs (rare on Windows
+    /// CI but possible on dev workstations under <c>C:\Program Files</c>)
+    /// round-trip cleanly through both link.exe's and clang's response-
+    /// file parsers, both of which follow the CRT quoting rules captured
+    /// here.
+    /// </summary>
+    [Fact]
+    public void FormatResponseFile_QuotesArgsWithWhitespace_And_EscapesEmbeddedQuotes()
+    {
+        string body = XToolChain.FormatResponseFile(new[]
+        {
+            "/nologo",                                   // verbatim
+            "/LIBPATH:C:\\Program Files\\Lib",           // path with space -> quoted
+            "\"already-quoted\"",                        // embedded quotes -> escaped
+            "",                                           // empty arg -> "" (round-trip)
+        });
+
+        // Args without whitespace are appended verbatim, terminator LF.
+        Assert.Contains("/nologo\n", body);
+        // Path with space wraps in double quotes.
+        Assert.Contains("\"/LIBPATH:C:\\Program Files\\Lib\"\n", body);
+        // Embedded double quote escaped with backslash.
+        Assert.Contains("\"\\\"already-quoted\\\"\"\n", body);
+        // Empty arg becomes "".
+        Assert.Contains("\"\"\n", body);
     }
 
     // ----- Helpers -----
