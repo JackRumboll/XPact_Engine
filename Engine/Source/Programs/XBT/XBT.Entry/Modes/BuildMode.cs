@@ -760,6 +760,44 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // ---- 12. Execute -----------------------------------------------
         ExecutionReport report = ExecuteGraph(graph, history, cppDependencyCache, cancellationToken);
 
+        // ---- 12.5 Surface per-action failure diagnostics ---------------
+        // ParallelExecutor stores a per-action ErrorMessage on every
+        // failed ActionResult but historically had no callback / log
+        // path to dump them; a build with 800 silent failures was
+        // unactionable. Walk the results once and emit the first N
+        // root-cause failures (failed actions that were NOT skipped due
+        // to a failed prerequisite) so the build log surfaces the actual
+        // toolchain / runner error rather than just an aggregate count.
+        // We cap the emission so a mass-failure (e.g. a missing system
+        // header that breaks every TU) doesn't flood the log.
+        const int MaxFailuresToReport = 20;
+        int rootCauseEmitted = 0;
+        foreach (var kvp in report.Results)
+        {
+            ActionResult r = kvp.Value;
+            if (r.Success || r.Skipped)
+            {
+                continue;
+            }
+            if (rootCauseEmitted >= MaxFailuresToReport)
+            {
+                break;
+            }
+            string? msg = r.ErrorMessage;
+            Logger.Error(
+                $"Action failed: {kvp.Key.Description} (exit={r.ExitCode}): " +
+                (string.IsNullOrEmpty(msg) ? "(no message)" : msg),
+                exitCode: r.ExitCode,
+                new DiagnosticContext
+                {
+                    Action = kvp.Key.Action.CommandDescription,
+                    Module = kvp.Key.Action.Module,
+                    Tier = kvp.Key.Action.Tier,
+                    SimPath = kvp.Key.Action.SimPath,
+                });
+            rootCauseEmitted++;
+        }
+
         // ---- 13. Save ActionHistory + CppDependencyCache --------------
         // Audit fix R7-M5: re-acquires the build mutex briefly, saves,
         // releases. Save is best-effort -- a failure is logged but
@@ -1376,7 +1414,9 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 // promptly on Ctrl-C / IDE cancellation.
                 cancellationToken.ThrowIfCancellationRequested();
                 IReadOnlyList<IExternalAction> compileActions =
-                    toolchain.CompileSource(module, target, source, moduleObjDir, pchBinding);
+                    toolchain.CompileSource(
+                        module, target, source, moduleObjDir, pchBinding,
+                        moduleSourceDir: moduleDir);
                 foreach (IExternalAction compile in compileActions)
                 {
                     actions.Add(compile);

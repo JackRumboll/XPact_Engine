@@ -764,6 +764,79 @@ public sealed class XClangToolChainTests : IDisposable
         Assert.Equal(realHash, ToolchainSelfHash.XbtBinaryHash);
     }
 
+    /// <summary>
+    /// Clang mirror of XMSVCToolChainTests's duplicate-basename test:
+    /// two source files with the same basename in different
+    /// subdirectories under the module source root must produce
+    /// distinct .o paths. Without this, the link step would receive
+    /// duplicate prerequisites and the build would fail before any TU
+    /// reached the linker.
+    /// </summary>
+    [Fact]
+    public void CompileSource_DuplicateBasenameInDistinctSubdirs_ProducesDistinctObjPaths()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget(Platform.Linux);
+
+        string moduleSourceDir = Path.Combine(_scratchDir, "ModSrc");
+        string outputDir = Path.Combine(_scratchDir, "Obj");
+        Directory.CreateDirectory(outputDir);
+
+        FileItem sourceA = FileItem.GetItemByPath(
+            Path.Combine(moduleSourceDir, "SubA", "Same.cpp"));
+        FileItem sourceB = FileItem.GetItemByPath(
+            Path.Combine(moduleSourceDir, "SubB", "Same.cpp"));
+
+        IExternalAction compileA = _linuxToolchain.CompileSource(
+            module, target, sourceA, outputDir,
+            pch: null, moduleSourceDir: moduleSourceDir).Single();
+        IExternalAction compileB = _linuxToolchain.CompileSource(
+            module, target, sourceB, outputDir,
+            pch: null, moduleSourceDir: moduleSourceDir).Single();
+
+        string ObjOf(IExternalAction action) => action.ProducedItems
+            .First(i => i.FullPath.EndsWith(".o", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        string objA = ObjOf(compileA);
+        string objB = ObjOf(compileB);
+
+        Assert.NotEqual(objA, objB);
+        Assert.Equal(Path.Combine(outputDir, "SubA", "Same.o"), objA);
+        Assert.Equal(Path.Combine(outputDir, "SubB", "Same.o"), objB);
+
+        // The .d sidecar lives alongside the .o, so the same-basename
+        // collision cannot reappear at the dependency-tracking layer.
+        string DepOf(IExternalAction action) => action.ProducedItems
+            .First(i => i.FullPath.EndsWith(".d", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        Assert.Equal(objA + ".d", DepOf(compileA));
+        Assert.Equal(objB + ".d", DepOf(compileB));
+    }
+
+    /// <summary>
+    /// When <c>moduleSourceDir</c> is omitted (or empty), the Clang
+    /// toolchain falls back to flat basename-only naming under
+    /// <c>outputDir</c>. Same rationale as the MSVC mirror test.
+    /// </summary>
+    [Fact]
+    public void CompileSource_NoModuleSourceDir_KeepsFlatBasenameLayout()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget(Platform.Linux);
+
+        IExternalAction compile = _linuxToolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir)
+            .Single();
+
+        string objPath = compile.ProducedItems
+            .First(i => i.FullPath.EndsWith(".o", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        Assert.Equal(Path.Combine(_scratchDir, "Foo.o"), objPath);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

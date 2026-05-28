@@ -130,7 +130,7 @@ public sealed class ClangdCompileCommandsGenerator : IProjectFileGenerator
             {
                 token.ThrowIfCancellationRequestedWithDiagnostic("ClangdCompileCommandsGenerator.CollectEntries.file");
 
-                IExternalAction compileAction = GetCompileAction(rec.Rules, context, sourceFile);
+                IExternalAction compileAction = GetCompileAction(rec.Rules, context, sourceFile, moduleDir);
                 string clangCommand = BuildClangCommand(compileAction, context.ToolChain.Platform);
 
                 string normalisedFile = NormalisePath(sourceFile);
@@ -180,12 +180,19 @@ public sealed class ClangdCompileCommandsGenerator : IProjectFileGenerator
     private static IExternalAction GetCompileAction(
         ModuleRules module,
         GenerationContext context,
-        string sourceFilePath)
+        string sourceFilePath,
+        string moduleDir)
     {
         // Compose the synthetic FileItem for the source TU and a
         // scratch output directory under Intermediate/. The output
         // path appears only in the emitted command's /Fo or -o flag;
-        // we never write to it from this generator.
+        // we never write to it from this generator. We still thread
+        // moduleSourceDir = moduleDir so the .obj path encoded in the
+        // emitted command matches the layout BuildMode would actually
+        // produce on disk -- clangd interprets the .obj path for
+        // some diagnostic hovers and a divergent path here would
+        // confuse the IDE when two same-basename TUs sit in sibling
+        // subdirectories.
         FileItem sourceItem = FileItem.GetItemByPath(sourceFilePath);
         string scratchOut = Path.Combine(
             context.EngineRoot,
@@ -200,7 +207,8 @@ public sealed class ClangdCompileCommandsGenerator : IProjectFileGenerator
             module: module,
             target: context.Target,
             sourceFile: sourceItem,
-            outputDir: scratchOut);
+            outputDir: scratchOut,
+            moduleSourceDir: moduleDir);
 
         // The toolchain returns a single CompileCppAction for most
         // modules. Multi-action returns are reserved for paths like

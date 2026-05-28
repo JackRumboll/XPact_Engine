@@ -386,7 +386,8 @@ public sealed class XClangToolChain : XToolChain
         TargetRules target,
         FileItem sourceFile,
         string outputDir,
-        PCHBinding? pch = null)
+        PCHBinding? pch = null,
+        string moduleSourceDir = "")
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -516,9 +517,13 @@ public sealed class XClangToolChain : XToolChain
         VerifyNoBannedFlags(module, args);
 
         // === Output ===
-        string objName = Path.GetFileNameWithoutExtension(sourceFile.FullPath) + ".o";
-        string objPath = Path.Combine(outputDir, objName);
-        string depPath = Path.Combine(outputDir, objName + ".d");
+        // ComposeObjectFilePath threads moduleSourceDir through so two
+        // TUs with the same basename in different subdirectories of
+        // the same module produce distinct .o paths. The Makefile-
+        // format .d sidecar sits alongside the .o so the orphan-sweep
+        // and CppDependencyCache hooks track the same parent directory.
+        string objPath = ComposeObjectFilePath(sourceFile, outputDir, moduleSourceDir, "o");
+        string depPath = objPath + ".d";
         args.Add("-MF");
         args.Add(depPath);
         args.Add("-o");

@@ -129,7 +129,8 @@ public sealed class XMSVCToolChain : XToolChain
         TargetRules target,
         FileItem sourceFile,
         string outputDir,
-        PCHBinding? pch = null)
+        PCHBinding? pch = null,
+        string moduleSourceDir = "")
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -244,8 +245,16 @@ public sealed class XMSVCToolChain : XToolChain
         }
 
         // === Output ===
-        string objName = Path.GetFileNameWithoutExtension(sourceFile.FullPath) + ".obj";
-        string objPath = Path.Combine(outputDir, objName);
+        // ComposeObjectFilePath threads moduleSourceDir through so two
+        // TUs with the same basename in different subdirectories of
+        // the same module produce distinct .obj paths (the duplicate-
+        // prerequisite bug that otherwise stops the link of any module
+        // with same-named source files in sibling test directories
+        // like FAtomicInt32.Tests / FAtomicInt64.Tests). The helper
+        // creates the .obj's parent directory so cl.exe's /Fo write
+        // does not fail when the relative subdirectory does not yet
+        // exist on disk.
+        string objPath = ComposeObjectFilePath(sourceFile, outputDir, moduleSourceDir, "obj");
         args.Add($"/Fo{objPath}");
 
         // === Header dependency tracking (audit fix R3-C1) ===
@@ -258,9 +267,11 @@ public sealed class XMSVCToolChain : XToolChain
         //
         // MSVC 17.4+ is required for /sourceDependencies; XBT's VS 2026
         // BuildTools floor is 17.10 so the flag is always available in
-        // a supported environment. The path is alongside the .obj so the
-        // orphan-temp-file sweep tracks the same parent directory.
-        string depJsonPath = Path.Combine(outputDir, objName + ".deps.json");
+        // a supported environment. The .deps.json sits alongside the
+        // .obj (sharing its directory and basename) so the orphan-
+        // temp-file sweep tracks the same parent directory and the
+        // sidecar moves with the .obj whenever the .obj relocates.
+        string depJsonPath = objPath + ".deps.json";
         args.Add($"/sourceDependencies");
         args.Add(depJsonPath);
 

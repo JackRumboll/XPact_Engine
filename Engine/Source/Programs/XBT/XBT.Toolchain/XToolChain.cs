@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Simgenics.XPact.XBT.ActionGraph;
 using Simgenics.XPact.XBT.Configuration;
 using Simgenics.XPact.XBT.Core;
@@ -62,12 +63,29 @@ public abstract class XToolChain
     /// <c>-include-pch</c> (Clang) flags so the TU consumes the PCH
     /// per Toolchain Contract Rev 13 Section 1.5.
     /// </param>
+    /// <param name="moduleSourceDir">
+    /// Optional absolute path of the module's source root (the
+    /// directory the module's <c>.Build.toml</c> / <c>.Build.cs</c>
+    /// descriptor lives in). When set and <paramref name="sourceFile"/>
+    /// is under it, the toolchain composes the .obj/.o output path
+    /// under <c>{outputDir}/{srcRelDir}/{basename}.{ext}</c> where
+    /// <c>srcRelDir</c> is the source file's parent directory relative
+    /// to <paramref name="moduleSourceDir"/>. This mirrors the UE
+    /// intermediate layout and disambiguates same-basename TUs that
+    /// live in different subdirectories of the same module (e.g.
+    /// <c>Tests/HAL/FAtomicInt32.Tests/CASContention.cpp</c> vs.
+    /// <c>Tests/HAL/FAtomicInt64.Tests/CASContention.cpp</c>). When
+    /// empty (default) or when the source file is not located under
+    /// the named directory, the toolchain falls back to flat
+    /// basename-only naming directly under <paramref name="outputDir"/>.
+    /// </param>
     public abstract IReadOnlyList<IExternalAction> CompileSource(
         ModuleRules module,
         TargetRules target,
         FileItem sourceFile,
         string outputDir,
-        PCHBinding? pch = null);
+        PCHBinding? pch = null,
+        string moduleSourceDir = "");
 
     /// <summary>
     /// Produce the link action for a module. One
@@ -292,6 +310,96 @@ public abstract class XToolChain
                 "PCHUsage = NoPCHs or NoSharedPCHs; SharedPCH on a sim-path module is " +
                 "banned because PCH non-determinism violates sim-path determinism.");
         }
+    }
+
+    /// <summary>
+    /// Compose the absolute on-disk path for a per-source intermediate
+    /// artefact (.obj on MSVC, .o on Clang) plus its parent directory.
+    /// Centralised here so MSVC and Clang implementations of
+    /// <see cref="CompileSource"/> share the same naming policy and
+    /// can never drift apart on disambiguation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When <paramref name="moduleSourceDir"/> is non-empty AND
+    /// <paramref name="sourceFile"/> lives under it, the artefact lands
+    /// at <c>{outputDir}/{srcRelDir}/{basename}.{extension}</c> where
+    /// <c>srcRelDir</c> is <paramref name="sourceFile"/>'s parent
+    /// directory relative to <paramref name="moduleSourceDir"/>. This
+    /// mirrors the UE intermediate layout and disambiguates same-
+    /// basename TUs in different subdirectories (the duplicate-
+    /// prerequisite bug at the link layer).
+    /// </para>
+    /// <para>
+    /// When <paramref name="moduleSourceDir"/> is empty OR the source
+    /// is not under it (relative path escapes via <c>..</c>), the
+    /// artefact falls back to flat <c>{outputDir}/{basename}.{extension}</c>.
+    /// The fallback preserves the contract used by ad-hoc toolchain
+    /// tests that don't declare a module source root.
+    /// </para>
+    /// <para>
+    /// The parent directory of the returned path is created (via
+    /// <see cref="Directory.CreateDirectory(string)"/>) so cl.exe / clang
+    /// can write the artefact without a prior mkdir step from the
+    /// orchestrator. Idempotent; safe for the orchestrator to also
+    /// pre-create <paramref name="outputDir"/>.
+    /// </para>
+    /// </remarks>
+    /// <param name="sourceFile">The source TU.</param>
+    /// <param name="outputDir">
+    /// Absolute path of the module's intermediate output root.
+    /// </param>
+    /// <param name="moduleSourceDir">
+    /// Optional absolute path of the module's source root. Empty
+    /// string selects the flat-basename fallback.
+    /// </param>
+    /// <param name="extension">
+    /// Per-toolchain object-file extension WITHOUT the leading dot
+    /// (e.g. <c>"obj"</c> for MSVC, <c>"o"</c> for Clang).
+    /// </param>
+    /// <returns>
+    /// The absolute path of the to-be-produced object file.
+    /// </returns>
+    protected static string ComposeObjectFilePath(
+        FileItem sourceFile,
+        string outputDir,
+        string moduleSourceDir,
+        string extension)
+    {
+        ArgumentNullException.ThrowIfNull(sourceFile);
+        ArgumentException.ThrowIfNullOrEmpty(outputDir);
+        ArgumentException.ThrowIfNullOrEmpty(extension);
+
+        string baseName = Path.GetFileNameWithoutExtension(sourceFile.FullPath) + "." + extension;
+
+        string objPath;
+        if (!string.IsNullOrEmpty(moduleSourceDir))
+        {
+            string sourceParent = Path.GetDirectoryName(sourceFile.FullPath) ?? string.Empty;
+            string relParent = Path.GetRelativePath(moduleSourceDir, sourceParent);
+
+            // GetRelativePath returns "." when the source's parent IS
+            // the module source dir; treat that the same as an empty
+            // relative subdir. Any path that escapes upward via ".."
+            // means the source is outside the named module root --
+            // fall back to flat naming so we never compose an .obj
+            // path outside outputDir.
+            bool isUnderModule =
+                relParent != "."
+                && !relParent.StartsWith("..", StringComparison.Ordinal)
+                && !Path.IsPathRooted(relParent);
+
+            objPath = isUnderModule
+                ? Path.Combine(outputDir, relParent, baseName)
+                : Path.Combine(outputDir, baseName);
+        }
+        else
+        {
+            objPath = Path.Combine(outputDir, baseName);
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(objPath)!);
+        return objPath;
     }
 
     /// <summary>

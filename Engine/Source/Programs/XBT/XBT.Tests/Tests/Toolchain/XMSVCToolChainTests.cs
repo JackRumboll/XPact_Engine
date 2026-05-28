@@ -564,6 +564,95 @@ public sealed class XMSVCToolChainTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Two source files with the same basename living in different
+    /// subdirectories under the module's source root must produce
+    /// distinct .obj paths. Without this, the link action receives
+    /// two prerequisite items with identical FullPath, and
+    /// <see cref="ExternalAction.Create"/>'s <c>ValidateSorted</c>
+    /// throws a duplicate-entry exception that fails the build.
+    ///
+    /// Real-world trigger:
+    /// Engine/Source/Runtime/XCore/Tests/HAL/FAtomicInt32.Tests/CASContention.cpp
+    /// vs.
+    /// Engine/Source/Runtime/XCore/Tests/HAL/FAtomicInt64.Tests/CASContention.cpp
+    /// (and several other duplicate-basename pairs under the
+    /// XCore.Tests source tree).
+    ///
+    /// Fix: the toolchain composes the .obj path under a sub-directory
+    /// of <c>outputDir</c> derived from the source file's path
+    /// relative to <c>moduleSourceDir</c> -- the UE convention.
+    /// </summary>
+    [Fact]
+    public void CompileSource_DuplicateBasenameInDistinctSubdirs_ProducesDistinctObjPaths()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget();
+
+        string moduleSourceDir = Path.Combine(_scratchDir, "ModSrc");
+        string outputDir = Path.Combine(_scratchDir, "Obj");
+        Directory.CreateDirectory(outputDir);
+
+        FileItem sourceA = FileItem.GetItemByPath(
+            Path.Combine(moduleSourceDir, "SubA", "Same.cpp"));
+        FileItem sourceB = FileItem.GetItemByPath(
+            Path.Combine(moduleSourceDir, "SubB", "Same.cpp"));
+
+        IExternalAction compileA = _toolchain.CompileSource(
+            module, target, sourceA, outputDir,
+            pch: null, moduleSourceDir: moduleSourceDir).Single();
+        IExternalAction compileB = _toolchain.CompileSource(
+            module, target, sourceB, outputDir,
+            pch: null, moduleSourceDir: moduleSourceDir).Single();
+
+        string ObjOf(IExternalAction action) => action.ProducedItems
+            .First(i => i.FullPath.EndsWith(".obj", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        string objA = ObjOf(compileA);
+        string objB = ObjOf(compileB);
+
+        Assert.NotEqual(objA, objB);
+        Assert.Equal(Path.Combine(outputDir, "SubA", "Same.obj"), objA);
+        Assert.Equal(Path.Combine(outputDir, "SubB", "Same.obj"), objB);
+
+        // The .deps.json sidecar lives alongside the .obj, not flat
+        // under outputDir, so the same-basename collision cannot
+        // reappear at the dependency-tracking layer.
+        string DepOf(IExternalAction action) => action.ProducedItems
+            .First(i => i.FullPath.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        Assert.Equal(objA + ".deps.json", DepOf(compileA));
+        Assert.Equal(objB + ".deps.json", DepOf(compileB));
+    }
+
+    /// <summary>
+    /// When <c>moduleSourceDir</c> is omitted (or empty), the toolchain
+    /// falls back to flat basename-only naming under <c>outputDir</c>.
+    /// This preserves the contract used by every flag-emission test in
+    /// this file and by callers that genuinely have no module-source
+    /// tree to anchor against (e.g. ad-hoc one-shot compiles in the
+    /// future). The fallback also limits the blast radius of the
+    /// per-subdir-naming fix to call sites that explicitly opt in.
+    /// </summary>
+    [Fact]
+    public void CompileSource_NoModuleSourceDir_KeepsFlatBasenameLayout()
+    {
+        ModuleRules module = NewModule();
+        TargetRules target = NewTarget();
+
+        IExternalAction compile = _toolchain
+            .CompileSource(module, target, MakeSource("Foo.cpp"), _scratchDir)
+            .Single();
+
+        string objPath = compile.ProducedItems
+            .First(i => i.FullPath.EndsWith(".obj", StringComparison.OrdinalIgnoreCase))
+            .FullPath;
+
+        Assert.Equal(Path.Combine(_scratchDir, "Foo.obj"), objPath);
+    }
+
     // ----- Helpers -----
 
     private static ModuleRules NewModule(

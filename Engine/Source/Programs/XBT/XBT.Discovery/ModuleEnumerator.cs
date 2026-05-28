@@ -161,29 +161,16 @@ public static class ModuleEnumerator
 
         // Enumerate both descriptor kinds. We group by directory so the
         // .Build.cs precedence rule (Contract Section 9.6) can be
-        // applied per-module.
+        // applied per-module. The walk is delegated to
+        // DescriptorWalker so well-known non-source subtrees (bin/,
+        // obj/, .idea/, .vs/, .vscode/, .git/) are pruned at the
+        // directory level. See DescriptorWalker for the why.
         string[] tomlPaths;
         string[] csPaths;
         try
         {
-            tomlPaths = Directory.GetFiles(
-                root,
-                "*" + BuildTomlSuffix,
-                new EnumerationOptions
-                {
-                    RecurseSubdirectories = true,
-                    IgnoreInaccessible = true,
-                    MatchType = MatchType.Simple,
-                });
-            csPaths = Directory.GetFiles(
-                root,
-                "*" + BuildCsSuffix,
-                new EnumerationOptions
-                {
-                    RecurseSubdirectories = true,
-                    IgnoreInaccessible = true,
-                    MatchType = MatchType.Simple,
-                });
+            tomlPaths = DescriptorWalker.EnumerateFiles(root, BuildTomlSuffix);
+            csPaths = DescriptorWalker.EnumerateFiles(root, BuildCsSuffix);
         }
         catch (UnauthorizedAccessException ex)
         {

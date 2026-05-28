@@ -596,6 +596,90 @@ public sealed class ParallelExecutorTests : IDisposable
     }
 
     /// <summary>
+    /// When a subprocess fails (non-zero exit), the ActionRunResult's
+    /// ErrorMessage must include BOTH stdout and stderr -- cl.exe (the
+    /// MSVC compiler) writes its diagnostics to stdout, not stderr, so
+    /// a failure report that captures only stderr loses every MSVC
+    /// compile error. The fix labels the two streams ("stdout: ..."
+    /// and "stderr: ...") so the reader can tell which channel a
+    /// diagnostic came from. The previous behaviour reported only
+    /// stderr; a cl.exe failure surfaced just the "/pathmap requires
+    /// /experimental:deterministic" warning while the real C1083
+    /// missing-include error on stdout was silently discarded.
+    /// </summary>
+    [Fact]
+    public void ProcessActionRunner_FailureMessage_IncludesStdoutAndStderr()
+    {
+        // Construct a subprocess that:
+        //   1. writes a distinctive marker to stdout,
+        //   2. writes a distinctive marker to stderr,
+        //   3. exits non-zero.
+        // We use the host's shell so this works on Windows (cmd.exe)
+        // and POSIX (/bin/sh).
+        (string commandPath, string[] commandArgs) = MakeFailingSubprocessWithBothStreams();
+
+        FileItem produced = MakeFileItem("never-written");
+        IExternalAction action = ExternalAction.Create(new ExternalAction
+        {
+            ActionType = XActionType.CompileCppAction,
+            PrerequisiteItems = Array.Empty<FileItem>(),
+            ProducedItems = new[] { produced },
+            CommandPath = commandPath,
+            CommandArguments = commandArgs,
+            WorkingDirectory = _scratchDir,
+            CommandDescription = "FailingSubprocess",
+            StatusDescription = "fail-both-streams",
+            bUseActionHistory = false,
+            Configuration = BuildConfiguration.Development,
+            Platform = Platform.Win64,
+        });
+
+        string tempPath = Path.Combine(_scratchDir, "never-written.tmp.1.1");
+        Dictionary<FileItem, string> tempPaths = new() { [produced] = tempPath };
+        ActionRunContext ctx = new(
+            Action: action,
+            TempOutputPaths: tempPaths,
+            ProcessId: Environment.ProcessId,
+            ActionId: 1,
+            CancellationToken: CancellationToken.None);
+
+        ProcessActionRunner runner = new();
+        ActionRunResult result = runner.RunAction(ctx);
+
+        Assert.False(result.Success);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.NotNull(result.ErrorMessage);
+        // Both stream markers must be present in the report.
+        Assert.Contains("MARKER-STDOUT-LINE", result.ErrorMessage!, StringComparison.Ordinal);
+        Assert.Contains("MARKER-STDERR-LINE", result.ErrorMessage!, StringComparison.Ordinal);
+        // The two streams are labelled so the reader can tell them apart.
+        Assert.Contains("stdout:", result.ErrorMessage!, StringComparison.Ordinal);
+        Assert.Contains("stderr:", result.ErrorMessage!, StringComparison.Ordinal);
+    }
+
+    private static (string commandPath, string[] commandArgs) MakeFailingSubprocessWithBothStreams()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // cmd /c "echo MARKER-STDOUT-LINE & echo MARKER-STDERR-LINE 1>&2 & exit /b 7"
+            // The 1>&2 redirection sends the second echo to stderr. The
+            // explicit "exit /b 7" makes the script exit non-zero so the
+            // runner takes the failure branch.
+            return ("cmd.exe", new[]
+            {
+                "/c",
+                "echo MARKER-STDOUT-LINE & echo MARKER-STDERR-LINE 1>&2 & exit /b 7",
+            });
+        }
+        // POSIX: sh -c 'echo MARKER-STDOUT-LINE; echo MARKER-STDERR-LINE 1>&2; exit 7'
+        return ("/bin/sh", new[]
+        {
+            "-c",
+            "echo MARKER-STDOUT-LINE; echo MARKER-STDERR-LINE 1>&2; exit 7",
+        });
+    }
+
+    /// <summary>
     /// Audit fix R5-C2: when an action sets bProducerWritesFinalPath=true,
     /// the executor passes <see cref="ActionRunContext.TempOutputPaths"/>
     /// entries equal to the action's FINAL produced-item paths (not

@@ -211,6 +211,127 @@ public sealed class ModuleEnumeratorTests : IDisposable
     }
 
     [Fact]
+    public void Enumerate_Skips_BinSubtree_Descendants()
+    {
+        // .NET test projects (and other consumers of MSBuild) copy
+        // fixture content into bin/<cfg>/<tfm>/ when CopyToOutputDirectory
+        // is set. A scan rooted at /Engine/Source/ that descends into
+        // bin/ would discover those copies as duplicate modules. The
+        // bin/ subtree must be pruned at the directory level so the
+        // OS walk never enters it -- both for correctness and to avoid
+        // walking NuGet-restored dependency DLLs.
+        WriteModule("Engine/Source/Runtime/Real", "Real", ModuleTier.Engine);
+        WriteModule("Engine/Source/Programs/MyProgram/bin/Debug/net8.0/CopyOfFixture/Source/Runtime/HelloModule",
+            "HelloModule", ModuleTier.Engine);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.Equal("Real", catalog.Modules[0].Rules.Name);
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
+    public void Enumerate_Skips_ObjSubtree_Descendants()
+    {
+        // obj/ holds the same hazard as bin/: MSBuild intermediates,
+        // restored NuGet packages, possibly copied fixture content.
+        WriteModule("Engine/Source/Runtime/Real", "Real", ModuleTier.Engine);
+        WriteModule("Engine/Source/Programs/MyProgram/obj/Debug/net8.0/StaleCopy/Runtime/StaleModule",
+            "StaleModule", ModuleTier.Engine);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.Equal("Real", catalog.Modules[0].Rules.Name);
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
+    public void Enumerate_Skips_DotIdeaSubtree_Descendants()
+    {
+        // JetBrains IDEs (Rider/CLion) write workspace state under
+        // .idea/. If a developer ever stages a descriptor there (e.g.
+        // an autosave / scratchpad) the production scan must not pick
+        // it up.
+        WriteModule("Engine/Source/Runtime/Real", "Real", ModuleTier.Engine);
+        WriteModule("Engine/Source/Runtime/.idea/Scratch/GhostModule",
+            "GhostModule", ModuleTier.Engine);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.Equal("Real", catalog.Modules[0].Rules.Name);
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
+    public void Enumerate_Skips_BinSubtree_BuildCs_Descendants()
+    {
+        // The .Build.cs Roslyn-fallback enumeration walks the same
+        // tree as the TOML enumeration; bin/obj/.idea exclusion must
+        // apply to both descriptor kinds. Tests the .Build.cs branch
+        // explicitly so the Phase 1 escape-hatch path is also covered
+        // by the prune.
+        string moduleDir = Path.Combine(_scratchDir,
+            "Engine", "Source", "Programs", "MyProgram",
+            "bin", "Debug", "net8.0", "CopyOfFixture", "Source", "Runtime", "GhostBuildCs");
+        Directory.CreateDirectory(moduleDir);
+        File.WriteAllText(
+            Path.Combine(moduleDir, "GhostBuildCs.Build.cs"),
+            "// Copyright Simgenics. All Rights Reserved.\n// stub",
+            new UTF8Encoding(false));
+
+        // No target supplied -> would normally fire the
+        // RoslynFallbackPending diagnostic. After pruning, the .Build.cs
+        // is never visited, so the diagnostic must NOT fire.
+        ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Empty(_diagnostics.RoslynPending);
+    }
+
+    [Fact]
+    public void Enumerate_RegressionBugReport_TestOutputDuplicate_NotDiscovered()
+    {
+        // Exact reproduction of the duplicate-module bug observable on
+        // plain main: XBT.Tests copies its Fixtures/ tree to
+        // bin/Debug/net8.0/Fixtures/ as part of its build output. A scan
+        // rooted at /Engine/Source/ that descended into XBT.Tests/bin/
+        // would surface HelloModule twice -- once from the source-level
+        // Fixtures and once from the bin/ copy -- and the catalog would
+        // throw with "Duplicate module name 'HelloModule'".
+        //
+        // After the fix, only the source-level Fixtures entry is
+        // discovered. The catalog is well-formed and exposes exactly
+        // one HelloModule whose DescriptorPath ends in the Fixtures
+        // (non-bin) directory.
+        WriteModule(
+            "Engine/Source/Programs/XBT/XBT.Tests/Fixtures/HelloWorldEngine/Engine/Source/Runtime/HelloModule",
+            "HelloModule", ModuleTier.Engine);
+        WriteModule(
+            "Engine/Source/Programs/XBT/XBT.Tests/bin/Debug/net8.0/Fixtures/HelloWorldEngine/Engine/Source/Runtime/HelloModule",
+            "HelloModule", ModuleTier.Engine);
+
+        ModuleCatalog catalog = ModuleEnumerator.Enumerate(
+            new[] { Path.Combine(_scratchDir, "Engine", "Source") },
+            _diagnostics);
+
+        Assert.Equal(1, catalog.Count);
+        Assert.True(catalog.TryGet("HelloModule", out ModuleRecord rec));
+        Assert.DoesNotContain(Path.Combine("bin", "Debug"), rec.DescriptorPath);
+        Assert.Contains(Path.Combine("Fixtures", "HelloWorldEngine"), rec.DescriptorPath);
+        Assert.Empty(_diagnostics.ParseFailures);
+    }
+
+    [Fact]
     public void BuildCs_And_BuildToml_Both_Present_BuildCs_Wins()
     {
         // Per Contract Section 9.6, when a module ships both descriptors

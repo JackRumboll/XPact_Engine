@@ -1226,10 +1226,28 @@ public sealed class ProcessActionRunner : IActionRunner
             {
                 return new ActionRunResult(true, 0, null);
             }
-            return new ActionRunResult(
-                false,
-                exitCode,
-                $"{action.CommandDescription} exit {exitCode}: {stderr.ToString()}");
+            // cl.exe (MSVC) emits diagnostics to stdout; clang and most
+            // POSIX tools emit them to stderr. A failure report that
+            // names only stderr loses every MSVC compile error. Include
+            // both streams in the error message, labelled so the reader
+            // can tell which channel they came from. Empty channels are
+            // elided to keep the message compact when a tool wrote to
+            // only one stream.
+            string stderrText = stderr.ToString();
+            string stdoutText = stdout.ToString();
+            StringBuilder combined = new();
+            combined.Append(action.CommandDescription)
+                    .Append(" exit ")
+                    .Append(exitCode);
+            if (stdoutText.Length > 0)
+            {
+                combined.Append("\nstdout: ").Append(stdoutText);
+            }
+            if (stderrText.Length > 0)
+            {
+                combined.Append("\nstderr: ").Append(stderrText);
+            }
+            return new ActionRunResult(false, exitCode, combined.ToString());
         }
         catch (OperationCanceledException)
         {

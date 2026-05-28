@@ -117,19 +117,15 @@ public static class PluginEnumerator
         }
 
         // Each plugin descriptor lives at /Plugins/<Name>/<Name>.xplugin
-        // by convention; we enumerate the second-level subtree.
-        IEnumerable<string> descriptors;
+        // by convention; we enumerate the second-level subtree via
+        // DescriptorWalker so bin/, obj/, .idea/, .vs/, .vscode/, .git/
+        // subtrees are pruned at the directory level. (A .xplugin that
+        // ended up inside a plugin's nested test-project bin/ would
+        // otherwise surface as a phantom plugin in the catalog.)
+        string[] descriptors;
         try
         {
-            descriptors = Directory.EnumerateFiles(
-                root,
-                "*" + PluginExtension,
-                new EnumerationOptions
-                {
-                    RecurseSubdirectories = true,
-                    IgnoreInaccessible = true,
-                    MatchType = MatchType.Simple,
-                });
+            descriptors = DescriptorWalker.EnumerateFiles(root, PluginExtension);
         }
         catch (UnauthorizedAccessException ex)
         {
