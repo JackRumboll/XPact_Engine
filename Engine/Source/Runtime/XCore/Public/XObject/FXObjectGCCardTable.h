@@ -320,6 +320,14 @@ namespace XCore
             // GC-side decrement keeps the counter consistent for the
             // next cycle's IsSaturated check.)
             m_dirtyCount.fetch_sub(Cleared, ::std::memory_order_relaxed);
+
+            // Phase 5.k: re-arm the saturation telemetry latch so the
+            // NEXT cycle's first cross-the-threshold writes will emit
+            // a fresh RememberedSetSaturation event. Relaxed is correct
+            // (we hold the exclusive lock; no concurrent reader of the
+            // latch races with this store).
+            m_saturationLatched.store(false, ::std::memory_order_relaxed);
+
             return Cleared;
         }
 
@@ -336,6 +344,31 @@ namespace XCore
         // CHEAP: two atomic loads + one multiply + one compare.
         // =============================================================
         [[nodiscard]] bool IsSaturated() const noexcept;
+
+        // =============================================================
+        // CheckAndEmitSaturationTransition -- one-shot saturation
+        // telemetry hook (Phase 5.k; spec §10.12).
+        //
+        // If the card table has CROSSED the saturation threshold since
+        // the last clear, emits an XInsights `RememberedSetSaturation`
+        // event ONCE and sets an internal latch. The latch is cleared
+        // when the next ForEachDirtyCardAndClear drains the dirty cards
+        // (the GC's safepoint sequencing means the latch reset is
+        // always after a full clear).
+        //
+        // CALL SITES:
+        //   * MarkCardRangeDirty (the bulk-write path; rare; the per-
+        //     call cost of a one-shot transition check is negligible).
+        //   * The Phase 5.g FXObjectCollector trigger code, before
+        //     deciding between card-walk and full-scan paths.
+        //
+        // The one-shot semantic prevents emit spam: hundreds of
+        // MarkCardDirty calls past the threshold produce exactly ONE
+        // RememberedSetSaturation emit per GC cycle.
+        //
+        // RETURNS: true iff the emit fired on this call.
+        // =============================================================
+        bool CheckAndEmitSaturationTransition() noexcept;
 
         // =============================================================
         // Diagnostic accessors.
@@ -420,6 +453,26 @@ namespace XCore
         ::std::atomic<::std::size_t> m_dirtyCount;   //  8 bytes
 
         // -------------------------------------------------------------
+        // Saturation-emit one-shot latch (Phase 5.k; spec §10.12).
+        //
+        // Set true by CheckAndEmitSaturationTransition when the
+        // dirty-card count first crosses the saturation threshold.
+        // Cleared by ForEachDirtyCardAndClear when the card table is
+        // drained (the next GC cycle re-arms the latch).
+        //
+        // Lives in the 7-byte padding window between m_dirtyCount and
+        // m_lock so adding it does NOT change sizeof(FXObjectGCCardTable).
+        // The struct's total size + alignof are unchanged (verified by
+        // the static_assert below).
+        //
+        // The atomic is 1 byte; relaxed loads/stores are sufficient
+        // (the latch reset under ForEachDirtyCardAndClear's exclusive
+        // lock pairs with the post-clear acquire-load on the next
+        // CheckAndEmitSaturationTransition).
+        // -------------------------------------------------------------
+        ::std::atomic<bool>          m_saturationLatched{false};  // 1 byte
+
+        // -------------------------------------------------------------
         // Reader/writer lock protecting Initialize +
         // __ResetForTests + ForEachDirtyCardAndClear (which clears the
         // array under EXCLUSIVE).
@@ -441,14 +494,20 @@ namespace XCore
     // ABI / size lock for the card-table struct.
     //
     // The exact size is:
-    //   m_heapBaseAddr   :  8 bytes
-    //   m_heapByteSize   :  8 bytes
-    //   m_totalCards     :  8 bytes
-    //   m_cards          :  8 bytes
-    //   m_dirtyCount     :  8 bytes (atomic<size_t>)
-    //   m_lock           : 64 bytes (FRWLock, alignof 16)
-    //   total            : 40 (data) + 64 (lock) = 104 bytes;
-    //                       alignof 16 (from FRWLock) -> rounds to 112.
+    //   m_heapBaseAddr        :  8 bytes
+    //   m_heapByteSize        :  8 bytes
+    //   m_totalCards          :  8 bytes
+    //   m_cards               :  8 bytes
+    //   m_dirtyCount          :  8 bytes (atomic<size_t>)
+    //   m_saturationLatched   :  1 byte  (atomic<bool>; Phase 5.k addition)
+    //   _padding              :  7 bytes (lives in the FRWLock alignment gap)
+    //   m_lock                : 64 bytes (FRWLock, alignof 16)
+    //   total                 : 48 (data + latch + pad) + 64 (lock) = 112 bytes.
+    //
+    // Phase 5.k added m_saturationLatched in the 7-byte padding window
+    // that previously existed between m_dirtyCount (offset 32, size 8;
+    // next-free at 40) and m_lock (alignof 16; lands at offset 48).
+    // The total sizeof is UNCHANGED at 112 bytes; the ABI lock holds.
     //
     // FRWLock has alignof 16 which dominates the struct's alignof.
     // The 8-byte members preceding it pack to 40 bytes; the lock then

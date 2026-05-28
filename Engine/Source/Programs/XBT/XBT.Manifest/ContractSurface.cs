@@ -549,7 +549,7 @@ public static class ContractSurface
         ("XWeakPtr", 8),                  // Phase 5.c   (shipped)
         ("XPtr", 8),                      // Phase 5.c   (shipped)
         ("FXObjectLifecycleTable", 72),   // Phase 5.d   (shipped)
-        ("FXObjectRefSchema", 24),        // Phase 5.g'  (deferred)
+        ("FXObjectRefSchema", 24),        // Phase 5.g'  (shipped)
         // XCoreXObject Phase 5.e (GC root protocol): XGCRootSpan ships.
         ("XGCRootSpan", 32),              // Phase 5.e   (shipped)
     };
@@ -608,12 +608,22 @@ public static class ContractSurface
             // because its layout matches XPtr's; the macro pin is
             // sufficient).
 
-            // Phase 5.g' (schema-vector GC walker): .rodata-resident
-            // opcode array emitted by XHT per FClass for the fast-path
-            // GC scan (UE-MISS-1 / FIX-A-CRIT-8). ABI lock: 24 bytes
-            // per schema header (NumOps + Version + Ops + _padTail);
-            // 24 bytes per opcode.
-            { "FXObjectRefSchema", "Phase 5.g' (XCoreXObject schema-vector GC walker)" },
+            // Phase 5.g' (schema-vector GC walker): SHIPPED at the
+            // XCoreXObject Phase 5.g' implementation (the 24-byte
+            // FXObjectRefSchema header + 24-byte FXObjectRefSchemaOp
+            // descriptor + 22-active-opcode enumeration + the
+            // template-only `XCore::WalkSchemaRefs` walker). The
+            // FXObjectRefSchema entry is REMOVED from this deferred
+            // map; the validate-abi-tags walker now enforces the
+            // XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG pin via the
+            // XPACT_VERIFY_XOBJECT_LAYOUT macro's Phase 5.g' additions.
+            //
+            // The XHT-side `SchemaVectorEmitter` C# class emits the
+            // per-class constinit opcode array + schema header to the
+            // module's .gen.cpp; the full integration into the
+            // SourceEmitter pipeline lands when the Stage-B FClass
+            // emit shape is finalised (current Stage-A surface emits
+            // XClassDescriptor which has no RefSchema field).
         };
 
     /// <summary>

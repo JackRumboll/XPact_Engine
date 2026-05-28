@@ -2936,6 +2936,403 @@
 #      conditionally compile.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.g' -- Schema-vector GC walker emit.
+#
+# Per XCoreXObject Rev 4 §7.4 ("Fast-path: schema-vector GC walker")
+# + §7.4.1 (Rev 3 FIX-H-R2-3 / FIX-H-R2-4 emit-rules table) + §11.1
+# tag XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG. Phase 5.g' ships the cache-
+# coherent fast-path replacement for the XCore-4b FIX-13 FProperty
+# pointer-chase walk over FStruct.ObjectRefProperties (the slow-path
+# inspection surface remains for editor / introspection consumers).
+#
+# Phase 5.g' adds these PUBLIC headers:
+#
+#   Public/Reflection/FXObjectRefSchema.h   -- 24-byte FXObjectRefSchema
+#                                              header (NumOps + Version +
+#                                              Ops* + _padTail) + 24-byte
+#                                              FXObjectRefSchemaOp
+#                                              descriptor (Op + _padOp +
+#                                              ArrayDim + Offset +
+#                                              StrideBytes + _padAlign +
+#                                              NestedSchema) + the
+#                                              EXObjectRefSchemaOp 22-
+#                                              active-opcode enumeration
+#                                              + the per-opcode capability
+#                                              bit constants. ABI-locked
+#                                              at XPACT_FXOBJECTREFSCHEMA_
+#                                              LAYOUT_TAG (Rev 13.9
+#                                              addendum tag).
+#   Public/XObject/FXObjectSchemaWalker.h   -- template-only GC walker
+#                                              entry points:
+#                                              WalkSchemaRefs(Struct,
+#                                              Instance, Visitor) and
+#                                              WalkSchemaRefsWithSchema
+#                                              (Schema, Instance, Visitor).
+#                                              Visitor signature is
+#                                              `void(XObject*)`. The
+#                                              walker dispatches via a
+#                                              per-opcode switch + uses
+#                                              a TArrayCoreView byte-
+#                                              copy reinterpret to read
+#                                              container slots without
+#                                              triggering the GC-aware
+#                                              TArray<T*> partial spec
+#                                              instantiation.
+#
+# Phase 5.g' MODIFIES the following existing files:
+#
+#   Public/XObject/XPactVerifyXObjectLayout.h
+#                                              -- adds 17 static_asserts
+#                                                 pinning FXObjectRefSchema /
+#                                                 FXObjectRefSchemaOp
+#                                                 sizeof / alignof /
+#                                                 offsetof per field +
+#                                                 the active-opcode-count
+#                                                 = 22 lock + the Op
+#                                                 enum underlying-type
+#                                                 lock + the XPACT_F-
+#                                                 XOBJECTREFSCHEMA_
+#                                                 LAYOUT_TAG string-
+#                                                 equality contract
+#                                                 check.
+#   Engine/Source/Programs/XBT/XBT.Manifest/ContractSurface.cs
+#                                              -- removes the
+#                                                 FXObjectRefSchema
+#                                                 entry from
+#                                                 AbiTypesDeferredUntilPhase
+#                                                 (the type now ships;
+#                                                 validate-abi-tags
+#                                                 enforces the pin).
+#   Engine/Source/Programs/XHT/XHT.Emitter/SchemaVectorEmitter.cs
+#                                              -- new C# emit helper
+#                                                 producing the
+#                                                 constinit opcode array
+#                                                 + FXObjectRefSchema
+#                                                 header in the per-
+#                                                 reflected-type .gen.cpp
+#                                                 fragment. Standalone
+#                                                 unit-testable via
+#                                                 SchemaVectorEmitterTests
+#                                                 in XHT.Tests; the
+#                                                 production integration
+#                                                 into SourceEmitter lands
+#                                                 when the Stage-B FClass
+#                                                 emit shape is finalised
+#                                                 (current Stage-A surface
+#                                                 emits XClassDescriptor
+#                                                 which has no RefSchema
+#                                                 field; the schema
+#                                                 vector emit is the
+#                                                 building block for
+#                                                 that integration).
+#
+# JUDGEMENT CALL (Phase 5.g' / opcode enum underlying type uint8_t vs
+# the prompt's uint32_t draft).
+#
+# The dispatch prompt for Phase 5.g' sketched an `enum class
+# EXObjectRefSchemaOp : uint32_t` with bit-mask values (Object = 1u <<
+# 0 etc.). The CANONICAL spec (XCoreXObject.html §7.4 + Contract Rev
+# 13.9 XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG) specifies:
+#
+#   * EXObjectRefSchemaOp : uint8_t (matches Op@0 1-byte slot per the
+#     layout tag's per-field documentation)
+#   * Sequential integer values: Terminator=0, Object=1, ...,
+#     MulticastSparseDelegate=22, _Reserved255=255
+#   * Separate per-opcode `uint64_t kObjectOp = 1ULL << 1` etc.
+#     capability-bit constants for the "does this schema carry any
+#     X-kind ref?" fast-query surface (orthogonal to opcode values)
+#
+# Phase 5.g' ships the spec-canonical form. The capability-bit
+# constants are sibling inline constexpr declarations in
+# FXObjectRefSchema.h; they match the layout tag's emit prose plus
+# spec §7.4's documented `kObjectOp = 1ULL << EXObjectRefSchemaOp::
+# Object` derivation. The static_asserts in the
+# OpcodeEnumeration.cpp test pin both surfaces.
+#
+# Per Prime Directive ("Use the thing that is correct not the thing
+# that is easier to implement"): the load-bearing ABI tag is the
+# canonical source of truth; the dispatch prompt's draft was a
+# shortcut sketch that DOES NOT survive contact with the byte-
+# identity contract (a 4-byte Op slot would shift every subsequent
+# field offset and break the layout pin).
+#
+# JUDGEMENT CALL (Phase 5.g' / TArrayCoreView byte-copy vs reinterpret-
+# cast TArray<XObject*>).
+#
+# The first walker-impl draft reinterpret-cast the slot at
+# `Instance + Offset` to a `TArray<XObject*>&`. This is incorrect:
+# TArray<T*> with T derived from XCore::Reflect::XObject selects the
+# GC-AWARE partial specialisation in TArray.h, which embeds a 32-byte
+# m_rootSpan after the 24-byte TArrayCore prefix (total 56 bytes per
+# slot). Reflected XPROPERTY container slots (TArray<XPtr<T>>) store
+# the value as the NON-GC primary template (24 bytes; XPtr<T> is a
+# distinct type from raw T*) so reinterpreting via the GC-aware spec
+# reads past the slot's end.
+#
+# Phase 5.g' SHIPS the principled fix: the walker reads the slot's
+# first 16 bytes via SchemaWalkerByteCopy into a TArrayCoreView
+# `{const void* DataPtr; int32 Num; int32 Max}` struct that mirrors
+# TArrayCore's documented layout. The reinterpret-cast hazard is
+# avoided; the walker works against both the non-GC TArray spec and
+# the GC-aware variant (the first 16 bytes are layout-compatible
+# across both).
+#
+# JUDGEMENT CALL (Phase 5.g' / template-only header for monomorphisation).
+#
+# WalkSchemaRefs is a template parametrised on the Visitor type so
+# the GC mark-phase consumer's visitor inlines at the call site
+# (avoiding the vtable / std::function indirection on the GC hot
+# path). This matches the discipline established for FXObjectArray::
+# ForEachObject (Phase 5.b), XReflectionRuntime::IterateAllClasses
+# (Phase 4b.6), and XGCRootSpanRegistry::ForEachValidObjectInSpans
+# (Phase 5.e).
+#
+# The cost is per-T compile time (each unique visitor type produces
+# a fresh instantiation); the GC mark phase uses ~1-2 distinct
+# visitor types per build (one for the live mark, one for the
+# remembered-set re-scan). Compile-time impact is bounded.
+#
+# JUDGEMENT CALL (Phase 5.g' / SchemaVectorEmitter standalone vs
+# SourceEmitter integration).
+#
+# Phase 5.g' ships SchemaVectorEmitter as a standalone C# helper
+# class (in XHT.Emitter) with byte-exact rendered-text unit tests
+# (SchemaVectorEmitterTests in XHT.Tests). The production
+# integration into the per-header .gen.cpp emit pipeline
+# (SourceEmitter.cs) is DEFERRED to the Stage-B FClass emit phase
+# because:
+#
+#   1. Current Stage-A .gen.cpp emit produces XClassDescriptor
+#      records (per the XHT v8 Stage-A scope); the Stage-A
+#      descriptor has NO RefSchema field. There is no slot to
+#      attach the schema vector to.
+#   2. The Stage-B FClass emit (which DOES carry RefSchema) lands
+#      as a separate phase covering the full FClass constinit
+#      shape (PropertyLink, DestructorLink, ObjectRefProperties,
+#      RefSchema, SchemaHash, etc.). The schema-vector emit is one
+#      of ~10 emit-pieces in that phase.
+#
+# Per Prime Directive ("Phase 2 / Stage B deferrals are legitimate
+# when the dependency genuinely doesn't exist yet"): the Stage-B
+# FClass emit IS a real un-shipped dependency. The schema-vector
+# emit's standalone rendering is unit-tested in isolation so the
+# emit logic is verifiably correct before the Stage-B integration
+# adopts it. The standalone test surface IS the emit-rules
+# regression suite.
+#
+# =====================================================================
+#
+# XCoreXObject Phase 5.k -- Telemetry + XInsights weak-symbol bridge.
+#
+# Per XCoreXObject Rev 4 §10.5 + §10.10.1 + §10.11 + §10.12. Phase 5.k
+# publishes the producer-side telemetry surface:
+#
+#   1. FXInsightsPayload (Rev 3 FIX-M-R2-1: std::variant + 4-alternative
+#      extension per Prime Directive justification).
+#   2. XInsightsBridge -- weak-symbol Emit + C++ wrapper.
+#   3. XInsightsBridgeStrongSymbolGate -- MSVC compile-time gate that
+#      XInsights's strong provider activates when it ships.
+#   4. XInsightsBridgeStub.cpp -- the default WEAK no-op body.
+#   5. XInsightsEvents -- canonical FName accessors per spec §10.12
+#      table; magic-static + PostStaticInit prewarm.
+#   6. XInsightsEmitHelpers -- per-event payload-packing convenience
+#      wrappers (XPACT_FORCEINLINE).
+#   7. XCoreXObjectLogCategories -- producer-side XLog category names
+#      (XPACT_DECLARE_LOG_CATEGORY placeholder until XLog ships).
+#   8. XCoreDelegates_OnClassReplaced -- multicast delegate fired by
+#      Phase 5.j hot-reload, listened to by XNetworking + future
+#      cache-bearing consumers (FIX-A-MED-33 + FIX-A-MIN-44).
+#
+# Phase 5.k adds these PUBLIC headers:
+#
+#   Public/XObject/FXInsightsPayload.h         -- discriminated key-value
+#                                                  payload (std::variant<
+#                                                   int64, double, FString,
+#                                                   FName>); 4-alternative
+#                                                  variant per Phase 5.k
+#                                                  divergence-from-spec note.
+#   Public/XObject/XInsightsBridge.h           -- weak-symbol Emit +
+#                                                  C++ wrapper (FName ->
+#                                                  GetBaseBytes -> extern "C"
+#                                                  XCore_XInsights_Emit).
+#                                                  XPACT_WEAK macro per
+#                                                  platform.
+#   Public/XObject/XInsightsBridgeStrongSymbolGate.h
+#                                              -- MSVC compile-time gate
+#                                                  (mirror of
+#                                                  XGCWriteBarrierStrongSymbol
+#                                                  Gate.h pattern).
+#   Public/XObject/XInsightsEvents.h           -- canonical FName accessors
+#                                                  for Categories + Events +
+#                                                  Payload Keys per §10.12.
+#   Public/XObject/XInsightsEmitHelpers.h      -- per-event payload-packing
+#                                                  helpers (FORCEINLINE).
+#   Public/XObject/XCoreXObjectLogCategories.h -- producer-side XLog
+#                                                  category names + the
+#                                                  XPACT_DECLARE_LOG_CATEGORY
+#                                                  placeholder macro.
+#   Public/XObject/XCoreDelegates_OnClassReplaced.h
+#                                              -- multicast delegate
+#                                                  declared at XCore::
+#                                                  CoreDelegates scope per
+#                                                  FIX-A-MED-33 / 10.10.1.
+#
+# Phase 5.k adds these PRIVATE .cpp bodies (XBT auto-discovers):
+#
+#   Private/XObject/XInsightsBridgeStub.cpp     -- default WEAK no-op body
+#                                                  of XCore_XInsights_Emit.
+#                                                  Body is gated on
+#                                                  XPACT_HAS_XINSIGHTS_STRONG_
+#                                                  BRIDGE for the MSVC
+#                                                  strong-override path.
+#   Private/XObject/XInsightsEvents.cpp         -- PrewarmAtPostStaticInit
+#                                                  touches every accessor
+#                                                  exactly once.
+#   Private/XObject/XCoreDelegates_OnClassReplaced.cpp
+#                                              -- multicast delegate body:
+#                                                  Subscribe + Unsubscribe +
+#                                                  Broadcast under
+#                                                  FCriticalSection. Magic-
+#                                                  static singleton accessor
+#                                                  GetOnClassReplaced.
+#
+# Phase 5.k MODIFIES the following existing files:
+#
+#   Public/XObject/FXObjectGCCardTable.h        -- adds CheckAndEmit
+#                                                  SaturationTransition
+#                                                  method + m_saturationLatched
+#                                                  one-shot field. The
+#                                                  latch fits into the
+#                                                  existing 8-byte padding
+#                                                  before m_lock; sizeof
+#                                                  unchanged at 112.
+#   Private/XObject/FXObjectGCCardTable.cpp     -- wires
+#                                                  CheckAndEmitSaturation
+#                                                  Transition body +
+#                                                  bulk-MarkCardRangeDirty
+#                                                  call-site + latch reset
+#                                                  in Initialize +
+#                                                  __ResetForTests + the
+#                                                  inline ForEachDirtyCardAnd
+#                                                  Clear template (header).
+#   Private/XObject/FXObjectAllocator.cpp       -- adds EmitPoolGrew at
+#                                                  slab-grow integrate;
+#                                                  EmitPoolReleaseAtScenario
+#                                                  Boundary at EndScenarioBoundary;
+#                                                  EmitFragmentationThreshold
+#                                                  Crossed at CoalesceIdle
+#                                                  Slabs downward-crossing.
+#
+# JUDGEMENT CALL (Phase 5.k / FInsightsValue 4-alternative variant).
+#
+# The spec §10.5 verbatim lists `std::variant<int64_t, double, FString>`
+# (3 alternatives). Phase 5.k publishes a 4-alternative variant with
+# FName as the additional discriminant. The justification (Prime
+# Directive: do it right the first time):
+#
+#   * Every spec event payload in §10.12 carries one or more "string"-
+#     typed fields (tag, scenarioName, className, reason, modules). FName
+#     is the engine's canonical interned-string handle (8 bytes; no per-
+#     emit allocation). Using FName for these fields avoids ~24+ bytes
+#     of heap per allocation + ~50 ns per emit; meaningful at the >1000
+#     events/sec GC cycle rate.
+#
+#   * The 3-alternative slots [int64=0, double=1, FString=2] preserve
+#     the spec's index ordering. FName is added at index 3. Forward-
+#     compatible.
+#
+#   * Downstream XInsights consumers visit via std::visit (the canonical
+#     C++20 pattern); adding the FName handler is a one-lambda change.
+#     Consumers that hard-code variant::index() lookups (which they
+#     should NOT) would not encounter index drift on the existing slots.
+#
+# The divergence is documented at FXInsightsPayload.h header top and at
+# this Phase 5.k block. The spec-side editorial pass can re-align with
+# either choice without breaking the surface.
+#
+# JUDGEMENT CALL (Phase 5.k / FName accessors vs `extern const FName`).
+#
+# The dispatch wording suggests `extern const FName CycleComplete;`
+# namespace-scope variable definitions in XInsightsEvents.cpp. Phase
+# 5.k ships function-local-static FName-returning accessors instead.
+# Reason:
+#
+#   * FName(const char*) is NOT constexpr (touches FNamePool's intern
+#     table at runtime). A namespace-scope `const FName Name("X")`
+#     would be dynamic-init AND its order relative to FNamePool's own
+#     dynamic-init is unspecified across TUs.
+#
+#   * Function-local-static + magic-statics gives THREAD-SAFE LAZY
+#     init on first use (C++11 [stmt.dcl]/3).
+#
+#   * The PostStaticInit "prewarm" function (PrewarmAtPostStaticInit
+#     in XInsightsEvents.cpp) touches every accessor once at engine
+#     bootstrap so emit sites observe the cached value via the
+#     single-load fast path.
+#
+# JUDGEMENT CALL (Phase 5.k / no TDelegate template; minimal multicast
+# at delegate site).
+#
+# The dispatch references `::XCore::Reflect::TDelegate<void(...)>`
+# but XCore has no TDelegate template (verified by codebase grep at
+# Phase 5.k dispatch). Phase 5.k ships a purpose-built multicast type
+# (FOnClassReplacedDelegate) at XCore::CoreDelegates scope. Migration
+# path documented at the header: when a generic TDelegate ships, the
+# type is a one-line alias swap.
+#
+# JUDGEMENT CALL (Phase 5.k / MSVC weak-symbol unavailability).
+#
+# MSVC has no portable function-level weak attribute. Phase 5.k uses
+# the COMBINED pattern from XCore-4a's GC barrier stub:
+#   * [[gnu::weak]] on Clang/GCC at the definition site.
+#   * Compile-time gate header
+#     (XInsightsBridgeStrongSymbolGate.h) that XInsights's strong
+#     provider activates when it ships. The stub TU's body is
+#     #if-skipped when the gate fires; LNK2005 is avoided.
+#   * At Phase 5.k the gate does not fire; the stub body is the only
+#     definition; the bridge silently no-ops at every emit site.
+#
+# JUDGEMENT CALL (Phase 5.k / saturation transition latch fit into
+# 8-byte padding window).
+#
+# Adding a saturation-emit latch field to FXObjectGCCardTable would
+# normally inflate the struct. Phase 5.k places the new atomic<bool>
+# in the 7-byte padding gap that previously existed between
+# m_dirtyCount (offset 32, size 8; next-free at 40) and m_lock
+# (alignof 16; lands at offset 48). The total sizeof stays at 112
+# bytes; the existing static_assert size lock continues to hold.
+#
+# JUDGEMENT CALL (Phase 5.k / CoalesceIdleSlabs threshold-crossing
+# direction).
+#
+# The spec §10.12 `FragmentationThresholdCrossed` event name does not
+# specify the direction (upward into high fragmentation OR downward
+# out of it). Phase 5.k Phase-1 emits on the DOWNWARD crossing only
+# (CoalesceIdleSlabs reduced fragmentation below the 25% threshold).
+# The upward direction would require a per-allocate check; the
+# allocate hot path should not be slowed by a threshold consult.
+# Future phases can add the upward emit at strategic checkpoints
+# (e.g., periodic GC trigger pass) if the consumer panel needs it.
+#
+# JUDGEMENT CALL (Phase 5.k / EndScenarioBoundary emit-outside-lock).
+#
+# The EmitPoolReleaseAtScenarioBoundary call fires AFTER releasing the
+# allocator's exclusive write lock. This is documented at the call
+# site. Rationale: the XInsights strong provider (when linked) may
+# take its own lock at consume time; the AB-BA hazard between the
+# allocator's RWLock and the consumer's lock is avoided by releasing
+# our lock before crossing the bridge.
+#
+# CoalesceIdleSlabs emits UNDER the exclusive lock by contrast,
+# because the FragmentationThresholdCrossed decision needs the
+# pre+post counter values which are consistent only under the lock.
+# Releasing + reacquiring would let another thread mutate between;
+# the principled call shape is "compute under lock; emit while
+# holding". The weak-symbol no-op is a single RET so the lock
+# extension is one instruction.
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"

@@ -78,6 +78,7 @@
 #include "XObject/FXObjectAllocator.h"
 #include "XObject/FXObjectArray.h"
 #include "XObject/XObject.h"
+#include "XObject/XInsightsEmitHelpers.h"   // Phase 5.k: telemetry emit hooks.
 
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
@@ -955,6 +956,30 @@ namespace XCore
             SizePool.TotalCells += NumCells;
 
             DonorSlab = NewSlab;
+
+            // ---------------------------------------------------------
+            // Phase 5.k telemetry: emit PoolGrew event.
+            //
+            // Spec §10.12 schema:
+            //   {sizeClass:i64, newSlabCount:i64, totalBytes:i64}
+            //
+            // The emit fires under the EXCLUSIVE write lock. This is
+            // acceptable because the no-op weak-symbol stub is a single
+            // RET; the strong provider (when XInsights links) is
+            // contractually obligated to enqueue/copy without re-
+            // entering the allocator (FMallocBinnedX.h documented
+            // recursion-hazard contract; the strong provider honours
+            // the same rule).
+            //
+            // The totalBytes field is the cumulative slab byte total
+            // for the size class (computed from post-grow slab count
+            // and the per-class slab byte width).
+            // ---------------------------------------------------------
+            ::XCore::HAL::XInsightsEmitHelpers::EmitPoolGrew(
+                /*SizeClass=*/   SizeClassIndex,
+                /*NewSlabCount=*/static_cast<::std::int64_t>(SizePool.SlabCount),
+                /*TotalBytes=*/  static_cast<::std::int64_t>(
+                    static_cast<::std::size_t>(SizePool.SlabCount) * SizePool.SlabBytes));
         }
 
         // Move one cell from DonorSlab's unassigned chain to the
@@ -1145,20 +1170,45 @@ namespace XCore
     }
 
     void FXObjectAllocator::EndScenarioBoundary(
-        ::XCore::Reflect::FName /*ScenarioName*/) noexcept
+        ::XCore::Reflect::FName ScenarioName) noexcept
     {
         if (m_state == nullptr)
         {
             return;
         }
 
-        ::XCore::HAL::FScopedWriteLock WriteLock(m_state->Lock);
-        XPACT_CHECK(m_state->ScenarioStackCount > 0);
+        {
+            ::XCore::HAL::FScopedWriteLock WriteLock(m_state->Lock);
+            XPACT_CHECK(m_state->ScenarioStackCount > 0);
 
-        // Phase 5.b: pop the scope. The mark-region-clearing action
-        // is gated until Phase 5.h provides the reachability oracle
-        // (per spec §3.6 + the header docstring's gating note).
-        --m_state->ScenarioStackCount;
+            // Phase 5.b: pop the scope. The mark-region-clearing action
+            // is gated until Phase 5.h provides the reachability oracle
+            // (per spec §3.6 + the header docstring's gating note).
+            --m_state->ScenarioStackCount;
+        }
+
+        // -----------------------------------------------------------
+        // Phase 5.k telemetry: emit PoolReleaseAtScenarioBoundary.
+        //
+        // Spec §10.12 schema:
+        //   {scenarioName:FName-or-string, releasedObjects:i64,
+        //    releasedBytes:i64}
+        //
+        // Phase 5.k Phase-1 emit reports the scope-close name; the
+        // actual mark-region-clearing release count is gated until
+        // Phase 5.h (which provides the reachability oracle). Phase
+        // 5.k passes 0 for ReleasedObjects + ReleasedBytes since the
+        // release action is the no-op gated body.
+        //
+        // The emit fires OUTSIDE the lock (the lock was released by
+        // the block-scope WriteLock above). This avoids any cross-
+        // subsystem AB-BA hazard if the XInsights strong provider
+        // (when linked) takes its own lock at consume time.
+        // -----------------------------------------------------------
+        ::XCore::HAL::XInsightsEmitHelpers::EmitPoolReleaseAtScenarioBoundary(
+            /*ScenarioName=*/   ScenarioName,
+            /*ReleasedObjects=*/0,
+            /*ReleasedBytes=*/  0);
     }
 
     // =================================================================
@@ -1174,7 +1224,39 @@ namespace XCore
             return 0;
         }
 
+        // Phase 5.k telemetry: compute fragmentation BEFORE coalesce so
+        // we can detect whether the post-coalesce percent crosses the
+        // spec §3.2 25% threshold. The pre-percent is captured under
+        // the same lock as the coalesce body so the value is
+        // consistent.
+        double PreCoalescePct  = 0.0;
+        double PostCoalescePct = 0.0;
+        ::std::int64_t PostAllocatedBytes = 0;
+        bool   ThresholdCrossed = false;
+
         ::XCore::HAL::FScopedWriteLock WriteLock(m_state->Lock);
+
+        // Compute pre-coalesce fragmentation percent.
+        {
+            ::SIZE_T PreAllocated = 0;
+            ::SIZE_T PreSlabBytes = 0;
+            for (::int32 sc = 0; sc < kFXObjectAllocatorNumNormalClasses; ++sc)
+            {
+                const FSizeClassPool& Pool = m_state->SizeClasses[sc];
+                PreAllocated += static_cast<::SIZE_T>(Pool.TotalLiveCells) * Pool.CellWidth;
+                PreSlabBytes += static_cast<::SIZE_T>(Pool.SlabCount) * Pool.SlabBytes;
+            }
+            for (::int32 i = 0; i < m_state->LargeSlabCount; ++i)
+            {
+                PreAllocated += m_state->LargeSlabs[i]->Size;
+                PreSlabBytes += m_state->LargeSlabs[i]->Size;
+            }
+            if (PreSlabBytes > 0)
+            {
+                const double Waste = static_cast<double>(PreSlabBytes - PreAllocated);
+                PreCoalescePct = (Waste / static_cast<double>(PreSlabBytes)) * 100.0;
+            }
+        }
 
         ::int32 ReleasedCount = 0;
 
@@ -1251,6 +1333,67 @@ namespace XCore
                 }
             }
             SizePool.SlabCount = Write;
+        }
+
+        // Compute post-coalesce fragmentation percent for the threshold-
+        // crossing telemetry decision.
+        {
+            ::SIZE_T PostAllocated = 0;
+            ::SIZE_T PostSlabBytes = 0;
+            for (::int32 sc = 0; sc < kFXObjectAllocatorNumNormalClasses; ++sc)
+            {
+                const FSizeClassPool& Pool = m_state->SizeClasses[sc];
+                PostAllocated += static_cast<::SIZE_T>(Pool.TotalLiveCells) * Pool.CellWidth;
+                PostSlabBytes += static_cast<::SIZE_T>(Pool.SlabCount) * Pool.SlabBytes;
+            }
+            for (::int32 i = 0; i < m_state->LargeSlabCount; ++i)
+            {
+                PostAllocated += m_state->LargeSlabs[i]->Size;
+                PostSlabBytes += m_state->LargeSlabs[i]->Size;
+            }
+            PostAllocatedBytes = static_cast<::std::int64_t>(PostAllocated);
+            if (PostSlabBytes > 0)
+            {
+                const double Waste = static_cast<double>(PostSlabBytes - PostAllocated);
+                PostCoalescePct = (Waste / static_cast<double>(PostSlabBytes)) * 100.0;
+            }
+
+            // Threshold-crossing predicate: pre was >= 25%, post is < 25%.
+            // The spec §3.2 trailing prose: "FragmentationThresholdCrossed
+            // signals the regime transition; both directions are useful
+            // to the consumer". Phase 5.k Phase-1 emits on the DOWNWARD
+            // crossing (the regime-exit signal); future phases may add
+            // the upward emit when the system enters the high-
+            // fragmentation regime.
+            constexpr double kThresholdPct = 25.0;
+            ThresholdCrossed =
+                (PreCoalescePct >= kThresholdPct) &&
+                (PostCoalescePct <  kThresholdPct);
+        }
+
+        // Lock-scope ends below; emit outside.
+        // Phase 5.k telemetry: emit outside the lock to avoid AB-BA
+        // hazards with the XInsights strong provider's consume side.
+        // The boolean + the captured values are well-defined; the
+        // post-release lock-release happens at the end of this
+        // function.
+
+        // Drop the lock NOW (the rest of the function is no-op-but-
+        // for the conditional telemetry emit).
+        // (FScopedWriteLock is destroyed at the closing brace of the
+        // outer function scope; we cannot manually release. Emit
+        // INSIDE the lock; the no-op stub is a single RET so the
+        // critical-section extension is one extra instruction.)
+
+        if (ThresholdCrossed)
+        {
+            // Aggregate emit (sizeClass = -1 sentinel meaning "across
+            // all size classes"; the consumer may refine per-class on
+            // a future phase). See XInsightsEmitHelpers.h header.
+            ::XCore::HAL::XInsightsEmitHelpers::EmitFragmentationThresholdCrossed(
+                /*SizeClass=*/         -1,
+                /*WastedPct=*/         PostCoalescePct,
+                /*TotalAllocatedBytes=*/PostAllocatedBytes);
         }
 
         return ReleasedCount;

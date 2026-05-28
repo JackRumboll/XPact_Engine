@@ -64,6 +64,7 @@
 #include "XObject/FXObjectSatbQueue.h"        // sizeof(FXObjectSatbQueue) (Phase 5.f)
 #include "Reflection/FStruct.h"               // sizeof(FStruct) + RefSchema offset (Rev 13.9 cascade)
 #include "Reflection/FClass.h"                // sizeof(FClass) + LifecycleTable offset (Rev 13.9 cascade)
+#include "Reflection/FXObjectRefSchema.h"     // sizeof(FXObjectRefSchema/Op) (Phase 5.g')
 
 #include <cstddef>          // offsetof
 #include <cstdint>          // uint32_t
@@ -323,7 +324,69 @@
                       "XGCCardTable-v1: byte-per-card flat array; card "                           \
                       "size = 512 bytes; max heap = 4 GB; card table = "                           \
                       "8 MB; clean = 0x00, dirty = 0x01"),                                         \
-                  "XPACT_XGC_CARDTABLE_LAYOUT_TAG string mismatch.")                               \
+                  "XPACT_XGC_CARDTABLE_LAYOUT_TAG string mismatch.");                              \
+    /* ===== Phase 5.g': FXObjectRefSchema + FXObjectRefSchemaOp (per                          */  \
+    /*       XCoreXObject Rev 4 §7.4 + §11.3 + Contract Rev 13.9                               */  \
+    /*       XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG) ===== */                                          \
+    static_assert(sizeof(::XCore::Reflect::FXObjectRefSchema)   == 24,                             \
+                  "FXObjectRefSchema size lock (Phase 5.g'): 24 bytes per "                        \
+                  "XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG.");                                          \
+    static_assert(alignof(::XCore::Reflect::FXObjectRefSchema)  ==  8,                             \
+                  "FXObjectRefSchema alignment lock (Phase 5.g'): 8 bytes.");                      \
+    static_assert(sizeof(::XCore::Reflect::FXObjectRefSchemaOp) == 24,                             \
+                  "FXObjectRefSchemaOp size lock (Phase 5.g'): 24 bytes per "                      \
+                  "XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG.");                                          \
+    static_assert(alignof(::XCore::Reflect::FXObjectRefSchemaOp) == 8,                             \
+                  "FXObjectRefSchemaOp alignment lock (Phase 5.g'): 8 bytes.");                    \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchema, NumOps)   ==  0,                   \
+                  "FXObjectRefSchema.NumOps offset lock (Phase 5.g').");                           \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchema, Version)  ==  4,                   \
+                  "FXObjectRefSchema.Version offset lock (Phase 5.g').");                          \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchema, Ops)      ==  8,                   \
+                  "FXObjectRefSchema.Ops offset lock (Phase 5.g').");                              \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchema, _padTail) == 16,                   \
+                  "FXObjectRefSchema._padTail offset lock (Phase 5.g').");                         \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, Op)           ==  0,             \
+                  "FXObjectRefSchemaOp.Op offset lock (Phase 5.g').");                             \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, _padOp)       ==  1,             \
+                  "FXObjectRefSchemaOp._padOp offset lock (Phase 5.g').");                         \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, ArrayDim)     ==  2,             \
+                  "FXObjectRefSchemaOp.ArrayDim offset lock (Phase 5.g').");                       \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, Offset)       ==  4,             \
+                  "FXObjectRefSchemaOp.Offset offset lock (Phase 5.g').");                         \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, StrideBytes)  ==  8,             \
+                  "FXObjectRefSchemaOp.StrideBytes offset lock (Phase 5.g').");                    \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, _padAlign)    == 12,             \
+                  "FXObjectRefSchemaOp._padAlign offset lock (Phase 5.g'; "                        \
+                  "Rev 3 per FIX-H-R2-5: explicit alignment pad).");                               \
+    static_assert(offsetof(::XCore::Reflect::FXObjectRefSchemaOp, NestedSchema) == 16,             \
+                  "FXObjectRefSchemaOp.NestedSchema offset lock (Phase 5.g').");                   \
+    /* Active opcode count (22 per Rev 3 FIX-H-R2-3).                                          */  \
+    static_assert(::XCore::Reflect::kEXObjectRefSchemaOpActiveCount == 22u,                        \
+                  "EXObjectRefSchemaOp active count lock (Phase 5.g'): "                           \
+                  "22 active opcodes per Rev 3 FIX-H-R2-3.");                                      \
+    /* Underlying-type lock: Op enum MUST be uint8_t.                                          */  \
+    static_assert(sizeof(::XCore::Reflect::EXObjectRefSchemaOp) == 1,                              \
+                  "EXObjectRefSchemaOp underlying type lock (Phase 5.g'): "                        \
+                  "uint8_t per XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG.");                              \
+    /* Phase 5.g' tag-string equality contract check.                                          */  \
+    static_assert(::XPactDetail::CompileTimeStrEq(                                                 \
+                      XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG,                                          \
+                      "FXObjectRefSchema-v1: 24 bytes; NumOps@0 (u32), "                           \
+                      "Version@4 (u32), Ops@8 (const FXObjectRefSchemaOp*), "                      \
+                      "_padTail@16; alignof = 8. FXObjectRefSchemaOp is 24 "                       \
+                      "bytes per opcode; Op@0 (u8), _padOp@1, ArrayDim@2 "                         \
+                      "(u16), Offset@4 (i32), StrideBytes@8 (i32), "                               \
+                      "NestedSchema@16 (const FXObjectRefSchema*); alignof "                       \
+                      "= 8 (4 bytes of pad at offset 12 to align "                                 \
+                      "NestedSchema to 8). Rev 3: 22 active opcodes (added "                       \
+                      "Interface, ClassProperty, SoftClass, Delegate, "                            \
+                      "MulticastInlineDelegate, MulticastSparseDelegate per "                      \
+                      "FIX-H-R2-3)."),                                                             \
+                  "XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG string mismatch -- "                         \
+                  "one of the three sources (XReflectionRuntime.h / "                              \
+                  "AbiLayoutPins.cs / ContractSurface.cs) drifted from "                           \
+                  "the contract.")                                                                 \
     /* Deliberate no-semicolon terminator: the macro is used as                              */    \
     /*   `XPACT_VERIFY_XOBJECT_LAYOUT();`                                                    */    \
     /* at the call site; the trailing static_assert above ends with `)`                      */    \
@@ -333,10 +396,15 @@
 // Remaining deferred pins (documented here so the macro grows
 // idempotently as later phases ship):
 //
-//   * FXObjectRefSchema         (Phase 5.g'):
-//       static_assert(sizeof(::XCore::Reflect::FXObjectRefSchema) == 24)
-//   * FXObjectRefSchemaOp       (Phase 5.g'):
-//       static_assert(sizeof(::XCore::Reflect::FXObjectRefSchemaOp) == 24)
+//   Phase 5.g' LANDED (in the macro above):
+//   * FXObjectRefSchema         @ 24 bytes (NumOps@0 + Version@4 +
+//                                Ops@8 + _padTail@16; alignof 8)
+//   * FXObjectRefSchemaOp       @ 24 bytes (Op@0 + _padOp@1 + ArrayDim@2
+//                                + Offset@4 + StrideBytes@8 + _padAlign@12
+//                                + NestedSchema@16; alignof 8)
+//   * EXObjectRefSchemaOp underlying type = uint8_t.
+//   * Active opcode count = 22.
+//   * XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG string-equality contract check.
 //
 // Phase 5.c LANDED (in the macro above):
 //   * XObjectKey                @ 8 bytes

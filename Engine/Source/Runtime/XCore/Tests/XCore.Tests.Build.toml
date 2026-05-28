@@ -2054,6 +2054,170 @@
 # representation).
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.g' tests cover the schema-vector GC walker runtime
+# surface (XCoreXObject Rev 4 §7.4 + §7.4.1; Phase 5.g' build TOML
+# section above for the full scope description).
+#
+# Tests/XObject/FXObjectRefSchema.Tests/ (6 tests):
+#
+#   * SizeofAndAlignof.cpp     -- ABI lock for FXObjectRefSchema (24
+#                                 bytes; NumOps@0 + Version@4 + Ops@8
+#                                 + _padTail@16) + FXObjectRefSchemaOp
+#                                 (24 bytes; Op@0 + _padOp@1 + ArrayDim@2
+#                                 + Offset@4 + StrideBytes@8 +
+#                                 _padAlign@12 + NestedSchema@16) +
+#                                 trait locks (trivially-copyable +
+#                                 standard-layout for .rodata
+#                                 constinit invariants).
+#   * OpcodeEnumeration.cpp    -- verifies the 22 active opcodes are
+#                                 sequentially numbered 1..22 +
+#                                 Terminator@0 sentinel + _Reserved255
+#                                 canary + per-opcode capability bit
+#                                 constants (kObjectOp etc.) match
+#                                 `1ULL << opcode-value`.
+#   * WalkSimpleStruct.cpp     -- synthetic instance with 3 Object
+#                                 opcodes + Terminator; verify the
+#                                 walker visits each ref slot in
+#                                 opcode order.
+#   * WalkNestedStruct.cpp     -- outer schema with a Struct opcode
+#                                 pointing at an inner schema; verify
+#                                 the walker recurses into the inner
+#                                 schema and visits its refs.
+#   * WalkArrayOfObject.cpp    -- TArrayCoreView reinterpret of a
+#                                 synthetic TArray<XObject*> slot;
+#                                 verify each element is visited;
+#                                 empty-array case is a no-op visit.
+#   * WalkMapAndSet.cpp        -- MapOfObject_KeyValue + SetOfObject
+#                                 opcodes against synthetic 8/16-byte
+#                                 entry strides; verify each entry's
+#                                 first-8-bytes is visited.
+#   * WalkOpcodeCoverage.cpp   -- single-slot opcode coverage for the
+#                                 remaining 7 single-slot opcodes
+#                                 (WeakObject, SoftObject, Interface,
+#                                 ClassProperty, SoftClass, Delegate,
+#                                 MulticastInline) + Terminator
+#                                 early-exit + Version-mismatch
+#                                 walker-no-op fallback +
+#                                 OptionalObject Op.Offset+8 read.
+#
+# JUDGEMENT CALL (Phase 5.g' tests / synthetic instances + Visitor
+# stub vs live FStruct integration).
+#
+# The Phase 5.g' walker tests use synthetic instance buffers + manually-
+# constructed FXObjectRefSchema records (not real XHT-emitted constinit
+# data). The walker is template-only + reads the schema vector + the
+# instance bytes directly; the synthetic test surface exercises every
+# opcode dispatch path without requiring the full Stage-B FClass emit
+# integration.
+#
+# The live FStruct integration test (where WalkSchemaRefs is invoked
+# from a real GC mark-phase visitor against an XHT-emitted FClass)
+# lands as part of the Phase 5.g GC mark phase landing (the consumer
+# of the walker). Phase 5.g' is the WALKER ABI + dispatch + visit
+# correctness gate; Phase 5.g is the consumer correctness gate.
+#
+# Tests are linked against XAssertionMacros.cpp directly (the same
+# pattern other XObject tests use when the live XObject runtime is
+# not yet wired). The PASS criterion is the assertion-count diagnostic
+# at end-of-main printing the test-name + "PASS"; the XBT runner
+# treats non-zero exit as FAIL.
+#
+# C# side (XHT.Tests / SchemaVectorEmitterTests.cs; 7 tests; not
+# listed here -- the C# test discovery is in the XHT.Tests project,
+# not in this XCore.Tests.Build.toml):
+#
+#   * EmitSimpleObjectProperty_OneOpcodePlusTerminator
+#   * EmitContainerProperties_ArrayMapSetOpcodes
+#   * EmitNestedStruct_StructOpcodeWithNestedSchemaSymbol
+#   * EmitDelegateProperty_DelegateOpcodes
+#   * EmitNoRefProperties_EmptyResult
+#   * EmitMixedHierarchy_RefsEmittedInOrder
+#   * SchemaOpKind_MatchesRuntimeEnum   (the byte-identity invariant
+#                                         between the C# SchemaOpKind
+#                                         enum and the C++
+#                                         EXObjectRefSchemaOp enum)
+#
+# =====================================================================
+#
+# XCoreXObject Phase 5.k tests cover the telemetry + XInsights weak-
+# symbol bridge + OnClassReplaced delegate surface (Phase 5.k tasks
+# in XCoreXObject Rev 4 §10.5 + §10.10.1 + §10.12).
+#
+# Tests/XObject/FXInsightsPayload.Tests/ (4 tests):
+#
+#   * Sizeof.cpp              -- default ctor + populate + copy/move
+#                                 value-type sanity; type-traits.
+#   * AddAndForEach.cpp       -- 3 entries added; ForEach visits in
+#                                 insertion order; GetEntry random
+#                                 access matches.
+#   * MultipleTypes.cpp       -- all 4 variant alternatives (int64,
+#                                 double, FString, FName) round-trip
+#                                 through the payload.
+#   * EmptyPayload.cpp        -- default-constructed payload has 0
+#                                 entries; ForEach on empty payload
+#                                 invokes visitor 0 times.
+#
+# Tests/XObject/XInsightsBridge.Tests/ (4 tests):
+#
+#   * EmitDefaultIsNoOp.cpp   -- default weak-symbol stub is silent
+#                                 no-op; no crash; payload unchanged.
+#   * EmitWithMockStrongSymbol.cpp
+#                              -- test-defined strong XCore_XInsights_
+#                                 Emit increments a counter on each
+#                                 call. Verified on Clang/GCC via the
+#                                 [[gnu::weak]] mechanism. On MSVC the
+#                                 mock would LNK2005 against the stub
+#                                 (the gate header pattern is XInsights's
+#                                 build-system responsibility when it
+#                                 ships); the test verifies the no-crash
+#                                 baseline on MSVC.
+#   * CategoryEventFNamesPostInit.cpp
+#                              -- PrewarmAtPostStaticInit succeeds; every
+#                                 Category / Event / Key FName accessor
+#                                 returns the expected string; accessor
+#                                 results are stable across calls.
+#   * EmitterHelpers.cpp      -- EmitGCCycleComplete +
+#                                 EmitAllocFailure +
+#                                 EmitFragmentationThresholdCrossed +
+#                                 EmitGCRememberedSetSaturation all
+#                                 dispatch through the bridge (Clang/GCC
+#                                 strong-override verified via the test-
+#                                 local mock; MSVC verifies no-crash).
+#
+# Tests/XObject/XCoreDelegates_OnClassReplaced.Tests/ (2 tests):
+#
+#   * SubscribeUnsubscribe.cpp -- Subscribe returns valid handle;
+#                                  GetSubscriberCount tracks Subscribe
+#                                  + Unsubscribe; Unsubscribe with
+#                                  kInvalidHandle returns false; double
+#                                  Unsubscribe returns false on second.
+#   * FireOnReplace.cpp        -- Broadcast invokes subscribed callback
+#                                  with correct OldClass / NewClass
+#                                  pointers; multiple subscribers all
+#                                  receive; after Unsubscribe the
+#                                  callback does NOT fire; snapshot-
+#                                  then-release reentry semantics: a
+#                                  callback that Subscribes during its
+#                                  own invocation does NOT fire in the
+#                                  current Broadcast.
+#
+# JUDGEMENT CALL (Phase 5.k tests / strong-override MSVC posture).
+#
+# The strong-symbol override path is verifiable end-to-end on Clang/GCC
+# via the [[gnu::weak]] attribute pattern. On MSVC the override would
+# LNK2005 against the stub's strong-linkage default in XCore.lib. The
+# principled fix is the gate header (XInsightsBridgeStrongSymbolGate.h)
+# wired into the stub TU's compile when the strong provider lands; this
+# is XBT-side build-system wiring that arrives with XInsights's module.
+#
+# Phase 5.k tests honor this asymmetry: the strong-override tests
+# (EmitWithMockStrongSymbol.cpp + EmitterHelpers.cpp) emit a clear
+# stdout "SKIP" on MSVC + verify the no-crash baseline. Both tests
+# PASS on MSVC with reduced verification scope; both PASS with full
+# verification on Clang/GCC.
+#
+# =====================================================================
 
 name = "XCore.Tests"
 tier = "Engine"

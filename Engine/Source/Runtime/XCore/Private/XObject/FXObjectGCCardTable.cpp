@@ -17,6 +17,7 @@
 // =====================================================================
 
 #include "XObject/FXObjectGCCardTable.h"
+#include "XObject/XInsightsEmitHelpers.h"   // Phase 5.k: telemetry emit hooks.
 
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
@@ -50,6 +51,10 @@ FXObjectGCCardTable::FXObjectGCCardTable() noexcept
     , m_totalCards(0)
     , m_cards(nullptr)
     , m_dirtyCount(0)
+    // m_saturationLatched is initialised inline in the header to
+    // `false` via the brace-init `{false}` syntax. Phase 5.k: the
+    // member-init list omits it deliberately so the brace-init is the
+    // single source of truth.
     , m_lock()
 {
 }
@@ -129,6 +134,8 @@ void FXObjectGCCardTable::Initialize(
             // post-init" holds.
             ::std::memset(m_cards, kCardClean, m_totalCards);
             m_dirtyCount.store(0, ::std::memory_order_relaxed);
+            // Phase 5.k: re-arm the saturation telemetry latch.
+            m_saturationLatched.store(false, ::std::memory_order_relaxed);
             // Discard the new allocation.
             OldCards = NewCards;
         }
@@ -142,6 +149,8 @@ void FXObjectGCCardTable::Initialize(
             m_heapByteSize      = HeapByteSize;
             m_totalCards        = TotalCards;
             m_dirtyCount.store(0, ::std::memory_order_relaxed);
+            // Phase 5.k: re-arm the saturation telemetry latch.
+            m_saturationLatched.store(false, ::std::memory_order_relaxed);
         }
     }
 
@@ -167,6 +176,8 @@ void FXObjectGCCardTable::__ResetForTests() noexcept
         m_heapByteSize  = 0;
         m_totalCards    = 0;
         m_dirtyCount.store(0, ::std::memory_order_relaxed);
+        // Phase 5.k: re-arm the saturation telemetry latch.
+        m_saturationLatched.store(false, ::std::memory_order_relaxed);
     }
     if (OldCards != nullptr)
     {
@@ -250,6 +261,11 @@ void FXObjectGCCardTable::MarkCardRangeDirty(
     if (NewlyDirtied != 0)
     {
         m_dirtyCount.fetch_add(NewlyDirtied, ::std::memory_order_relaxed);
+        // Phase 5.k: bulk-write path consults the saturation transition
+        // hook. The one-shot latch in CheckAndEmitSaturationTransition
+        // ensures at most one emit per GC cycle even if MarkCardRangeDirty
+        // is called many times past the threshold.
+        (void)CheckAndEmitSaturationTransition();
     }
 }
 
@@ -272,6 +288,59 @@ bool FXObjectGCCardTable::IsSaturated() const noexcept
     // (Dirty <= Total <= 8M cards on 4 GB; 8M * 100 = 800M; fits in
     // 32-bit even).
     return (Dirty * 100) >= (Total * kSaturationThresholdPercent);
+}
+
+// ---------------------------------------------------------------------
+// CheckAndEmitSaturationTransition -- one-shot saturation telemetry
+// (Phase 5.k; spec §10.12).
+//
+// Atomically transitions the m_saturationLatched flag from false to
+// true on the first call past the saturation threshold; emits the
+// RememberedSetSaturation event once. Subsequent calls see the latch
+// already set and short-circuit. The latch is re-armed at the next
+// ForEachDirtyCardAndClear / Initialize / __ResetForTests boundary.
+//
+// Concurrency: the CAS on m_saturationLatched is the synchronisation
+// primitive that guarantees exactly-one emit even under concurrent
+// callers (the bulk MarkCardRangeDirty paths from multiple writer
+// threads + the GC trigger's explicit consult). The emit itself runs
+// AFTER the CAS wins, so a losing thread observes the latch already
+// set and does not emit.
+// ---------------------------------------------------------------------
+bool FXObjectGCCardTable::CheckAndEmitSaturationTransition() noexcept
+{
+    if (!IsSaturated())
+    {
+        // Not yet saturated; no transition.
+        return false;
+    }
+
+    // Saturation predicate is true. Try to CAS the latch from false
+    // to true; only the winner emits.
+    bool Expected = false;
+    if (!m_saturationLatched.compare_exchange_strong(
+            Expected, true,
+            ::std::memory_order_acq_rel,
+            ::std::memory_order_relaxed))
+    {
+        // Lost the CAS; another caller already emitted in this cycle.
+        return false;
+    }
+
+    // We won the CAS; compute the payload + emit.
+    const ::std::size_t Dirty = m_dirtyCount.load(::std::memory_order_relaxed);
+    const ::std::size_t Total = m_totalCards;
+    const double SaturationPct = (Total == 0)
+        ? 0.0
+        : (static_cast<double>(Dirty) * 100.0 / static_cast<double>(Total));
+
+    ::XCore::HAL::XInsightsEmitHelpers::EmitGCRememberedSetSaturation(
+        /*DirtyCardCount=*/static_cast<::std::int64_t>(Dirty),
+        /*TotalCardCount=*/static_cast<::std::int64_t>(Total),
+        /*SaturationPct=*/ SaturationPct,
+        /*CycleId=*/       0);  // Phase 5.k Phase-1: 0; Phase 5.g sets real id.
+
+    return true;
 }
 
 } // namespace XCore
