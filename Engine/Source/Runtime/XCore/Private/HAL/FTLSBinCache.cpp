@@ -20,8 +20,8 @@
 //
 // =====================================================================
 
-#include "Private/HAL/FTLSBinCache.h"
-#include "Private/HAL/FMallocBinnedX.h"   // FMallocBinnedX::__ThreadExitFlushBundle (Phase 1g)
+#include "HAL/FTLSBinCache.h"
+#include "HAL/FMallocBinnedX.h"   // FMallocBinnedX::__ThreadExitFlushBundle (Phase 1g)
 
 #include "HAL/FMemory.h"                  // FMemory::IsAlive guard for post-shutdown drain
 #include "Macros/XCoreTypes.h"

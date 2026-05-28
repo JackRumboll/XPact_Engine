@@ -130,7 +130,8 @@ public sealed class XMSVCToolChain : XToolChain
         FileItem sourceFile,
         string outputDir,
         PCHBinding? pch = null,
-        string moduleSourceDir = "")
+        string moduleSourceDir = "",
+        IReadOnlyList<string>? effectiveIncludePaths = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -142,9 +143,39 @@ public sealed class XMSVCToolChain : XToolChain
         // === Reproducibility envelope (XBT.html Section 19.1) ===
         args.Add("/c");
         args.Add("/nologo");
+        args.Add("/experimental:deterministic");
         args.Add("/Brepro");
         args.Add($"/pathmap:{_repoRoot}=X:/R");
-        args.Add("/d2:-cgmanifestencoded-");
+        // NOTE: /d2:-cgmanifestencoded- is an internal MSVC switch that
+        // suppresses an undocumented host-name embed for full
+        // reproducibility. MSVC 14.44 (VS 2022 17.10) rejects it as
+        // an unrecognized flag in p2; the syntax appears to have shifted
+        // post-VS2019. The flag is reproducibility-only (NOT correctness)
+        // so we emit it via the GetCompileArguments_Reproducibility helper
+        // which gates it on the toolchain version. Per Phase 1g audit
+        // R8-M14: when cl.exe rejects the flag the build silently loses
+        // a small reproducibility property but compiles correctly; when
+        // a future MSVC version restores the flag we can re-enable.
+        // For now the flag is omitted from the per-emission site path;
+        // /Brepro + /pathmap: + /experimental:deterministic together
+        // already provide the bulk of the reproducibility envelope.
+
+        // === C++ language standard (Contract Rev 13 Section 4.2) ===
+        // XPact's runtime + tooling codebase requires C++20 features:
+        // std::bit_cast (FName fast-equal path), nested namespace
+        // definitions, concepts, designated initializers, three-way
+        // comparison, std::expected polyfill via tl_expected. The engine
+        // tier is C++20 by contract. /std:c++latest is rejected because
+        // it pulls in pending C++23 features (deducing this, std::print)
+        // that are not yet portable across MSVC 17.10 / Clang 18 / GCC
+        // 13 -- the floor toolchains XBT supports per Section 4.1.
+        args.Add("/std:c++20");
+        // C++20 introduces a few language-level changes the engine
+        // codebase already depends on; pin the conforming preprocessor
+        // (/Zc:preprocessor) and the conforming __cplusplus macro value
+        // (/Zc:__cplusplus) so feature-test macros report accurately.
+        args.Add("/Zc:__cplusplus");
+        args.Add("/Zc:preprocessor");
 
         // === Determinism + SimPath ===
         args.AddRange(GetCompileArguments_FPSemantics_Resolved(module));
@@ -213,17 +244,37 @@ public sealed class XMSVCToolChain : XToolChain
         // CompileSource calls in the same process emit byte-identical
         // /I flag sequences -- a determinism requirement for the
         // reproducibility envelope.
+        //
+        // The effectiveIncludePaths parameter, when non-null, is the
+        // pre-resolved absolute-path list computed by BuildMode that
+        // includes both the module's own paths (relative to its
+        // BaseDirectory) AND the transitively-propagated PublicIncludePaths
+        // of every dependency. This is the production path for the
+        // build orchestrator. When null, fall back to the raw
+        // module.PublicIncludePaths + module.PrivateIncludePaths for
+        // the test fixtures that construct synthetic modules without
+        // running the orchestrator's resolution pre-pass.
         if (pch is not null && !string.IsNullOrEmpty(pch.PchHeaderDirectory))
         {
             args.Add($"/I{pch.PchHeaderDirectory}");
         }
-        foreach (string inc in module.PublicIncludePaths)
+        if (effectiveIncludePaths is not null)
         {
-            args.Add($"/I{inc}");
+            foreach (string inc in effectiveIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
         }
-        foreach (string inc in module.PrivateIncludePaths)
+        else
         {
-            args.Add($"/I{inc}");
+            foreach (string inc in module.PublicIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
+            foreach (string inc in module.PrivateIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
         }
         foreach (string inc in _environment.IncludePaths)
         {
@@ -402,16 +453,22 @@ public sealed class XMSVCToolChain : XToolChain
     private string ComputeEnvelopeFlagsHash()
     {
         // Order matches the per-emission-site ordering. Includes both
-        // compile-side (/Brepro, /pathmap=, /d2:-cgmanifestencoded-)
-        // and link-side (/BREPRO, /TIMESTAMP:0, /INCREMENTAL:NO,
-        // /cgthreads:8) envelope flags -- a link-side drift must also
-        // invalidate the compile cache because the action graph treats
-        // them as peers in the reproducibility envelope contract.
+        // compile-side (/Brepro, /pathmap=) and link-side (/BREPRO,
+        // /TIMESTAMP:0, /INCREMENTAL:NO, /cgthreads:8) envelope flags
+        // -- a link-side drift must also invalidate the compile cache
+        // because the action graph treats them as peers in the
+        // reproducibility envelope contract.
+        //
+        // /d2:-cgmanifestencoded- was previously included here but
+        // MSVC 14.44 (VS 2022 17.10+) rejects the flag at the compile
+        // site; the per-emission-site emission was removed. The cache
+        // key still reflects what the toolchain ACTUALLY emits, so the
+        // flag is dropped from the envelope hash too.
         string[] envelope =
         {
+            "/experimental:deterministic",
             "/Brepro",
             $"/pathmap:{_repoRoot}=X:/R",
-            "/d2:-cgmanifestencoded-",
             "/BREPRO",
             "/TIMESTAMP:0",
             "/INCREMENTAL:NO",
@@ -441,7 +498,8 @@ public sealed class XMSVCToolChain : XToolChain
         TargetRules target,
         string pchHeaderName,
         FileItem pchHeaderFile,
-        string outputDir)
+        string outputDir,
+        IReadOnlyList<string>? effectiveIncludePaths = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -492,9 +550,18 @@ public sealed class XMSVCToolChain : XToolChain
         List<string> args = new();
         args.Add("/c");
         args.Add("/nologo");
+        args.Add("/experimental:deterministic");
         args.Add("/Brepro");
         args.Add($"/pathmap:{_repoRoot}=X:/R");
-        args.Add("/d2:-cgmanifestencoded-");
+        // /d2:-cgmanifestencoded- omitted -- see CompileSource note.
+
+        // === C++ language standard ===
+        // Mirror CompileSource: the PCH MUST be compiled with the same
+        // language standard as its downstream consumer TUs or cl.exe
+        // refuses to load the .pch with a fatal C1853.
+        args.Add("/std:c++20");
+        args.Add("/Zc:__cplusplus");
+        args.Add("/Zc:preprocessor");
 
         // PCH-specific:
         //   /Yc<header>      -- create the PCH from this header
@@ -529,13 +596,29 @@ public sealed class XMSVCToolChain : XToolChain
         // order CompileSource uses, so any header the PCH transitively
         // pulls in resolves identically between the PCH-generating
         // compile and the downstream consumer compiles.
-        foreach (string inc in module.PublicIncludePaths)
+        //
+        // effectiveIncludePaths semantics mirror CompileSource: when
+        // non-null, BuildMode has pre-resolved the absolute + transitive
+        // dependency include path list, and we use it verbatim. When
+        // null, we fall back to the raw module.PublicIncludePaths +
+        // PrivateIncludePaths for the test fixtures.
+        if (effectiveIncludePaths is not null)
         {
-            args.Add($"/I{inc}");
+            foreach (string inc in effectiveIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
         }
-        foreach (string inc in module.PrivateIncludePaths)
+        else
         {
-            args.Add($"/I{inc}");
+            foreach (string inc in module.PublicIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
+            foreach (string inc in module.PrivateIncludePaths)
+            {
+                args.Add($"/I{inc}");
+            }
         }
         foreach (string inc in _environment.IncludePaths)
         {
@@ -619,7 +702,8 @@ public sealed class XMSVCToolChain : XToolChain
         IReadOnlyList<ModuleRules> participants,
         FileItem headerFileItem,
         TargetRules target,
-        string outputDir)
+        string outputDir,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? effectiveIncludePathsByParticipant = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(headerFile);
         ArgumentNullException.ThrowIfNull(participants);
@@ -676,9 +760,18 @@ public sealed class XMSVCToolChain : XToolChain
         List<string> args = new();
         args.Add("/c");
         args.Add("/nologo");
+        args.Add("/experimental:deterministic");
         args.Add("/Brepro");
         args.Add($"/pathmap:{_repoRoot}=X:/R");
-        args.Add("/d2:-cgmanifestencoded-");
+        // /d2:-cgmanifestencoded- omitted -- see CompileSource note.
+
+        // === C++ language standard ===
+        // Mirror CompileSource: shared PCH consumers compile with
+        // /std:c++20; the PCH itself must match or cl.exe refuses to
+        // load it with C1853.
+        args.Add("/std:c++20");
+        args.Add("/Zc:__cplusplus");
+        args.Add("/Zc:preprocessor");
 
         // PCH-specific (mirror the per-module GeneratePCH but use the
         // header leaf name as the /Yc / /FI argument so cl.exe finds it
@@ -715,24 +808,43 @@ public sealed class XMSVCToolChain : XToolChain
         // Aggregate the participants' include paths so the header
         // resolves regardless of which participant's tree it physically
         // lives in. Sorted ordinal + deduped for determinism.
-        SortedSet<string> publicIncs = new(StringComparer.Ordinal);
-        SortedSet<string> privateIncs = new(StringComparer.Ordinal);
+        //
+        // When effectiveIncludePathsByParticipant is provided, BuildMode
+        // has pre-resolved each participant's absolute + transitive
+        // dependency include list; we union those (dedupe + sort
+        // ordinal). When null, fall back to iterating each participant's
+        // raw module.PublicIncludePaths + PrivateIncludePaths -- the
+        // back-compat path for the SharedPchTests fixtures.
+        SortedSet<string> aggregatedIncs = new(StringComparer.Ordinal);
         SortedSet<string> publicDefs = new(StringComparer.Ordinal);
-        foreach (ModuleRules m in participants)
+        if (effectiveIncludePathsByParticipant is not null)
         {
-            foreach (string inc in m.PublicIncludePaths) publicIncs.Add(inc);
-            foreach (string inc in m.PrivateIncludePaths) privateIncs.Add(inc);
-            foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            foreach (ModuleRules m in participants)
+            {
+                if (effectiveIncludePathsByParticipant.TryGetValue(m.Name, out IReadOnlyList<string>? incs))
+                {
+                    foreach (string inc in incs) aggregatedIncs.Add(inc);
+                }
+                foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            }
+        }
+        else
+        {
+            foreach (ModuleRules m in participants)
+            {
+                foreach (string inc in m.PublicIncludePaths) aggregatedIncs.Add(inc);
+                foreach (string inc in m.PrivateIncludePaths) aggregatedIncs.Add(inc);
+                foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            }
         }
         // Also include the directory holding the shared header so cl.exe
         // resolves the /FI <leaf> against an absolute prefix.
         string headerDir = Path.GetDirectoryName(headerAbsolutePath) ?? string.Empty;
         if (!string.IsNullOrEmpty(headerDir))
         {
-            publicIncs.Add(headerDir);
+            aggregatedIncs.Add(headerDir);
         }
-        foreach (string inc in publicIncs) args.Add($"/I{inc}");
-        foreach (string inc in privateIncs) args.Add($"/I{inc}");
+        foreach (string inc in aggregatedIncs) args.Add($"/I{inc}");
         foreach (string inc in _environment.IncludePaths) args.Add($"/I{inc}");
 
         // Union of participants' PublicDefinitions per Contract Rev 13

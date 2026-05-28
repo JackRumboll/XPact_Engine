@@ -1286,6 +1286,37 @@ public sealed class BuildMode : IToolMode<BuildMode>
         string manifestJsonPath = Path.Combine(manifestOutputDir, "Manifest.json");
         string? xhtExePath = TryResolveXhtExecutable(engineRoot, target.Platform);
 
+        // Per-module effective include path resolution pre-pass. The
+        // toolchain's CompileSource / GeneratePCH / GenerateSharedPCH
+        // calls need ABSOLUTE include paths that include both the active
+        // module's own Public/Private directories AND every dependency
+        // module's PublicIncludePaths. This is the proper resolution of
+        // the dependency-include propagation rule documented on
+        // ModuleRules.PublicIncludePaths.
+        //
+        // The dictionary is keyed on module name and is shared across
+        // every CompileSource + GeneratePCH + GenerateSharedPCH call in
+        // this pass; the resolution itself is O(depGraph) per module
+        // but each module is resolved at most once.
+        //
+        // Phase 1g posture: targetModules already covers every module
+        // selected for the target (test modules included when
+        // Configuration == Test). The unresolved-dep diagnostic is
+        // ValidateTierRules' job; here we simply skip unknown names.
+        Dictionary<string, ModuleRecord> moduleRecordByName =
+            new(StringComparer.Ordinal);
+        foreach (ModuleRecord rec in targetModules)
+        {
+            moduleRecordByName[rec.Rules.Name] = rec;
+        }
+        Dictionary<string, IReadOnlyList<string>> effectiveIncludesByModule =
+            new(StringComparer.Ordinal);
+        foreach (ModuleRecord rec in targetModules)
+        {
+            effectiveIncludesByModule[rec.Rules.Name] =
+                ComputeEffectiveIncludePaths(rec, moduleRecordByName);
+        }
+
         // Shared-PCH grouping pre-pass (Phase 1.4b per Contract Rev 13
         // Section 1.5). Walk the selected modules, group by the resolved
         // absolute path of each module's SharedPCHHeaderFile, emit ONE
@@ -1296,7 +1327,14 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // semantics (per the spec: single-participant "shared" PCHs are
         // wasteful; emit a Logger.Info and treat as private).
         Dictionary<string, PCHBinding> sharedPchBindingByModule =
-            BuildSharedPchGroups(toolchain, target, engineRoot, targetModules, actions, reportActions);
+            BuildSharedPchGroups(
+                toolchain,
+                target,
+                engineRoot,
+                targetModules,
+                actions,
+                reportActions,
+                effectiveIncludesByModule);
 
         foreach (ModuleRecord rec in targetModules)
         {
@@ -1396,7 +1434,13 @@ public sealed class BuildMode : IToolMode<BuildMode>
             }
             else
             {
-                pchBinding = TryGeneratePCH(toolchain, module, target, moduleDir, moduleObjDir);
+                pchBinding = TryGeneratePCH(
+                    toolchain,
+                    module,
+                    target,
+                    moduleDir,
+                    moduleObjDir,
+                    effectiveIncludesByModule[module.Name]);
                 if (pchBinding is not null)
                 {
                     actions.Add(pchBinding.Action);
@@ -1405,6 +1449,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
             }
 
             // Per-source compile actions.
+            IReadOnlyList<string> moduleEffectiveIncludes =
+                effectiveIncludesByModule[module.Name];
             List<FileItem> objectFiles = new();
             foreach (FileItem source in sourceFiles)
             {
@@ -1416,7 +1462,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 IReadOnlyList<IExternalAction> compileActions =
                     toolchain.CompileSource(
                         module, target, source, moduleObjDir, pchBinding,
-                        moduleSourceDir: moduleDir);
+                        moduleSourceDir: moduleDir,
+                        effectiveIncludePaths: moduleEffectiveIncludes);
                 foreach (IExternalAction compile in compileActions)
                 {
                     actions.Add(compile);
@@ -1907,7 +1954,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
         string engineRoot,
         IReadOnlyList<ModuleRecord> targetModules,
         List<IExternalAction> actions,
-        List<IExternalAction> reportActions)
+        List<IExternalAction> reportActions,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> effectiveIncludesByModule)
     {
         Dictionary<string, PCHBinding> bindingByModule =
             new(StringComparer.Ordinal);
@@ -2068,12 +2116,28 @@ public sealed class BuildMode : IToolMode<BuildMode>
             List<ModuleRules> participantRules =
                 participantRecords.Select(r => r.Rules).ToList();
 
+            // Slice the effective-includes dictionary to just the
+            // participants in this group; passing the full per-build map
+            // would force the toolchain to do its own subset lookup. The
+            // toolchain treats the dictionary as opaque (per-name lookup),
+            // so a subset matching the participants is the right shape.
+            Dictionary<string, IReadOnlyList<string>> participantIncludes =
+                new(StringComparer.Ordinal);
+            foreach (ModuleRules m in participantRules)
+            {
+                if (effectiveIncludesByModule.TryGetValue(m.Name, out IReadOnlyList<string>? incs))
+                {
+                    participantIncludes[m.Name] = incs;
+                }
+            }
+
             PCHBinding binding = toolchain.GenerateSharedPCH(
                 headerFile: groupRelativeHeader[headerKey],
                 participants: participantRules,
                 headerFileItem: headerFileItem,
                 target: target,
-                outputDir: sharedIntermediateDir);
+                outputDir: sharedIntermediateDir,
+                effectiveIncludePathsByParticipant: participantIncludes);
 
             actions.Add(binding.Action);
             reportActions.Add(binding.Action);
@@ -2104,7 +2168,8 @@ public sealed class BuildMode : IToolMode<BuildMode>
         ModuleRules module,
         TargetRules target,
         string moduleDir,
-        string moduleObjDir)
+        string moduleObjDir,
+        IReadOnlyList<string> effectiveIncludePaths)
     {
         PCHUsageMode effectiveUsage = XToolChain.ResolvePCHUsage(module);
         if (effectiveUsage == PCHUsageMode.NoPCHs
@@ -2129,7 +2194,191 @@ public sealed class BuildMode : IToolMode<BuildMode>
         PCHIncludeOrderRewriter.RewriteFile(headerPath, module.Name);
 
         FileItem header = FileItem.GetItemByPath(headerPath);
-        return toolchain.GeneratePCH(module, target, module.PrivatePCHHeaderFile!, header, moduleObjDir);
+        return toolchain.GeneratePCH(
+            module,
+            target,
+            module.PrivatePCHHeaderFile!,
+            header,
+            moduleObjDir,
+            effectiveIncludePaths);
+    }
+
+    /// <summary>
+    /// Compute the effective per-module include path list the toolchain
+    /// emits as <c>/I</c> (MSVC) or <c>-I</c> (Clang) flags. The result
+    /// is the ordered concatenation of:
+    /// <list type="number">
+    ///   <item>The module's own <see cref="ModuleRules.PublicIncludePaths"/>,
+    ///   resolved to absolute paths against the module's
+    ///   <c>BaseDirectory</c> (the directory holding its .Build.toml).</item>
+    ///   <item>The module's own <see cref="ModuleRules.PrivateIncludePaths"/>,
+    ///   resolved the same way.</item>
+    ///   <item>The transitive set of every dependency module's
+    ///   <see cref="ModuleRules.PublicIncludePaths"/>, resolved to
+    ///   absolute paths against THAT module's BaseDirectory.</item>
+    /// </list>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the proper resolution of the dependency-include
+    /// propagation rule documented on
+    /// <see cref="ModuleRules.PublicIncludePaths"/>: "Visible to
+    /// consumers via transitive propagation through
+    /// <c>PublicDependencyModuleNames</c>." Without this resolution the
+    /// toolchain would emit <c>/IPublic</c> verbatim, which the compiler
+    /// resolves against its working directory (the repo root) -- a
+    /// stale-by-construction path that misses both the module's own
+    /// Public/ directory AND every dependency's Public/.
+    /// </para>
+    /// <para>
+    /// Propagation rule per Contract Rev 13 Section 9.1:
+    /// <list type="bullet">
+    ///   <item><see cref="ModuleRules.PublicDependencyModuleNames"/>
+    ///   contribute their PublicIncludePaths AND their own public-dep
+    ///   transitive closures (Public-deps' Public-deps' Public ...).</item>
+    ///   <item><see cref="ModuleRules.PrivateDependencyModuleNames"/>
+    ///   contribute their PublicIncludePaths (so private deps can
+    ///   reference their dep's headers from their own .cpp files) but
+    ///   downstream consumers of THIS module do not transitively see
+    ///   the private-dep's PublicIncludePaths.</item>
+    /// </list>
+    /// For include-path emission (the question this method answers) the
+    /// distinction collapses: both public and private deps contribute
+    /// their <see cref="ModuleRules.PublicIncludePaths"/> to the active
+    /// module's compile lines. The public/private distinction matters
+    /// only for downstream propagation, which we model by walking from
+    /// each compiled module independently rather than caching a single
+    /// "exported" set per module.
+    /// </para>
+    /// <para>
+    /// Order discipline: own paths first, then deps in alphabetical
+    /// order, then each dep's PublicIncludePaths in declaration order.
+    /// Within a single module's contribution, the declared order is
+    /// preserved (matches the parser's preservation rule and the
+    /// manifest's audit invariant). Duplicates are filtered (a header
+    /// declared by two ancestors won't be emitted twice). The result
+    /// list contains absolute paths only.
+    /// </para>
+    /// </remarks>
+    internal static IReadOnlyList<string> ComputeEffectiveIncludePaths(
+        ModuleRecord activeRecord,
+        IReadOnlyDictionary<string, ModuleRecord> recordByName)
+    {
+        ArgumentNullException.ThrowIfNull(activeRecord);
+        ArgumentNullException.ThrowIfNull(recordByName);
+
+        List<string> result = new();
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        // (1) Active module's own public + private paths (absolute).
+        string activeDir = Path.GetDirectoryName(activeRecord.DescriptorPath)!;
+        foreach (string p in activeRecord.Rules.PublicIncludePaths)
+        {
+            AddIfNew(seen, result, ResolveModuleRelative(activeDir, p));
+        }
+        foreach (string p in activeRecord.Rules.PrivateIncludePaths)
+        {
+            AddIfNew(seen, result, ResolveModuleRelative(activeDir, p));
+        }
+
+        // (2) Transitive dependency PublicIncludePaths. Walk both public
+        //     and private dep edges -- both contribute their PUBLIC
+        //     include paths to the active module's compile lines (only
+        //     downstream propagation differs between the two edge kinds,
+        //     which is irrelevant for the active module's compile
+        //     command).
+        //
+        // The walk is BFS to keep the order deterministic + transitive
+        // (public-deps' public-deps' public... contribute too).
+        HashSet<string> visitedModules = new(StringComparer.Ordinal)
+        {
+            activeRecord.Rules.Name,
+        };
+        Queue<ModuleDep> frontier = new();
+        // Order: alphabetical so the emission is byte-stable across
+        // hosts and re-runs (parser already sorts but defending here).
+        foreach (ModuleDep dep in
+            activeRecord.Rules.PublicDependencyModuleNames
+                .Concat(activeRecord.Rules.PrivateDependencyModuleNames)
+                .OrderBy(d => d.Name, StringComparer.Ordinal))
+        {
+            frontier.Enqueue(dep);
+        }
+
+        while (frontier.Count > 0)
+        {
+            ModuleDep dep = frontier.Dequeue();
+            if (!visitedModules.Add(dep.Name))
+            {
+                continue;
+            }
+
+            // interface_module = true deps may still be header-only
+            // libraries (e.g. tl_expected) with PublicIncludePaths. They
+            // contribute headers like any other dependency.
+            if (!recordByName.TryGetValue(dep.Name, out ModuleRecord? depRecord))
+            {
+                // Missing dependency -- the tier-validation pass already
+                // diagnosed this case with an error. Skip silently here
+                // to avoid duplicate diagnostics.
+                continue;
+            }
+
+            string depDir = Path.GetDirectoryName(depRecord.DescriptorPath)!;
+            foreach (string p in depRecord.Rules.PublicIncludePaths)
+            {
+                AddIfNew(seen, result, ResolveModuleRelative(depDir, p));
+            }
+
+            // Push the dep's PUBLIC deps onto the frontier. Private deps
+            // are NOT transitively included from a non-direct ancestor
+            // (private deps stop propagating once you cross a module
+            // boundary).
+            foreach (ModuleDep nested in
+                depRecord.Rules.PublicDependencyModuleNames
+                    .OrderBy(d => d.Name, StringComparer.Ordinal))
+            {
+                if (!visitedModules.Contains(nested.Name))
+                {
+                    frontier.Enqueue(nested);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolve a module-relative include path to its canonical absolute
+    /// form. Module-relative paths are simple subdirectory names (e.g.
+    /// "Public", "Private/HAL") joined to the descriptor's parent dir;
+    /// the parser already rejects absolute paths + parent-traversal so
+    /// the input always lies inside the module tree.
+    /// </summary>
+    private static string ResolveModuleRelative(string moduleDir, string relativePath)
+    {
+        // Trim leading whitespace defensively; the parser also trims.
+        string trimmed = relativePath.Trim();
+        if (trimmed.Length == 0)
+        {
+            // Empty entry -> the module's BaseDirectory itself.
+            return Path.GetFullPath(moduleDir);
+        }
+        return Path.GetFullPath(Path.Combine(moduleDir, trimmed));
+    }
+
+    /// <summary>
+    /// Add an include path to the output list when not already present.
+    /// Dedup is case-insensitive to match Windows filesystem semantics;
+    /// the canonical path produced by <see cref="Path.GetFullPath(string)"/>
+    /// preserves the original casing for the recorded entry.
+    /// </summary>
+    private static void AddIfNew(HashSet<string> seen, List<string> result, string absolutePath)
+    {
+        if (seen.Add(absolutePath))
+        {
+            result.Add(absolutePath);
+        }
     }
 
     /// <summary>

@@ -387,7 +387,8 @@ public sealed class XClangToolChain : XToolChain
         FileItem sourceFile,
         string outputDir,
         PCHBinding? pch = null,
-        string moduleSourceDir = "")
+        string moduleSourceDir = "",
+        IReadOnlyList<string>? effectiveIncludePaths = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -406,6 +407,17 @@ public sealed class XClangToolChain : XToolChain
         // layout randomization from the host's RNG, breaking
         // reproducibility across machines.
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
+
+        // === C++ language standard (Contract Rev 13 Section 4.2) ===
+        // XPact's engine + tooling code requires C++20 (std::bit_cast,
+        // concepts, nested namespaces, designated initializers, three-
+        // way comparison, std::expected polyfill via tl_expected). Pin
+        // -std=c++20 so Clang doesn't default to its compile-time
+        // language version (currently c++17 for Clang 18). Emitted
+        // identically across CompileSource / GeneratePCH /
+        // GenerateSharedPCH so a PCH built at one standard does not
+        // mismatch its consumer TUs at a different one.
+        args.Add("-std=c++20");
 
         // === Android target triple (audit fix R8-C1) ===
         // The NDK ships a generic bin/clang driver; without an explicit
@@ -486,17 +498,35 @@ public sealed class XClangToolChain : XToolChain
         // implicit lookup + any -include flag resolves against the
         // header's own directory regardless of consumer-module include
         // paths.
+        //
+        // effectiveIncludePaths semantics: when non-null, BuildMode has
+        // pre-resolved the absolute + transitive dependency include path
+        // list. Use it verbatim INSTEAD of the raw
+        // module.PublicIncludePaths + PrivateIncludePaths. When null,
+        // fall back to the raw lists for the test fixtures that
+        // construct synthetic modules without running BuildMode's
+        // resolution pre-pass.
         if (pch is not null && !string.IsNullOrEmpty(pch.PchHeaderDirectory))
         {
             args.Add($"-I{pch.PchHeaderDirectory}");
         }
-        foreach (string inc in module.PublicIncludePaths)
+        if (effectiveIncludePaths is not null)
         {
-            args.Add($"-I{inc}");
+            foreach (string inc in effectiveIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
         }
-        foreach (string inc in module.PrivateIncludePaths)
+        else
         {
-            args.Add($"-I{inc}");
+            foreach (string inc in module.PublicIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
+            foreach (string inc in module.PrivateIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
         }
 
         // === PCH consumption (Contract Section 1.5; Phase 1.3) ===
@@ -671,7 +701,8 @@ public sealed class XClangToolChain : XToolChain
         TargetRules target,
         string pchHeaderName,
         FileItem pchHeaderFile,
-        string outputDir)
+        string outputDir,
+        IReadOnlyList<string>? effectiveIncludePaths = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -698,6 +729,12 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-fno-ident");
         args.Add("-fdeterministic-cgu-order");
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
+
+        // === C++ language standard ===
+        // Mirror CompileSource: the PCH MUST be compiled with the same
+        // language standard as consumer TUs or Clang refuses to use the
+        // .pchi.
+        args.Add("-std=c++20");
 
         // === Android target triple (audit fix R8-C1) ===
         // Identical triple emission across CompileSource / GeneratePCH /
@@ -730,13 +767,26 @@ public sealed class XClangToolChain : XToolChain
         }
 
         // === Include paths (mirror consumer TUs) ===
-        foreach (string inc in module.PublicIncludePaths)
+        // effectiveIncludePaths overrides the raw module lists when
+        // BuildMode has pre-resolved transitive dependency includes.
+        // See XToolChain.CompileSource docs for the full contract.
+        if (effectiveIncludePaths is not null)
         {
-            args.Add($"-I{inc}");
+            foreach (string inc in effectiveIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
         }
-        foreach (string inc in module.PrivateIncludePaths)
+        else
         {
-            args.Add($"-I{inc}");
+            foreach (string inc in module.PublicIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
+            foreach (string inc in module.PrivateIncludePaths)
+            {
+                args.Add($"-I{inc}");
+            }
         }
 
         // === PCH-specific: treat header as a c++-header ===
@@ -821,7 +871,8 @@ public sealed class XClangToolChain : XToolChain
         IReadOnlyList<ModuleRules> participants,
         FileItem headerFileItem,
         TargetRules target,
-        string outputDir)
+        string outputDir,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? effectiveIncludePathsByParticipant = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(headerFile);
         ArgumentNullException.ThrowIfNull(participants);
@@ -863,6 +914,11 @@ public sealed class XClangToolChain : XToolChain
         args.Add("-fdeterministic-cgu-order");
         args.Add($"-frandomize-layout-seed-file={EnsureRandomizeLayoutSeedFile()}");
 
+        // === C++ language standard ===
+        // Mirror CompileSource: consumers compile with -std=c++20; the
+        // PCH must match.
+        args.Add("-std=c++20");
+
         // === Android target triple (audit fix R8-C1) ===
         // Identical to the CompileSource / GeneratePCH emission; a
         // shared PCH used by Android consumers MUST be compiled for the
@@ -877,22 +933,39 @@ public sealed class XClangToolChain : XToolChain
         // Aggregate include paths from every participant (sorted ordinal
         // + deduped for determinism). Include the header's own directory
         // so the -x c++-header path resolves.
-        SortedSet<string> publicIncs = new(StringComparer.Ordinal);
-        SortedSet<string> privateIncs = new(StringComparer.Ordinal);
+        //
+        // effectiveIncludePathsByParticipant overrides the raw module
+        // lists when BuildMode has pre-resolved transitive dependency
+        // includes. See XToolChain.GenerateSharedPCH docs for the full
+        // contract.
+        SortedSet<string> aggregatedIncs = new(StringComparer.Ordinal);
         SortedSet<string> publicDefs = new(StringComparer.Ordinal);
-        foreach (ModuleRules m in participants)
+        if (effectiveIncludePathsByParticipant is not null)
         {
-            foreach (string inc in m.PublicIncludePaths) publicIncs.Add(inc);
-            foreach (string inc in m.PrivateIncludePaths) privateIncs.Add(inc);
-            foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            foreach (ModuleRules m in participants)
+            {
+                if (effectiveIncludePathsByParticipant.TryGetValue(m.Name, out IReadOnlyList<string>? incs))
+                {
+                    foreach (string inc in incs) aggregatedIncs.Add(inc);
+                }
+                foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            }
+        }
+        else
+        {
+            foreach (ModuleRules m in participants)
+            {
+                foreach (string inc in m.PublicIncludePaths) aggregatedIncs.Add(inc);
+                foreach (string inc in m.PrivateIncludePaths) aggregatedIncs.Add(inc);
+                foreach (string def in m.PublicDefinitions) publicDefs.Add(def);
+            }
         }
         string headerDir = Path.GetDirectoryName(headerAbsolutePath) ?? string.Empty;
         if (!string.IsNullOrEmpty(headerDir))
         {
-            publicIncs.Add(headerDir);
+            aggregatedIncs.Add(headerDir);
         }
-        foreach (string inc in publicIncs) args.Add($"-I{inc}");
-        foreach (string inc in privateIncs) args.Add($"-I{inc}");
+        foreach (string inc in aggregatedIncs) args.Add($"-I{inc}");
 
         // Union of participants' PublicDefinitions.
         foreach (string def in publicDefs) args.Add($"-D{def}");

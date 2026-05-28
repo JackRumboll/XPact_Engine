@@ -44,8 +44,8 @@
 #include "HAL/FMemTag.h"
 #include "HAL/FMutex.h"            // Phase 1g fix M-8: FMutex replaces std::mutex
 #include "HAL/FPlatformMemory.h"
-#include "Private/HAL/FMallocBinnedX.h"
-#include "Private/HAL/StackWalk/IStackWalk.h"
+#include "HAL/FMallocBinnedX.h"
+#include "HAL/StackWalk/IStackWalk.h"
 #include "Containers/FString.h"    // Rev 2 FIX-3: WriteReport now writes to disk
 
 #include "Macros/XCoreTypes.h"

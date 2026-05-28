@@ -15,8 +15,8 @@
 //
 // =====================================================================
 
-#include "Private/HAL/FMallocBinnedX.h"
-#include "Private/HAL/FTLSBinCache.h"
+#include "HAL/FMallocBinnedX.h"
+#include "HAL/FTLSBinCache.h"
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"

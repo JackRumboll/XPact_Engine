@@ -16,7 +16,7 @@
 #include "HAL/FMemory.h"
 #include "HAL/FMemTag.h"
 #include "HAL/FOOMPolicy.h"
-#include "Private/HAL/FMallocBinnedX.h"
+#include "HAL/FMallocBinnedX.h"
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XPactMacros.h"

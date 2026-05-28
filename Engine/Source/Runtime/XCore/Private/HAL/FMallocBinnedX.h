@@ -150,7 +150,7 @@
 #include "HAL/FMemTag.h"
 #include "HAL/FOOMPolicy.h"
 #include "HAL/TBoundedMpscQueue.h"
-#include "Private/HAL/FTLSBinCache.h"
+#include "HAL/FTLSBinCache.h"
 
 #include <atomic>
 #include <mutex>

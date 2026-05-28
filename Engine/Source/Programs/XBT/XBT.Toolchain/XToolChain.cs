@@ -79,13 +79,36 @@ public abstract class XToolChain
     /// the named directory, the toolchain falls back to flat
     /// basename-only naming directly under <paramref name="outputDir"/>.
     /// </param>
+    /// <param name="effectiveIncludePaths">
+    /// Optional override for the per-module include path list emitted as
+    /// <c>/I</c> (MSVC) or <c>-I</c> (Clang) flags. When non-null, the
+    /// toolchain uses this list verbatim INSTEAD of
+    /// <see cref="ModuleRules.PublicIncludePaths"/> +
+    /// <see cref="ModuleRules.PrivateIncludePaths"/>. Production callers
+    /// pass an absolute-path list pre-resolved by BuildMode that includes:
+    /// (a) the module's own public + private include paths, resolved
+    /// relative to the module's <c>BaseDirectory</c>; and (b) the
+    /// transitive set of every dependency module's
+    /// <see cref="ModuleRules.PublicIncludePaths"/>, also resolved to
+    /// absolute paths. This is the proper resolution of the dependency
+    /// propagation rule documented in
+    /// <see cref="ModuleRules.PublicIncludePaths"/> (visible to consumers
+    /// via transitive propagation through
+    /// <see cref="ModuleRules.PublicDependencyModuleNames"/>).
+    /// When null (the default) the toolchain falls back to the raw
+    /// <see cref="ModuleRules.PublicIncludePaths"/> +
+    /// <see cref="ModuleRules.PrivateIncludePaths"/> for backwards
+    /// compatibility with the existing test fixtures that pass synthetic
+    /// modules without dependency resolution.
+    /// </param>
     public abstract IReadOnlyList<IExternalAction> CompileSource(
         ModuleRules module,
         TargetRules target,
         FileItem sourceFile,
         string outputDir,
         PCHBinding? pch = null,
-        string moduleSourceDir = "");
+        string moduleSourceDir = "",
+        IReadOnlyList<string>? effectiveIncludePaths = null);
 
     /// <summary>
     /// Produce the link action for a module. One
@@ -125,6 +148,13 @@ public abstract class XToolChain
     /// Absolute path to the intermediate output directory where the
     /// generated <c>.pch</c> / <c>.pchi</c> lives.
     /// </param>
+    /// <param name="effectiveIncludePaths">
+    /// Optional override for the per-module include path list (see
+    /// <see cref="CompileSource"/> for the full contract). The PCH
+    /// generation TU must see the same include path universe its
+    /// downstream consumer TUs see, so production callers pass the same
+    /// resolved list they pass to <see cref="CompileSource"/>.
+    /// </param>
     /// <exception cref="ToolchainBannedFlagException">
     /// Thrown with exit 41 when <paramref name="module"/> is sim-path
     /// and its <see cref="ModuleRules.PCHUsage"/> is anything other
@@ -138,7 +168,8 @@ public abstract class XToolChain
         TargetRules target,
         string pchHeaderName,
         FileItem pchHeaderFile,
-        string outputDir);
+        string outputDir,
+        IReadOnlyList<string>? effectiveIncludePaths = null);
 
     /// <summary>
     /// Emit a SHARED PCH generation action consumed by every module in
@@ -174,6 +205,14 @@ public abstract class XToolChain
     /// consumer compile depends on the same shared <see cref="PCHBinding.Action"/>
     /// and consumes the same <see cref="PCHBinding.PchOutputFile"/>.
     /// </returns>
+    /// <param name="effectiveIncludePathsByParticipant">
+    /// Optional per-participant pre-resolved absolute-path include
+    /// lists. Keyed by participant module name. When non-null, the
+    /// toolchain unions the lists (dedupe + sort ordinal) and uses the
+    /// result INSTEAD of iterating each participant's raw
+    /// <see cref="ModuleRules.PublicIncludePaths"/>. Production callers
+    /// populate this from BuildMode's per-module include resolution.
+    /// </param>
     /// <exception cref="ToolchainBannedFlagException">
     /// Thrown with exit 41 when any element of <paramref name="participants"/>
     /// has <see cref="ModuleRules.SimPath"/> = true. Per Contract Rev 13
@@ -185,7 +224,8 @@ public abstract class XToolChain
         IReadOnlyList<ModuleRules> participants,
         FileItem headerFileItem,
         TargetRules target,
-        string outputDir);
+        string outputDir,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? effectiveIncludePathsByParticipant = null);
 
     /// <summary>
     /// Defence-in-depth gate for <see cref="GenerateSharedPCH"/>: a

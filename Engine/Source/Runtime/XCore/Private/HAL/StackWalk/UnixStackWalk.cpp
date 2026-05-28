@@ -19,7 +19,7 @@
 //
 // =====================================================================
 
-#include "Private/HAL/StackWalk/IStackWalk.h"
+#include "HAL/StackWalk/IStackWalk.h"
 
 #include "Macros/XCoreTypes.h"
 #include "Macros/XCoreDefines.h"
