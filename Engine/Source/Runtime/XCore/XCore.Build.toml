@@ -1683,6 +1683,198 @@
 # reconciliation is documented as a Phase 5.d follow-up.
 #
 # =====================================================================
+#
+# XCoreXObject Phase 5.b -- FXObjectAllocator + FXObjectArray bodies.
+#
+# Per XCoreXObject Rev 4 §3 ("the XObject heap") + §3.3 ("FXObjectArray
+# global object table"). Phase 5.b ships the runtime allocator + global
+# object table layered atop XCore-4a's FMallocBinnedX (the XObject heap
+# routes through FMemory::Malloc with FMemTag::XObject) and the spec
+# §3.3 sparse-array with never-relocate / 1 MB-grow invariants.
+#
+# Phase 5.b adds these PUBLIC headers (each documented inline; ABI-
+# locked by the relevant XPACT_*_LAYOUT_TAG):
+#
+#   Public/XObject/FXObjectAllocator.h        -- the FXObjectAllocator
+#                                                public surface (~470
+#                                                lines). PImpl: m_state
+#                                                lives in the .cpp.
+#                                                AllocateRaw (3-arg
+#                                                NewObject hot path hook
+#                                                target), Deallocate,
+#                                                RegisterClassPool,
+#                                                RebindClassPool,
+#                                                CoalesceIdleSlabs,
+#                                                BeginScenarioBoundary,
+#                                                EndScenarioBoundary,
+#                                                GetStats. Singleton
+#                                                accessor via Get();
+#                                                __ResetForTests for the
+#                                                test harness only.
+#
+#   Public/XObject/FXObjectAllocatorStats.h   -- 184-line POD stats
+#                                                snapshot (per spec §3.6
+#                                                telemetry). NOT part of
+#                                                the Contract Rev 13.9
+#                                                ABI lock (the allocator-
+#                                                internal types are
+#                                                deliberately mutable).
+#                                                Fields: TotalAllocatedBytes,
+#                                                TotalSlabBytes,
+#                                                TotalLiveObjects,
+#                                                ActiveSlabs, IdleSlabs,
+#                                                LargeObjectSlabs,
+#                                                FragmentationPercent
+#                                                (0.00-100.00),
+#                                                PerClassAllocations
+#                                                (dense TArray of
+#                                                {FClass*, LiveCount}).
+#
+#   Public/XObject/FXObjectArray.h            -- 403-line FXObjectArray
+#                                                public surface. Single
+#                                                contiguous 256 MB VM
+#                                                reservation (32k entries
+#                                                per 1 MB commit; ~8M
+#                                                max). NEVER-RELOCATE
+#                                                invariant (concurrent
+#                                                readers holding a raw
+#                                                entry pointer are safe
+#                                                across grows). Index 0
+#                                                is reserved as null
+#                                                sentinel. API:
+#                                                AllocateEntry, ReserveSlot
+#                                                + BindObject (two-step
+#                                                NewObject hot path),
+#                                                FreeEntry,
+#                                                GetObjectAtIndex (serial
+#                                                checked), GetObjectAtIndexUnchecked
+#                                                (GC mark sweep path),
+#                                                ForEachObject (templated
+#                                                visitor), NumLive,
+#                                                Capacity, __ResetForTests.
+#
+# Phase 5.b adds these PRIVATE .cpp bodies (XBT auto-discovers them):
+#
+#   Private/XObject/FXObjectAllocator.cpp     -- 1300-line allocator
+#                                                body. Internal types
+#                                                (FState, FSlab,
+#                                                FSizeClassPool,
+#                                                FClassPool, FLargeSlab)
+#                                                are PImpl-hidden behind
+#                                                FXObjectAllocator::FState*
+#                                                m_state. Lazy state init
+#                                                on first AllocateRaw /
+#                                                RegisterClassPool /
+#                                                BeginScenarioBoundary
+#                                                call.
+#
+#   Private/XObject/FXObjectArray.cpp         -- 482-line array body.
+#                                                FRWLock-protected
+#                                                slot table + LIFO
+#                                                free-list. The ctor
+#                                                reserves the 256 MB
+#                                                VM range + commits the
+#                                                first 1 MB chunk;
+#                                                aborts on reserve /
+#                                                commit failure via
+#                                                FPlatformMemory + the
+#                                                FPlatformMisc abort
+#                                                path.
+#
+#   Private/XObject/XObjectAllocatorBootstrap.cpp
+#                                            -- ~200-line bootstrap TU.
+#                                                Provides:
+#                                                  (a) The strong
+#                                                      definition of
+#                                                      s_XObjectAllocator
+#                                                      (XCore-4a's
+#                                                      tentative
+#                                                      extern in
+#                                                      HAL/FMemory.h).
+#                                                  (b) The bodies of
+#                                                      RegisterXObjectAllocator
+#                                                      and NewXObject
+#                                                      (the diagnostic-
+#                                                      wrapped dispatch
+#                                                      surface).
+#                                                  (c) A namespace-scope
+#                                                      static `FXObjectAllocatorAutoRegister`
+#                                                      whose ctor calls
+#                                                      RegisterXObjectAllocator
+#                                                      with FXObjectAllocator::
+#                                                      AllocateRawStatic
+#                                                      at TU dynamic-init
+#                                                      time -- BEFORE
+#                                                      EInitPhase advances
+#                                                      from PreStaticInit
+#                                                      to PostStaticInit.
+#                                                      Any NewObject<T>
+#                                                      hot-path caller
+#                                                      observes the
+#                                                      wired hook.
+#
+# JUDGEMENT CALL (Phase 5.b / slab base alignment fix).
+#
+# The Phase 5.b dispatch's reference body used `Align = CellWidth` for
+# FMemory::MallocOrAbort when allocating fresh slabs. CellWidth is NOT
+# always a power-of-two (the spec §3.2 size-class table includes 96 /
+# 192 / 384 / 768). FMemory::MallocOrAbort's pre-condition is
+# `(Align & (Align - 1)) == 0` (power-of-two alignment). The reference
+# body trips this check on the first 96-byte size-class slab commit.
+#
+# Phase 5.b ships the FIXED variant: slab base aligned to 64 (the
+# smallest spec-defined cell width AND a typical cache-line size; both
+# a power-of-two AND a multiple of every spec cell width's GCD).
+# Every spec cell width (64/96/128/192/256/384/512/768/1024) is a
+# multiple of 8 = alignof(XObject), so cell-offset alignment is
+# preserved across the cell stride regardless of slab base alignment.
+# Documented inline at the call site (FXObjectAllocator.cpp circa
+# line 780).
+#
+# JUDGEMENT CALL (Phase 5.b / private static member helpers).
+#
+# The Phase 5.b dispatch's reference body placed FindClassPoolUnderLock,
+# RegisterClassPoolUnderLock, ClassToSizeClass, and EnsureStateInitialised
+# in an anonymous namespace + a free `static` function. Those helpers
+# reference FXObjectAllocator::FState / FSizeClassPool / FClassPool /
+# FSlab / FLargeSlab which are PRIVATE NESTED TYPES of
+# FXObjectAllocator. C++ access control rejects this -- the friend-
+# declaration alternative is fiddly across anonymous namespaces.
+#
+# Phase 5.b promotes the helpers to PRIVATE STATIC MEMBER FUNCTIONS
+# of FXObjectAllocator (declared in the header alongside the public
+# surface, defined in the .cpp). This is the principled fix per the
+# Prime Directive: the nested types are intentionally private, and
+# the helpers conceptually belong to the class. The alternative
+# (friending each helper to the class) would add 4 friend declarations
+# to the header without changing the helpers' semantics.
+#
+# JUDGEMENT CALL (Phase 5.b / bootstrap registration timing).
+#
+# The Phase 5.b dispatch wording targets EInitPhase::PostStaticInit
+# for the RegisterXObjectAllocator call (matching FMallocBinnedX::Init
+# timing). Phase 5.b registers EARLIER -- at TU dynamic-init via a
+# namespace-scope static `FXObjectAllocatorAutoRegister` ctor, which
+# runs before `main()` and before EInitPhase advances from
+# PreStaticInit. By the time any PostStaticInit-or-later TU calls
+# NewObject<T>, the hook is wired.
+#
+# Rationale: TU dynamic-init is the same lifecycle window that
+# constinit FStatTLS + FAutoConsoleVariable already use to push onto
+# their Treiber stacks. The pattern is engine-wide consistent. The
+# alternative (explicit RegisterXObjectAllocator call from a
+# PostStaticInit-tier bootstrap routine) would require a new
+# XEngineInit entry point that has not been written yet.
+#
+# Cross-TU init-order safety: `s_XObjectAllocator` itself is a
+# zero-initialised global (the strong definition in
+# XObjectAllocatorBootstrap.cpp uses default value-init = nullptr).
+# Value-initialisation precedes ALL dynamic init in the program (per
+# [basic.start.static]/2), so the registration ctor sees a well-defined
+# nullptr slot and replaces it with the function pointer atomically
+# via std::atomic_ref<FnPtr>::store(memory_order_release).
+#
+# =====================================================================
 
 name = "XCore"
 tier = "Engine"
