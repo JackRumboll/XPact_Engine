@@ -79,6 +79,11 @@
 #include "Macros/XErrorTypes.h"
 #include "Macros/XResult.h"
 
+// Brings in g_XHotReloadInProgress so IsQuiesceActive can be defined inline
+// at its declaration (the method is XPACT_FORCEINLINE; an out-of-line body
+// triggered LNK2019 because the qualifier inhibits external linkage).
+#include "XObject/FXObjectHotReloadState.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -450,8 +455,14 @@ namespace XCore
         // =============================================================
 
         // True iff the cascade window is currently open. Acquire-load
-        // on the global flag.
-        [[nodiscard]] XPACT_FORCEINLINE bool IsQuiesceActive() const noexcept;
+        // on the global flag. XPACT_FORCEINLINE inhibits external linkage
+        // so the body MUST be in-header (not in the .cpp) — see commit
+        // log for the LNK2019 fix.
+        [[nodiscard]] XPACT_FORCEINLINE bool IsQuiesceActive() const noexcept
+        {
+            return ::XCore::g_XHotReloadInProgress.load(
+                ::std::memory_order_acquire);
+        }
 
         // Running total of classes replaced in the CURRENT cascade.
         // Resets to 0 at BeginHotReloadQuiesce; bumps on each

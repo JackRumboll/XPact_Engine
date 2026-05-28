@@ -118,13 +118,9 @@ void FXObjectHotReloadCoordinator::__ResetForTests() noexcept
     g_XGCAcceptDrains.store(true,       ::std::memory_order_release);
 }
 
-// =====================================================================
-// IsQuiesceActive -- diagnostic accessor.
-// =====================================================================
-bool FXObjectHotReloadCoordinator::IsQuiesceActive() const noexcept
-{
-    return g_XHotReloadInProgress.load(::std::memory_order_acquire);
-}
+// IsQuiesceActive is defined inline in the header per its XPACT_FORCEINLINE
+// qualifier (out-of-line + force-inline previously triggered LNK2019 because
+// the qualifier inhibits external linkage).
 
 // =====================================================================
 // GetReplacedClassCount / GetTotalInstancesRebound -- diagnostics.
