@@ -1562,8 +1562,17 @@ public sealed class BuildMode : IToolMode<BuildMode>
                 }
                 else
                 {
+                    // Phase 1g Sleef wiring: resolve module_def_file to
+                    // an absolute path (module-relative input from the
+                    // descriptor) so the toolchain can emit /DEF:<abs>
+                    // and add the file to PrerequisiteItems. Null
+                    // passes through unchanged for modules that don't
+                    // declare an explicit export list (the common case).
+                    string? moduleDefAbsolute = ResolveModuleDefFile(module.ModuleDefFile, moduleDir);
+
                     IExternalAction link = toolchain.LinkModule(
-                        module, target, objectFiles, moduleBinDir, linkLibraries, linkPrereqs);
+                        module, target, objectFiles, moduleBinDir, linkLibraries, linkPrereqs,
+                        moduleDefFileAbsolute: moduleDefAbsolute);
                     actions.Add(link);
                     reportActions.Add(link);
 
@@ -2595,6 +2604,38 @@ public sealed class BuildMode : IToolMode<BuildMode>
             resolved.Add(absolute);
         }
         return resolved;
+    }
+
+    /// <summary>
+    /// Phase 1g Sleef wiring: resolve a module's optional
+    /// <see cref="ModuleRules.ModuleDefFile"/> to an absolute path. The
+    /// parser rejects absolute and path-traversal forms at parse time
+    /// per Toolchain Contract Rev 13 Section 2.1; here we trust the
+    /// validated module-relative input and join it against the
+    /// module's descriptor parent directory so the toolchain receives
+    /// a canonical absolute path.
+    /// </summary>
+    /// <param name="declared">
+    /// The module-relative .def path from the descriptor, or null when
+    /// the module doesn't declare an explicit export list.
+    /// </param>
+    /// <param name="moduleDir">
+    /// Absolute path of the module's descriptor parent directory.
+    /// </param>
+    /// <returns>
+    /// Absolute path of the .def file, or null when
+    /// <paramref name="declared"/> is null / whitespace.
+    /// </returns>
+    private static string? ResolveModuleDefFile(string? declared, string moduleDir)
+    {
+        if (string.IsNullOrWhiteSpace(declared))
+        {
+            return null;
+        }
+        string trimmed = declared.Trim();
+        return Path.IsPathRooted(trimmed)
+            ? trimmed
+            : Path.GetFullPath(Path.Combine(moduleDir, trimmed));
     }
 
     /// <summary>

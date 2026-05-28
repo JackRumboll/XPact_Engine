@@ -93,3 +93,14 @@ b_exclude_from_shared_pch = true
 # Upstream third-party warning posture; do not impose XPact's stricter
 # warning set on the vendored Sleef sources.
 b_warnings_as_errors = false
+
+# Phase 1g Sleef wiring: explicit module-definition export list. The
+# vendored upstream sources carry no __declspec(dllexport) annotations
+# (they're plain C intended for static embedding), so without an
+# explicit /DEF: link.exe produces Sleef.dll with no exports and
+# therefore no companion Sleef.lib import library — and every consumer
+# (XCore in particular) fails to link with LNK1181. The .def file
+# lists the 16 public scalar entries declared in include/Sleef.h; the
+# upstream sources themselves stay byte-identical to the vendored
+# drop. See Sleef.def for the export list.
+module_def_file = "Sleef.def"

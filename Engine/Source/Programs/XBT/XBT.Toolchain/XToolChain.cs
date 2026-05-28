@@ -136,13 +136,29 @@ public abstract class XToolChain
     /// appear on the link command line; they exist purely to drive
     /// the topological sort.
     /// </param>
+    /// <param name="moduleDefFileAbsolute">
+    /// Phase 1g Sleef wiring: optional pre-resolved absolute path to a
+    /// Microsoft module-definition (<c>.def</c>) file listing the
+    /// symbols this module's DLL must export. When non-null, the MSVC
+    /// toolchain emits <c>/DEF:&lt;abs&gt;</c> on the link command line
+    /// so link.exe writes the named symbols into the DLL's export
+    /// table and produces the matching import library
+    /// (<c>{Module}.lib</c>) next to <c>{Module}.dll</c>. BuildMode
+    /// resolves <see cref="ModuleRules.ModuleDefFile"/> to absolute
+    /// before invoking. The Clang toolchain ignores the parameter
+    /// (Linux/Android use ELF visibility rather than .def files). The
+    /// resolved file is added to the link action's
+    /// <see cref="IExternalAction.PrerequisiteItems"/> so an edit
+    /// invalidates the cached link.
+    /// </param>
     public abstract IExternalAction LinkModule(
         ModuleRules module,
         TargetRules target,
         IReadOnlyList<FileItem> objectFiles,
         string outputDir,
         IReadOnlyList<string>? additionalLibraries = null,
-        IReadOnlyList<string>? additionalPrerequisites = null);
+        IReadOnlyList<string>? additionalPrerequisites = null,
+        string? moduleDefFileAbsolute = null);
 
     /// <summary>
     /// Produce a link action that builds an EXECUTABLE (not a shared

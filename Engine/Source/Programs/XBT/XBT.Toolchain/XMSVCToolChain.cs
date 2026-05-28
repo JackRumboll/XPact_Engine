@@ -990,7 +990,8 @@ public sealed class XMSVCToolChain : XToolChain
         IReadOnlyList<FileItem> objectFiles,
         string outputDir,
         IReadOnlyList<string>? additionalLibraries = null,
-        IReadOnlyList<string>? additionalPrerequisites = null)
+        IReadOnlyList<string>? additionalPrerequisites = null,
+        string? moduleDefFileAbsolute = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
@@ -1051,6 +1052,21 @@ public sealed class XMSVCToolChain : XToolChain
         rspArgs.Add($"/OUT:{dllPath}");
         rspArgs.Add($"/IMPLIB:{implibPath}");
 
+        // Phase 1g Sleef wiring: explicit /DEF: when the module declares
+        // a Microsoft module-definition export list. Required for
+        // vendored ThirdParty libraries (Sleef in particular) whose
+        // upstream code carries no __declspec(dllexport) annotations:
+        // without /DEF:, link.exe produces a DLL with no exports and
+        // therefore no companion .lib import library, so consumers'
+        // link lines fail with LNK1181. The .def file resolves to an
+        // absolute path at BuildMode link-emit time and is added to
+        // PrerequisiteItems below so an edit to the .def invalidates
+        // the cached link.
+        if (!string.IsNullOrEmpty(moduleDefFileAbsolute))
+        {
+            rspArgs.Add($"/DEF:{moduleDefFileAbsolute}");
+        }
+
         // Library search paths: VCEnvironment.LibraryPaths is the composite
         // MSVC + Windows SDK path list constructed in a fixed order at
         // discovery time (Phase 1.4a). The /LIBPATH: flag order is
@@ -1109,6 +1125,15 @@ public sealed class XMSVCToolChain : XToolChain
             {
                 prereqs.Add(FileItem.GetItemByPath(p));
             }
+        }
+        // Phase 1g Sleef wiring: the .def file is a build-time linker
+        // input — an edit to the exports list must invalidate the
+        // cached link, same as an .obj input. Adding it to
+        // PrerequisiteItems threads that invalidation through the
+        // existing ActionHistory / topological-sort machinery.
+        if (!string.IsNullOrEmpty(moduleDefFileAbsolute))
+        {
+            prereqs.Add(FileItem.GetItemByPath(moduleDefFileAbsolute));
         }
         prereqs.Sort(static (a, b) => string.CompareOrdinal(a.FullPath, b.FullPath));
 

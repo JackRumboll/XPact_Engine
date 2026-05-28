@@ -285,6 +285,60 @@ public class ModuleRules
     public List<string> AdditionalLibraries { get; init; } = new();
 
     // -----------------------------------------------------------------
+    // Explicit module-definition export list (Phase 1g Sleef wiring)
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Optional module-relative path to a Microsoft module-definition
+    /// (<c>.def</c>) file listing the symbols this module's DLL must
+    /// export. When non-null, the MSVC toolchain emits
+    /// <c>/DEF:&lt;absolute-path&gt;</c> on the link command line so
+    /// link.exe writes the named symbols into the DLL's export table
+    /// and produces the matching import library (<c>{Module}.lib</c>)
+    /// next to <c>{Module}.dll</c>. Null = no explicit export list
+    /// (the linker exports whichever symbols carry
+    /// <c>__declspec(dllexport)</c> in the source).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a .def file rather than dllexport annotations.</b>
+    /// Vendored ThirdParty libraries (Sleef in particular) carry
+    /// no <c>__declspec(dllexport)</c> markers because the upstream
+    /// code is plain C intended for static embedding. XPact emits
+    /// every module — including vendored ThirdParty wrappers — as
+    /// its own DLL, so the linker needs an explicit export list to
+    /// produce a usable import library for downstream consumers.
+    /// A <c>.def</c> file is the structurally-correct way to express
+    /// the export surface without modifying the vendored sources.
+    /// </para>
+    /// <para>
+    /// <b>Resolution.</b> The path is module-relative; BuildMode
+    /// resolves it against the module's descriptor parent directory
+    /// at link-emit time before passing the absolute path to the
+    /// toolchain. Path-traversal (<c>..</c>) and absolute-path forms
+    /// are rejected at parse time per Toolchain Contract Rev 13
+    /// Section 2.1 (reproducibility envelope).
+    /// </para>
+    /// <para>
+    /// <b>Action-graph integration.</b> The toolchain adds the
+    /// resolved .def file to the link action's
+    /// <see cref="ActionGraph.IExternalAction.PrerequisiteItems"/> so
+    /// an edit to the .def invalidates the cached link, just as an
+    /// edit to a .obj input would.
+    /// </para>
+    /// <para>
+    /// <b>Clang.</b> The Clang toolchain accepts the parameter for
+    /// signature symmetry with MSVC but does not emit a flag —
+    /// Linux/Android use ELF visibility (<c>--version-script=</c>)
+    /// rather than a Windows-style .def file. SimPath ThirdParty
+    /// wrappers that need an export list on Linux/Android will
+    /// receive a future <c>module_version_script</c> field; this
+    /// field is Win64-MSVC-specific.
+    /// </para>
+    /// </remarks>
+    public string? ModuleDefFile { get; init; } = null;
+
+    // -----------------------------------------------------------------
     // Compile environment (Contract Section 9.1)
     // -----------------------------------------------------------------
 

@@ -112,6 +112,7 @@ public static class BuildTomlParser
             "engine_version_compat",
             "pch_header_file",
             "shared_pch_header_file",
+            "module_def_file",
             // Enum-string keys -- the result must be a string, then
             // re-parsed by the enum reader. Treated as string scalars
             // for the purposes of @expr substitution.
@@ -168,6 +169,13 @@ public static class BuildTomlParser
             "public_definitions",
             "private_definitions",
             "additional_libraries",
+            // Phase 1g Sleef wiring: optional .def export list (Win64/MSVC).
+            // BuildMode resolves the module-relative path to absolute and
+            // passes it to XMSVCToolChain.LinkModule which emits
+            // /DEF:<abs> so link.exe writes the named symbols into the
+            // DLL's export table and produces the matching .lib import
+            // library next to the .dll. See ModuleRules.ModuleDefFile.
+            "module_def_file",
         };
 
     /// <summary>
@@ -495,6 +503,10 @@ public static class BuildTomlParser
             // module's descriptor parent directory before passing to the
             // toolchain. Empty default keeps existing fixtures compiling.
             AdditionalLibraries = ReadStringList(model, "additional_libraries", sourcePath),
+            // Phase 1g Sleef wiring: optional .def export list. The value
+            // is a module-relative path; BuildMode resolves it to absolute
+            // at link-emit time. Path-traversal validation runs below.
+            ModuleDefFile = ReadString(model, "module_def_file", sourcePath),
         };
         // Audit fix R8-M3: inject the descriptor content hash via the
         // in-assembly setter. DescriptorContentHash is private-set so
@@ -577,6 +589,12 @@ public static class BuildTomlParser
         {
             ValidatePathField("private_include_paths", p, sourcePath);
         }
+
+        // Phase 1g Sleef wiring: validate module_def_file as path-typed.
+        // Same discipline as pch_header_file -- module-relative, no
+        // path traversal, no absolute. BuildMode resolves the relative
+        // form to absolute at link-emit time.
+        ValidatePathField("module_def_file", rules.ModuleDefFile, sourcePath);
 
         // Closed-surface name check: a module with no name is a parse
         // failure; we ran the file stem fallback above, so if Name is

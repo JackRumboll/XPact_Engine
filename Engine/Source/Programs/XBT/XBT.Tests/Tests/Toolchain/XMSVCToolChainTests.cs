@@ -1025,6 +1025,124 @@ public sealed class XMSVCToolChainTests : IDisposable
             $".obj (idx {objIdx}) must precede library (idx {libIdx}) on the link line.");
     }
 
+    // ------------------------------------------------------------------
+    // Phase 1g Sleef wiring: /DEF: emission + .def prerequisite invariants.
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Phase 1g: <see cref="XMSVCToolChain.LinkModule"/> with a non-null
+    /// <c>moduleDefFileAbsolute</c> emits <c>/DEF:&lt;abs&gt;</c> on the
+    /// link command line. This is the structural fix for vendored
+    /// ThirdParty libraries (Sleef in particular) whose upstream code
+    /// carries no <c>__declspec(dllexport)</c> annotations: without
+    /// <c>/DEF:</c>, link.exe produces a DLL with no exports and
+    /// therefore no companion <c>.lib</c>, and every consumer's link
+    /// fails with LNK1181.
+    /// </summary>
+    [Fact]
+    public void LinkModule_WithModuleDefFile_EmitsDefFlag()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        string defPath = Path.Combine(_scratchDir, "Foo.def");
+        IExternalAction link = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            moduleDefFileAbsolute: defPath);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.Contains($"/DEF:{defPath}", rsp);
+    }
+
+    /// <summary>
+    /// Phase 1g: when <c>moduleDefFileAbsolute</c> is null (the common
+    /// case for modules that don't declare an explicit export list),
+    /// the link command line emits NO <c>/DEF:</c> flag.
+    /// </summary>
+    [Fact]
+    public void LinkModule_WithoutModuleDefFile_OmitsDefFlag()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        IExternalAction link = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.DoesNotContain("/DEF:", rsp);
+    }
+
+    /// <summary>
+    /// Phase 1g: the .def file lands in
+    /// <see cref="IExternalAction.PrerequisiteItems"/> so the action
+    /// graph's incremental-rebuild machinery invalidates the cached
+    /// link when the .def is edited. Same discipline as the .obj
+    /// inputs.
+    /// </summary>
+    [Fact]
+    public void LinkModule_WithModuleDefFile_AddsDefToPrerequisites()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        string defPath = Path.Combine(_scratchDir, "Foo.def");
+        IExternalAction link = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            moduleDefFileAbsolute: defPath);
+
+        Assert.Contains(link.PrerequisiteItems, fi =>
+            string.Equals(fi.FullPath, defPath, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Phase 1g: an empty-string <c>moduleDefFileAbsolute</c> is
+    /// treated as "no .def file" — no <c>/DEF:</c> flag and no
+    /// prerequisite entry. This mirrors the null contract so callers
+    /// that pass <c>string.Empty</c> by accident don't poison the
+    /// link line with <c>/DEF:</c> (empty arg) which link.exe would
+    /// reject.
+    /// </summary>
+    [Fact]
+    public void LinkModule_WithEmptyModuleDefFile_TreatedAsNoDef()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+        IExternalAction link = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            moduleDefFileAbsolute: string.Empty);
+
+        string rsp = link.ResponseFileContents!;
+        Assert.DoesNotContain("/DEF:", rsp);
+    }
+
+    /// <summary>
+    /// Phase 1g: presence of <c>moduleDefFileAbsolute</c> changes the
+    /// response file body and therefore the
+    /// <see cref="IExternalAction.CommandVersion"/>. A switch from
+    /// no-def to with-def (or a .def path change) forces a re-link.
+    /// </summary>
+    [Fact]
+    public void LinkModule_ModuleDefFile_FlowsIntoCommandVersion()
+    {
+        ModuleRules module = NewModule(simPath: false);
+        TargetRules target = NewTarget();
+        FileItem obj = FileItem.GetItemByPath(Path.Combine(_scratchDir, "Foo.obj"));
+
+        IExternalAction linkNoDef = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir);
+        IExternalAction linkWithDef = _toolchain.LinkModule(
+            module, target, new[] { obj }, _scratchDir,
+            moduleDefFileAbsolute: Path.Combine(_scratchDir, "Foo.def"));
+
+        Assert.NotEqual(linkNoDef.ResponseFileContents, linkWithDef.ResponseFileContents);
+        Assert.NotEqual(linkNoDef.CommandVersion, linkWithDef.CommandVersion);
+    }
+
     /// <summary>
     /// LinkExecutable + LinkModule produce DIFFERENT response file
     /// bodies (and thus distinct CommandVersions) for the same .obj

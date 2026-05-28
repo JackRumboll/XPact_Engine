@@ -294,6 +294,15 @@ public static class BuildTomlSerializer
                     EmitStringArrayField(sb, key, r.AdditionalLibraries);
                 }
                 break;
+            case "module_def_file":
+                // Phase 1g Sleef wiring: emitted only when non-null. The
+                // smallest round-trip form omits the key when the module
+                // does not declare an explicit export list.
+                if (r.ModuleDefFile is not null)
+                {
+                    EmitStringField(sb, key, r.ModuleDefFile);
+                }
+                break;
             default:
                 // Should be impossible: keys originate from
                 // KnownTopLevelKeys above. Throw to surface any drift.

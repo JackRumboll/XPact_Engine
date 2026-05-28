@@ -759,4 +759,93 @@ public sealed class BuildTomlParserTests
         Assert.Equal(a.Tier, b.Tier);
         Assert.Equal(a.ModuleType, b.ModuleType);
     }
+
+    // -----------------------------------------------------------------
+    // Phase 1g Sleef wiring: module_def_file TOML key.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// A TOML descriptor with <c>module_def_file</c> populates
+    /// <see cref="ModuleRules.ModuleDefFile"/>. When the key is absent
+    /// the field stays null (the common case).
+    /// </summary>
+    [Fact]
+    public void ModuleDefFile_BindsToModuleDefFile()
+    {
+        const string toml = """
+            name = "Sleef"
+            tier = "Engine"
+            module_type = "ThirdParty"
+            module_def_file = "Sleef.def"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+
+        Assert.Equal("Sleef.def", rules.ModuleDefFile);
+    }
+
+    /// <summary>
+    /// Absence of <c>module_def_file</c> leaves
+    /// <see cref="ModuleRules.ModuleDefFile"/> null. Existing
+    /// descriptors that pre-date Phase 1g should round-trip without
+    /// drift.
+    /// </summary>
+    [Fact]
+    public void ModuleDefFile_Absent_StaysNull()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "Runtime"
+            """;
+
+        ModuleRules rules = BuildTomlParser.Parse(toml);
+
+        Assert.Null(rules.ModuleDefFile);
+    }
+
+    /// <summary>
+    /// <c>module_def_file</c> with a <c>..</c> segment is a parse
+    /// failure (exit 30). Same path-traversal discipline as
+    /// <c>pch_header_file</c> and the include paths.
+    /// </summary>
+    [Fact]
+    public void ModuleDefFile_With_ParentTraversal_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "ThirdParty"
+            module_def_file = "../OtherModule/X.def"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("module_def_file", ex.Message);
+        Assert.Contains("..", ex.Message);
+    }
+
+    /// <summary>
+    /// <c>module_def_file</c> as an absolute path is a parse failure
+    /// (exit 30). Absolute paths leak host-machine layout into the
+    /// descriptor; reproducibility requires module-relative paths
+    /// per Toolchain Contract Rev 13 Section 2.1.
+    /// </summary>
+    [Fact]
+    public void ModuleDefFile_With_AbsolutePath_Rejects_With_Exit30()
+    {
+        const string toml = """
+            name = "X"
+            tier = "Engine"
+            module_type = "ThirdParty"
+            module_def_file = "/etc/passwd"
+            """;
+
+        DescriptorParseException ex = Assert.Throws<DescriptorParseException>(
+            () => BuildTomlParser.Parse(toml));
+        Assert.Equal(30, ex.ExitCode);
+        Assert.Contains("module_def_file", ex.Message);
+        Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

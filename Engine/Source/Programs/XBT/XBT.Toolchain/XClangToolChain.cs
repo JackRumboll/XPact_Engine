@@ -1117,12 +1117,24 @@ public sealed class XClangToolChain : XToolChain
         IReadOnlyList<FileItem> objectFiles,
         string outputDir,
         IReadOnlyList<string>? additionalLibraries = null,
-        IReadOnlyList<string>? additionalPrerequisites = null)
+        IReadOnlyList<string>? additionalPrerequisites = null,
+        string? moduleDefFileAbsolute = null)
     {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(objectFiles);
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
+
+        // Phase 1g Sleef wiring: moduleDefFileAbsolute is a Win64-MSVC-
+        // specific concept (Microsoft module-definition export list).
+        // Linux/Android use ELF visibility (--version-script=) rather
+        // than .def files; consuming the parameter here keeps the
+        // abstract signature symmetric but the value is ignored on
+        // this toolchain. A future module_version_script field will
+        // carry the Linux/Android equivalent for SimPath ThirdParty
+        // wrappers that need an explicit export list on those
+        // platforms.
+        _ = moduleDefFileAbsolute;
 
         // Sort objectFiles up front so both the response file body AND
         // the action's PrerequisiteItems sort-invariant hold against the

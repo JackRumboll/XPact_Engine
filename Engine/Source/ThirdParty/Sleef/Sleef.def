@@ -1,0 +1,43 @@
+; Sleef module-definition file -- the export list for Sleef.dll.
+;
+; The vendored Sleef upstream scalar amalgamation (BSL-1.0, Naoki Shibata
+; and contributors 2010 - 2024) carries no __declspec(dllexport)
+; annotations because the upstream code is plain C intended for static
+; embedding. XPact emits Sleef as a per-module DLL like every other
+; XPact module, so the linker needs an explicit export list to produce
+; the import library Sleef.lib that XCore (and any other consumer of the
+; sim-path math substrate) links against.
+;
+; This .def file is the structurally-correct way to export a vendored
+; library's public surface without touching the upstream source: link.exe
+; reads /DEF:Sleef.def, emits the named symbols into the .dll's export
+; table, and writes the matching Sleef.lib import library next to the
+; .dll. The upstream sources stay byte-identical to the vendored drop.
+;
+; Wired into the link line by XMSVCToolChain.LinkModule via the
+; module_def_file TOML field on Sleef.Build.toml. Per Sleef.h the public
+; surface is the scalar transcendentals only; the SIMD entries that the
+; upstream header carries are stripped from this vendored subset per
+; XCore-4a Rev 3 Section 6.3 + Toolchain Contract Rev 13 Section 4
+; (sim-path determinism contract forbids SIMD math substrates).
+
+EXPORTS
+    ; Single-precision scalar transcendentals (Sleef u35 / u10 ULP tier).
+    Sleef_sinf_u35
+    Sleef_cosf_u35
+    Sleef_tanf_u35
+    Sleef_atan2f_u10
+    Sleef_sqrtf_u10
+    Sleef_powf_u10
+    Sleef_expf_u10
+    Sleef_logf_u10
+
+    ; Double-precision scalar transcendentals (Sleef u35 / u10 ULP tier).
+    Sleef_sin_u35
+    Sleef_cos_u35
+    Sleef_tan_u35
+    Sleef_atan2_u10
+    Sleef_sqrt_u10
+    Sleef_pow_u10
+    Sleef_exp_u10
+    Sleef_log_u10
