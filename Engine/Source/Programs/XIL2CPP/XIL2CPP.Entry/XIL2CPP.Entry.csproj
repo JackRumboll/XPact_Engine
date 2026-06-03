@@ -27,12 +27,15 @@
 
   <ItemGroup>
     <!--
-      Phase 6.a references XIL2CPP.Core only. The Manifest and Frontend
-      projects do not exist yet; their ProjectReferences (and the
-      manifest-malformed exit-50 catch branch they enable) land in a later
-      sub-phase. Per /Documents/XIL2CPP.html Rev 4 Section 15.
+      The CLI dispatches the transpile-module mode, which reads the manifest
+      (XIL2CPP.Manifest) and runs the Roslyn Pass-1 front-end
+      (XIL2CPP.Frontend). The Manifest reference also enables the
+      manifest-malformed exit-50 catch branch in Program.cs. Per
+      /Documents/XIL2CPP.html Rev 4 Section 15 + Section 3.2.
     -->
     <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Manifest\XIL2CPP.Manifest.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
   </ItemGroup>
 
   <ItemGroup>

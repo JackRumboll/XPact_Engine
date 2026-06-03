@@ -25,12 +25,24 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+
+    <!--
+      Test-only BCL reference set. Supplies a pinned, in-package .NET 8
+      reference-assembly set so the Frontend Pass-1 tests can build a
+      CSharpCompilation with a deterministic BCL surface WITHOUT depending on
+      the build machine's installed SDK (which would break the
+      X-IL2CPP-CSPATH-DET cross-arch determinism gate). Product code never
+      references this; it targets the curated XPact.CSharp.BCL reference DLL.
+      Per /Documents/XIL2CPP.html Rev 4 Section 9.8 + Directory.Packages.props.
+    -->
+    <PackageReference Include="Basic.Reference.Assemblies.Net80" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
     <ProjectReference Include="..\XIL2CPP.Entry\XIL2CPP.Entry.csproj" />
     <ProjectReference Include="..\XIL2CPP.Manifest\XIL2CPP.Manifest.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
   </ItemGroup>
 
 </Project>

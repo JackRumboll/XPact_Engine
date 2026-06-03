@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Simgenics.XPact.XIL2CPP.Core;
 using Simgenics.XPact.XIL2CPP.Entry.Modes;
+using Simgenics.XPact.XIL2CPP.Manifest;
 
 namespace Simgenics.XPact.XIL2CPP.Entry;
 
@@ -43,11 +44,10 @@ namespace Simgenics.XPact.XIL2CPP.Entry;
 /// <list type="bullet">
 ///   <item><description>0 -- success.</description></item>
 ///   <item><description>10 -- CLI argument error (unknown mode / malformed flag).</description></item>
+///   <item><description>50 -- manifest malformed (incl. module-not-in-manifest; mirrors XHT's mapping of <see cref="ManifestMalformedException"/>).</description></item>
 ///   <item><description>63 -- XIL2CPP internal failure (uncaught exception, surfaced as an XIL2CPP900 ICE).</description></item>
 ///   <item><description>130 -- cancelled by user (Ctrl-C).</description></item>
 /// </list>
-/// The manifest-malformed (50) catch branch is added in a later sub-phase
-/// once the XIL2CPP.Manifest types exist; Phase 6.a does not reference them.
 /// </para>
 /// </remarks>
 public static class Program
@@ -133,6 +133,25 @@ public static class Program
         {
             Logger.Error($"error {DiagnosticCodes.LoggerSentinel}: {ex.Message}");
             return ExitCodes.CliArgumentError;
+        }
+        catch (ManifestMalformedException ex)
+        {
+            // Mirrors XHT's Program mapping of ManifestMalformedException to
+            // exit 50 (ManifestMalformed). The exception carries an optional
+            // catalog-anchored DiagnosticCode (e.g. XIL2CPP141 for the
+            // schema-version gate); when present, surface it. When absent,
+            // the throw is a reader-infrastructure case the XIL2CPP Section 12
+            // catalog deliberately does NOT allocate a dedicated code for
+            // (manifest-not-found, hardened-reader-limit rejection,
+            // ContractVersion mismatch, module-not-in-manifest -- see
+            // ManifestMalformedException's remarks). Unlike XHT (which anchors
+            // every manifest throw site and treats a null code as a code-side
+            // bug), an un-anchored XIL2CPP manifest exception is the normal
+            // case, so it surfaces at the logger sentinel (XIL2CPP000), still
+            // at exit 50.
+            string code = ex.DiagnosticCode ?? DiagnosticCodes.LoggerSentinel;
+            Logger.Error($"error {code}: {ex.Message}");
+            return ExitCodes.ManifestMalformed;
         }
         catch (OperationCanceledException)
         {

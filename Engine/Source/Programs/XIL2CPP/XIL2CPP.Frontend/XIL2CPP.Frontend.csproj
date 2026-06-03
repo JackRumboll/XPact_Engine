@@ -1,0 +1,34 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Frontend</RootNamespace>
+    <AssemblyName>XIL2CPP.Frontend</AssemblyName>
+    <Description>XIL2CPP Pass-1 Roslyn front-end: deterministic CSharpParseOptions, ordinal C# source enumeration, per-file SyntaxTree parse, ordered MetadataReference resolution (curated BCL ref + per-dependency-module .refonly.dll), CSharpCompilation construction, lazy per-tree semantic models, and Roslyn-to-XIL2CPP diagnostic translation with cross-module provenance hints. NO C++ emit (later sub-phase). Per /Documents/XIL2CPP.html Rev 4 Section 3 (Pass 1) + Section 9.8.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Manifest\XIL2CPP.Manifest.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn parse + semantic surface. Version is resolved centrally from
+      Directory.Packages.props (4.11.0, pinned to match the XHT parser).
+      Per central package management the Version attribute is omitted here.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The front-end's internal helpers (provenance map, reference-set
+      builder seams) are exposed to XIL2CPP.Tests so the Pass-1 unit tests
+      can drive cross-module resolution against an in-test metadataOnly
+      emit without going through the product reference-DLL pipeline.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>
