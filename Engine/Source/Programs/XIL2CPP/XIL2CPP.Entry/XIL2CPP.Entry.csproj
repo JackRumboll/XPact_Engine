@@ -28,14 +28,17 @@
   <ItemGroup>
     <!--
       The CLI dispatches the transpile-module mode, which reads the manifest
-      (XIL2CPP.Manifest) and runs the Roslyn Pass-1 front-end
-      (XIL2CPP.Frontend). The Manifest reference also enables the
+      (XIL2CPP.Manifest), runs the Roslyn Pass-1 front-end (XIL2CPP.Frontend),
+      then drives Pass 2 (XIL2CPP.Normalization) and Pass 3
+      (XIL2CPP.Analysis). The Manifest reference also enables the
       manifest-malformed exit-50 catch branch in Program.cs. Per
       /Documents/XIL2CPP.html Rev 4 Section 15 + Section 3.2.
     -->
     <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
     <ProjectReference Include="..\XIL2CPP.Manifest\XIL2CPP.Manifest.csproj" />
     <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Normalization\XIL2CPP.Normalization.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Analysis\XIL2CPP.Analysis.csproj" />
   </ItemGroup>
 
   <ItemGroup>
