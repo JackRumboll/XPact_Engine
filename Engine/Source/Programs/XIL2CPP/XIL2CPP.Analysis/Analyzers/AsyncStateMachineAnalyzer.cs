@@ -10,7 +10,6 @@ using Microsoft.CodeAnalysis.Text;
 using Simgenics.XPact.XIL2CPP.Core;
 using Simgenics.XPact.XIL2CPP.Frontend;
 using Simgenics.XPact.XIL2CPP.Normalization;
-using XilSeverity = Simgenics.XPact.XIL2CPP.Core.DiagnosticSeverity;
 
 namespace Simgenics.XPact.XIL2CPP.Analysis;
 
@@ -49,8 +48,7 @@ public sealed record AsyncCapturedRoot(
 /// set of <c>XObject*</c> locals / parameters that are live across an
 /// <c>await</c> and therefore become the emitted state machine's
 /// <c>XGCRootSpan</c> captures. Recorded for EVERY async method (non-sim-path
-/// async is in the MVP per Section 5.9); sim-path async is additionally
-/// diagnosed (<c>XIL2CPP044</c> / <c>XIL2CPP048</c>).
+/// async is in the MVP per Section 5.9).
 /// </summary>
 /// <param name="MethodDisplay">
 /// The owning async method's fully-qualified display string, or a synthesized
@@ -65,8 +63,7 @@ public sealed record AsyncCapturedRoot(
 /// True iff the async method's declared return type is a Task-like /
 /// async-stream type (<c>Task</c>, <c>Task&lt;T&gt;</c>, <c>ValueTask</c>,
 /// <c>ValueTask&lt;T&gt;</c>, or <c>IAsyncEnumerable&lt;T&gt;</c>); false for
-/// an <c>async void</c> handler. Drives the <c>XIL2CPP048</c> sim-path
-/// diagnostic at the declaration site.
+/// an <c>async void</c> handler.
 /// </param>
 /// <param name="IsAsyncIterator">
 /// True iff the method is an async iterator (an <c>async</c> method that
@@ -90,43 +87,31 @@ public sealed record AsyncSite(
 
 /// <summary>
 /// Pass-3 analyzer for async methods per <c>/Documents/XIL2CPP.html</c> Rev 4
-/// Sections 5.9 + 7.5. Records every async method as an <see cref="AsyncSite"/>
-/// (the state-machine view: which <c>XObject*</c> locals / parameters live
-/// across an <c>await</c> and therefore become the emitted state machine's
-/// <c>XGCRootSpan</c> captures), and enforces the sim-path async ban.
+/// Section 5.9. Records every async method (ordinary method, async local
+/// function, or async lambda) as an <see cref="AsyncSite"/> -- the
+/// state-machine view: which <c>XObject*</c> locals / parameters live across an
+/// <c>await</c> and therefore become the emitted state machine's
+/// <c>XGCRootSpan</c> captures.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Recording (all modules).</b> Non-sim-path async is in the MVP
-/// (Section 5.9: "emit as state-machine struct with XGCRootSpan over captured
-/// XObject*"), so every async method -- ordinary method, async local function,
-/// or async lambda -- is recorded as an <see cref="AsyncSite"/> regardless of
-/// the sim-path flag. The capture set is computed from the authoritative
-/// Pass-1 semantic model's <c>AnalyzeDataFlow</c>: a variable is a capture iff
-/// it is an <c>XObject</c>-derived local / parameter whose value flows into
-/// the post-<c>await</c> region (it is live across the suspension point).
-/// </para>
-/// <para>
-/// <b>Sim-path enforcement (the state-machine declaration sites only).</b> On
-/// a sim-path module async is banned (Section 7.5, Q4): each async method
-/// declaration emits <c>XIL2CPP044</c>, and each Task-like-returning async
-/// declaration plus each <c>await foreach</c> statement emits
-/// <c>XIL2CPP048</c>. This analyzer deliberately scopes its <c>044</c> /
-/// <c>048</c> emission to the <em>state-machine declaration / await-foreach
-/// sites</em> -- the async-method view -- so it does not double-emit with the
-/// sim-path banned-API analyzer, which owns the <em>expression-level</em>
-/// Task surface (e.g. <c>Task.Result</c> / <c>Task.Wait()</c> member-access
-/// sites). The two analyzers therefore partition the <c>048</c> surface by
-/// site kind: state-machine declarations + <c>await foreach</c> here;
-/// expression-level Task members there.
+/// <b>Recording only -- no diagnostics.</b> This analyzer is a pure
+/// emit-metadata pass: it records an <see cref="AsyncSite"/> for every async
+/// method regardless of the module's sim-path flag (non-sim-path async is in
+/// the MVP per Section 5.9). The sim-path async/await ban
+/// (<c>XIL2CPP044</c>) and the sim-path Task-surface ban (<c>XIL2CPP048</c>)
+/// are owned SOLELY by <see cref="SimPathBannedApiAnalyzer"/> -- the single
+/// owner of every sim-path banned-API code (Section 7.4 / 7.5). Keeping the
+/// ban in one analyzer avoids double-emission when both analyzers run under
+/// full reflection discovery.
 /// </para>
 /// <para>
 /// <b>Determinism.</b> Async declarations are visited in source-declaration
 /// (span) order across the parsed files in their canonical ordinal order; the
 /// per-site capture set is sorted by a stable key (variable display string,
 /// then kind, then type) so two runs over identical input record an identical
-/// set and emit identical diagnostics (gates X-IL2CPP-MANGLE-DET /
-/// X-IL2CPP-CSPATH-DET, Section 9.9). No ambient state / DateTime / Random.
+/// set (gates X-IL2CPP-MANGLE-DET / X-IL2CPP-CSPATH-DET, Section 9.9). No
+/// ambient state / DateTime / Random.
 /// </para>
 /// </remarks>
 public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
@@ -137,8 +122,7 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
     /// <summary>
     /// Display format for the recorded method identity: fully-qualified
     /// namespace + containing types, the member name, and the parameter-type
-    /// list (e.g. <c>"global::M.A.RunAsync()"</c>). A stable, readable,
-    /// deterministic identity. The built-in
+    /// list (e.g. <c>"global::M.A.RunAsync()"</c>). The built-in
     /// <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> is a TYPE format
     /// that drops the member-name qualification for a method symbol, so we
     /// compose an explicit format that keeps it.
@@ -158,13 +142,11 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
         ArgumentNullException.ThrowIfNull(builder);
 
         Pass1Result pass1 = unit.Pass1;
-        bool simPath = pass1.IsSimPath;
-        string module = pass1.ModuleName;
 
         // Visit files in their canonical ordinal order, then async-method
-        // declarations + await-foreach statements in document (span) order
-        // within each file. DescendantNodesAndSelf yields nodes in span order,
-        // so the visit order is deterministic.
+        // declarations in document (span) order within each file.
+        // DescendantNodesAndSelf yields nodes in span order, so the visit
+        // order is deterministic.
         foreach (ModuleParser.ParsedFile parsed in pass1.ParsedFiles)
         {
             SemanticModel model = pass1.GetSemanticModel(parsed.Tree);
@@ -175,16 +157,16 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
                 switch (node)
                 {
                     case MethodDeclarationSyntax method when HasAsyncModifier(method.Modifiers):
-                        HandleAsyncBody(
-                            unit, model, builder, simPath, module,
+                        RecordAsyncBody(
+                            model, builder,
                             declaration: method,
                             body: (SyntaxNode?)method.Body ?? method.ExpressionBody,
                             symbol: model.GetDeclaredSymbol(method));
                         break;
 
                     case LocalFunctionStatementSyntax local when HasAsyncModifier(local.Modifiers):
-                        HandleAsyncBody(
-                            unit, model, builder, simPath, module,
+                        RecordAsyncBody(
+                            model, builder,
                             declaration: local,
                             body: (SyntaxNode?)local.Body ?? local.ExpressionBody,
                             symbol: model.GetDeclaredSymbol(local) as IMethodSymbol);
@@ -192,21 +174,11 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
 
                     case AnonymousFunctionExpressionSyntax lambda
                         when lambda.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword):
-                        HandleAsyncBody(
-                            unit, model, builder, simPath, module,
+                        RecordAsyncBody(
+                            model, builder,
                             declaration: lambda,
                             body: lambda.Body,
                             symbol: model.GetSymbolInfo(lambda).Symbol as IMethodSymbol);
-                        break;
-
-                    case ForEachStatementSyntax forEach
-                        when forEach.AwaitKeyword.IsKind(SyntaxKind.AwaitKeyword):
-                        HandleAwaitForEach(builder, simPath, module, forEach.AwaitKeyword);
-                        break;
-
-                    case ForEachVariableStatementSyntax forEachVar
-                        when forEachVar.AwaitKeyword.IsKind(SyntaxKind.AwaitKeyword):
-                        HandleAwaitForEach(builder, simPath, module, forEachVar.AwaitKeyword);
                         break;
                 }
             }
@@ -217,16 +189,13 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
         => modifiers.Any(SyntaxKind.AsyncKeyword);
 
     /// <summary>
-    /// Record one async method as an <see cref="AsyncSite"/> and, on a sim-path
-    /// module, emit the declaration-site bans (<c>XIL2CPP044</c> always;
-    /// <c>XIL2CPP048</c> when the method is Task-like / async-stream shaped).
+    /// Record one async method as an <see cref="AsyncSite"/> (the
+    /// state-machine view). No diagnostics are emitted here; the sim-path ban
+    /// is owned by <see cref="SimPathBannedApiAnalyzer"/>.
     /// </summary>
-    private static void HandleAsyncBody(
-        NormalizedUnit unit,
+    private static void RecordAsyncBody(
         SemanticModel model,
         Pass3ResultBuilder builder,
-        bool simPath,
-        string module,
         SyntaxNode declaration,
         SyntaxNode? body,
         IMethodSymbol? symbol)
@@ -240,11 +209,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
 
         IReadOnlyList<AsyncCapturedRoot> captures = ComputeCrossAwaitRoots(model, body);
 
-        // The default member display format qualifies the method with its
-        // containing type and renders the parameter list (e.g.
-        // "M.A.RunAsync()"), giving a stable, readable identity; the
-        // fully-qualified TYPE format drops the member-name qualification for a
-        // method symbol, so we use the default member format here.
         string methodDisplay = symbol is not null
             ? symbol.ToDisplayString(MethodDisplayFormat)
             : SynthesizeLambdaLabel(span);
@@ -257,57 +221,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
             returnsTaskLike,
             isAsyncIterator,
             captures));
-
-        if (!simPath)
-        {
-            return;
-        }
-
-        // Sim-path: async/await is banned (Section 7.5, Q4). Emit XIL2CPP044
-        // at every async declaration site.
-        builder.AddDiagnostic(span.ToDiagnostic(
-            XilSeverity.Error,
-            DiagnosticCodes.SimPathAsyncAwaitBanned,
-            "async/await is banned on sim-path TUs.",
-            module));
-
-        // XIL2CPP048: Task-like / async-stream return surface at the
-        // state-machine declaration site (Task<T> / ValueTask<T> /
-        // IAsyncEnumerable<T>). The expression-level Task members
-        // (Task.Result / Task.Wait) are owned by the sim-path banned-API
-        // analyzer, so we do NOT touch them here.
-        if (returnsTaskLike)
-        {
-            builder.AddDiagnostic(span.ToDiagnostic(
-                XilSeverity.Error,
-                DiagnosticCodes.SimPathTaskBanned,
-                "Task<T> / ValueTask<T> / IAsyncEnumerable<T> / await foreach is banned on sim-path TUs.",
-                module));
-        }
-    }
-
-    /// <summary>
-    /// Emit <c>XIL2CPP048</c> at an <c>await foreach</c> statement on a
-    /// sim-path module (the async-stream consumption site is part of the
-    /// state-machine view this analyzer owns).
-    /// </summary>
-    private static void HandleAwaitForEach(
-        Pass3ResultBuilder builder,
-        bool simPath,
-        string module,
-        SyntaxToken awaitKeyword)
-    {
-        if (!simPath)
-        {
-            return;
-        }
-
-        SourceSpan span = SpanOfToken(awaitKeyword);
-        builder.AddDiagnostic(span.ToDiagnostic(
-            XilSeverity.Error,
-            DiagnosticCodes.SimPathTaskBanned,
-            "Task<T> / ValueTask<T> / IAsyncEnumerable<T> / await foreach is banned on sim-path TUs.",
-            module));
     }
 
     /// <summary>
@@ -335,8 +248,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
             return Array.Empty<AsyncCapturedRoot>();
         }
 
-        // Collect each await expression's nearest enclosing statement so we
-        // can analyze the region that resumes after it.
         Dictionary<ISymbol, AsyncCapturedRoot> captured = new(SymbolEqualityComparer.Default);
 
         foreach (AwaitExpressionSyntax await in body.DescendantNodes().OfType<AwaitExpressionSyntax>())
@@ -348,11 +259,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
                 continue;
             }
 
-            // The statements that resume AFTER the await's statement, in the
-            // same block. If the await is the last statement of its block,
-            // there is no in-block post-await region (captures across an await
-            // at an outer scope are picked up when we analyze that outer
-            // statement's own block).
             int idx = block.Statements.IndexOf(awaitStatement);
             if (idx < 0 || idx + 1 >= block.Statements.Count)
             {
@@ -440,9 +346,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
             return false;
         }
 
-        // Compare on the unbound (original-definition) fully-qualified name so
-        // Task<T> / ValueTask<T> / IAsyncEnumerable<T> match independent of the
-        // type argument.
         string name = named.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         return name is "global::System.Threading.Tasks.Task"
             or "global::System.Threading.Tasks.Task<TResult>"
@@ -482,25 +385,6 @@ public sealed class AsyncStateMachineAnalyzer : ISemanticAnalyzer
     private static SourceSpan SpanOf(SyntaxNode node)
     {
         FileLinePositionSpan lp = node.GetLocation().GetLineSpan();
-        LinePosition start = lp.StartLinePosition;
-        LinePosition end = lp.EndLinePosition;
-        return new SourceSpan(
-            lp.Path,
-            start.Line + 1,
-            start.Character + 1,
-            end.Line + 1,
-            end.Character + 1,
-            validate: true);
-    }
-
-    /// <summary>
-    /// Build a 1-based <see cref="SourceSpan"/> from a single token's start
-    /// location (used to anchor an <c>await foreach</c> diagnostic on the
-    /// <c>await</c> keyword).
-    /// </summary>
-    private static SourceSpan SpanOfToken(SyntaxToken token)
-    {
-        FileLinePositionSpan lp = token.GetLocation().GetLineSpan();
         LinePosition start = lp.StartLinePosition;
         LinePosition end = lp.EndLinePosition;
         return new SourceSpan(
