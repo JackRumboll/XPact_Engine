@@ -28,11 +28,11 @@ namespace Simgenics.XPact.XIL2CPP.Core;
 /// a manifest produced against a different contract surface.
 /// </para>
 /// <para>
-/// The value tracks the live Contract surface. When the XBT slot-14
-/// amendment (ReferenceCompileCSharpAction) lands it rotates the
-/// auto-derived structure hash; this constant is re-pinned in lockstep
-/// with the XBT + XHT pins to the re-derived value (the live value is
-/// logged by
+/// The value tracks the live Contract surface. The XBT slot-14
+/// amendment (<c>ReferenceCompileCSharpAction</c>) landed at Phase 6.a
+/// and rotated the auto-derived structure hash from the Rev 13.9 value;
+/// this constant is re-pinned in lockstep with the XBT + XHT pins to the
+/// re-derived Rev 13.10 value (the live value is logged by
 /// <c>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</c>
 /// per the established Rev-bump cadence). Do NOT hand-rotate.
 /// </para>
@@ -48,12 +48,12 @@ public static class Xil2CppVersion
 
     /// <summary>
     /// The Contract version string XIL2CPP reads manifests against.
-    /// Locked to the live Contract surface (currently Rev 13.9, hash
-    /// <c>381d8ef7a7770d9b</c>, matching the XBT + XHT pins). Re-pinned in
+    /// Locked to the live Contract surface (currently Rev 13.10, hash
+    /// <c>bbcc0292b75e9a10</c>, matching the XBT + XHT pins). Re-pinned in
     /// lockstep whenever the auto-derived ContractSurface structure hash
     /// rotates -- see the remarks on <see cref="Xil2CppVersion"/>.
     /// </summary>
-    public const string ContractVersion = "13.9+381d8ef7a7770d9b";
+    public const string ContractVersion = "13.10+bbcc0292b75e9a10";
 
     /// <summary>
     /// The .NET runtime XIL2CPP is currently running on. Surfaced for

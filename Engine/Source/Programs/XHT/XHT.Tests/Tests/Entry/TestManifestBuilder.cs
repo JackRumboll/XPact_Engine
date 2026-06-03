@@ -38,7 +38,7 @@ internal static class TestManifestBuilder
 
     private static string EmptyModulesJson() => """
         {
-          "ContractVersion": "13.9+381d8ef7a7770d9b",
+          "ContractVersion": "13.10+bbcc0292b75e9a10",
           "EngineVersion": "0.1.0",
           "Target": {
             "Name": "MiningTrainingEditor",
@@ -62,7 +62,7 @@ internal static class TestManifestBuilder
 
     private static string OneModuleJson(string moduleName) => $$"""
         {
-          "ContractVersion": "13.9+381d8ef7a7770d9b",
+          "ContractVersion": "13.10+bbcc0292b75e9a10",
           "EngineVersion": "0.1.0",
           "Target": {
             "Name": "MiningTrainingEditor",

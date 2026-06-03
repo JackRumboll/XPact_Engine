@@ -512,7 +512,7 @@ foreach (var creation in syntaxTree.GetRoot().DescendantNodes().OfType&lt;Object
 {
   "$schema": "https://xpact.dev/schemas/TierTable.merged.v1.json",
   "schemaVersion": 1,
-  "contractVersion": "13.9+381d8ef7a7770d9b",
+  "contractVersion": "13.10+bbcc0292b75e9a10",
   "modules": ["MyModule", "..."],
   "functions": [
     {
@@ -560,7 +560,7 @@ CacheKey = SHA256(
   Module_conditional_symbols,        // [Rev 2: applied FIX-B-MEDIUM-25] for [Conditional("X")] elision
   Module_reproducibility_envelope_settings_struct,  // path-map, build-id, deterministic-timestamps
   Per-target settings struct serialized JSON,
-  ContractVersion (e.g., "13.9+381d8ef7a7770d9b" per Contract Rev 13.9; Rev 2 update),
+  ContractVersion (e.g., "13.10+bbcc0292b75e9a10" per Contract Rev 13.10; Rev 2 update),
   Sorted_concatenation(
     SHA256(every .cs file in csharp_sources, in lexicographic order)
   ),
@@ -1221,7 +1221,7 @@ extern "C" void _v1ab12cd34__Simgenics__XPact__GameFramework__Valve__SetOpenFrac
 
 <p><strong>Mangling participates in / excludes from [Rev 2: applied FIX-C-MED-01 / FIX-C-MED-02 / FIX-C-MED-03].</strong> The mangled name depends only on:</p>
 <ol>
-  <li>The Contract version hash (e.g., <code>13.9+381d8ef7a7770d9b</code>).</li>
+  <li>The Contract version hash (e.g., <code>13.10+bbcc0292b75e9a10</code>).</li>
   <li>The namespace-qualified type name.</li>
   <li>The method name (CLR convention).</li>
   <li>Generic-arg manglings (in source-declaration order).</li>

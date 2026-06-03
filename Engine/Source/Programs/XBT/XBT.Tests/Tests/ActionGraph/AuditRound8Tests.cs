@@ -36,7 +36,6 @@ public sealed class AuditRound8Tests
     [InlineData(XActionType.Reserved_DerivedDataFetch)]
     [InlineData(XActionType.Reserved_LiveCodingCascade)]
     [InlineData(XActionType.Reserved_PatchDllEmit)]
-    [InlineData(XActionType.Reserved_Phase2_F)]
     [InlineData(XActionType.Reserved_Phase2_G)]
     public void ExternalAction_Create_RejectsReservedSlots(XActionType reservedSlot)
     {
@@ -60,6 +59,7 @@ public sealed class AuditRound8Tests
     [InlineData(XActionType.LinkModuleAction)]
     [InlineData(XActionType.PCHGenerationAction)]
     [InlineData(XActionType.Tier2WholeProgramPass)]
+    [InlineData(XActionType.ReferenceCompileCSharpAction)]
     [InlineData(XActionType.BuildPluginManifestAction)]
     public void ExternalAction_Create_AcceptsNamedSlots(XActionType namedSlot)
     {

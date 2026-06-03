@@ -16,11 +16,11 @@ public class Xil2CppVersionTests
     public void ContractVersion_MatchesLiveContractSurfacePin()
     {
         // Must equal Simgenics.XPact.XBT.Manifest.ContractVersion.Current
-        // and Simgenics.XPact.XHT.Core.XhtVersion.ContractVersion. When the
-        // XBT slot-14 amendment (ReferenceCompileCSharpAction) lands it
-        // rotates the auto-derived structure hash; this literal is re-pinned
-        // in lockstep at that point.
-        Assert.Equal("13.9+381d8ef7a7770d9b", Xil2CppVersion.ContractVersion);
+        // and Simgenics.XPact.XHT.Core.XhtVersion.ContractVersion. The XBT
+        // slot-14 amendment (ReferenceCompileCSharpAction) landed at
+        // Phase 6.a and rotated the auto-derived structure hash from the
+        // Rev 13.9 value; this literal is re-pinned in lockstep.
+        Assert.Equal("13.10+bbcc0292b75e9a10", Xil2CppVersion.ContractVersion);
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public class Xil2CppVersionTests
     {
         string s = Xil2CppVersion.GetVersionString();
         Assert.Contains("XIL2CPP 0.1.0+phase6a", s);
-        Assert.Contains("Contract 13.9+381d8ef7a7770d9b", s);
+        Assert.Contains("Contract 13.10+bbcc0292b75e9a10", s);
         Assert.Contains("Runtime ", s);
         Assert.EndsWith("\n", s);
     }

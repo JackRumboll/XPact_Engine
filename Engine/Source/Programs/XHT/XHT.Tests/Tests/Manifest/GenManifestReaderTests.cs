@@ -44,7 +44,7 @@ public class GenManifestReaderTests : IDisposable
     {
         "[Metadata]",
         "XhtSchemaVersion = 1",
-        "ContractVersion = 13.9+381d8ef7a7770d9b",
+        "ContractVersion = 13.10+bbcc0292b75e9a10",
         "ModuleName = XScoring",
         "ProducedAtUtcDeterministic = 0",
         "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -67,7 +67,7 @@ public class GenManifestReaderTests : IDisposable
     {
         GenManifest m = GenManifestReader.Parse(MinimalValid());
         Assert.Equal(1, m.XhtSchemaVersion);
-        Assert.Equal("13.9+381d8ef7a7770d9b", m.ContractVersion);
+        Assert.Equal("13.10+bbcc0292b75e9a10", m.ContractVersion);
         Assert.Equal("XScoring", m.ModuleName);
         Assert.Equal("2026-05-20T12:34:56Z", m.GeneratedAtUtcIso);
         Assert.Empty(m.Inputs);
@@ -82,7 +82,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -100,7 +100,7 @@ public class GenManifestReaderTests : IDisposable
         string text = string.Join("\n", new[]
         {
             "[Metadata]",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -139,7 +139,7 @@ public class GenManifestReaderTests : IDisposable
             "[Inputs]",
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -157,7 +157,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -176,7 +176,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -196,7 +196,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -216,7 +216,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -244,7 +244,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -264,7 +264,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 0",
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -293,7 +293,7 @@ public class GenManifestReaderTests : IDisposable
         // Full path: build a manifest, write atomically, read back.
         GenManifest m = new(
             XhtSchemaVersion: 1,
-            ContractVersion: "13.9+381d8ef7a7770d9b",
+            ContractVersion: "13.10+bbcc0292b75e9a10",
             ModuleName: "XScoring",
             GeneratedAtUtcIso: "2026-05-20T12:34:56Z",
             Inputs: ImmutableArray.Create(new GenManifestEntry("A.h", "0011223344556677")),
@@ -328,7 +328,7 @@ public class GenManifestReaderTests : IDisposable
         {
             "[Metadata]",
             "XhtSchemaVersion = 1",
-            "ContractVersion = 13.9+381d8ef7a7770d9b",
+            "ContractVersion = 13.10+bbcc0292b75e9a10",
             "ModuleName = X",
             "ProducedAtUtcDeterministic = 1234567890", // non-zero
             "GeneratedAtUtc = 2026-05-20T12:34:56Z",
@@ -382,7 +382,7 @@ public class GenManifestReaderTests : IDisposable
         // the same semantic tag but different structure hashes describe
         // different contract surfaces. The check must reject the
         // mismatched one even when the prefix matches.
-        const string sameTagDifferentHash = "13.9+0000000000000000";
+        const string sameTagDifferentHash = "13.10+0000000000000000";
         Assert.NotEqual(XhtVersion.ContractVersion, sameTagDifferentHash);
         string text = MinimalValidWithContractVersion(sameTagDifferentHash);
         ManifestMalformedException ex = Assert.Throws<ManifestMalformedException>(

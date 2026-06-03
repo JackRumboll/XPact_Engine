@@ -3,18 +3,24 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>XPact Toolchain Contract &mdash; Rev 13.9</title>
+<title>XPact Toolchain Contract &mdash; Rev 13.10</title>
 </head>
 <body>
 
-<h1>XPact Toolchain Contract &mdash; Rev 13.9</h1>
-<p>Status: <strong>Stage B &mdash; Reflection-type byte-layout freeze + XCoreXObject Phase 5.a' micro-bump (XCoreXObject Rev 4 §11.2 / §11.3 cascade)</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 16, Section 4 Step 0 + Step 5 amendment (Stage B Contract extension authorized for XCoreXObject); XCore-4b Rev 4 Section 11 supplies the Rev 13.8 addendum content; XCoreXObject Rev 4 Section 11.1 / 11.2 supplies the Rev 13.9 micro-bump content.</p>
+<h1>XPact Toolchain Contract &mdash; Rev 13.10</h1>
+<p>Status: <strong>Stage B &mdash; Reflection-type byte-layout freeze + XCoreXObject Phase 5.a' micro-bump (XCoreXObject Rev 4 §11.2 / §11.3 cascade) + XIL2CPP Phase 6.a cross-module reference-compile action surface addition</strong>. Plan reference: <code>C:\Users\benne\.claude\plans\unreal-engine-source-code-lively-pillow.md</code> Rev 16, Section 4 Step 0 + Step 5 amendment (Stage B Contract extension authorized for XCoreXObject); XCore-4b Rev 4 Section 11 supplies the Rev 13.8 addendum content; XCoreXObject Rev 4 Section 11.1 / 11.2 supplies the Rev 13.9 micro-bump content; XIL2CPP Rev 4 Section 9.8 supplies the Rev 13.10 action-graph slot-14 amendment.</p>
 
 <h3>Revision history (Rev 13 family)</h3>
 
 <table border="1" cellpadding="6" cellspacing="0">
   <thead><tr><th>Rev</th><th>SemanticVersionTag</th><th>ContractVersion.Current</th><th>Summary</th></tr></thead>
   <tbody>
+    <tr>
+      <td><strong>13.10</strong></td>
+      <td><code>13.10</code></td>
+      <td><code>13.10+bbcc0292b75e9a10</code></td>
+      <td>XIL2CPP Phase 6.a &mdash; cross-module reference-compile action surface addition per XIL2CPP Rev 4 &sect;9.8. The XBT action-graph slot 14 is promoted from the reserved placeholder <code>Reserved_Phase2_F</code> to the named, emit-eligible <code>ReferenceCompileCSharpAction</code>: the per-module C# reference compile that produces <code>M.refonly.dll</code> (a metadata-only reference assembly, no method bodies) so a downstream module's XIL2CPP transpile resolves cross-module C# types through Roslyn against its dependencies' public surface. Because slot 14 is now a named action XBT can emit, it joins <code>ContractSurface.ActionTypes</code> in ascending-ordinal position (after <code>Tier2WholeProgramPass</code> slot 13, before <code>BuildPluginManifestAction</code> slot 16); the slot ordinal is unchanged (still 14), so the promotion is append-only and the single new <code>action:ReferenceCompileCSharpAction</code> canonical line is the only surface delta. <code>ContractVersion.StructureHash</code> rotates from <code>381d8ef7a7770d9b</code> to <code>bbcc0292b75e9a10</code> (derived by canonicalization; the live value is logged by <code>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</code>). <code>SemanticVersionTag</code> bumps <code>"13.9"</code> &rarr; <code>"13.10"</code>. The XHT + XIL2CPP <code>ContractVersion</code> pins are re-pinned in lockstep. The AuditRound8 "rejects reserved slot" theory drops the slot-14 case and the "accepts named slot" theory gains it; the R8-Mi5 "every emit-eligible slot is on the surface" invariant now covers slot 14.</td>
+    </tr>
     <tr>
       <td><strong>13.9</strong></td>
       <td><code>13.9</code></td>

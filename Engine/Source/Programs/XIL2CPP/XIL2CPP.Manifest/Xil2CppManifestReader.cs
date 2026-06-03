@@ -315,7 +315,7 @@ public sealed record XbtTargetInfo(
 /// linked at runtime; the XIL2CPP-side reader maintains the parallel DTO
 /// shape).
 /// </summary>
-/// <param name="ContractVersion">Auto-derived contract version string (e.g. <c>"13.9+381d8ef7a7770d9b"</c>).</param>
+/// <param name="ContractVersion">Auto-derived contract version string (e.g. <c>"13.10+bbcc0292b75e9a10"</c>).</param>
 /// <param name="EngineVersion">Engine semver discovered from <c>Engine.xengine</c>.</param>
 /// <param name="Target">Per-target fields.</param>
 /// <param name="RootLocalPath">Host-local repo root path; forward-slashed.</param>
@@ -595,7 +595,7 @@ public static class Xil2CppManifestReader
     /// <c>/Documents/XIL2CPP.html</c> Rev 4 Section 9.7. Comparison is an
     /// ordinal string-equality check over the full composite
     /// <c>&lt;tag&gt;+&lt;hash&gt;</c> form (e.g.
-    /// <c>"13.9+381d8ef7a7770d9b"</c>).
+    /// <c>"13.10+bbcc0292b75e9a10"</c>).
     /// </summary>
     /// <param name="manifest">The deserialised manifest. Must not be null.</param>
     /// <exception cref="ManifestMalformedException">

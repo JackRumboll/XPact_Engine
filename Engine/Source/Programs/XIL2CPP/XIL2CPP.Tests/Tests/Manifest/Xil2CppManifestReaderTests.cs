@@ -451,7 +451,7 @@ public class Xil2CppManifestReaderTests : IDisposable
         // The structure-hash suffix is load-bearing: two manifests with the
         // same semantic tag but different structure hashes describe different
         // contract surfaces and the check must reject the mismatched one.
-        const string sameTagDifferentHash = "13.9+0000000000000000";
+        const string sameTagDifferentHash = "13.10+0000000000000000";
         Assert.NotEqual(Xil2CppVersion.ContractVersion, sameTagDifferentHash);
 
         string json = MinimalValidJsonWithContractVersion(sameTagDifferentHash);

@@ -294,7 +294,7 @@ public sealed record XbtTargetInfo(
 /// <c>Simgenics.XPact.XBT.Manifest.Manifest</c> (not linked at runtime;
 /// the XHT-side reader maintains the parallel DTO shape).
 /// </summary>
-/// <param name="ContractVersion">Auto-derived contract version string (e.g. <c>"13.2+b04ae3cc84cdd9f3"</c>).</param>
+/// <param name="ContractVersion">Auto-derived contract version string (e.g. <c>"13.10+bbcc0292b75e9a10"</c>).</param>
 /// <param name="EngineVersion">Engine semver discovered from <c>Engine.xengine</c>.</param>
 /// <param name="Target">Per-target fields.</param>
 /// <param name="RootLocalPath">Host-local repo root path; forward-slashed.</param>
@@ -537,7 +537,7 @@ public static class XbtManifestReader
     /// <c>/Documents/XHT.html</c> Rev 8 Section 23.2 (diagnostic
     /// <c>XHT002</c>). Comparison is an ordinal string-equality check
     /// over the full composite <c>&lt;tag&gt;+&lt;hash&gt;</c> form
-    /// (e.g. <c>"13.2+b04ae3cc84cdd9f3"</c>).
+    /// (e.g. <c>"13.10+bbcc0292b75e9a10"</c>).
     /// </summary>
     /// <param name="manifest">The deserialised manifest. Must not be null.</param>
     /// <exception cref="ManifestMalformedException">

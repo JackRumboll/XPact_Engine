@@ -48,7 +48,7 @@ public class XbtManifestReaderTests : IDisposable
     // test fixture.
     private static string MinimalValidJson() => """
         {
-          "ContractVersion": "13.9+381d8ef7a7770d9b",
+          "ContractVersion": "13.10+bbcc0292b75e9a10",
           "EngineVersion": "0.1.0",
           "Target": {
             "Name": "MiningTrainingEditor",
@@ -72,7 +72,7 @@ public class XbtManifestReaderTests : IDisposable
 
     private static string OneModuleJson() => """
         {
-          "ContractVersion": "13.9+381d8ef7a7770d9b",
+          "ContractVersion": "13.10+bbcc0292b75e9a10",
           "EngineVersion": "0.1.0",
           "Target": {
             "Name": "MiningTrainingEditor",
@@ -139,7 +139,7 @@ public class XbtManifestReaderTests : IDisposable
     public void DeserializeJsonString_MinimalEmpty_ParsesAllTopLevelFields()
     {
         XbtManifest m = XbtManifestReader.DeserializeJsonString(MinimalValidJson());
-        Assert.Equal("13.9+381d8ef7a7770d9b", m.ContractVersion);
+        Assert.Equal("13.10+bbcc0292b75e9a10", m.ContractVersion);
         Assert.Equal("0.1.0", m.EngineVersion);
         Assert.Equal("MiningTrainingEditor", m.Target.Name);
         Assert.Equal(BuildTargetType.Editor, m.Target.Type);
@@ -343,12 +343,13 @@ public class XbtManifestReaderTests : IDisposable
     [Fact]
     public void DeserializeJsonString_ContractVersionMatchesLiteralCurrentValue_Succeeds()
     {
-        // Explicit literal check against the Round-3 audit's documented
-        // expected value. If XhtVersion.ContractVersion changes, BOTH
-        // this constant and the version constant must change in lockstep
-        // -- the test guards that the production value does not drift
-        // silently away from the documented pin.
-        const string literalCurrent = "13.9+381d8ef7a7770d9b";
+        // Explicit literal check against the documented Contract Rev
+        // 13.10 expected value (XIL2CPP Phase 6.a re-pin). If
+        // XhtVersion.ContractVersion changes, BOTH this constant and the
+        // version constant must change in lockstep -- the test guards
+        // that the production value does not drift silently away from
+        // the documented pin.
+        const string literalCurrent = "13.10+bbcc0292b75e9a10";
         Assert.Equal(literalCurrent, XhtVersion.ContractVersion);
         string json = MinimalValidJsonWithContractVersion(literalCurrent);
         XbtManifest m = XbtManifestReader.DeserializeJsonString(json);
@@ -384,9 +385,9 @@ public class XbtManifestReaderTests : IDisposable
         // the same semantic tag but different structure hashes describe
         // different contract surfaces and the check must reject the
         // mismatched one. Construct a string that shares the prefix
-        // ("13.9+") but rotates the hash so a partial-prefix-only check
+        // ("13.10+") but rotates the hash so a partial-prefix-only check
         // would (incorrectly) accept it.
-        const string sameTagDifferentHash = "13.9+0000000000000000";
+        const string sameTagDifferentHash = "13.10+0000000000000000";
         // Sanity guard: we are testing against XhtVersion.ContractVersion,
         // so the synthetic value must in fact differ from the compile-time
         // pin to make the test meaningful.
