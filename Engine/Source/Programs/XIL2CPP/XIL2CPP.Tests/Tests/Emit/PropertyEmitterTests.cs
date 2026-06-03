@@ -14,11 +14,12 @@ using Xunit;
 namespace Simgenics.XPact.XIL2CPP.Tests.Tests.Emit;
 
 /// <summary>
-/// Tests for <see cref="PropertyEmitter"/> (WU-E3): the getter / setter
+/// Tests for <see cref="PropertyEmitter"/> (WU-E3 / WU-6H): the getter / setter
 /// <c>extern "C"</c> accessor shapes that read / write the synthesized
 /// <c>__BackingField_&lt;Name&gt;</c> slot, the linker-symbol resolution through
-/// the Pass-5 mangling table, and the 6.h <c>XPACT_GC_STORE</c> hook comment
-/// that is emitted only for an XObject-derived property setter.
+/// the Pass-5 mangling table, and the 6.h <c>XPACT_GC_STORE</c> write barrier
+/// that replaces the plain field store only for an XObject-derived property
+/// setter.
 /// </summary>
 public sealed class PropertyEmitterTests
 {
@@ -143,11 +144,11 @@ public sealed class PropertyEmitterTests
     }
 
     // -----------------------------------------------------------------
-    // Setter shape -- XObject reference (emits 6.h hook).
+    // Setter shape -- XObject reference (emits the 6.h write barrier).
     // -----------------------------------------------------------------
 
     [Fact]
-    public void EmitSetter_XObjectProperty_EmitsGcStoreHookComment()
+    public void EmitSetter_XObjectProperty_EmitsGcStoreBarrierInsteadOfPlainAssign()
     {
         (EmitContext ctx, IPropertySymbol prop) = BuildFor(
             "Target",
@@ -164,21 +165,18 @@ public sealed class PropertyEmitterTests
         string output = writer.Build();
         string setSym = LinkerSymbolOf(ctx, prop.SetMethod!);
 
-        // XPtr<Actor> value type for the XObject-derived slot.
-        Assert.Contains(
-            "extern \"C\" void " + setSym + "(::Game::Widget* self, XPtr<Actor> value) noexcept {",
-            output);
-        // The 6.h hook comment precedes the field store.
-        Assert.Contains(
-            "// TODO(6.h): XPACT_GC_STORE(self, &self->__BackingField_Target, value) "
-            + "when T is XObject-derived",
-            output);
-        Assert.Contains("self->__BackingField_Target = value;", output);
+        // XPtr<Actor> value type for the XObject-derived slot, and the body is
+        // the Phase 6.h write barrier over the backing field.
+        string expected =
+            "extern \"C\" void " + setSym + "(::Game::Widget* self, XPtr<Actor> value) noexcept {\n"
+            + "    XPACT_GC_STORE(self, &(self->__BackingField_Target), value);\n"
+            + "}\n";
+        Assert.Equal(expected, output);
 
-        // The hook comment is emitted before the assignment.
-        int hookIndex = output.IndexOf("TODO(6.h)", System.StringComparison.Ordinal);
-        int storeIndex = output.IndexOf("__BackingField_Target = value", System.StringComparison.Ordinal);
-        Assert.True(hookIndex >= 0 && storeIndex > hookIndex);
+        // The barrier REPLACES the plain field store (no double-write) and the
+        // placeholder hook comment is gone.
+        Assert.DoesNotContain("__BackingField_Target = value", output);
+        Assert.DoesNotContain("TODO(6.h)", output);
     }
 
     // -----------------------------------------------------------------

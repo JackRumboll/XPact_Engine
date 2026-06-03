@@ -8,17 +8,16 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace Simgenics.XPact.XIL2CPP.Emit.Cpp.Body;
 
 /// <summary>
-/// Body-lowering rule (WU-D1) for a C# assignment expression, per
+/// Body-lowering rule (WU-D1 / WU-6H) for a C# assignment expression, per
 /// <c>/Documents/XIL2CPP.html</c> Rev 4 Sections 5.3 + 6.3:
 /// a non-reference LHS lowers to <c>&lt;lhs&gt; = &lt;rhs&gt;;</c>; an LHS that
-/// resolves to an XObject-derived reference field / property slot FIRST emits
-/// the write-barrier hook comment
-/// <c>// TODO(6.h): XPACT_GC_STORE(&lt;parent&gt;, &amp;&lt;slot&gt;, &lt;value&gt;)</c>
-/// (the placeholder for the Phase 6.h
-/// <c>XPACT_GC_STORE(parent_obj, &amp;slot, new_value)</c> inline expansion) and
-/// THEN the plain assignment. Both the LHS and the RHS are lowered by recursing
-/// into the parent expression emitter, so this rule never re-implements operand
-/// lowering.
+/// resolves to an XObject-derived reference field / property slot lowers to the
+/// Phase 6.h write barrier
+/// <c>XPACT_GC_STORE(&lt;parent&gt;, &amp;(&lt;slot&gt;), &lt;value&gt;);</c>
+/// INSTEAD of the plain assignment (the macro performs the store itself, so
+/// emitting the plain <c>lhs = rhs;</c> too would double-write). Both the LHS
+/// and the RHS are lowered by recursing into the parent expression emitter, so
+/// this rule never re-implements operand lowering.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -27,27 +26,60 @@ namespace Simgenics.XPact.XIL2CPP.Emit.Cpp.Body;
 /// test the Pass-3 <see cref="Analysis.ReferenceStoreAnalyzer"/> uses, via
 /// <see cref="Analysis.AnalyzerHelpers.IsXObjectDerived(INamedTypeSymbol?)"/>).
 /// A value-typed slot, a local, or a parameter is NOT a reference store and
-/// lowers to the plain assignment with no hook.
+/// lowers to the plain assignment with no barrier.
 /// </para>
 /// <para>
-/// <b>Why only a hook comment here.</b> WU-D1 owns declaration / assignment
-/// lowering; the actual <c>XPACT_GC_STORE</c> expansion (computing the stable
-/// <c>parent_obj</c>, the slot address, and the multi-step chain promotion per
-/// Section 5.3) is the Phase 6.h write-barrier unit. This rule emits the
-/// deterministic hook marker so the barrier site is visible and never silently
-/// dropped, then emits the assignment that 6.h will wrap.
+/// <b>The write barrier (Phase 6.h, gate X-IL2CPP-BARRIER-EMIT).</b> An
+/// XObject reference store emits
+/// <c>XPACT_GC_STORE(parent_obj, &amp;(slot), new_value);</c> per Section 6.3
+/// (the doc's <c>XPACT_GC_STORE(actor, &amp;actor-&gt;Owner, newOwner)</c>
+/// example). The macro both records the store with the collector AND performs
+/// the slot write, so the plain <c>slot = value;</c> assignment is SUPPRESSED
+/// at a reference store -- emitting it too would write the slot twice. The
+/// three operands are:
+/// </para>
+/// <list type="bullet">
+///   <item><description>
+///     <b>parent_obj</b> -- the directly-enclosing object whose slot is written:
+///     the lowered receiver of a member-access LHS (<c>h.Slot = a</c> -&gt;
+///     <c>h</c>), or the instance receiver token <see cref="SelfToken"/> when
+///     the slot is written through a bare identifier (an implicit-<c>this</c>
+///     instance member, <c>Slot = a</c> -&gt; <c>self</c>).
+///   </description></item>
+///   <item><description>
+///     <b>&amp;(slot)</b> -- the address of the lowered LHS slot expression
+///     (<c>&amp;(h-&gt;Slot)</c> / <c>&amp;(self-&gt;Slot)</c>). The parentheses
+///     keep the address-of binding tight around the whole lowered slot.
+///   </description></item>
+///   <item><description>
+///     <b>new_value</b> -- the lowered RHS expression.
+///   </description></item>
+/// </list>
+/// <para>
+/// All three operands are lowered through the shared expression emitter, so the
+/// barrier carries real C++ (a compilable <c>self-&gt;Slot</c> / call form),
+/// never raw C# syntax text.
 /// </para>
 /// <para>
-/// <b>Determinism (gate X-IL2CPP-CSPATH-DET).</b> The hook placeholders are the
-/// syntactic operand texts (a pure function of the tree); operand lowering is
-/// delegated to the shared expression emitter; no ambient state,
-/// <see cref="DateTime"/>, <see cref="Guid"/>, or culture-sensitive formatting.
+/// <b>Determinism (gate X-IL2CPP-CSPATH-DET).</b> Operand lowering is delegated
+/// to the shared expression emitter (a pure function of the bound tree); the
+/// only literal fragments are the fixed macro name + punctuation; no ambient
+/// state, <see cref="DateTime"/>, <see cref="Guid"/>, or culture-sensitive
+/// formatting.
 /// </para>
 /// </remarks>
 public sealed class AssignmentLoweringRule : IBodyLoweringRule
 {
-    /// <summary>The Phase 6.h write-barrier hook-comment prefix this rule emits at a reference store.</summary>
-    public const string WriteBarrierHookPrefix = "TODO(6.h): ";
+    /// <summary>The Phase 6.h write-barrier macro this rule emits at an XObject reference store.</summary>
+    public const string WriteBarrierMacro = "XPACT_GC_STORE";
+
+    /// <summary>
+    /// The instance receiver token used as <c>parent_obj</c> for an
+    /// implicit-<c>this</c> reference store (matches the
+    /// <c>self</c> token the identifier-lowering rule + method emitter thread
+    /// the free-function receiver under).
+    /// </summary>
+    public const string SelfToken = "self";
 
     /// <inheritdoc/>
     public string Name => "Assignment";
@@ -72,16 +104,8 @@ public sealed class AssignmentLoweringRule : IBodyLoweringRule
 
         if (IsReferenceStore(model, lhs))
         {
-            // The Phase 6.h write-barrier hook: parent_obj, &slot, new_value
-            // per /Documents/XIL2CPP.html Rev 4 Section 6.3
-            // (XPACT_GC_STORE(actor, &actor->Owner, newOwner)). The placeholders
-            // are the syntactic operand texts; 6.h computes the stable parent /
-            // slot address / promoted value.
-            string parent_obj = ReceiverText(lhs);
-            string slot = SlotText(lhs);
-            string value = rhs.ToString();
-            writer.AppendComment(
-                $"{WriteBarrierHookPrefix}XPACT_GC_STORE({parent_obj}, &{slot}, {value})");
+            EmitWriteBarrier(lhs, rhs, writer, parent);
+            return;
         }
 
         // The plain assignment: <lhs> = <rhs>; with both operands lowered
@@ -92,6 +116,55 @@ public sealed class AssignmentLoweringRule : IBodyLoweringRule
         parent.Expressions.EmitExpression(rhs);
         writer.Append(";");
         writer.AppendLine();
+    }
+
+    /// <summary>
+    /// Emit the Phase 6.h write barrier for an XObject reference store:
+    /// <c>XPACT_GC_STORE(&lt;parent&gt;, &amp;(&lt;slot&gt;), &lt;value&gt;);</c>.
+    /// The macro performs the store, so NO plain assignment follows (no
+    /// double-write). The parent, slot, and value are lowered through the shared
+    /// expression emitter.
+    /// </summary>
+    private static void EmitWriteBarrier(
+        ExpressionSyntax lhs,
+        ExpressionSyntax rhs,
+        CppWriter writer,
+        StatementEmitter parent)
+    {
+        writer.Append(WriteBarrierMacro);
+        writer.Append("(");
+
+        // parent_obj: the lowered receiver of a member-access LHS, or the `self`
+        // instance receiver for a bare-identifier (implicit-this) slot.
+        EmitParent(lhs, writer, parent);
+
+        // &(slot): the address of the lowered LHS slot expression.
+        writer.Append(", &(");
+        parent.Expressions.EmitExpression(lhs);
+        writer.Append("), ");
+
+        // new_value: the lowered RHS.
+        parent.Expressions.EmitExpression(rhs);
+
+        writer.Append(");");
+        writer.AppendLine();
+    }
+
+    /// <summary>
+    /// Emit the <c>parent_obj</c> operand: the lowered receiver of a
+    /// member-access LHS (<c>h.Slot</c> -&gt; lowered <c>h</c>), or the
+    /// <see cref="SelfToken"/> instance receiver when the slot is written
+    /// through a bare identifier (an implicit-<c>this</c> instance member).
+    /// </summary>
+    private static void EmitParent(ExpressionSyntax lhs, CppWriter writer, StatementEmitter parent)
+    {
+        if (lhs is MemberAccessExpressionSyntax memberAccess)
+        {
+            parent.Expressions.EmitExpression(memberAccess.Expression);
+            return;
+        }
+
+        writer.Append(SelfToken);
     }
 
     /// <summary>
@@ -113,22 +186,4 @@ public sealed class AssignmentLoweringRule : IBodyLoweringRule
         return slotType is INamedTypeSymbol namedSlotType
             && Analysis.AnalyzerHelpers.IsXObjectDerived(namedSlotType);
     }
-
-    /// <summary>
-    /// The directly-enclosing object expression of the slot, for the hook's
-    /// <c>parent_obj</c> placeholder: the receiver of a member-access LHS, or
-    /// <c>this</c> when the slot is written through a bare identifier (an
-    /// implicit-<c>this</c> instance member).
-    /// </summary>
-    private static string ReceiverText(ExpressionSyntax lhs)
-        => lhs is MemberAccessExpressionSyntax memberAccess
-            ? memberAccess.Expression.ToString()
-            : "this";
-
-    /// <summary>
-    /// The slot expression for the hook's address-of placeholder: the syntactic
-    /// LHS text (e.g. <c>actor-&gt;Owner</c> in source form <c>actor.Owner</c>).
-    /// </summary>
-    private static string SlotText(ExpressionSyntax lhs)
-        => lhs.ToString();
 }

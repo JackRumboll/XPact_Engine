@@ -32,12 +32,14 @@ namespace Simgenics.XPact.XIL2CPP.Emit.Cpp;
 /// <see cref="StableId"/>.
 /// </para>
 /// <para>
-/// <b>The 6.h write-barrier hook.</b> When <c>T</c> is XObject-derived the
-/// setter's body is preceded by a single-line
-/// <c>// TODO(6.h): XPACT_GC_STORE(...)</c> comment marking where the Phase-6.h
-/// reference-store write barrier will be inserted (the actual barrier is a
-/// later wave). For a value-typed / non-XObject <c>T</c> no hook is emitted --
-/// a plain field store carries no GC obligation.
+/// <b>The 6.h write barrier (gate X-IL2CPP-BARRIER-EMIT).</b> When <c>T</c> is
+/// XObject-derived the setter writes its backing field through the
+/// <c>XPACT_GC_STORE(self, &amp;(self-&gt;__BackingField_&lt;Name&gt;), value);</c>
+/// reference-store write barrier INSTEAD of a plain field store: the macro
+/// records the reference with the collector AND performs the store, so emitting
+/// a plain <c>self-&gt;__BackingField_&lt;Name&gt; = value;</c> too would
+/// double-write. For a value-typed / non-XObject <c>T</c> no barrier is emitted
+/// -- a plain field store carries no GC obligation.
 /// </para>
 /// <para>
 /// <b>Determinism (gate X-IL2CPP-CSPATH-DET).</b> Every emit is a pure
@@ -52,6 +54,9 @@ public sealed class PropertyEmitter
 {
     /// <summary>The synthesized backing-field name prefix (Section 10.2 reflection shape).</summary>
     public const string BackingFieldPrefix = "__BackingField_";
+
+    /// <summary>The Phase 6.h write-barrier macro an XObject-derived property setter emits.</summary>
+    public const string WriteBarrierMacro = "XPACT_GC_STORE";
 
     /// <summary>
     /// The C++ namespace + type for the engine root reference smart-pointer
@@ -122,10 +127,13 @@ public sealed class PropertyEmitter
 
     /// <summary>
     /// Emit only the setter accessor for <paramref name="property"/> /
-    /// <paramref name="setter"/>:
-    /// <c>extern "C" void &lt;set_LinkerSymbol&gt;(&lt;self&gt;, &lt;T&gt; value) noexcept { [hook] self-&gt;__BackingField_&lt;Name&gt; = value; }</c>.
-    /// The 6.h write-barrier hook comment is emitted only when the property
-    /// type is XObject-derived.
+    /// <paramref name="setter"/>. For a value-typed property the body is the
+    /// plain
+    /// <c>extern "C" void &lt;set_LinkerSymbol&gt;(&lt;self&gt;, &lt;T&gt; value) noexcept { self-&gt;__BackingField_&lt;Name&gt; = value; }</c>;
+    /// for an XObject-derived property the field store is replaced by the Phase
+    /// 6.h write barrier
+    /// <c>XPACT_GC_STORE(self, &amp;(self-&gt;__BackingField_&lt;Name&gt;), value);</c>
+    /// (which performs the store itself, so the plain assignment is suppressed).
     /// </summary>
     /// <param name="property">The owning property symbol. Must not be null.</param>
     /// <param name="setter">The property's set / init accessor method symbol. Must not be null.</param>
@@ -153,16 +161,22 @@ public sealed class PropertyEmitter
         writer.BeginBlock(
             "extern \"C\" void " + linkerSymbol + "(" + selfParam + ", " + valueType + " value) noexcept");
 
-        // The 6.h reference-store write barrier hook -- only when the slot is
-        // an XObject reference (a value-typed store carries no GC obligation).
         if (IsXObjectReferenceType(property.Type))
         {
-            writer.AppendComment(
-                "TODO(6.h): XPACT_GC_STORE(self, &self->" + backingField
-                + ", value) when T is XObject-derived");
+            // Phase 6.h reference-store write barrier (gate X-IL2CPP-BARRIER-EMIT):
+            // the setter's slot write goes through XPACT_GC_STORE so the
+            // collector records the reference. The macro performs the backing-
+            // field store itself, so NO plain `self->__BackingField_<Name> =
+            // value;` follows -- emitting it too would write the slot twice.
+            writer.AppendLine(
+                WriteBarrierMacro + "(self, &(self->" + backingField + "), value);");
+        }
+        else
+        {
+            // Value-typed slot: a plain field store carries no GC obligation.
+            writer.AppendLine("self->" + backingField + " = value;");
         }
 
-        writer.AppendLine("self->" + backingField + " = value;");
         writer.EndBlock();
     }
 

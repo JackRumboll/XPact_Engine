@@ -74,6 +74,27 @@ public sealed class ControlFlowLoweringRuleTests
         return writer.Build();
     }
 
+    /// <summary>
+    /// Emit <paramref name="methodBody"/>'s first <typeparamref name="TNode"/>
+    /// through <paramref name="registry"/> against a context built from the SAME
+    /// source, so the node's tree participates in the compilation and the
+    /// semantic-model lookups the lowering performs (e.g. the FIX-3 for-init
+    /// inline declaration's type resolution) succeed.
+    /// </summary>
+    private static string EmitFromSource<TNode>(BodyLoweringRuleRegistry registry, string methodBody)
+        where TNode : SyntaxNode
+    {
+        string source = $"namespace M {{ public class C {{ public void Run(int n, int j) {{ {methodBody} }} }} }}";
+        EmitContext ctx = EmitTestHelpers.BuildEmitContext(source);
+        SyntaxTree tree = ctx.Unit.Pass1.ParsedFiles[0].Tree;
+        TNode node = tree.GetRoot().DescendantNodes().OfType<TNode>().First();
+
+        CppWriter writer = new();
+        StatementEmitter emitter = new(ctx, writer, registry);
+        emitter.EmitStatement(node);
+        return writer.Build();
+    }
+
     private static TNode ParseFirst<TNode>(string methodBody)
         where TNode : SyntaxNode
     {
@@ -253,35 +274,40 @@ public sealed class ControlFlowLoweringRuleTests
     // ---- ForLoopLoweringRule ------------------------------------------------
 
     [Fact]
-    public void For_EmitsBackEdgeHookAsFirstBodyLine()
+    public void For_EmitsBackEdgeCheckAsFirstBodyLine()
     {
-        ForStatementSyntax forStmt = ParseFirst<ForStatementSyntax>(
-            "for (int i = 0; i < n; i++) { return a; }");
-        string cpp = Emit(ControlFlowRegistryWithInlineExpressions(), forStmt);
+        // No LongLoopSite is recorded by this test's pipeline (it runs only the
+        // CrossModuleNoThrowAnalyzer), so the back-edge check is emitted by the
+        // fail-safe default -- a loop with `n` as a non-constant bound is never
+        // provably short in any case. FIX 3: the for-init declaration lowers
+        // inline to its genuine C++ type spelling (`int` -> `int32_t`).
+        string cpp = EmitFromSource<ForStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(),
+            "for (int i = 0; i < n; i++) { return n; }");
         Assert.Equal(
-            "for (int i = 0; i < n; i++) {\n"
-            + "    // " + ForLoopLoweringRule.BackEdgeHookComment + "\n"
-            + "    return a;\n"
+            "for (int32_t i = 0; i < n; i++) {\n"
+            + "    " + ForLoopLoweringRule.BackEdgeCheckStatement + "\n"
+            + "    return n;\n"
             + "}\n",
             cpp);
     }
 
     [Fact]
-    public void For_HookComment_NamesThe6gWave()
+    public void For_BackEdgeCheck_IsTheRealMacroStatement()
     {
-        Assert.Equal("TODO(6.g): XPACT_BACKEDGE_SAFEPOINT_CHECK();", ForLoopLoweringRule.BackEdgeHookComment);
+        Assert.Equal("XPACT_BACKEDGE_SAFEPOINT_CHECK();", ForLoopLoweringRule.BackEdgeCheckStatement);
     }
 
     [Fact]
-    public void For_UnbracedBody_StillEmitsHookAndSingleBracePair()
+    public void For_UnbracedBody_StillEmitsCheckAndSingleBracePair()
     {
-        ForStatementSyntax forStmt = ParseFirst<ForStatementSyntax>(
-            "for (int i = 0; i < n; i++) return a;");
-        string cpp = Emit(ControlFlowRegistryWithInlineExpressions(), forStmt);
+        string cpp = EmitFromSource<ForStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(),
+            "for (int i = 0; i < n; i++) return n;");
         Assert.Equal(
-            "for (int i = 0; i < n; i++) {\n"
-            + "    // " + ForLoopLoweringRule.BackEdgeHookComment + "\n"
-            + "    return a;\n"
+            "for (int32_t i = 0; i < n; i++) {\n"
+            + "    " + ForLoopLoweringRule.BackEdgeCheckStatement + "\n"
+            + "    return n;\n"
             + "}\n",
             cpp);
     }
@@ -289,28 +315,40 @@ public sealed class ControlFlowLoweringRuleTests
     [Fact]
     public void For_MultipleIncrementors_AreCommaSeparated()
     {
-        ForStatementSyntax forStmt = ParseFirst<ForStatementSyntax>(
-            "for (int i = 0; i < n; i++, j--) { return a; }");
-        string cpp = Emit(ControlFlowRegistryWithInlineExpressions(), forStmt);
+        string cpp = EmitFromSource<ForStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(),
+            "for (int i = 0; i < n; i++, j--) { return n; }");
         Assert.Equal(
-            "for (int i = 0; i < n; i++, j--) {\n"
-            + "    // " + ForLoopLoweringRule.BackEdgeHookComment + "\n"
-            + "    return a;\n"
+            "for (int32_t i = 0; i < n; i++, j--) {\n"
+            + "    " + ForLoopLoweringRule.BackEdgeCheckStatement + "\n"
+            + "    return n;\n"
             + "}\n",
             cpp);
     }
 
     [Fact]
-    public void For_NestedInsideBlock_HookIndentsWithBody()
+    public void For_NestedInsideBlock_CheckIndentsWithBody()
     {
-        BlockSyntax block = ParseBlock(
-            "{ for (int i = 0; i < n; i++) { return a; } }");
-        string cpp = Emit(ControlFlowRegistryWithInlineExpressions(), block);
+        // Build a context from the same source so the for-init's inline
+        // declaration type-resolves; the block under assertion is the FIRST
+        // block nested inside the method body (skipping the method body itself).
+        string source =
+            "namespace M { public class C { public void Run(int n, int j) { "
+            + "{ for (int i = 0; i < n; i++) { return n; } } } } }";
+        EmitContext ctx = EmitTestHelpers.BuildEmitContext(source);
+        SyntaxTree tree = ctx.Unit.Pass1.ParsedFiles[0].Tree;
+        BlockSyntax block = tree.GetRoot().DescendantNodes().OfType<BlockSyntax>().Skip(1).First();
+
+        CppWriter writer = new();
+        StatementEmitter emitter = new(ctx, writer, ControlFlowRegistryWithInlineExpressions());
+        emitter.EmitStatement(block);
+        string cpp = writer.Build();
+
         Assert.Equal(
             "{\n"
-            + "    for (int i = 0; i < n; i++) {\n"
-            + "        // " + ForLoopLoweringRule.BackEdgeHookComment + "\n"
-            + "        return a;\n"
+            + "    for (int32_t i = 0; i < n; i++) {\n"
+            + "        " + ForLoopLoweringRule.BackEdgeCheckStatement + "\n"
+            + "        return n;\n"
             + "    }\n"
             + "}\n",
             cpp);
@@ -325,15 +363,47 @@ public sealed class ControlFlowLoweringRuleTests
         Assert.Equal("ControlFlow.ForLoop", rule.Name);
     }
 
+    [Fact]
+    public void For_DeclarationInit_LowersInlineToCppDeclaration_NotTodoComment()
+    {
+        // FIX 3: a for-init VariableDeclaration is lowered inline to a real C++
+        // declaration (`int32_t i = 0`) in the for-init clause, NOT a
+        // `// TODO(6.e)` comment inside the for(...) header (which was ill-formed
+        // C++). The whole for-loop must compile-shape cleanly.
+        string cpp = EmitFromSource<ForStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(),
+            "for (int i = 0; i < n; i++) { return n; }");
+
+        Assert.Contains("for (int32_t i = 0;", cpp);
+        Assert.DoesNotContain("TODO(6.e)", cpp);
+    }
+
+    [Fact]
+    public void For_MultiDeclaratorInit_IsCommaSeparated()
+    {
+        // A multi-declarator for-init renders comma-separated, one type prefix
+        // shared (`int32_t i = 0, k = 1`).
+        string cpp = EmitFromSource<ForStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(),
+            "for (int i = 0, k = 1; i < n; i++) { return n; }");
+
+        Assert.Contains("for (int32_t i = 0, k = 1;", cpp);
+        Assert.DoesNotContain("TODO(6.e)", cpp);
+    }
+
     // ---- Determinism --------------------------------------------------------
 
     [Fact]
     public void Emit_IsByteDeterministicAcrossTwoRuns()
     {
-        IfStatementSyntax ifStmt = ParseFirst<IfStatementSyntax>(
-            "if (a) { for (int i = 0; i < n; i++) { return x; } } else { return y; }");
-        string first = Emit(ControlFlowRegistryWithInlineExpressions(), ifStmt);
-        string second = Emit(ControlFlowRegistryWithInlineExpressions(), ifStmt);
+        // The for-init inline declaration type-resolves, so the node must come
+        // from a context-participating source; two emits stay byte-identical.
+        const string body =
+            "if (n > 0) { for (int i = 0; i < n; i++) { return n; } } else { return j; }";
+        string first = EmitFromSource<IfStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(), body);
+        string second = EmitFromSource<IfStatementSyntax>(
+            ControlFlowRegistryWithInlineExpressions(), body);
         Assert.Equal(first, second);
     }
 

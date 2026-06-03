@@ -28,7 +28,7 @@ public sealed class MethodEmitterTests
     // -----------------------------------------------------------------
 
     [Fact]
-    public void Tier2_Direct_EmitsExternCNoexceptFreeFunctionWithSafepointAndGcHook()
+    public void Tier2_Direct_EmitsExternCNoexceptFreeFunctionWithSafepointAndShadowStack()
     {
         // An internal class + internal non-throwing leaf method classifies Tier 2.
         const string source = """
@@ -48,11 +48,38 @@ public sealed class MethodEmitterTests
 
         ManglingRecord record = ctx.FindMangling(StableId.FromSymbol(method))!.Value;
 
-        // One extern "C" direct function, noexcept, with the safepoint + 6.g hook.
+        // One extern "C" direct function, noexcept, with the Phase 6.g
+        // precise-GC shadow stack (self roots slot 0) + the safepoint poll.
         Assert.Contains("extern \"C\" int32_t " + record.LinkerSymbol + "(", cpp);
         Assert.Contains(") noexcept {", cpp);
-        Assert.Contains("// " + MethodEmitter.GcHookComment, cpp);
+        // The 6.g shadow-stack prologue REPLACES the old TODO(6.g) hook comment:
+        // the rooted instance method declares _liveRefs[1] and roots self at 0.
+        Assert.DoesNotContain("// " + MethodEmitter.GcHookComment, cpp);
+        Assert.Contains(
+            MethodShadowStackBuilder.SlotElementType + " " + MethodShadowStackBuilder.ArrayName + "[1] = {};",
+            cpp);
+        Assert.Contains(
+            MethodShadowStackBuilder.ArrayName + "[0] = " + MethodShadowStackBuilder.SlotElementType
+            + "(reinterpret_cast<" + MethodShadowStackBuilder.XObjectPointerType + ">(self));",
+            cpp);
+        // The registered stack-map record keyed off the function's own symbol.
+        Assert.Contains("static const " + MethodShadowStackBuilder.StackMapRecordType, cpp);
+        Assert.Contains(MethodShadowStackBuilder.StackMapTableType + "::Register(", cpp);
         Assert.Contains(MethodEmitter.SafepointCheck, cpp);
+
+        // WU-6G-STACKMAP placement fix: the FStackMapRecord + registrar are
+        // emitted at FILE scope AFTER the function's closing brace (so the
+        // static-init registrar actually runs), NOT inside the body where they
+        // would be unreachable dead code after a returning body. The record line
+        // therefore follows the function's column-0 closing brace, and the record
+        // is wrapped in the per-function stack-map namespace.
+        string[] lines = cpp.Split('\n');
+        int funcCloseBrace = System.Array.FindIndex(lines, l => l == "}");
+        int recordLine = System.Array.FindIndex(
+            lines, l => l.Contains("static const " + MethodShadowStackBuilder.StackMapRecordType));
+        Assert.True(funcCloseBrace >= 0 && recordLine > funcCloseBrace,
+            "The FStackMapRecord must be emitted at file scope after the function's closing brace.");
+        Assert.Contains("namespace " + MethodEmitter.StackMapNamespacePrefix, cpp);
 
         // No Tier-1 shim machinery for a Tier-2 method.
         Assert.DoesNotContain(MethodEmitter.ShimSuffix, cpp);
@@ -105,10 +132,28 @@ public sealed class MethodEmitterTests
         string cpp = EmitMethod(ctx, method);
         ManglingRecord record = ctx.FindMangling(StableId.FromSymbol(method))!.Value;
 
-        // Private static _Body helper carries the real body + safepoint + hook.
+        // Private static _Body helper carries the real body + the Phase 6.g
+        // shadow stack + safepoint; the stack map is keyed off the _Body symbol.
         Assert.Contains("static int32_t " + record.LinkerSymbol + MethodEmitter.BodySuffix + "(", cpp);
-        Assert.Contains("// " + MethodEmitter.GcHookComment, cpp);
+        Assert.DoesNotContain("// " + MethodEmitter.GcHookComment, cpp);
+        Assert.Contains(
+            MethodShadowStackBuilder.SlotElementType + " " + MethodShadowStackBuilder.ArrayName + "[1] = {};",
+            cpp);
+        Assert.Contains(
+            MethodShadowStackBuilder.StackMapTableType + "::Register(reinterpret_cast<unsigned long long>(&"
+            + record.LinkerSymbol + MethodEmitter.BodySuffix + ")",
+            cpp);
         Assert.Contains(MethodEmitter.SafepointCheck, cpp);
+
+        // WU-6G-STACKMAP placement fix: the Tier-1 stack-map record is emitted at
+        // FILE scope after the _Body helper's closing brace (reachable at
+        // static-init), NOT inside the _Body block after its return.
+        string[] tier1Lines = cpp.Split('\n');
+        int bodyCloseBrace = System.Array.FindIndex(tier1Lines, l => l == "}");
+        int tier1RecordLine = System.Array.FindIndex(
+            tier1Lines, l => l.Contains("static const " + MethodShadowStackBuilder.StackMapRecordType));
+        Assert.True(bodyCloseBrace >= 0 && tier1RecordLine > bodyCloseBrace,
+            "The Tier-1 FStackMapRecord must be emitted at file scope after the _Body closing brace.");
 
         // Exported extern "C" void _Shim with the trailing XResult* out-param.
         Assert.Contains(

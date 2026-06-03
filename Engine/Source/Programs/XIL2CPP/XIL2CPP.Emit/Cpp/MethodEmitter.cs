@@ -26,26 +26,36 @@ namespace Simgenics.XPact.XIL2CPP.Emit.Cpp;
 /// <remarks>
 /// <para>
 /// <b>Tier 2 (direct).</b> A zero-overhead plain free function with the C#
-/// method's natural signature and NO <c>XResult</c> out-param:
+/// method's natural signature and NO <c>XResult</c> out-param. When the body
+/// roots live managed references the precise-GC shadow stack + stack-map
+/// record (XIL2CPP Phase 6.g) wraps it (when it roots none, the shadow-stack
+/// apparatus is elided and only the safe-point poll + body emit):
 /// <code>
 /// extern "C" &lt;ret&gt; &lt;LinkerSymbol&gt;(&lt;self?&gt;, &lt;params&gt;) noexcept {
-///     // TODO(6.g): FStackMapRecord + shadow-stack
+///     ::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt; _liveRefs[N] = {};
+///     _liveRefs[0] = ...(reinterpret_cast&lt;...&gt;(self));  // self + XObject params
 ///     XPACT_SAFEPOINT_CHECK();
 ///     &lt;body&gt;
 /// }
+/// // FILE SCOPE, after the closing brace: the function is defined by here, so
+/// // the registrar's address-of the linker symbol is valid; a file-scope static
+/// // initializer runs at static-init time and actually registers (an in-body
+/// // function-local static after a returning body is UNREACHABLE).
+/// static const ::XCore::Reflect::FStackMapRecord _stackMap... = { ... };
+/// [[maybe_unused]] static const bool _stackMapReg... = []() { ...Register(...); return true; }();
 /// </code>
 /// Tier 2 is <c>noexcept</c> (Constraint Section 2.8: it provably cannot throw).
 /// </para>
 /// <para>
 /// <b>Tier 1 (shim).</b> The ABI-stable <c>XResult</c>-shimmed form. The body
-/// lives in a private <c>static</c> <c>_Body</c> helper; the exported
+/// (with its shadow stack + stack map keyed by the <c>_Body</c> symbol) lives
+/// in a private <c>static</c> <c>_Body</c> helper; the exported
 /// <c>extern "C"</c> <c>_Shim</c> wraps the call in a <c>try / catch</c> and
 /// reports success / failure through the <c>::XCore::Exception::XResult*</c>
 /// out-param (Dev-mode form; the Shipping <c>#ifdef</c> form is Phase 6.j):
 /// <code>
 /// static &lt;ret&gt; &lt;LinkerSymbol&gt;_Body(&lt;self?&gt;, &lt;params&gt;) {
-///     // TODO(6.g): FStackMapRecord + shadow-stack
-///     XPACT_SAFEPOINT_CHECK();
+///     // shadow stack + safe-point + body + stack-map record (as Tier 2 above)
 ///     &lt;body&gt;
 /// }
 /// extern "C" void &lt;LinkerSymbol&gt;_Shim(&lt;self?&gt;, &lt;params&gt;, ::XCore::Exception::XResult* outResult) {
@@ -78,10 +88,16 @@ namespace Simgenics.XPact.XIL2CPP.Emit.Cpp;
 /// </remarks>
 public sealed class MethodEmitter
 {
-    /// <summary>The 6.g GC-hook TODO marker emitted as the first body line of every method shell.</summary>
+    /// <summary>
+    /// The 6.g GC-hook TODO marker. The method-body prologue NO LONGER emits
+    /// this (it now emits the real precise-GC shadow stack + stack-map record
+    /// via <see cref="MethodShadowStackBuilder"/>); the constant is retained
+    /// because the virtual-dispatch thunk emitter (which forwards without
+    /// rooting and so carries no shadow stack) still emits it as its GC hook.
+    /// </summary>
     public const string GcHookComment = "TODO(6.g): FStackMapRecord + shadow-stack";
 
-    /// <summary>The safe-point poll macro every method shell calls before its body.</summary>
+    /// <summary>The safe-point poll macro every method shell calls (after shadow-stack init) before its body.</summary>
     public const string SafepointCheck = "XPACT_SAFEPOINT_CHECK();";
 
     /// <summary>The runtime exception-result type the Tier-1 shim out-param points at (Contract Section 2.7).</summary>
@@ -154,8 +170,10 @@ public sealed class MethodEmitter
 
     /// <summary>
     /// Emit the Tier-2 direct form: a single <c>noexcept</c> <c>extern "C"</c>
-    /// free function whose body is the safe-point poll + the 6.g GC-hook
-    /// comment + the lowered statements.
+    /// free function whose body is the shadow-stack prologue + the safe-point
+    /// poll + the lowered statements, then -- at FILE scope after the closing
+    /// brace -- the precise-GC stack-map record + registrar. The function's own
+    /// linker symbol keys the stack-map registration.
     /// </summary>
     private static void EmitTier2Direct(
         ManglingRecord record,
@@ -169,8 +187,16 @@ public sealed class MethodEmitter
         string header = "extern \"C\" " + returnType + " " + record.LinkerSymbol
             + "(" + RenderParamList(parameters) + ") noexcept";
         writer.BeginBlock(header);
-        EmitBodyPrologueAndBody(method, writer, bodyEmitter);
+        MethodShadowStackBuilder? rootedStack =
+            EmitBodyPrologueAndBody(method, writer, bodyEmitter);
         writer.EndBlock();
+
+        // The stack-map record + registrar emit at FILE scope AFTER the closing
+        // brace: &<linkerSymbol> is now in scope (the function is fully defined)
+        // and a file-scope static initializer runs at static-init time -- so it
+        // actually registers, where an in-body function-local static after a
+        // returning body would be dead code that never runs.
+        EmitFileScopeStackMap(record.LinkerSymbol, rootedStack, writer);
     }
 
     /// <summary>
@@ -190,11 +216,21 @@ public sealed class MethodEmitter
         StatementEmitter bodyEmitter)
     {
         // Private body helper: static <ret> <Symbol>_Body(<self?>, <params>).
+        // The _Body helper carries the rooted body, so its symbol keys the
+        // precise-GC stack-map registration (NOT the exported _Shim boundary).
         string bodySymbol = record.LinkerSymbol + BodySuffix;
         writer.BeginBlock(
             "static " + returnType + " " + bodySymbol + "(" + RenderParamList(parameters) + ")");
-        EmitBodyPrologueAndBody(method, writer, bodyEmitter);
+        MethodShadowStackBuilder? rootedStack =
+            EmitBodyPrologueAndBody(method, writer, bodyEmitter);
         writer.EndBlock();
+
+        // The stack-map record + registrar emit at FILE scope AFTER the _Body
+        // closing brace, keyed off the _Body symbol (the function that carries
+        // the rooted body): &<_Body> is now in scope and the file-scope static
+        // initializer registers at static-init time. (An in-body function-local
+        // static after the _Body's return would be unreachable dead code.)
+        EmitFileScopeStackMap(bodySymbol, rootedStack, writer);
 
         // Exported shim boundary: appends the XResult* out-param after the
         // method's own parameters. NOT noexcept (it converts a C# exception
@@ -228,18 +264,251 @@ public sealed class MethodEmitter
     }
 
     /// <summary>
-    /// Emit the shared body prologue (the 6.g GC-hook comment + the safe-point
-    /// poll) followed by the lowered method body.
+    /// Emit the shared body prologue + body (the IN-FUNCTION precise-GC
+    /// apparatus, XIL2CPP Phase 6.g) via a TWO-PASS lowering so the shadow-stack
+    /// array length <c>N</c> is known before the array declaration is written:
+    /// <list type="number">
+    ///   <item><description>
+    ///     Bind a fresh <see cref="MethodShadowStackBuilder"/> onto a SECONDARY
+    ///     <see cref="StatementEmitter"/> (sharing the caller's context +
+    ///     registry), allocate <c>self</c> at index 0 (instance members) and
+    ///     each XObject-derived parameter a slot, THEN lower the body into a
+    ///     secondary buffer (so additional rooting allocations a rule makes are
+    ///     counted before <c>N</c> is fixed).
+    ///   </description></item>
+    ///   <item><description>
+    ///     Into the real writer, in ORDER: (1) the shadow-stack array
+    ///     declaration <c>_liveRefs[N]</c>, (2) the <c>self</c> + parameter slot
+    ///     writes, (3) <c>XPACT_SAFEPOINT_CHECK()</c> (after shadow-stack init),
+    ///     (4) the flushed body buffer.
+    ///   </description></item>
+    /// </list>
+    /// The <c>FStackMapRecord</c> + <c>XStackMapTable::Register</c> registrar is
+    /// NOT emitted here: it is emitted at FILE scope after the function's closing
+    /// brace by <see cref="EmitFileScopeStackMap"/> (an in-body function-local
+    /// static after a returning body would be unreachable dead code, so the lazy
+    /// init would never run and the stack map would never register). This method
+    /// returns the populated builder (or null) so the caller can emit that
+    /// file-scope record once the function definition is complete.
+    /// <para>
+    /// When the method roots NO managed references (<c>N == 0</c> -- e.g. a
+    /// static leaf with no XObject parameters), the shadow-stack apparatus is
+    /// elided entirely (no array, no slot writes) and null is returned (no
+    /// file-scope record): a zero-length root array would be ill-formed and a
+    /// method with no live refs needs no precise-GC map. The safe-point poll +
+    /// body still emit.
+    /// </para>
     /// </summary>
-    private static void EmitBodyPrologueAndBody(
+    /// <param name="method">The method whose body is lowered.</param>
+    /// <param name="writer">The real C++ writer the function body is emitted into.</param>
+    /// <param name="bodyEmitter">The caller's statement emitter (its context + registry are reused for the secondary pass).</param>
+    /// <returns>
+    /// The populated <see cref="MethodShadowStackBuilder"/> when the method roots
+    /// at least one managed reference (the caller emits its file-scope stack-map
+    /// record), or null when the method roots none.
+    /// </returns>
+    private static MethodShadowStackBuilder? EmitBodyPrologueAndBody(
         IMethodSymbol method,
         CppWriter writer,
         StatementEmitter bodyEmitter)
     {
-        writer.AppendComment(GcHookComment);
+        // -------------------------------------------------------------
+        // Pass 1: lower the body into a SECONDARY buffer with a bound
+        // shadow-stack builder, so N (the live-ref count) is final before the
+        // array declaration is written into the real writer.
+        // -------------------------------------------------------------
+        MethodShadowStackBuilder shadowStack = new();
+        List<(int Index, string Expr)> rootedSlotWrites = PreallocateRoots(method, shadowStack);
+
+        // The secondary buffer starts at the real writer's CURRENT indent depth
+        // (the function-body depth), so flushing it preserves the same
+        // indentation the body would have had if lowered directly into writer.
+        CppWriter bodyBuffer = new();
+        for (int i = 0; i < writer.Depth; i++)
+        {
+            bodyBuffer.Indent();
+        }
+
+        StatementEmitter secondary = new(bodyEmitter.Context, bodyBuffer, bodyEmitter.Registry)
+        {
+            ShadowStackBuilder = shadowStack,
+        };
+        EmitBody(method, bodyBuffer, secondary);
+
+        bool hasRoots = shadowStack.Count > 0;
+
+        // -------------------------------------------------------------
+        // Pass 2: emit the IN-FUNCTION parts into the real writer in the LOCKED
+        // order. The stack-map record is emitted by the caller at file scope.
+        // -------------------------------------------------------------
+
+        // (1) The shadow-stack array declaration (only when there are roots).
+        if (hasRoots)
+        {
+            shadowStack.EmitArrayDecl(writer);
+
+            // (2) self + parameter slot writes (the pre-body root initialisation).
+            foreach ((int index, string expr) in rootedSlotWrites)
+            {
+                shadowStack.EmitSlotWrite(index, expr, writer);
+            }
+        }
+
+        // (3) The safe-point poll (now AFTER shadow-stack init).
         writer.AppendLine(SafepointCheck);
-        EmitBody(method, writer, bodyEmitter);
+
+        // (4) Flush the lowered body buffer verbatim.
+        writer.Append(bodyBuffer.Build());
+
+        return hasRoots ? shadowStack : null;
     }
+
+    /// <summary>The file-scope wrapping-namespace prefix each per-function stack-map block is emitted under.</summary>
+    public const string StackMapNamespacePrefix = "_xstackmap_";
+
+    /// <summary>
+    /// Emit the precise-GC stack-map record + registrar at FILE / NAMESPACE
+    /// scope, immediately after the function whose <paramref name="linkerSymbol"/>
+    /// keys the registration (and which is therefore fully defined at this point,
+    /// so <c>&amp;linkerSymbol</c> is in scope). The record + the
+    /// <c>[[maybe_unused]] static const bool</c> registrar are produced by
+    /// <see cref="MethodShadowStackBuilder.EmitStackMapRecord"/>; because the
+    /// registrar is a FILE-scope static its lazy initializer runs at static-init
+    /// time and actually performs the
+    /// <c>::XCore::Reflect::XStackMapTable::Register(...)</c> -- unlike an in-body
+    /// function-local static after a returning body, which would be unreachable
+    /// dead code that never registers.
+    /// <para>
+    /// <b>Per-function wrapping namespace.</b> <see cref="MethodShadowStackBuilder.EmitStackMapRecord"/>
+    /// names the record / registrar with the fixed identifiers <c>_stackMap</c> /
+    /// <c>_stackMapReg</c>. At file scope MANY functions in one translation unit
+    /// would then collide on those names (a C++ redefinition error). The record
+    /// is therefore wrapped in a per-function namespace
+    /// <c>namespace _xstackmap_&lt;sanitized-symbol&gt; { ... }</c> so the fixed names
+    /// are unique per function. The function whose address is taken still resolves
+    /// by unqualified lookup from inside the nested namespace (it lives in an
+    /// enclosing scope), so <c>&amp;linkerSymbol</c> stays valid.
+    /// </para>
+    /// <para>
+    /// No-op when <paramref name="rootedStack"/> is null (the method rooted no
+    /// managed references, so there is no stack map to register).
+    /// </para>
+    /// </summary>
+    /// <param name="linkerSymbol">The function linker symbol whose address keys the stack-map registration (the Tier-2 direct function, or the Tier-1 <c>_Body</c> helper). Must not be null when <paramref name="rootedStack"/> is non-null.</param>
+    /// <param name="rootedStack">The populated shadow-stack builder, or null when the method roots no references.</param>
+    /// <param name="writer">The real C++ writer (positioned at file scope after the function's closing brace). Must not be null.</param>
+    private static void EmitFileScopeStackMap(
+        string linkerSymbol,
+        MethodShadowStackBuilder? rootedStack,
+        CppWriter writer)
+    {
+        if (rootedStack is null)
+        {
+            return;
+        }
+
+        // Wrap the fixed-name record + registrar in a per-function namespace so
+        // the file-scope identifiers never collide across functions in the TU.
+        writer.BeginBlock("namespace " + StackMapNamespaceName(linkerSymbol));
+        rootedStack.EmitStackMapRecord(linkerSymbol, writer);
+        writer.EndBlock();
+    }
+
+    /// <summary>
+    /// The deterministic per-function wrapping-namespace name the file-scope
+    /// stack-map block is emitted under: the <see cref="StackMapNamespacePrefix"/>
+    /// plus <paramref name="linkerSymbol"/> with every character that is not a
+    /// C++ identifier character (a letter, a digit, or <c>'_'</c>) replaced by
+    /// <c>'_'</c> -- so a constructor symbol carrying a <c>'$'</c> token still
+    /// yields a valid, unique identifier. A pure function of the symbol (ordinal
+    /// per-character mapping), so it is byte-deterministic.
+    /// </summary>
+    /// <param name="linkerSymbol">The function linker symbol. Must not be null.</param>
+    /// <returns>The sanitized wrapping-namespace identifier.</returns>
+    private static string StackMapNamespaceName(string linkerSymbol)
+    {
+        StringBuilder sb = new(StackMapNamespacePrefix.Length + linkerSymbol.Length);
+        sb.Append(StackMapNamespacePrefix);
+        foreach (char c in linkerSymbol)
+        {
+            bool isIdentChar = c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z')
+                or (>= '0' and <= '9') or '_';
+            sb.Append(isIdentChar ? c : '_');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Pre-allocate the always-live root slots BEFORE the body is lowered:
+    /// <c>self</c> at index 0 for an instance member (architect decision 7) then
+    /// each XObject-derived parameter, in declaration order. Returns the ordered
+    /// (slot-index, slot-expression) writes the prologue emits after the array
+    /// declaration. A value-typed / non-reference parameter is not rooted.
+    /// </summary>
+    /// <param name="method">The method being emitted.</param>
+    /// <param name="shadowStack">The per-method shadow-stack builder to allocate into.</param>
+    /// <returns>The ordered slot writes (index + C++ expression) for the rooted self + parameters.</returns>
+    private static List<(int Index, string Expr)> PreallocateRoots(
+        IMethodSymbol method,
+        MethodShadowStackBuilder shadowStack)
+    {
+        List<(int Index, string Expr)> writes = new();
+
+        // self at index 0 for an instance member (instance method / accessor /
+        // operator, or a constructor); a static member has no self.
+        if (HasSelfParameter(method))
+        {
+            int selfIndex = shadowStack.Allocate(SelfSlotKey, SelfParamName);
+            writes.Add((selfIndex, SelfParamName));
+        }
+
+        // Each XObject-derived (or XObject) reference parameter roots a slot.
+        foreach (IParameterSymbol parameter in method.Parameters)
+        {
+            if (!IsRootableParameter(parameter))
+            {
+                continue;
+            }
+
+            string name = CppIdentifier(parameter.Name);
+            int index = shadowStack.Allocate(ParameterSlotKey(parameter), name);
+            writes.Add((index, name));
+        }
+
+        return writes;
+    }
+
+    /// <summary>
+    /// True iff <paramref name="parameter"/> is a by-value managed reference
+    /// whose type IS or DERIVES FROM the engine <c>XObject</c> (so it must be
+    /// rooted in the shadow stack). A by-ref / out / in parameter is an alias
+    /// the caller already roots; a value-typed parameter holds no managed
+    /// reference -- neither roots a slot.
+    /// </summary>
+    private static bool IsRootableParameter(IParameterSymbol parameter)
+    {
+        if (parameter.RefKind != RefKind.None)
+        {
+            return false;
+        }
+
+        return parameter.Type is INamedTypeSymbol named
+            && (Analysis.AnalyzerHelpers.IsXObjectType(named)
+                || Analysis.AnalyzerHelpers.IsXObjectDerived(named));
+    }
+
+    /// <summary>The stable shadow-stack symbol key the instance <c>self</c> slot is allocated under.</summary>
+    private const string SelfSlotKey = "$self";
+
+    /// <summary>
+    /// The stable shadow-stack symbol key for a parameter slot: the
+    /// <c>$param:</c> prefix + the parameter ordinal + <c>:</c> + the parameter
+    /// name, so two distinct parameters never collide and the key is a pure
+    /// function of the parameter (deterministic).
+    /// </summary>
+    private static string ParameterSlotKey(IParameterSymbol parameter)
+        => "$param:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ":" + parameter.Name;
 
     /// <summary>
     /// Lower the method's syntactic body through <paramref name="bodyEmitter"/>.

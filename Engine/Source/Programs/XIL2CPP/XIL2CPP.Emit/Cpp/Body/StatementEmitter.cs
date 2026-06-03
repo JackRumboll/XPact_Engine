@@ -75,6 +75,17 @@ public sealed class StatementEmitter
     public ExpressionEmitter Expressions { get; }
 
     /// <summary>
+    /// The per-method precise-GC shadow-stack builder (XIL2CPP Phase 6.g),
+    /// bound by the <see cref="MethodEmitter"/> for the duration of a method
+    /// body's lowering and cleared afterwards. A body-lowering rule that roots
+    /// a live managed reference (a local / parameter slot) allocates / writes
+    /// through this builder. Null outside of a method-body emit (e.g. when a
+    /// type-level body fragment is lowered without a shadow stack), so a rule
+    /// must null-check before rooting.
+    /// </summary>
+    public MethodShadowStackBuilder? ShadowStackBuilder { get; internal set; }
+
+    /// <summary>
     /// Lower one statement node: dispatch to the first matching rule, or emit
     /// the <c>// TODO(6.e): &lt;NodeKind&gt; not yet lowered</c> comment when no
     /// rule handles it.

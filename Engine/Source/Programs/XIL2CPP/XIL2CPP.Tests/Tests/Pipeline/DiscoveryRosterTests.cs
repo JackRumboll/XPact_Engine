@@ -10,7 +10,7 @@ namespace Simgenics.XPact.XIL2CPP.Tests.Tests.Pipeline;
 
 /// <summary>
 /// Locks the reflection-discovered Pass-2 normalizer roster (11) and Pass-3
-/// analyzer roster (12) by EXACT name set per /Documents/XIL2CPP.html Rev 4
+/// analyzer roster (14) by EXACT name set per /Documents/XIL2CPP.html Rev 4
 /// Section 3.2. This is the standing guard against a future pass silently not
 /// being discovered (e.g. a missing public parameterless constructor, a wrong
 /// assembly, or a renamed interface) and documents the roster in one place.
@@ -45,8 +45,10 @@ public sealed class DiscoveryRosterTests
     };
 
     /// <summary>
-    /// The exact set of 12 Pass-3 analyzer <c>Name</c>s expected under full
-    /// reflection discovery (Phase 6.b). Listed explicitly so the roster is
+    /// The exact set of 14 Pass-3 analyzer <c>Name</c>s expected under full
+    /// reflection discovery (Phase 6.b, extended in Phase 6.g with
+    /// <c>LongLoopAnalyzer</c> and the WU-6G-STACKMAP coverage-oracle
+    /// <c>LiveLocalAnalyzer</c>). Listed explicitly so the roster is
     /// self-documenting and a silent non-discovery fails the test.
     /// </summary>
     private static readonly string[] ExpectedAnalyzerNames =
@@ -57,6 +59,8 @@ public sealed class DiscoveryRosterTests
         "CrossModuleNoThrowAnalyzer",
         "GenericInstantiationAnalyzer",
         "LambdaCaptureAnalyzer",
+        "LiveLocalAnalyzer",
+        "LongLoopAnalyzer",
         "NewExpressionAnalyzer",
         "ReferenceStoreAnalyzer",
         "ReflectionConsumptionAnalyzer",
@@ -78,12 +82,12 @@ public sealed class DiscoveryRosterTests
     }
 
     [Fact]
-    public void DiscoverAnalyzers_ReturnsExactlyTheTwelveExpected()
+    public void DiscoverAnalyzers_ReturnsExactlyTheThirteenExpected()
     {
         IReadOnlyList<ISemanticAnalyzer> discovered = Pass3Driver.DiscoverAnalyzers();
         List<string> names = discovered.Select(a => a.Name).ToList();
 
-        Assert.Equal(12, names.Count);
+        Assert.Equal(ExpectedAnalyzerNames.Length, names.Count);
         Assert.Equal(
             ExpectedAnalyzerNames.OrderBy(s => s, System.StringComparer.Ordinal).ToList(),
             names);

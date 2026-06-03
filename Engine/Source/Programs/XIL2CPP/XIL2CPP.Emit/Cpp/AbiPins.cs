@@ -298,9 +298,32 @@ public static class AbiPins
         {
             string n = bytes.ToString(CultureInfo.InvariantCulture);
             writer.AppendStaticAssert(
-                "sizeof(::XCore::Reflect::" + type + ") == " + n,
+                "sizeof(::XCore::Reflect::" + SizeofTypeExpr(type) + ") == " + n,
                 "ABI lock: sizeof(" + type + ") must be " + n + " bytes per Contract Rev 13.9 (XCore-4b Stage B addendum)");
         }
         writer.AppendLine("#endif // XPACT_FCLASS_LAYOUT_TAG && __has_include");
+    }
+
+    /// <summary>
+    /// The C++ type expression (WITHOUT the leading <c>::XCore::Reflect::</c>
+    /// qualifier the caller prepends) the sizeof pin <c>sizeof</c>s for
+    /// <paramref name="typeName"/>. Every entry is its bare name EXCEPT
+    /// <c>XPtr</c>, which is a CLASS TEMPLATE: a bare <c>sizeof(XPtr)</c> is
+    /// ill-formed (a template needs arguments), so its pin instantiates the
+    /// canonical <c>XPtr&lt;::XCore::Reflect::XObject&gt;</c> -- the final form
+    /// per <c>/Documents/XIL2CPP.html</c> line 3538
+    /// (<c>sizeof(::XCore::Reflect::XPtr&lt;::XCore::Reflect::XObject&gt;) == 8</c>).
+    /// The shadow-stack element type the XIL2CPP method bodies now emit is this
+    /// same instantiation, so the pin validates the exact type the emit uses.
+    /// </summary>
+    /// <param name="typeName">The <see cref="TypeSizes"/> type name. Must not be null.</param>
+    /// <returns>The sizeof type expression (template-instantiated for <c>XPtr</c>; the bare name otherwise).</returns>
+    /// <exception cref="ArgumentNullException">If <paramref name="typeName"/> is null.</exception>
+    public static string SizeofTypeExpr(string typeName)
+    {
+        ArgumentNullException.ThrowIfNull(typeName);
+        return StringComparer.Ordinal.Equals(typeName, "XPtr")
+            ? "XPtr<::XCore::Reflect::XObject>"
+            : typeName;
     }
 }

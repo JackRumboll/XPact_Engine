@@ -90,11 +90,19 @@ public sealed class AbiPinsTests
             Assert.Contains($"XPactDetail::CompileTimeStrEq({macro},", output);
         }
 
-        // Every sizeof pin is asserted.
+        // Every sizeof pin is asserted. XPtr is a class template, so its pin
+        // instantiates the canonical XPtr<::XCore::Reflect::XObject> form (the
+        // XIL2CPP.html line 3538 shape); AbiPins.SizeofTypeExpr renders it.
         foreach ((string type, int bytes) in AbiPins.TypeSizes)
         {
-            Assert.Contains($"sizeof(::XCore::Reflect::{type}) == {bytes}", output);
+            Assert.Contains(
+                $"sizeof(::XCore::Reflect::{AbiPins.SizeofTypeExpr(type)}) == {bytes}", output);
         }
+
+        // The XPtr pin specifically emits the templated form (regression guard
+        // for the Phase 6.g shadow-stack element type coupling).
+        Assert.Contains(
+            "sizeof(::XCore::Reflect::XPtr<::XCore::Reflect::XObject>) == 8", output);
 
         // The envelope tags come from the context's ABI-tag content strings.
         Assert.Contains("XPACT_GC_ROOT_ABI_TAG, \"Span-based v1\"", output);

@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Simgenics.XPact.XIL2CPP.Emit.Cpp;
 using Simgenics.XPact.XIL2CPP.Emit.Cpp.Body;
+using Simgenics.XPact.XIL2CPP.Emit.Cpp.Body.Rules;
 using Simgenics.XPact.XIL2CPP.Frontend;
 using Xunit;
 
@@ -55,11 +56,20 @@ public sealed class LocalDeclarationLoweringRuleTests
 
     private static LocalDeclarationStatementSyntax FindFirstLocalDeclaration(EmitContext ctx)
     {
-        ModuleParser.ParsedFile parsed = ctx.Unit.Pass1.ParsedFiles[0];
-        return parsed.Tree.GetRoot()
-            .DescendantNodes()
-            .OfType<LocalDeclarationStatementSyntax>()
-            .First();
+        foreach (ModuleParser.ParsedFile parsed in ctx.Unit.Pass1.ParsedFiles)
+        {
+            LocalDeclarationStatementSyntax? found = parsed.Tree.GetRoot()
+                .DescendantNodes()
+                .OfType<LocalDeclarationStatementSyntax>()
+                .FirstOrDefault();
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        Assert.Fail("no LocalDeclarationStatementSyntax found in the emit context's parsed files");
+        return null!;
     }
 
     [Fact]
@@ -154,6 +164,80 @@ public sealed class LocalDeclarationLoweringRuleTests
     [Fact]
     public void SpellCppType_NullType_ReturnsNull()
         => Assert.Null(LocalDeclarationLoweringRule.SpellCppType(null));
+
+    // =================================================================
+    // FIX 4: an explicit-typed XObject-derived (reference) local is spelled as
+    // a POINTER over its `::`-qualified C++ name (matching the method / member
+    // emitters), so the declared type agrees with its pointer-typed initializer.
+    // =================================================================
+
+    [Fact]
+    public void ExplicitXObjectDerivedLocal_LowersToQualifiedPointer()
+    {
+        string cpp = LowerXObjectLocal(
+            "Actor chosen = fallback;",
+            paramType: "Actor");
+
+        // The explicit XObject-derived type spells as `::Game::Actor*`; the
+        // pointer-typed parameter initializer (`fallback`) agrees with it.
+        Assert.StartsWith("::Game::Actor* chosen = ", cpp, System.StringComparison.Ordinal);
+        Assert.EndsWith(";\n", cpp);
+        Assert.DoesNotContain("auto", cpp);
+        // NOT the old, bare-value-name (type-mismatch) spelling.
+        Assert.DoesNotContain("Actor chosen", cpp.Replace("::Game::Actor*", string.Empty));
+    }
+
+    [Fact]
+    public void VarXObjectDerivedLocal_StillLowersToAuto()
+    {
+        // var/auto already deduces the pointer type and must be left unchanged.
+        string cpp = LowerXObjectLocal(
+            "var chosen = fallback;",
+            paramType: "Actor");
+
+        Assert.StartsWith("auto chosen = ", cpp, System.StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Lower a method-body statement whose method takes a single XObject-derived
+    /// parameter (so an XObject local can be initialised from it). The XObject
+    /// stub is recognised by AnalyzerHelpers.IsXObjectDerived's metadata-name +
+    /// namespace fallback. The registry pairs the local rule with the identifier
+    /// rule so the initializer lowers to real C++.
+    /// </summary>
+    private static string LowerXObjectLocal(string methodBodyStatement, string paramType)
+    {
+        const string xobjectStub =
+            "namespace XPact.CoreXObject { public abstract class XObject { } }";
+        string source =
+            $$"""
+            namespace Game
+            {
+                using XPact.CoreXObject;
+                public class Actor : XObject { }
+                public class Widget
+                {
+                    public void M({{paramType}} fallback)
+                    {
+                        {{methodBodyStatement}}
+                    }
+                }
+            }
+            """;
+
+        EmitContext ctx = EmitTestHelpers.BuildEmitContext(xobjectStub, source);
+        LocalDeclarationStatementSyntax decl = FindFirstLocalDeclaration(ctx);
+
+        CppWriter writer = new();
+        BodyLoweringRuleRegistry registry = new(new IBodyLoweringRule[]
+        {
+            new LocalDeclarationLoweringRule(),
+            new IdentifierLoweringRule(),
+        });
+        StatementEmitter emitter = new(ctx, writer, registry);
+        emitter.EmitStatement(decl);
+        return writer.Build();
+    }
 
     private static ITypeSymbol Sp(Compilation compilation, SpecialType special)
         => compilation.GetSpecialType(special);

@@ -124,10 +124,13 @@ public sealed class StatementEmitterTests
         // The production-discovered registry dispatches a node it has a rule for
         // and falls back to the // TODO(6.e) comment for a node no rule handles.
         // (Originally probed with a `return`, but once the WU-D2 control-flow
-        // rules landed `return` is lowered; an expression statement is still
-        // unhandled, so it exercises the genuine fallback path -- preserving
-        // this test's intent that the registry "still works" + degrades to the
-        // TODO marker for un-lowered nodes.)
+        // rules landed `return` is lowered; the expression statement that next
+        // stood in for an un-lowered node is now lowered too -- the FIX-2
+        // ExpressionStatementLoweringRule routes it through the inner
+        // expression's rule. An EMPTY statement (`;`) still has no rule, so it
+        // exercises the genuine fallback path -- preserving this test's intent
+        // that the registry "still works" + degrades to the TODO marker for
+        // un-lowered nodes.)
         BodyLoweringRuleRegistry discovered = BodyLoweringRuleRegistry.Discover();
         EmitContext ctx = EmitTestHelpers.BuildEmitContext();
         CppWriter writer = new();
@@ -157,14 +160,15 @@ public sealed class StatementEmitterTests
     }
 
     /// <summary>
-    /// Parse a statement that NO production body-lowering rule handles (an
-    /// expression statement), so the production-discovered registry exercises
-    /// its TODO fallback path.
+    /// Parse a statement that NO production body-lowering rule handles (an EMPTY
+    /// statement, <c>;</c>), so the production-discovered registry exercises its
+    /// TODO fallback path. (An expression statement is now lowered by the FIX-2
+    /// <c>ExpressionStatementLoweringRule</c>, so it no longer falls back.)
     /// </summary>
     private static StatementSyntax ParseUnhandledStatement()
     {
-        SyntaxTree tree = CSharpSyntaxTree.ParseText("class C { void M() { N(); } void N() { } }");
-        return tree.GetRoot().DescendantNodes().OfType<ExpressionStatementSyntax>().First();
+        SyntaxTree tree = CSharpSyntaxTree.ParseText("class C { void M() { ; } }");
+        return tree.GetRoot().DescendantNodes().OfType<EmptyStatementSyntax>().First();
     }
 
     private static ExpressionSyntax ParseExpression(string expr)

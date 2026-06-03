@@ -10,12 +10,14 @@ using Xunit;
 namespace Simgenics.XPact.XIL2CPP.Tests.Tests.Emit.Body.Rules;
 
 /// <summary>
-/// Tests for <see cref="AssignmentLoweringRule"/> (WU-D1): a non-reference LHS
-/// lowers to the plain <c>lhs = rhs;</c>; a reference (XObject-derived field /
-/// property) LHS FIRST emits the Phase 6.h write-barrier hook comment
-/// <c>// TODO(6.h): XPACT_GC_STORE(&lt;parent&gt;, &amp;&lt;slot&gt;, &lt;value&gt;)</c>
-/// and THEN the plain assignment. Exercised through a real
-/// <see cref="StatementEmitter"/> over a registry containing JUST this rule.
+/// Tests for <see cref="AssignmentLoweringRule"/> (WU-D1 / WU-6H): a
+/// non-reference LHS lowers to the plain <c>lhs = rhs;</c>; a reference
+/// (XObject-derived field / property) LHS lowers to the Phase 6.h write barrier
+/// <c>XPACT_GC_STORE(&lt;parent&gt;, &amp;(&lt;slot&gt;), &lt;value&gt;);</c>
+/// INSTEAD of the plain assignment (the macro performs the store, so no
+/// double-write). Exercised through a real <see cref="StatementEmitter"/> over a
+/// registry containing this rule plus the member-access / identifier rules so
+/// the operands lower to real C++.
 /// </summary>
 public sealed class AssignmentLoweringRuleTests
 {
@@ -34,6 +36,8 @@ public sealed class AssignmentLoweringRuleTests
         BodyLoweringRuleRegistry registry = new(new IBodyLoweringRule[]
         {
             new AssignmentLoweringRule(),
+            new Simgenics.XPact.XIL2CPP.Emit.Cpp.Body.Rules.MemberAccessLoweringRule(),
+            new Simgenics.XPact.XIL2CPP.Emit.Cpp.Body.Rules.IdentifierLoweringRule(),
         });
         StatementEmitter emitter = new(ctx, writer, registry);
 
@@ -104,7 +108,7 @@ public sealed class AssignmentLoweringRuleTests
     }
 
     [Fact]
-    public void ReferenceFieldAssign_EmitsWriteBarrierHookThenAssign()
+    public void ReferenceFieldAssign_EmitsWriteBarrierInsteadOfPlainAssign()
     {
         string cpp = Lower(
             XObjectStub,
@@ -121,18 +125,16 @@ public sealed class AssignmentLoweringRuleTests
             }
             """);
 
-        // The hook comment MUST precede the plain assignment.
-        int hookIndex = cpp.IndexOf("TODO(6.h): XPACT_GC_STORE", System.StringComparison.Ordinal);
-        int assignIndex = cpp.IndexOf(" = ", System.StringComparison.Ordinal);
-
-        Assert.True(hookIndex >= 0, $"expected write-barrier hook comment; got:\n{cpp}");
-        Assert.True(assignIndex > hookIndex, $"expected the assignment AFTER the hook; got:\n{cpp}");
-        Assert.Contains("&this.Slot", cpp);
-        Assert.EndsWith(";\n", cpp);
+        // The implicit-`this` field store lowers to the barrier: parent = self,
+        // slot = self->Slot, value = a. The plain `self->Slot = a;` assignment
+        // is SUPPRESSED (the macro performs the store) -- no double-write.
+        Assert.Equal("XPACT_GC_STORE(self, &(self->Slot), a);\n", cpp);
+        Assert.DoesNotContain(" = ", cpp);
+        Assert.DoesNotContain("TODO(6.h)", cpp);
     }
 
     [Fact]
-    public void ReferencePropertyAssign_EmitsWriteBarrierHook()
+    public void ReferencePropertyAssign_EmitsWriteBarrier()
     {
         string cpp = Lower(
             XObjectStub,
@@ -149,13 +151,16 @@ public sealed class AssignmentLoweringRuleTests
             }
             """);
 
-        Assert.Contains("TODO(6.h): XPACT_GC_STORE", cpp);
-        // A bare-identifier (implicit-this) slot uses "this" as the parent.
-        Assert.Contains("XPACT_GC_STORE(this, &Slot, a)", cpp);
+        // A bare-identifier (implicit-this) reference store still emits the
+        // barrier with `self` as the parent and `a` as the new value; the plain
+        // assignment is suppressed (no double-write).
+        Assert.Contains("XPACT_GC_STORE(self, &(", cpp);
+        Assert.EndsWith("), a);\n", cpp);
+        Assert.DoesNotContain("TODO(6.h)", cpp);
     }
 
     [Fact]
-    public void ReferenceFieldAssign_HookCarriesParentSlotAndValue()
+    public void ReferenceFieldAssign_BarrierCarriesParentSlotAndValue()
     {
         string cpp = Lower(
             XObjectStub,
@@ -172,7 +177,10 @@ public sealed class AssignmentLoweringRuleTests
             }
             """);
 
-        // parent = receiver (h), slot = the LHS text (h.Slot), value = RHS (a).
-        Assert.Contains("XPACT_GC_STORE(h, &h.Slot, a)", cpp);
+        // parent = lowered receiver (h), slot = lowered LHS (h->Slot, arrow for
+        // the reference-typed receiver), value = lowered RHS (a). No plain
+        // assignment (no double-write).
+        Assert.Equal("XPACT_GC_STORE(h, &(h->Slot), a);\n", cpp);
+        Assert.DoesNotContain(" = ", cpp);
     }
 }

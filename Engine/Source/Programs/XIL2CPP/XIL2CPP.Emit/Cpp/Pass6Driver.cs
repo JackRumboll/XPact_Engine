@@ -31,7 +31,18 @@ namespace Simgenics.XPact.XIL2CPP.Emit.Cpp;
 /// </remarks>
 public sealed class Pass6Driver
 {
+    /// <summary>
+    /// The source-relative path stem the module-level container partial-spec
+    /// unit is keyed under. It yields the synthetic output pair
+    /// <c>&lt;Module&gt;.ContainerSpecs.cs.h</c> /
+    /// <c>&lt;Module&gt;.ContainerSpecs.cs.cpp</c> (Section 5.7 module-level
+    /// container emit), which holds the deduplicated container partial
+    /// specializations for every XGC-aware closed instantiation in the module.
+    /// </summary>
+    public const string ContainerSpecsStem = ".ContainerSpecs.cs";
+
     private readonly FileEmitter _fileEmitter = new();
+    private readonly ContainerPartialSpecEmitter _containerSpecEmitter = new();
 
     /// <summary>
     /// Run Pass 6 over <paramref name="context"/>: emit every parsed file in the
@@ -55,7 +66,55 @@ public sealed class Pass6Driver
             string relative = RelativeSourcePath(file.AbsolutePath, sourceRoot);
             results.Add(_fileEmitter.EmitFile(file, relative, context, registry));
         }
+
+        // Module-level container partial specializations (WU-6F / Section 5.7):
+        // one deduplicated C++ partial spec per XGC-aware closed container
+        // instantiation in the module, landing in a synthetic module-level
+        // .cs.cpp. Appended AFTER the per-file results so the per-file output
+        // identity (one EmitResult per source file) is unchanged; emitted only
+        // when the module actually has an XGC-aware container site, so a
+        // container-free module produces exactly the per-file results.
+        EmitResult? containerSpecs = EmitContainerSpecs(context);
+        if (containerSpecs is not null)
+        {
+            results.Add(containerSpecs);
+        }
+
         return results;
+    }
+
+    /// <summary>
+    /// Emit the module-level container partial-spec unit, or null when the
+    /// module has no XGC-aware container sites (so a container-free module
+    /// produces no synthetic unit). The unit's source carries the deduplicated
+    /// partial specializations the <see cref="ContainerPartialSpecEmitter"/>
+    /// produces; its header is intentionally empty (the specs are TU-local
+    /// definitions emitted into the source).
+    /// </summary>
+    private EmitResult? EmitContainerSpecs(EmitContext context)
+    {
+        if (context.Pass3.GetAll<Analysis.ContainerSite>().Count == 0)
+        {
+            return null;
+        }
+
+        CppWriter w = new();
+        w.AppendLine(FileEmitter.CopyrightBanner);
+        w.AppendLine(FileEmitter.GeneratorBanner);
+        w.AppendComment(
+            "Container partial specializations for module " + context.ModuleName + ".");
+        w.AppendLine();
+        w.AppendLine("#include \"XCoreXObject/XObject.h\"");
+        w.AppendLine("#include \"XCoreXObject/Internal/XGCWriteBarrier.h\"");
+        w.AppendLine("#include \"XReflectionRuntime.h\"");
+        w.AppendLine();
+
+        _containerSpecEmitter.Emit(context, w);
+
+        return new EmitResult(
+            context.ModuleName + ContainerSpecsStem,
+            HeaderContent: string.Empty,
+            SourceContent: w.Build());
     }
 
     /// <summary>
