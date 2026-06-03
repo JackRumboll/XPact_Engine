@@ -1,0 +1,19 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Shared MSBuild targets for every XIL2CPP project.
+
+    Per /Documents/XIL2CPP.html Rev 4 Section 15: this file hosts the
+    git-tag-derived Version property used by XIL2CPP.Entry's `version`
+    mode (Section 1.1) to compose the printed version line. The git-tag
+    derivation logic lands alongside the real version mode in a later
+    sub-phase; this Phase 6.a scaffold leaves the property surface empty
+    so the plumbing exists and can be extended without restructuring the
+    tree.
+
+    Mirrors the XHT precedent at
+    /Engine/Source/Programs/XHT/Directory.Build.targets.
+  -->
+
+</Project>

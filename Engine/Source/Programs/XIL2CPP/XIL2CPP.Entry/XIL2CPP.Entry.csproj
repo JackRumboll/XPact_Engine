@@ -1,0 +1,51 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Entry</RootNamespace>
+    <AssemblyName>xil2cpp</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <Description>XIL2CPP executable: Main, mode dispatcher, CLI parser, contract-imported exit-code surface, JSON build-log channel pre-pass. Phase 6.a scaffold ships the CLI infrastructure plus the version and help modes only; the transpile / parse-module modes land in a later sub-phase once the front-end exists. Per /Documents/XIL2CPP.html Rev 4 Section 15.</Description>
+
+    <!--
+      Release-time single-file publish properties per XIL2CPP.html Section 15.
+      PublishSingleFile / SelfContained are only honoured at `dotnet publish`
+      time, not at `dotnet build`. Declared here so a release pipeline can
+      publish without further configuration. Mirrors XHT.Entry's discipline.
+    -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!--
+      RuntimeIdentifier is intentionally NOT set in the csproj. Per
+      XIL2CPP.html Section 15 the publish RID is picked at the publish
+      command line so the same source tree publishes for Win64, Linux,
+      and Android-host-x86_64 deterministically.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      The CLI dispatches the transpile-module mode, which reads the manifest
+      (XIL2CPP.Manifest) and runs the Roslyn Pass-1 front-end
+      (XIL2CPP.Frontend). The Manifest reference also enables the
+      manifest-malformed exit-50 catch branch in Program.cs. Per
+      /Documents/XIL2CPP.html Rev 4 Section 15 + Section 3.2.
+    -->
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Manifest\XIL2CPP.Manifest.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      ToolModeRegistry.__RegisterForTesting / __ResetForTesting are internal
+      so production callers don't see them; XIL2CPP.Tests needs access for
+      the XIL2CPP900 ICE-branch positive coverage that injects a mode
+      throwing an un-anchored exception. Mirrors XHT.Entry's discipline.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

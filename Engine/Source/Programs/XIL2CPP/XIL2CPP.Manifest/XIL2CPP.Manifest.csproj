@@ -1,0 +1,26 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Manifest</RootNamespace>
+    <AssemblyName>XIL2CPP.Manifest</AssemblyName>
+    <Description>Reads the JSON + FlatBuffers manifest XBT emits (Toolchain Contract Section 10.2). Phase 6.a reads the JSON form; the FBS binary sidecar reader is a deferred gate matching the XHT.Manifest discipline. Does not depend on XBT.Manifest at runtime &#8212; the schema is shared by reference (standalone-tool discipline). Per /Documents/XIL2CPP.html Rev 4 Section 9.7.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      ManifestMalformedException's no-code constructors are internal so
+      production callers cannot construct an un-anchored exception (which
+      would surface as an XIL2CPP900 ICE per XIL2CPP.Entry.Program). The
+      test assembly needs access to validate the un-anchored / ICE branch
+      and to exercise the reader's internals; this mirrors XHT.Manifest's
+      InternalsVisibleTo entry.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

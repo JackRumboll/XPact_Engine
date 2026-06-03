@@ -772,14 +772,14 @@ allow = false                      # SimPath; default-disable hot-reload
     // Link + post
     LinkModuleAction               = 8,
 
-    // RESERVED for Phase 2 (slots 9-15 reserved so adding them later does
-    // not perturb the field-set hash that auto-derives CommandVersion).
+    // RESERVED for Phase 2 (slots 9-12 + 15 reserved so adding them later
+    // does not perturb the field-set hash that auto-derives CommandVersion).
     Reserved_DistributedCacheCheck = 9,
     Reserved_DerivedDataFetch      = 10,
     Reserved_LiveCodingCascade     = 11,
     Reserved_PatchDllEmit          = 12,
     Tier2WholeProgramPass          = 13,  // (Rev 4) post-MVP whole-program XIL2CPP Tier 2 promotion pass; Contract Rev 12 Section 5.2 Pass 2
-    Reserved_Phase2_F              = 14,
+    ReferenceCompileCSharpAction   = 14,  // (Contract Rev 13.10 / XIL2CPP Phase 6.a Section 9.8) per-module C# reference compile -> M.refonly.dll for cross-module Roslyn type resolution; promoted from the former Reserved_Phase2_F placeholder (ordinal preserved)
     Reserved_Phase2_G              = 15,
 
     // Plugins
@@ -787,15 +787,15 @@ allow = false                      # SimPath; default-disable hot-reload
 
     // NOTE Rev 3: slot 17 (formerly RunPostBuildAction) is RETIRED, not reused.
     // Slot numbers are stable; reusing 17 would alias old ActionHistory entries
-    // to a different action type. Phase 2 enum additions still use slots 9-15.
+    // to a different action type. Phase 2 enum additions still use slots 9-12 + 15.
     // Post-build work is expressed via IBuildHook (Section 5.7), whose
     // CreateAction returns an existing action type (CompileCppAction,
     // WriteManifestAction, etc.) appropriate to the hook's work.
 }</code></pre>
 
-<p>The reserved-slots discipline matters because <code>CommandVersion</code> is auto-derived from a hash of the <code>IExternalAction</code> field set including this enum's declaration; adding a new value to the enum changes the hash, which would invalidate <code>ActionHistory</code> across the entire engine. Pre-allocating slots 9&ndash;15 means Phase 2 work can introduce these action types without forcing a full rebuild of every existing target. Slot 17's retirement (rather than reuse) preserves the same invariant.</p>
+<p>The reserved-slots discipline matters because <code>CommandVersion</code> is auto-derived from a hash of the <code>IExternalAction</code> field set including this enum's declaration; adding a new value to the enum changes the hash, which would invalidate <code>ActionHistory</code> across the entire engine. Pre-allocating slots 9&ndash;12 + 15 means Phase 2 work can introduce these action types without forcing a full rebuild of every existing target. Slot 14 (<code>ReferenceCompileCSharpAction</code>) was promoted out of the reserved range at Contract Rev 13.10 (XIL2CPP Phase 6.a Section 9.8) when the cross-module reference-compile action landed; its ordinal is preserved so the promotion is append-only. Slot 17's retirement (rather than reuse) preserves the same invariant.</p>
 
-<p>Phase 1 emits actions of types 0&ndash;8 and 16 only; the reserved slots are never instantiated until Phase 2 systems land. Build-hook actions reuse existing action types per Section 5.7.</p>
+<p>Phase 1 emits actions of types 0&ndash;8 and 16 only; slot 14 (<code>ReferenceCompileCSharpAction</code>) is emitted once the XIL2CPP cross-module reference-compile path is wired. The remaining reserved slots are never instantiated until Phase 2 systems land. Build-hook actions reuse existing action types per Section 5.7.</p>
 
 <h3>5.2 IExternalAction (REVISED Rev 8 &mdash; <code>DependencyListFile</code> added; CacheKeyComponents from Rev 2)</h3>
 
@@ -2210,7 +2210,7 @@ public enum QuiescePriority
     <tr><td>Copyright check</td><td>Hash-cached pre-compile action</td><td>(unchanged)</td></tr>
     <tr><td>Tier enforcement</td><td>Module-resolution-time check, full link/dynamic matrix, exit 21</td><td>(unchanged)</td></tr>
     <tr><td>Engine-version enforcement</td><td>Module-resolution-time check, exit 23</td><td>(unchanged)</td></tr>
-    <tr><td>Action types</td><td>Phase 1 emits slots 0-8 and 16 (Section 5.1); slot 17 retired Rev 3 in favour of typed IBuildHook</td><td>Phase 2 instantiates Reserved slots 9-15</td></tr>
+    <tr><td>Action types</td><td>Phase 1 emits slots 0-8 and 16 (Section 5.1); slot 14 (ReferenceCompileCSharpAction) emitted once the XIL2CPP cross-module reference-compile path is wired (Contract Rev 13.10 / XIL2CPP Section 9.8); slot 17 retired Rev 3 in favour of typed IBuildHook</td><td>Phase 2 instantiates Reserved slots 9-12 + 15</td></tr>
     <tr><td>FIPS-switchable crypto</td><td>Target-level flag honoured by manifest</td><td>(unchanged; XSecurity does the work)</td></tr>
     <tr><td>Manifest format</td><td>Stage A schema, ContractVersion auto-derived</td><td>Stage B addendum extends with the FProperty replication-metadata slots</td></tr>
     <tr><td>Distributed derived data</td><td>n/a</td><td>Reserved enum slot 10</td></tr>

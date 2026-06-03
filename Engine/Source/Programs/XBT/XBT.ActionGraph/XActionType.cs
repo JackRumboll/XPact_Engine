@@ -15,8 +15,11 @@ namespace Simgenics.XPact.XBT.ActionGraph;
 /// set <em>including this enum's declaration</em>; adding a new value to
 /// the enum changes the hash, which would invalidate every
 /// <c>ActionHistory</c> entry across the engine. Pre-allocating slots
-/// 9&ndash;15 means Phase 2 work can introduce these action types without
-/// forcing a full rebuild of every existing target.
+/// 9&ndash;12 + 15 means Phase 2 work can introduce these action types
+/// without forcing a full rebuild of every existing target. Slot 14
+/// (<see cref="ReferenceCompileCSharpAction"/>) was promoted out of the
+/// reserved range when the XIL2CPP cross-module reference-compile action
+/// landed; its ordinal is preserved so the promotion is append-only.
 /// </para>
 /// <para>
 /// Slot 17 (formerly <c>RunPostBuildAction</c>) is <strong>retired,
@@ -28,8 +31,10 @@ namespace Simgenics.XPact.XBT.ActionGraph;
 /// etc.) appropriate to the hook's work.
 /// </para>
 /// <para>
-/// Phase 1 emits actions of types 0&ndash;8, 13, and 16 only. The reserved
-/// slots are never instantiated until Phase 2 systems land.
+/// Phase 1 emits actions of types 0&ndash;8, 13, and 16 only; slot 14
+/// (<see cref="ReferenceCompileCSharpAction"/>) is emitted once the
+/// XIL2CPP cross-module reference-compile path is wired. The remaining
+/// reserved slots are never instantiated until Phase 2 systems land.
 /// </para>
 /// </remarks>
 public enum XActionType
@@ -83,8 +88,21 @@ public enum XActionType
     /// </summary>
     Tier2WholeProgramPass = 13,
 
-    /// <summary>Reserved for Phase 2 system F (TBD).</summary>
-    Reserved_Phase2_F = 14,
+    /// <summary>
+    /// Per-module C# reference compile: emits <c>M.refonly.dll</c>
+    /// (a metadata-only reference assembly, no method bodies) so a
+    /// downstream module's XIL2CPP transpile can resolve cross-module
+    /// C# types through Roslyn against its dependencies' public surface
+    /// without recompiling their full IL. The action runs once per
+    /// module ahead of that module's <see cref="XIL2CPPAction"/> for any
+    /// consumer, mirroring the C++ side's "compile a header-only view of
+    /// the dependency first" ordering. Slot 14 is now a named,
+    /// emit-eligible action (formerly the Phase 2 reserved placeholder
+    /// <c>Reserved_Phase2_F</c>); it is enumerated on the canonical
+    /// <c>ContractSurface.ActionTypes</c> so a rename rotates
+    /// ContractVersion.
+    /// </summary>
+    ReferenceCompileCSharpAction = 14,
 
     /// <summary>Reserved for Phase 2 system G (TBD).</summary>
     Reserved_Phase2_G = 15,

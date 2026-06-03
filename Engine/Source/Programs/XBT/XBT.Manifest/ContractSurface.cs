@@ -108,8 +108,31 @@ public static class ContractSurface
     /// rows update to 120 / 240 / 136). Master Plan Rev 16 amendment
     /// covers the Stage B extension authorization.
     /// </para>
+    /// <para>
+    /// Rev 13.10 narrative (XIL2CPP Phase 6.a -- cross-module
+    /// reference-compile action surface addition per XIL2CPP Rev 4
+    /// Section 9.8): the XBT action-graph slot 14 is promoted from the
+    /// reserved placeholder <c>Reserved_Phase2_F</c> to the named,
+    /// emit-eligible <c>ReferenceCompileCSharpAction</c> -- the per-
+    /// module C# reference compile that produces <c>M.refonly.dll</c>
+    /// (a metadata-only reference assembly) so a downstream module's
+    /// XIL2CPP transpile resolves cross-module C# types through Roslyn
+    /// against its dependencies' public surface. Because slot 14 is now
+    /// a named action XBT can emit, it joins
+    /// <see cref="ActionTypes"/> in ascending-ordinal position (after
+    /// <c>Tier2WholeProgramPass</c> slot 13, before
+    /// <c>BuildPluginManifestAction</c> slot 16) so a future rename of
+    /// the slot rotates the structure hash, exactly as the R8-Mi5
+    /// "every emit-eligible slot is on the surface" invariant requires.
+    /// Per the append-only-ordinal contract, this single surface
+    /// addition rotates the hash; the slot ordinal itself is unchanged
+    /// (still 14), so the rotation is driven purely by the new surface
+    /// entry, and the wholesale ContractVersion bump invalidates the
+    /// downstream cache, which is the intended "no silent contract
+    /// drift" behaviour.
+    /// </para>
     /// </remarks>
-    public const string SemanticVersionTag = "13.9";
+    public const string SemanticVersionTag = "13.10";
 
     /// <summary>
     /// Itanium-ABI-style length-prefixed mangling rule example per
@@ -260,8 +283,10 @@ public static class ContractSurface
     /// </summary>
     /// <remarks>
     /// <para>
-    /// The list includes every action type that Phase 1 actually emits.
-    /// The pre-reserved Phase 2 slots (9-12 + 14-15) are <em>not</em>
+    /// The list includes every action type that Phase 1 actually emits,
+    /// plus <c>ReferenceCompileCSharpAction</c> (slot 14), which XBT
+    /// emits once the XIL2CPP cross-module reference-compile path is
+    /// wired. The pre-reserved Phase 2 slots (9-12 + 15) are <em>not</em>
     /// listed because they are placeholders -- adding a Phase 2 slot
     /// would invalidate every Phase 1 ActionHistory the moment that
     /// addendum lands, which defeats the point of the
@@ -279,6 +304,17 @@ public static class ContractSurface
     /// (formerly <c>RunPostBuildAction</c>) is RETIRED, not reused;
     /// it does NOT appear on this surface.
     /// </para>
+    /// <para>
+    /// Rev 13.10 (XIL2CPP Phase 6.a): <c>ReferenceCompileCSharpAction</c>
+    /// (slot 14, promoted from the former <c>Reserved_Phase2_F</c>
+    /// placeholder) is inserted in ascending-ordinal position between
+    /// <c>Tier2WholeProgramPass</c> (slot 13) and
+    /// <c>BuildPluginManifestAction</c> (slot 16). It is the per-module
+    /// C# reference compile (<c>M.refonly.dll</c> emit) the XIL2CPP
+    /// cross-module Roslyn type-resolution path consumes; as a named,
+    /// emit-eligible slot it MUST appear on the surface so a rename
+    /// rotates ContractVersion.
+    /// </para>
     /// </remarks>
     public static readonly IReadOnlyList<string> ActionTypes = new[]
     {
@@ -292,6 +328,7 @@ public static class ContractSurface
         "StaticAnalysisAction",
         "LinkModuleAction",
         "Tier2WholeProgramPass",
+        "ReferenceCompileCSharpAction",
         "BuildPluginManifestAction",
     };
 

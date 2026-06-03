@@ -630,6 +630,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
             fileSetByModule,
             manifestOutputDir,
             markerCache,
+            options.EnableXIL2CPP,
             cancellationToken,
             out IReadOnlyList<IExternalAction> emittedForReport,
             out IReadOnlyList<SimPathArtefact> pendingSimPathArtefacts);
@@ -1250,6 +1251,7 @@ public sealed class BuildMode : IToolMode<BuildMode>
         Dictionary<string, ModuleFileSet> fileSetByModule,
         string manifestOutputDir,
         ReflectionMarkerCache markerCache,
+        bool enableXil2cpp,
         CancellationToken cancellationToken,
         out IReadOnlyList<IExternalAction> emittedForReport,
         out IReadOnlyList<SimPathArtefact> pendingSimPathArtefactsOut)
@@ -1285,6 +1287,29 @@ public sealed class BuildMode : IToolMode<BuildMode>
         // have markers will fail loudly at executor-dispatch time.
         string manifestJsonPath = Path.Combine(manifestOutputDir, "Manifest.json");
         string? xhtExePath = TryResolveXhtExecutable(engineRoot, target.Platform);
+
+        // XIL2CPP Phase 6.a wiring (gated on -EnableXIL2CPP; default OFF).
+        // When the flag is set we resolve the xil2cpp executable the same
+        // way XHT is resolved. A C#-bearing module emits a
+        // ReferenceCompileCSharpAction (producing M.refonly.dll) and an
+        // XIL2CPPAction (a parse/bind validation pass) per XIL2CPP.html
+        // Section 9.8. When the flag is OFF, xil2cppExePath stays null and
+        // NOTHING new is emitted -- the default action graph is identical.
+        //
+        // The XIL2CPP intermediate root MUST agree with the path the
+        // xil2cpp transpile-module mode resolves at run time
+        // (TranspileModuleMode.ResolveIntermediateRoot walks up from the
+        // manifest to the ancestor containing an Engine/ sibling -- the
+        // repo root -- then appends Intermediate/Build/XIL2CPP). Since
+        // engineRoot == <repoRoot>/Engine, the repo root is engineRoot's
+        // parent; mirror that here so the M.refonly.dll path XBT
+        // pre-discovers is the path XIL2CPP reads.
+        string? xil2cppExePath = enableXil2cpp
+            ? TryResolveXil2CppExecutable(engineRoot, target.Platform)
+            : null;
+        string repoRoot = Directory.GetParent(engineRoot)?.FullName ?? engineRoot;
+        string xil2cppIntermediateRoot =
+            Path.Combine(repoRoot, "Intermediate", "Build", "XIL2CPP");
 
         // Per-module effective include path resolution pre-pass. The
         // toolchain's CompileSource / GeneratePCH / GenerateSharedPCH
@@ -1448,6 +1473,81 @@ public sealed class BuildMode : IToolMode<BuildMode>
                     simPath: module.SimPath);
                 actions.Add(emitAction);
                 reportActions.Add(emitAction);
+            }
+
+            // XIL2CPP Phase 6.a wiring (gated on -EnableXIL2CPP via the
+            // null check on xil2cppExePath; the flag-off path never resolves
+            // the exe so nothing here runs). For each module whose Languages
+            // include CSharp (CSharp-only or Both), emit the two-action
+            // XIL2CPP chain per XIL2CPP.html Section 9.8:
+            //
+            //   (a) ReferenceCompileCSharpAction(M) -> M.refonly.dll
+            //   (b) XIL2CPPAction(M)  (parse/bind validation; no C++ emit
+            //       in Phase 6.a)
+            //
+            // Both actions' PrerequisiteItems include each C#-bearing
+            // DEPENDENCY module's <Dep>.refonly.dll, which is the
+            // ProducedItem of that dependency's ReferenceCompileCSharpAction.
+            // The shared FileItem (interned by path) is the produced/consumed
+            // edge that orders ReferenceCompileCSharpAction(M_dep) BEFORE
+            // both ReferenceCompileCSharpAction(M) and XIL2CPPAction(M) --
+            // the same edge mechanism EmitReflectionAction uses to depend on
+            // ParseHeadersAction. A dependency that is NOT C#-bearing emits
+            // no refonly DLL, so it contributes no edge here (its types are
+            // not visible to XIL2CPP's Roslyn front-end anyway).
+            if (xil2cppExePath is not null && module.Languages.HasFlag(Languages.CSharp))
+            {
+                IReadOnlyList<XIL2CPPAction.DependencyReference> xilDeps =
+                    ComputeCSharpDependencyReferences(
+                        rec, moduleRecordByName, xil2cppIntermediateRoot);
+
+                // (a) Reference-compile: produces M.refonly.dll under
+                //     <xil2cppIntermediateRoot>/<M>/Reference/. The
+                //     ReferenceCompileCSharpAction's DependencyReference shape
+                //     is structurally identical to XIL2CPPAction's; translate
+                //     each entry so the two actions consume the same DLLs.
+                List<ReferenceCompileCSharpAction.DependencyReference> refDeps =
+                    new(xilDeps.Count);
+                foreach (XIL2CPPAction.DependencyReference d in xilDeps)
+                {
+                    refDeps.Add(new ReferenceCompileCSharpAction.DependencyReference(
+                        d.ModuleName, d.RefOnlyDllPath));
+                }
+
+                ReferenceCompileCSharpAction refCompileAction = new(
+                    moduleName: module.Name,
+                    xil2cppExecutablePath: xil2cppExePath,
+                    manifestJsonPath: manifestJsonPath,
+                    intermediateDirectory: xil2cppIntermediateRoot,
+                    sourceFiles: csharpFiles,
+                    dependencyReferences: refDeps,
+                    workingDirectory: engineRoot,
+                    tier: module.Tier.ToString(),
+                    configuration: target.Configuration,
+                    platform: target.Platform,
+                    simPath: module.SimPath);
+                actions.Add(refCompileAction);
+                reportActions.Add(refCompileAction);
+
+                // (b) Transpile-validate: a parse/bind pass over M's sources
+                //     resolved against its dependencies' reference DLLs. Its
+                //     prerequisites carry the SAME dependency refonly DLLs so
+                //     the Section 9.8 chain (ReferenceCompileCSharpAction(M_dep)
+                //     before XIL2CPPAction(M)) holds.
+                XIL2CPPAction transpileAction = new(
+                    moduleName: module.Name,
+                    xil2cppExecutablePath: xil2cppExePath,
+                    manifestJsonPath: manifestJsonPath,
+                    intermediateDirectory: xil2cppIntermediateRoot,
+                    sourceFiles: csharpFiles,
+                    dependencyReferences: xilDeps,
+                    workingDirectory: engineRoot,
+                    tier: module.Tier.ToString(),
+                    configuration: target.Configuration,
+                    platform: target.Platform,
+                    simPath: module.SimPath);
+                actions.Add(transpileAction);
+                reportActions.Add(transpileAction);
             }
 
             // PCH binding resolution: shared PCH wins if the module is in
@@ -2552,6 +2652,101 @@ public sealed class BuildMode : IToolMode<BuildMode>
     }
 
     /// <summary>
+    /// XIL2CPP Phase 6.a (Section 9.8): compute the C#-bearing dependency
+    /// reference-DLL set for a module's
+    /// <see cref="ReferenceCompileCSharpAction"/> /
+    /// <see cref="XIL2CPPAction"/>. Each entry is a dependency module that
+    /// itself includes <see cref="Languages.CSharp"/> (only such modules
+    /// emit a <c>refonly.dll</c>), paired with the absolute path of its
+    /// <c>&lt;Dep&gt;.refonly.dll</c> under
+    /// <c>&lt;xil2cppIntermediateRoot&gt;/&lt;Dep&gt;/Reference/</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Walks the dependency closure exactly like
+    /// <see cref="ComputeDependencyLinkArtefacts"/>: BFS through the active
+    /// module's public + private deps, then through every reachable module's
+    /// PUBLIC deps (private deps stop propagating once they cross a module
+    /// boundary). A dependency that is NOT C#-bearing produces no reference
+    /// DLL and is skipped (its types are invisible to XIL2CPP's Roslyn
+    /// front-end), but its own public deps are still traversed so a C#
+    /// module reachable transitively through a C++-only module is still
+    /// surfaced. The result is ordinal-sorted + deduped by module name so
+    /// two reconstructions produce identical edge sets.
+    /// </para>
+    /// </remarks>
+    internal static IReadOnlyList<XIL2CPPAction.DependencyReference>
+        ComputeCSharpDependencyReferences(
+            ModuleRecord activeRecord,
+            IReadOnlyDictionary<string, ModuleRecord> recordByName,
+            string xil2cppIntermediateRoot)
+    {
+        ArgumentNullException.ThrowIfNull(activeRecord);
+        ArgumentNullException.ThrowIfNull(recordByName);
+        ArgumentException.ThrowIfNullOrEmpty(xil2cppIntermediateRoot);
+
+        List<XIL2CPPAction.DependencyReference> result = new();
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        HashSet<string> visitedModules = new(StringComparer.Ordinal)
+        {
+            activeRecord.Rules.Name,
+        };
+        Queue<ModuleDep> frontier = new();
+        foreach (ModuleDep dep in
+            activeRecord.Rules.PublicDependencyModuleNames
+                .Concat(activeRecord.Rules.PrivateDependencyModuleNames)
+                .OrderBy(d => d.Name, StringComparer.Ordinal))
+        {
+            frontier.Enqueue(dep);
+        }
+
+        while (frontier.Count > 0)
+        {
+            ModuleDep dep = frontier.Dequeue();
+            if (!visitedModules.Add(dep.Name))
+            {
+                continue;
+            }
+            if (!recordByName.TryGetValue(dep.Name, out ModuleRecord? depRecord))
+            {
+                // Missing dep; tier validator already diagnosed.
+                continue;
+            }
+
+            // Only C#-bearing dependencies emit a reference DLL. Skip the
+            // others (they contribute no edge) but still traverse their
+            // public deps below so a C# module reachable transitively
+            // through a C++-only module is surfaced.
+            if (depRecord.Rules.Languages.HasFlag(Languages.CSharp) && seen.Add(dep.Name))
+            {
+                string refOnlyPath = Path.Combine(
+                    xil2cppIntermediateRoot,
+                    depRecord.Rules.Name,
+                    ReferenceCompileCSharpAction.ReferenceSubdirectory,
+                    depRecord.Rules.Name + ReferenceCompileCSharpAction.RefOnlyDllSuffix);
+                result.Add(new XIL2CPPAction.DependencyReference(
+                    depRecord.Rules.Name, refOnlyPath));
+            }
+
+            // Push the dep's PUBLIC deps onto the frontier for transitive
+            // closure.
+            foreach (ModuleDep nested in
+                depRecord.Rules.PublicDependencyModuleNames
+                    .OrderBy(d => d.Name, StringComparer.Ordinal))
+            {
+                if (!visitedModules.Contains(nested.Name))
+                {
+                    frontier.Enqueue(nested);
+                }
+            }
+        }
+
+        result.Sort(static (a, b) => string.CompareOrdinal(a.ModuleName, b.ModuleName));
+        return result;
+    }
+
+    /// <summary>
     /// Compose the (linker-input, producer-artefact) path pair for a
     /// dependency module. Win64: linker input is the <c>.lib</c> import
     /// library; producer artefact is the <c>.dll</c> (always written by
@@ -3462,6 +3657,49 @@ public sealed class BuildMode : IToolMode<BuildMode>
         return null;
     }
 
+    /// <summary>
+    /// Resolve the XIL2CPP executable path for the given platform. Returns
+    /// null when no XIL2CPP binary is present at the expected location; the
+    /// caller decides whether absence is fatal (a C#-bearing module under
+    /// <c>-EnableXIL2CPP</c> without the binary) or harmless (no C# modules
+    /// in the build, or the flag is off).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Layout per <c>/Documents/XBT.html</c> Section 18.1 + Toolchain
+    /// Contract Section 10.1: XBT, XHT, and XIL2CPP all live under
+    /// <c>&lt;EngineRoot&gt;/Binaries/&lt;Platform&gt;/</c>. The XIL2CPP
+    /// executable's assembly name is <c>xil2cpp</c> (see
+    /// <c>XIL2CPP.Entry.csproj</c>), so the binary is <c>xil2cpp.exe</c> on
+    /// Win64 and <c>xil2cpp</c> elsewhere. Mirrors
+    /// <see cref="TryResolveXhtExecutable"/> exactly, including the
+    /// parent-directory fall-back some test fixtures rely on.
+    /// </para>
+    /// </remarks>
+    internal static string? TryResolveXil2CppExecutable(string engineRoot, Platform platform)
+    {
+        bool isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        string exeName = isWindows ? "xil2cpp.exe" : "xil2cpp";
+        string platformDir = platform.ToString();
+        string candidate = Path.Combine(engineRoot, "Binaries", platformDir, exeName);
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+        // Fall-back: some test fixtures put the engine root one level up;
+        // try the parent's Binaries directory too.
+        string? parent = Directory.GetParent(engineRoot)?.FullName;
+        if (parent is not null)
+        {
+            string alt = Path.Combine(parent, "Binaries", platformDir, exeName);
+            if (File.Exists(alt))
+            {
+                return alt;
+            }
+        }
+        return null;
+    }
+
     private static ExecutionReport ExecuteGraph(
         Simgenics.XPact.XBT.ActionGraph.ActionGraph graph,
         ActionHistory history,
@@ -3592,6 +3830,21 @@ internal sealed record BuildOptions
     public bool NoMutexWait { get; init; }
 
     /// <summary>
+    /// XIL2CPP Phase 6.a opt-in (CLI flag <c>-EnableXIL2CPP</c>; default
+    /// <c>false</c>). When false the default build path is byte-for-byte
+    /// unchanged: NO <see cref="ReferenceCompileCSharpAction"/> /
+    /// <see cref="XIL2CPPAction"/> nodes are emitted and the action graph
+    /// is identical to a pre-XIL2CPP build. When true, each module whose
+    /// <see cref="Languages"/> includes <see cref="Languages.CSharp"/>
+    /// emits its reference-compile + transpile-validate actions per
+    /// <c>/Documents/XIL2CPP.html</c> Rev 4 Section 9.8. The flag stays
+    /// off by default because Phase 6.a transpile does no C++ emit yet
+    /// (that is Phase 6.e); it is a parse/bind validation surface that
+    /// the operator opts into.
+    /// </summary>
+    public bool EnableXIL2CPP { get; init; }
+
+    /// <summary>
     /// Audit fix M14: the set of CLI flags we accept-and-warn rather
     /// than reject. These are documented spec flags whose action-graph
     /// integration has not yet landed; ignoring them lets a forward-
@@ -3621,6 +3874,7 @@ internal sealed record BuildOptions
         string? architecture = null;
         int? androidApiLevel = null;
         bool noMutexWait = false;
+        bool enableXil2cpp = false;
 
         foreach (string arg in args)
         {
@@ -3720,6 +3974,14 @@ internal sealed record BuildOptions
                 // config + platform fail immediately instead of waiting.
                 noMutexWait = true;
             }
+            else if (arg.Equals("-EnableXIL2CPP", StringComparison.OrdinalIgnoreCase))
+            {
+                // XIL2CPP Phase 6.a opt-in. Default OFF so the build path
+                // is byte-for-byte unchanged unless the operator requests
+                // the (parse/bind-only) XIL2CPP reference-compile +
+                // transpile-validate actions. See BuildOptions.EnableXIL2CPP.
+                enableXil2cpp = true;
+            }
             else if (IsAcceptedButUnimplemented(arg))
             {
                 // Audit fix M14: accept-and-warn for forward-compat spec
@@ -3755,6 +4017,7 @@ internal sealed record BuildOptions
             Architecture = architecture,
             AndroidApiLevel = androidApiLevel,
             NoMutexWait = noMutexWait,
+            EnableXIL2CPP = enableXil2cpp,
         };
     }
 

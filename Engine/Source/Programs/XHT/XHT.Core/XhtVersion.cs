@@ -22,31 +22,28 @@ namespace Simgenics.XPact.XHT.Core;
 /// <para>
 /// <b>ContractVersion pin.</b> <see cref="ContractVersion"/> is the
 /// auto-derived Contract identifier XHT reads + writes manifests
-/// against. Locked at Contract Rev 13.9 (the XCoreXObject Phase 5.a'
-/// Contract prerequisite that micro-bumps the Stage B addendum: 3
-/// existing reflection-type tags update content + version int
-/// (<c>XPACT_FSTRUCT_LAYOUT_TAG</c> v4 -&gt; v5,
-/// <c>XPACT_FSCRIPTSTRUCT_LAYOUT_TAG</c> v4 -&gt; v5,
-/// <c>XPACT_FCLASS_LAYOUT_TAG</c> v4 -&gt; v6 with v5 skipped per
-/// FIX-N-R2-1); 8 new XObject-side tags join the addendum
-/// (XPACT_XOBJECT_LAYOUT_TAG, XPACT_XGC_CARDTABLE_LAYOUT_TAG,
-/// XPACT_XOBJECTARRAY_ENTRY_LAYOUT_TAG, XPACT_XOBJECTKEY_LAYOUT_TAG,
-/// XPACT_XWEAKPTR_LAYOUT_TAG, XPACT_XPTR_LAYOUT_TAG,
-/// XPACT_XOBJECT_LIFECYCLE_TABLE_TAG,
-/// XPACT_FXOBJECTREFSCHEMA_LAYOUT_TAG); 7 new AbiTypeSizes rows for
-/// the same types; FStruct +8 -&gt; 120, FClass +16 -&gt; 240,
-/// FScriptStruct +8 -&gt; 136 cascade.
+/// against. Locked at Contract Rev 13.10 (the XIL2CPP Phase 6.a
+/// cross-module reference-compile action surface addition: the XBT
+/// action-graph slot 14 is promoted from the reserved placeholder
+/// <c>Reserved_Phase2_F</c> to the named, emit-eligible
+/// <c>ReferenceCompileCSharpAction</c> and joins
+/// <c>ContractSurface.ActionTypes</c> in ascending-ordinal position,
+/// which rotates the structure hash).
 /// </para>
 /// <para>
 /// Hash history: <c>b04ae3cc84cdd9f3</c> covered Rev 13.2 / 13.3 /
 /// 13.4 / 13.5 / 13.6 / 13.7 (all wording-only after the Round-5a
 /// rotation); <c>d9514fb853e7dcc2</c> covered Rev 13.8 (Stage B
 /// addendum adding the 15 AbiLayoutTags + 14 AbiTypeSizes entries
-/// to ContractSurface); Rev 13.9 rotates the hash to a new value
-/// derived deterministically by canonicalization (the live value is
-/// logged by
+/// to ContractSurface); <c>381d8ef7a7770d9b</c> covered Rev 13.9
+/// (XCoreXObject Phase 5.a' micro-bump: 3 updated reflection-type
+/// tags + 3 updated AbiTypeSizes rows + 8 new XObject-side layout
+/// tags + 7 new AbiTypeSizes rows; FStruct +8 -&gt; 120, FClass
+/// +16 -&gt; 240, FScriptStruct +8 -&gt; 136 cascade); Rev 13.10
+/// rotates the hash to a new value derived deterministically by
+/// canonicalization (the live value is logged by
 /// <c>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</c>
-/// per the established Rev 13.7 / Rev 13.8 cadence).
+/// per the established Rev 13.7 / Rev 13.8 / Rev 13.9 cadence).
 /// </para>
 /// <para>
 /// <b>Schema-mismatch detection.</b> This constant is the
@@ -69,30 +66,31 @@ public static class XhtVersion
 
     /// <summary>
     /// The Contract version string XHT reads + writes manifests against.
-    /// Locked at Contract Rev 13.9 (XCoreXObject Phase 5.a' Contract
-    /// micro-bump prerequisite per XCoreXObject Rev 4 §11.2 / §11.3);
-    /// the hash <c>381d8ef7a7770d9b</c> reflects the addendum's
-    /// contribution of the 3 updated existing reflection-type tag
-    /// contents + 3 updated existing AbiTypeSizes rows (FStruct 112
-    /// -&gt; 120, FClass 224 -&gt; 240, FScriptStruct 128 -&gt; 136)
-    /// + 8 new XObject-side layout tags + 7 new AbiTypeSizes rows on
-    /// top of the Rev 13.8 baseline, via
+    /// Locked at Contract Rev 13.10 (XIL2CPP Phase 6.a cross-module
+    /// reference-compile action surface addition per XIL2CPP Rev 4
+    /// Section 9.8); the hash <c>bbcc0292b75e9a10</c> reflects the
+    /// promotion of XBT action-graph slot 14 from the reserved
+    /// placeholder <c>Reserved_Phase2_F</c> to the named, emit-eligible
+    /// <c>ReferenceCompileCSharpAction</c> and its insertion into
+    /// <c>ContractSurface.ActionTypes</c> (ascending-ordinal position,
+    /// after <c>Tier2WholeProgramPass</c> slot 13, before
+    /// <c>BuildPluginManifestAction</c> slot 16) on top of the Rev 13.9
+    /// baseline, via
     /// <c>Simgenics.XPact.XBT.Manifest.ContractVersion.ComputeStructureHash</c>
     /// canonicalization (see <c>XBT.Manifest/ContractSurface.cs</c>).
     /// </summary>
     /// <remarks>
-    /// Rev 13.9 hash derived by running
+    /// Rev 13.10 hash derived by running
     /// <c>ContractVersionTests.ContractVersion_Current_LogsTheValueForDocAlignment</c>
-    /// after the Phase 5.a' Contract surface delta landed. The
-    /// canonicalization algorithm is unchanged from Rev 13.8 (no
-    /// <c>ContractVersion.cs</c> code edit was required); the
-    /// additional canonical bytes from the 11 layout-tag additions
-    /// (3 updated + 8 new) + 10 type-size additions (3 updated + 7
-    /// new) rotated the BLAKE3 digest deterministically. Do NOT
+    /// after the Phase 6.a Contract surface delta landed. The
+    /// canonicalization algorithm is unchanged from Rev 13.9 (no
+    /// <c>ContractVersion.cs</c> code edit was required); the single
+    /// new <c>action:ReferenceCompileCSharpAction</c> canonical line
+    /// rotated the BLAKE3 digest deterministically. Do NOT
     /// hand-rotate; further surface changes must be re-derived the
     /// same way.
     /// </remarks>
-    public const string ContractVersion = "13.9+381d8ef7a7770d9b";
+    public const string ContractVersion = "13.10+bbcc0292b75e9a10";
 
     /// <summary>
     /// The .NET runtime XHT is currently running on. Surfaced for
