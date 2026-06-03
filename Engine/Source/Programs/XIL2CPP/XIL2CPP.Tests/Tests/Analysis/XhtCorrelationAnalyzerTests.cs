@@ -153,8 +153,8 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
             + "[XPact.CoreXObject.XClassAttribute] public class XValve { } }");
 
         // The manifest pairs XValve with the C++ class XValve and declares the
-        // canonical FClass symbol; no mismatch.
-        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_XValve,,\n");
+        // canonical module-prefixed FClass symbol (Section 5.1); no mismatch.
+        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -169,7 +169,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
         XhtCorrelatedType entry = Assert.Single(table.CorrelatedTypes);
         Assert.Equal("TestModule.XValve", entry.CSharpTypeName);
         Assert.Equal("XValve", entry.CppTypeName);
-        Assert.Equal("Z_Construct_FClass_XValve", entry.FClassSymbol);
+        Assert.Equal("Z_Construct_FClass_TestModule_XValve", entry.FClassSymbol);
         Assert.True(entry.XhtProducesFClass);
     }
 
@@ -219,7 +219,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
         Assert.Equal(DiagnosticSeverity.Error, d.Severity);
         Assert.Equal("XIL2CPP142", d.Code);
         Assert.Contains("Z_Construct_FClass_WrongName", d.Message);
-        Assert.Contains("Z_Construct_FClass_XValve", d.Message);
+        Assert.Contains("Z_Construct_FClass_TestModule_XValve", d.Message);
         Assert.Equal("TestModule", d.Module);
         Assert.True(result.HasErrors);
     }
@@ -232,7 +232,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
             "namespace TestModule { "
             + "[XPact.CoreXObject.XClassAttribute] public class XValve { } }");
 
-        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_XValve,,\n");
+        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -255,7 +255,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
         // XHT declares a NON-canonical backing field (angle-bracket form,
         // forbidden by Section 10.5) for the Flow auto-property.
         string path = WriteManifest(
-            "TestModule.XValve,XValve,Z_Construct_FClass_XValve,,Flow=<Flow>k__BackingField\n");
+            "TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,Flow=<Flow>k__BackingField\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -278,7 +278,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
             + "{ public int Flow { get; set; } } }");
 
         string path = WriteManifest(
-            "TestModule.XValve,XValve,Z_Construct_FClass_XValve,,Flow=__BackingField_Flow\n");
+            "TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,Flow=__BackingField_Flow\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -300,8 +300,8 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
         // The manifest declares a cross-language pair for a C# type the module
         // does not declare (TestModule.XGhost).
         string path = WriteManifest(
-            "TestModule.XValve,XValve,Z_Construct_FClass_XValve,,\n"
-            + "TestModule.XGhost,XGhost,Z_Construct_FClass_XGhost,,\n");
+            "TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,\n"
+            + "TestModule.XGhost,XGhost,Z_Construct_FClass_TestModule_XGhost,,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -325,8 +325,8 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
         // An entry with no C++ pair is not a cross-language pair; absent
         // C# type must NOT trigger XIL2CPP150.
         string path = WriteManifest(
-            "TestModule.XValve,XValve,Z_Construct_FClass_XValve,,\n"
-            + "TestModule.XOrphan,,Z_Construct_FClass_XOrphan,,\n");
+            "TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,\n"
+            + "TestModule.XOrphan,,Z_Construct_FClass_TestModule_XOrphan,,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -348,7 +348,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
 
         // The manifest pairs XValve but declares NO FProperty descriptors,
         // so the [XProperty] field Pressure is missing one.
-        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_XValve,,\n");
+        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 
@@ -370,7 +370,7 @@ public sealed class XhtCorrelationAnalyzerTests : IDisposable
             + "{ [XPact.CoreXObject.XPropertyAttribute] public int Pressure; } }");
 
         // The manifest declares the FProperty descriptor for Pressure.
-        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_XValve,Pressure,\n");
+        string path = WriteManifest("TestModule.XValve,XValve,Z_Construct_FClass_TestModule_XValve,Pressure,\n");
 
         Pass3Result result = RunWithManifest(unit, path);
 

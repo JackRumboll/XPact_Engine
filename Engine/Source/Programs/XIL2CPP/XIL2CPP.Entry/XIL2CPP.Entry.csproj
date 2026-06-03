@@ -41,6 +41,7 @@
     <ProjectReference Include="..\XIL2CPP.Normalization\XIL2CPP.Normalization.csproj" />
     <ProjectReference Include="..\XIL2CPP.Analysis\XIL2CPP.Analysis.csproj" />
     <ProjectReference Include="..\XIL2CPP.Tiering\XIL2CPP.Tiering.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Emit\XIL2CPP.Emit.csproj" />
   </ItemGroup>
 
   <ItemGroup>

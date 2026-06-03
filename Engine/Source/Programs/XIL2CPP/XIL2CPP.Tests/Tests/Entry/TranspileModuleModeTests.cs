@@ -215,18 +215,20 @@ public sealed class TranspileModuleModeTests : IDisposable
     }
 
     [Fact]
-    public void Mode_Description_SaysPass1Through4_NoEmit()
+    public void Mode_Description_SaysPass1Through7_EmitsWhenOutputDirGiven()
     {
         IToolMode mode = ToolModeRegistry.Resolve("transpile-module")!;
-        // Phase 6.c: the mode now runs Pass 1-4 (parse + bind + normalize +
-        // analyze + tier-classify) and emits the partial TierTable, but still
-        // emits no C++.
-        Assert.Contains("Pass 1-4", mode.Description, StringComparison.Ordinal);
+        // Phase 6.e: the mode now runs the full Pass 1-7 pipeline (parse + bind
+        // + normalize + analyze + tier-classify + mangle + C++ emit + output
+        // write) and emits .cs.cpp / .cs.h when --OutputDir is given.
+        Assert.Contains("Pass 1-7", mode.Description, StringComparison.Ordinal);
         Assert.Contains("normalize", mode.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("analyze", mode.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("tier-classify", mode.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("TierTable", mode.Description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("no C++ emit", mode.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(".cs.cpp", mode.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(".cs.h", mode.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--OutputDir", mode.Description, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -474,6 +476,100 @@ public sealed class TranspileModuleModeTests : IDisposable
         // The XIL2CPP040 diagnostic was actually emitted on the channel.
         Assert.Contains(DiagnosticCodes.SimPathBannedApiCall, sw.ToString(), StringComparison.Ordinal);
         Assert.True(Logger.ErrorCount >= 1);
+    }
+
+    // =================================================================
+    // Phase 6.e: --OutputDir drives the full Pass 1-7 emit. With the flag
+    // absent the mode behaves as Pass 1-4 (no .cs.cpp / .cs.h written); with
+    // it present + Pass 1-3 clean, the emit driver writes the .cs.cpp / .cs.h
+    // pair at the expected Transpiled/ paths and the mode still exits 0.
+    // =================================================================
+
+    /// <summary>
+    /// A locally declared stand-in for the XClass attribute so the emit treats
+    /// the test type as an [XClass] (the curated XPact.CSharp.BCL refs are
+    /// absent; the emitter recognises the attribute by metadata name +
+    /// namespace).
+    /// </summary>
+    private const string XClassAttributeStub = """
+        namespace XPact.CoreXObject
+        {
+            public sealed class XClassAttribute : System.Attribute { }
+        }
+        """;
+
+    [Fact]
+    public async Task Main_TranspileModule_WithOutputDir_WritesCsCppAndCsH_AndExit0()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+        TranspileModuleMode.__SetBclReferencesForTesting(Net80Bcl());
+
+        Directory.CreateDirectory(Path.Combine(_root, "Engine"));
+
+        // A small [XClass] module: one auto-property + one method.
+        WriteSource("Mod/Attr.cs", XClassAttributeStub);
+        WriteSource("Mod/Valve.cs",
+            "namespace Mod { [XPact.CoreXObject.XClassAttribute] public class XValve { "
+            + "public int Health { get; set; } public int Compute(int x) { return x; } } }");
+        string manifest = WriteManifestEx("Mod", "Mod", simPath: false, "Attr.cs", "Valve.cs");
+
+        string outputDir = Path.Combine(_root, "EmitOut");
+
+        int exit = await Program.Main(new[]
+        {
+            "transpile-module", $"-Manifest={manifest}", "-Module=Mod",
+            "--OutputDir", outputDir,
+        });
+
+        Assert.Equal(ExitCodes.Success, exit);
+
+        // The .cs.cpp + .cs.h pair for the Valve source lands at the expected
+        // Transpiled/ path (the stem derives from the absolute source path).
+        string transpiled = Path.Combine(outputDir, "Transpiled");
+        Assert.True(Directory.Exists(transpiled), $"Expected Transpiled/ under '{outputDir}'.");
+
+        string[] headers = Directory.GetFiles(transpiled, "*.cs.h", SearchOption.AllDirectories);
+        string[] sources = Directory.GetFiles(transpiled, "*.cs.cpp", SearchOption.AllDirectories);
+        Assert.NotEmpty(headers);
+        Assert.NotEmpty(sources);
+
+        // The Valve .cs.cpp emits the XClass type-level bodies.
+        string valveCpp = sources.Select(File.ReadAllText)
+            .First(c => c.Contains("XValve::StaticClass()", StringComparison.Ordinal));
+        Assert.Contains("Z_Construct_FClass_Mod_XValve() noexcept {", valveCpp);
+        Assert.Contains("auto* obj = new (memory) XValve();", valveCpp);
+
+        Assert.Contains("emitted", sw.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Main_TranspileModule_WithoutOutputDir_DoesNotEmitCpp()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+        TranspileModuleMode.__SetBclReferencesForTesting(Net80Bcl());
+
+        Directory.CreateDirectory(Path.Combine(_root, "Engine"));
+
+        WriteSource("Mod/Attr.cs", XClassAttributeStub);
+        WriteSource("Mod/Valve.cs",
+            "namespace Mod { [XPact.CoreXObject.XClassAttribute] public class XValve { "
+            + "public int Compute(int x) { return x; } } }");
+        string manifest = WriteManifestEx("Mod", "Mod", simPath: false, "Attr.cs", "Valve.cs");
+
+        // No --OutputDir -> the emit step is skipped; the mode behaves as today.
+        int exit = await Program.Main(new[]
+        {
+            "transpile-module", $"-Manifest={manifest}", "-Module=Mod",
+        });
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("Pass 1-4 clean", sw.ToString(), StringComparison.Ordinal);
+
+        // No Transpiled/ tree under the root (the emit step did not run).
+        string[] anyCpp = Directory.GetFiles(_root, "*.cs.cpp", SearchOption.AllDirectories);
+        Assert.Empty(anyCpp);
     }
 
     [Fact]

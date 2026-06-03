@@ -1,0 +1,38 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Emit</RootNamespace>
+    <AssemblyName>XIL2CPP.Emit</AssemblyName>
+    <Description>XIL2CPP Pass-5 / Pass-6 / Pass-7 shared emit framework: the deterministic C++ code builder (CppWriter), the Contract Rev 13.9 ABI static-assert pin block (AbiPins, duplicated from XHT.Emitter under the XIL2CPP namespace), the contract-versioned length-prefixed Itanium-ABI-style symbol mangler (Mangler / ManglingTable / Pass5Driver), the per-module emit context (EmitContext), the reflection-discovered body-lowering rule seam (IBodyLoweringRule / BodyLoweringRuleRegistry / StatementEmitter / ExpressionEmitter), and the atomic output writer (Pass7Writer / EnrichedTierTableSerializer). The concrete body-lowering rules + the class / method / property emitters + the Pass6Driver plug into these abstractions in a later wave. Per /Documents/XIL2CPP.html Rev 4 Section 3.2 (Pass 5 / 6 / 7) + Section 5.1 and /Documents/XToolchainContract.html Section 2.2 / 2.3 / 2.4 (mangling + determinism) + Section 14 (ABI envelope pins).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Normalization\XIL2CPP.Normalization.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Analysis\XIL2CPP.Analysis.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Tiering\XIL2CPP.Tiering.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn ISymbol / IMethodSymbol / INamedTypeSymbol surface the Mangler
+      consumes. Version is resolved centrally from Directory.Packages.props
+      (4.11.0). Per central package management the Version attribute is
+      omitted here.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The CppWriter / Mangler / Pass5Driver / Pass7Writer internals + the
+      BodyLoweringRuleRegistry discovery seam are exposed to XIL2CPP.Tests so
+      the emit-framework tests can drive them directly without going through
+      the (not-yet-built) Pass6Driver / entry-mode wiring.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

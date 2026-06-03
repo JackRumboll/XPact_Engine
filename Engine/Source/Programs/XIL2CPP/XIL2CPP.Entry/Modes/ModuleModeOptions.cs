@@ -28,12 +28,18 @@ namespace Simgenics.XPact.XIL2CPP.Entry.Modes;
 /// <param name="ManifestBinPath">Absolute path to the FBS sidecar (optional; null when not supplied).</param>
 /// <param name="ModuleName">Module the mode targets.</param>
 /// <param name="OutputDir">Output directory for the mode's writes (empty when not required by the mode).</param>
+/// <param name="EmitOutputDir">
+/// Output directory for the Pass-6/7 C++ emit (<c>--OutputDir &lt;path&gt;</c>);
+/// null when not supplied (the emit step is then skipped and the mode behaves
+/// as today through Pass 4). Additive per Phase 6.e.
+/// </param>
 /// <param name="JsonFd">CLI <c>-JsonFd=N</c> value; null when not supplied.</param>
 internal sealed record ModuleModeOptions(
     string ManifestPath,
     string? ManifestBinPath,
     string ModuleName,
     string OutputDir,
+    string? EmitOutputDir,
     int? JsonFd)
 {
     /// <summary>
@@ -44,6 +50,7 @@ internal sealed record ModuleModeOptions(
     ///   <item><description><c>-ManifestBin=&lt;path&gt;</c> (optional; FBS sidecar -- deferred per the JSON-only Phase 6.a reader).</description></item>
     ///   <item><description><c>-Module=&lt;name&gt;</c> (required).</description></item>
     ///   <item><description><c>-Out=&lt;dir&gt;</c> (required when <paramref name="requireOutput"/> is true).</description></item>
+    ///   <item><description><c>--OutputDir &lt;path&gt;</c> or <c>--OutputDir=&lt;path&gt;</c> (optional; the Phase-6.e C++ emit output directory -- absent skips the emit step).</description></item>
     ///   <item><description><c>-JsonFd=&lt;int&gt;</c> (optional).</description></item>
     /// </list>
     /// </summary>
@@ -60,10 +67,12 @@ internal sealed record ModuleModeOptions(
         string? manifestBinPath = null;
         string? moduleName = null;
         string? outputDir = null;
+        string? emitOutputDir = null;
         int? jsonFd = null;
 
-        foreach (string arg in args)
+        for (int i = 0; i < args.Length; i++)
         {
+            string arg = args[i];
             if (arg.StartsWith("-ManifestBin=", StringComparison.OrdinalIgnoreCase))
             {
                 // Checked BEFORE -Manifest= so the longer prefix wins (a
@@ -78,6 +87,22 @@ internal sealed record ModuleModeOptions(
             else if (arg.StartsWith("-Module=", StringComparison.OrdinalIgnoreCase))
             {
                 moduleName = arg["-Module=".Length..];
+            }
+            else if (arg.StartsWith("--OutputDir=", StringComparison.OrdinalIgnoreCase))
+            {
+                // --OutputDir=<path> (inline-value form). Checked before -Out=
+                // so the longer prefix wins and the leading "--" is honoured.
+                emitOutputDir = arg["--OutputDir=".Length..];
+            }
+            else if (string.Equals(arg, "--OutputDir", StringComparison.OrdinalIgnoreCase))
+            {
+                // --OutputDir <path> (space-separated-value form): consume the
+                // next argument as the value.
+                if (i + 1 >= args.Length)
+                {
+                    throw new CliArgumentException("--OutputDir requires a <path> value.");
+                }
+                emitOutputDir = args[++i];
             }
             else if (arg.StartsWith("-Out=", StringComparison.OrdinalIgnoreCase))
             {
@@ -117,6 +142,7 @@ internal sealed record ModuleModeOptions(
             ManifestBinPath: string.IsNullOrEmpty(manifestBinPath) ? null : manifestBinPath,
             ModuleName: moduleName,
             OutputDir: outputDir ?? string.Empty,
+            EmitOutputDir: string.IsNullOrEmpty(emitOutputDir) ? null : emitOutputDir,
             JsonFd: jsonFd);
     }
 }

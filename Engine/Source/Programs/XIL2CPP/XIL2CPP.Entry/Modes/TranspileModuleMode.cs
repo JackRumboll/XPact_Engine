@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Simgenics.XPact.XIL2CPP.Analysis;
 using Simgenics.XPact.XIL2CPP.Core;
+using Simgenics.XPact.XIL2CPP.Emit;
 using Simgenics.XPact.XIL2CPP.Frontend;
 using Simgenics.XPact.XIL2CPP.Normalization;
 using Simgenics.XPact.XIL2CPP.Tiering;
@@ -106,9 +107,10 @@ public sealed class TranspileModuleMode : IToolMode
 
     /// <inheritdoc />
     public string Description =>
-        "Run the Pass 1-4 analysis pipeline (parse + bind + normalize + analyze + tier-classify) "
-        + "for one module, report diagnostics, and emit the partial TierTable "
-        + "(TierTable.partial.<Module>.json). Phase 6.c: no C++ emit yet (that is Phase 6.e).";
+        "Run the Pass 1-7 pipeline (parse + bind + normalize + analyze + tier-classify + mangle "
+        + "+ C++ emit + output write) for one module, report diagnostics, and emit the partial "
+        + "TierTable (TierTable.partial.<Module>.json). Phase 6.e: emits .cs.cpp/.cs.h when "
+        + "--OutputDir is given (absent skips the emit step and the mode behaves as Pass 1-4).";
 
     /// <summary>
     /// Install (or clear, with null) the test-only BCL reference set the mode
@@ -246,8 +248,29 @@ public sealed class TranspileModuleMode : IToolMode
             tierTableWritten = TryWriteTierTable(tierTable, intermediateRoot, result.ModuleName);
         }
 
+        // Phase 6.e: when --OutputDir is supplied AND Pass 1-3 are error-clean,
+        // run the emit driver (Pass 5 mangle -> Pass 6 C++ emit -> Pass 7 output
+        // write), emitting its diagnostics and the .cs.cpp / .cs.h pairs into the
+        // requested output directory. Absent --OutputDir (the default) the emit
+        // step is skipped and the mode behaves exactly as the Pass 1-4 mode.
+        // Emit never weakens the analysis exit code (a clean analysis stays 0;
+        // an analysis error already returned a non-zero exit before this point).
+        int emittedFileCount = 0;
+        if (exitCode == ExitCodes.Success && !string.IsNullOrEmpty(opts.EmitOutputDir))
+        {
+            EmitDriverResult emit = EmitDriver.Run(
+                unit, p3, tierTable, ContractVersionShortTag(), opts.EmitOutputDir);
+
+            foreach (DiagnosticRecord diagnostic in emit.Diagnostics)
+            {
+                Logger.EmitDiagnostic(diagnostic);
+            }
+
+            emittedFileCount = emit.WrittenFiles.Count;
+        }
+
         Logger.Info(
-            "info {0}: transpile-module {1}: parsed {2} file(s); {3}{4}.",
+            "info {0}: transpile-module {1}: parsed {2} file(s); {3}{4}{5}.",
             DiagnosticCodes.LoggerSentinel,
             result.ModuleName,
             result.ParsedFiles.Count,
@@ -256,9 +279,35 @@ public sealed class TranspileModuleMode : IToolMode
                 : "Pass 2/3 reported errors",
             tierTableWritten
                 ? $" (wrote {TierTablePartialFileName(result.ModuleName)})"
+                : string.Empty,
+            emittedFileCount > 0
+                ? $" (emitted {emittedFileCount} C++ file(s) to '{opts.EmitOutputDir}')"
                 : string.Empty);
 
         return exitCode;
+    }
+
+    /// <summary>
+    /// Derive the deterministic contract-version short tag (WITHOUT the leading
+    /// <c>_v</c>) the Pass-5 mangle is computed under, from
+    /// <see cref="Xil2CppVersion.ContractVersion"/>. The ContractVersion is a
+    /// canonical <c>&lt;major.minor&gt;+&lt;hash&gt;</c> tag (e.g.
+    /// <c>13.10+bbcc0292b75e9a10</c>); the short tag is the trailing hash
+    /// segment after the <c>+</c> (the part that uniquely fingerprints the
+    /// frozen contract surface). When the string has no <c>+</c> the whole
+    /// value is used. Pure function of the compile-time constant, so the mangle
+    /// is byte-deterministic across runs + machines.
+    /// </summary>
+    /// <returns>The contract-version short tag.</returns>
+    internal static string ContractVersionShortTag()
+    {
+        string contractVersion = Xil2CppVersion.ContractVersion;
+        int plus = contractVersion.IndexOf('+', StringComparison.Ordinal);
+        if (plus >= 0 && plus + 1 < contractVersion.Length)
+        {
+            return contractVersion[(plus + 1)..];
+        }
+        return contractVersion;
     }
 
     /// <summary>

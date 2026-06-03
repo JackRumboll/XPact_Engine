@@ -155,9 +155,26 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
     /// <summary>
     /// XIL2CPP's canonical FClass scaffolding-symbol prefix per Section 10.4
     /// (the <c>Z_Construct_FClass_*</c> aggregation point). XHT and XIL2CPP
-    /// must agree on the symbol for a given type.
+    /// must agree on the symbol for a given type. The canonical symbol is
+    /// module-prefixed -- <c>Z_Construct_FClass_&lt;Module&gt;_&lt;Type&gt;</c>
+    /// (Section 5.1 authoritative) -- so a module-local type and an identically
+    /// named type in another module never collide; <see cref="CanonicalFClassSymbol"/>
+    /// composes the full form and the WU-E1 <c>ZConstructEmitter</c> emits the
+    /// matching symbol.
     /// </summary>
     private const string FClassSymbolPrefix = "Z_Construct_FClass_";
+
+    /// <summary>
+    /// Compose XIL2CPP's canonical module-prefixed FClass singleton-getter
+    /// symbol <c>Z_Construct_FClass_&lt;Module&gt;_&lt;Type&gt;</c> per
+    /// Section 5.1 (authoritative). The WU-E1 <c>ZConstructEmitter</c> emits
+    /// the identical form so cross-tool symbol matching agrees.
+    /// </summary>
+    /// <param name="moduleName">The emitting module name.</param>
+    /// <param name="simpleTypeName">The C# type's simple name.</param>
+    /// <returns>The canonical module-prefixed FClass symbol.</returns>
+    private static string CanonicalFClassSymbol(string moduleName, string simpleTypeName)
+        => FClassSymbolPrefix + moduleName + "_" + simpleTypeName;
 
     /// <summary>
     /// XIL2CPP's canonical auto-property backing-field prefix per
@@ -211,7 +228,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
         ArgumentNullException.ThrowIfNull(builder);
 
         string? manifestPath = _manifestPathOverride ?? DeriveManifestPath(unit);
-        ParsedManifest? manifest = TryReadManifest(manifestPath);
+        ParsedManifest? manifest = TryReadManifest(manifestPath, unit.Pass1.ModuleName);
 
         if (manifest is null)
         {
@@ -254,7 +271,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
                 continue;
             }
 
-            string canonicalSymbol = FClassSymbolPrefix + rt.SimpleName;
+            string canonicalSymbol = CanonicalFClassSymbol(unit.Pass1.ModuleName, rt.SimpleName);
 
             // XIL2CPP142 -- cross-tool symbol-space mismatch: XHT declares an
             // FClass symbol for the type that disagrees with XIL2CPP's
@@ -627,7 +644,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
         }
     }
 
-    private static ParsedManifest? TryReadManifest(string? manifestPath)
+    private static ParsedManifest? TryReadManifest(string? manifestPath, string moduleName)
     {
         if (string.IsNullOrWhiteSpace(manifestPath))
         {
@@ -654,7 +671,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
 
         try
         {
-            return ParseManifestText(text);
+            return ParseManifestText(text, moduleName);
         }
         catch (Exception)
         {
@@ -689,7 +706,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
     /// emit it), so they correlate the FClass-scaffolding ownership only.
     /// </para>
     /// </remarks>
-    private static ParsedManifest ParseManifestText(string text)
+    private static ParsedManifest ParseManifestText(string text, string moduleName)
     {
         ParsedManifest manifest = new();
         bool sawTypesSection = false;
@@ -733,7 +750,7 @@ public sealed class XhtCorrelationAnalyzer : ISemanticAnalyzer
             foreach (string baseName in generatedBaseNames)
             {
                 ManifestTypeEntry entry = manifest.GetOrAdd(baseName);
-                entry.FClassSymbol = FClassSymbolPrefix + SimpleNameOf(baseName);
+                entry.FClassSymbol = CanonicalFClassSymbol(moduleName, SimpleNameOf(baseName));
             }
         }
 
