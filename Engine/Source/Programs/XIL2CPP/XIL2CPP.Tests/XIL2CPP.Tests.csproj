@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Entry\XIL2CPP.Entry.csproj" />
   </ItemGroup>
 
 </Project>
