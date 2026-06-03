@@ -1,0 +1,36 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Tiering</RootNamespace>
+    <AssemblyName>XIL2CPP.Tiering</AssemblyName>
+    <Description>XIL2CPP Pass-4 tier classification: a per-module fixpoint over the call graph that assigns every emittable function Tier 1 (XResult-shimmed; can throw / crosses the DLL boundary) or Tier 2 (direct call; proven noexcept-safe). Consumes the Pass-2 NormalizedUnit (still-authoritative Pass-1 binding info) plus the Pass-3 CrossModuleNoThrowTable singleton (cross-module callee NoThrow status), runs the start-all-Tier-2-then-demote fixpoint per the Tier-2 condition, and emits a deterministic per-module TierTable.partial.&lt;Module&gt;.json. Per /Documents/XIL2CPP.html Rev 4 Section 3.1 + 3.2 (Pass 4) + 3.3 (two-pass tier protocol) and /Documents/XIL2CPP-Constraints.md Section 2.8.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Normalization\XIL2CPP.Normalization.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Analysis\XIL2CPP.Analysis.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn ISymbol / SyntaxNode surface. Version is resolved centrally
+      from Directory.Packages.props (4.11.0). Per central package management
+      the Version attribute is omitted here.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The TierTable JSON serializer / parser round-trip seams and the
+      Pass4Driver fixpoint internals are exposed to XIL2CPP.Tests so the
+      tiering tests can drive classification + serialization without going
+      through the product CLI.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

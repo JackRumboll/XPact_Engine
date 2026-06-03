@@ -215,14 +215,17 @@ public sealed class TranspileModuleModeTests : IDisposable
     }
 
     [Fact]
-    public void Mode_Description_SaysPass1Through3_NoEmit()
+    public void Mode_Description_SaysPass1Through4_NoEmit()
     {
         IToolMode mode = ToolModeRegistry.Resolve("transpile-module")!;
-        // Phase 6.b: the mode now runs Pass 1-3 (parse + bind + normalize +
-        // analyze) but still emits no C++.
-        Assert.Contains("Pass 1-3", mode.Description, StringComparison.Ordinal);
+        // Phase 6.c: the mode now runs Pass 1-4 (parse + bind + normalize +
+        // analyze + tier-classify) and emits the partial TierTable, but still
+        // emits no C++.
+        Assert.Contains("Pass 1-4", mode.Description, StringComparison.Ordinal);
         Assert.Contains("normalize", mode.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("analyze", mode.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tier-classify", mode.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TierTable", mode.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("no C++ emit", mode.Description, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -287,10 +290,11 @@ public sealed class TranspileModuleModeTests : IDisposable
         });
 
         Assert.Equal(ExitCodes.Success, exit);
-        // Phase 6.b: a declaration-free source binds clean through Pass 1
-        // and runs cleanly through Pass 2 + Pass 3 (no normalizer / analyzer
-        // fires on an empty unit), so the mode reports the full pipeline clean.
-        Assert.Contains("Pass 1-3 clean", sw.ToString(), StringComparison.Ordinal);
+        // Phase 6.c: a declaration-free source binds clean through Pass 1 and
+        // runs cleanly through Pass 2 + Pass 3 + Pass 4 (no normalizer /
+        // analyzer fires on an empty unit, and Pass 4 classifies zero
+        // functions), so the mode reports the full pipeline clean.
+        Assert.Contains("Pass 1-4 clean", sw.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -376,7 +380,76 @@ public sealed class TranspileModuleModeTests : IDisposable
 
         Assert.Equal(ExitCodes.Success, exit);
         Assert.Equal(0, Logger.ErrorCount);
-        Assert.Contains("Pass 1-3 clean", sw.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Pass 1-4 clean", sw.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_TranspileModule_CleanModule_WritesPartialTierTable()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+        TranspileModuleMode.__SetBclReferencesForTesting(Net80Bcl());
+
+        // Create an Engine/ sibling so the mode's ResolveIntermediateRoot
+        // resolves the intermediate root to <_root>/Intermediate/Build/XIL2CPP
+        // (it walks up from the manifest looking for an Engine/ sibling).
+        Directory.CreateDirectory(Path.Combine(_root, "Engine"));
+
+        // A clean module with one exported method (Tier 1) + one private method
+        // (Tier 2) so the table has both kinds.
+        WriteSource("Mod/Clean.cs",
+            "namespace Mod { public class C { public int Add(int a, int b) => a + b; private int H() => 1; } }");
+        string manifest = WriteManifestEx("Mod", "Mod", simPath: false, "Clean.cs");
+
+        int exit = await Program.Main(new[]
+        {
+            "transpile-module", $"-Manifest={manifest}", "-Module=Mod",
+        });
+
+        Assert.Equal(ExitCodes.Success, exit);
+
+        string tablePath = Path.Combine(
+            _root, "Intermediate", "Build", "XIL2CPP", "TierTable.partial.Mod.json");
+        Assert.True(File.Exists(tablePath), $"Expected TierTable at '{tablePath}'.");
+
+        string json = File.ReadAllText(tablePath);
+        Assert.Contains("\"module\": \"Mod\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"$schema\"", json, StringComparison.Ordinal);
+        // The exported Add is Tier 1; the private H is Tier 2.
+        Assert.Contains("\"tier\": \"Tier1\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"tier\": \"Tier2\"", json, StringComparison.Ordinal);
+        Assert.Contains("wrote partial TierTable", sw.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_TranspileModule_AnalysisError_DoesNotWriteTierTable()
+    {
+        using StringWriter sw = new();
+        Logger.__SetStderrForTesting(sw);
+        TranspileModuleMode.__SetBclReferencesForTesting(Net80Bcl());
+
+        Directory.CreateDirectory(Path.Combine(_root, "Engine"));
+
+        // A module that fails Pass-3 analysis (new on an XObject-derived type ->
+        // XIL2CPP001). A module that failed analysis must NOT publish a partial
+        // tier table (it never reaches C++ emit).
+        WriteSource("Mod/Stub.cs", XObjectStub);
+        WriteSource("Mod/Use.cs",
+            "namespace Mod { using XPact.CoreXObject; public sealed class Widget : XObject { } "
+            + "public class C { public Widget Make() => new Widget(); } }");
+        string manifest = WriteManifestEx("Mod", "Mod", simPath: false, "Stub.cs", "Use.cs");
+
+        int exit = await Program.Main(new[]
+        {
+            "transpile-module", $"-Manifest={manifest}", "-Module=Mod",
+        });
+
+        Assert.Equal(ExitCodes.Xil2CppInternalFailure, exit);
+
+        string tablePath = Path.Combine(
+            _root, "Intermediate", "Build", "XIL2CPP", "TierTable.partial.Mod.json");
+        Assert.False(File.Exists(tablePath),
+            "A module that failed analysis must not publish a partial TierTable.");
     }
 
     [Fact]

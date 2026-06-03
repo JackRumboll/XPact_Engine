@@ -10,27 +10,30 @@ using Simgenics.XPact.XIL2CPP.Analysis;
 using Simgenics.XPact.XIL2CPP.Core;
 using Simgenics.XPact.XIL2CPP.Frontend;
 using Simgenics.XPact.XIL2CPP.Normalization;
+using Simgenics.XPact.XIL2CPP.Tiering;
 using MetadataReferenceResolver = Simgenics.XPact.XIL2CPP.Frontend.MetadataReferenceResolver;
 using DiagnosticSeverity = Simgenics.XPact.XIL2CPP.Core.DiagnosticSeverity;
 
 namespace Simgenics.XPact.XIL2CPP.Entry.Modes;
 
 /// <summary>
-/// The <c>transpile-module</c> CLI mode. Phase 6.b runs the full
-/// Pass 1 -&gt; Pass 2 -&gt; Pass 3 analysis pipeline (Roslyn parse + bind,
-/// AST normalization, semantic analysis) for one module and emits the
-/// collected diagnostics per <c>/Documents/XIL2CPP.html</c> Rev 4
-/// Section 3.2 + 15.
+/// The <c>transpile-module</c> CLI mode. Phase 6.c runs the full
+/// Pass 1 -&gt; Pass 2 -&gt; Pass 3 -&gt; Pass 4 pipeline (Roslyn parse + bind,
+/// AST normalization, semantic analysis, tier classification) for one module,
+/// emits the collected diagnostics, and writes the per-module partial
+/// TierTable per <c>/Documents/XIL2CPP.html</c> Rev 4 Section 3.2 + 3.3 + 15.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Pass 1-3 -- still no C++ emit.</b> This sub-phase wires the front-end
+/// <b>Pass 1-4 -- still no C++ emit.</b> This sub-phase wires the front-end
 /// substrate (CSharpSyntaxTree parse + CSharpCompilation bind + per-tree
-/// semantic models) through Pass 2 (reflection-discovered AST normalizers)
-/// and Pass 3 (reflection-discovered semantic analyzers). Passes 4 through 7
-/// (tier classification, mangling, C++ emit, output write) are later
-/// sub-phases. The mode's <see cref="Description"/> says so honestly; it
-/// writes no <c>.cs.cpp</c> / <c>.cs.h</c> yet (that is Phase 6.e).
+/// semantic models) through Pass 2 (reflection-discovered AST normalizers),
+/// Pass 3 (reflection-discovered semantic analyzers), and Pass 4
+/// (<see cref="Pass4Driver.Run(NormalizedUnit, Pass3Result)"/>: per-module
+/// tier classification fixpoint). Passes 5 through 7 (mangling, C++ emit,
+/// output write) are later sub-phases. The mode's <see cref="Description"/>
+/// says so honestly; it writes no <c>.cs.cpp</c> / <c>.cs.h</c> yet (that is
+/// Phase 6.e) -- only the partial <c>TierTable.partial.&lt;Module&gt;.json</c>.
 /// </para>
 /// <para>
 /// <b>Pipeline gating.</b> Pass 2 + Pass 3 only run when Pass 1 reported no
@@ -39,7 +42,12 @@ namespace Simgenics.XPact.XIL2CPP.Entry.Modes;
 /// at Pass 1 and surfaces those errors (exit 63). When Pass 1 is clean, the
 /// mode runs Pass 2 (<see cref="Pass2Driver.Run(Pass1Result)"/>) then Pass 3
 /// (<see cref="Pass3Driver.Run(NormalizedUnit)"/>) and emits every Pass-2 +
-/// Pass-3 diagnostic.
+/// Pass-3 diagnostic. Pass 4 then runs the tier-classification fixpoint and,
+/// when Pass 2 + Pass 3 reported no error-severity diagnostics, writes the
+/// partial TierTable atomically under the resolved intermediate root. The
+/// TierTable is not written when analysis errors block downstream emit (a
+/// module that failed analysis never reaches C++ emit, so no partial table is
+/// published for it).
 /// </para>
 /// <para>
 /// <b>BCL references.</b> Product code targets the curated
@@ -98,8 +106,9 @@ public sealed class TranspileModuleMode : IToolMode
 
     /// <inheritdoc />
     public string Description =>
-        "Run the Pass 1-3 analysis pipeline (parse + bind + normalize + analyze) for one "
-        + "module and report diagnostics. Phase 6.b: no C++ emit yet (that is Phase 6.e).";
+        "Run the Pass 1-4 analysis pipeline (parse + bind + normalize + analyze + tier-classify) "
+        + "for one module, report diagnostics, and emit the partial TierTable "
+        + "(TierTable.partial.<Module>.json). Phase 6.c: no C++ emit yet (that is Phase 6.e).";
 
     /// <summary>
     /// Install (or clear, with null) the test-only BCL reference set the mode
@@ -144,10 +153,10 @@ public sealed class TranspileModuleMode : IToolMode
         // so the operator understands why BCL-type references will not
         // resolve. A later sub-phase wires the curated BCL ref DLLs here.
         Logger.Info(
-            "info {0}: transpile-module (Phase 6.b Pass 1-3): the curated XPact.CSharp.BCL "
+            "info {0}: transpile-module (Phase 6.c Pass 1-4): the curated XPact.CSharp.BCL "
             + "reference set is not wired yet; BCL-type references will not resolve. "
-            + "This mode parses + binds + normalizes + analyzes and reports diagnostics; "
-            + "no C++ is emitted.",
+            + "This mode parses + binds + normalizes + analyzes + tier-classifies and reports "
+            + "diagnostics; it writes the partial TierTable but no C++ is emitted.",
             DiagnosticCodes.LoggerSentinel);
 
         IReadOnlyList<MetadataReference> bclReferences =
@@ -219,16 +228,147 @@ public sealed class TranspileModuleMode : IToolMode
 
         int exitCode = ComputeExitCode(unit.Diagnostics, p3.Diagnostics);
 
+        // Pass 4: tier classification. Purely classificatory -- it surfaces no
+        // diagnostics and does not affect the exit code (the NoThrow proof +
+        // lookup-failure codes XIL2CPP030 / 036 are owned by the Pass-3
+        // CrossModuleNoThrowAnalyzer). The partial TierTable is written only
+        // when Pass 2 + Pass 3 are clean of error-severity diagnostics: a
+        // module that failed analysis never reaches C++ emit, so publishing a
+        // partial tier table for it would be misleading. When clean, the table
+        // is written atomically (temp-then-rename) under the resolved
+        // intermediate root so a reader never observes a half-written file.
+        TierTable tierTable = Pass4Driver.Run(unit, p3);
+        ct.ThrowIfCancellationRequested();
+
+        bool tierTableWritten = false;
+        if (exitCode == ExitCodes.Success)
+        {
+            tierTableWritten = TryWriteTierTable(tierTable, intermediateRoot, result.ModuleName);
+        }
+
         Logger.Info(
-            "info {0}: transpile-module {1}: parsed {2} file(s); {3}.",
+            "info {0}: transpile-module {1}: parsed {2} file(s); {3}{4}.",
             DiagnosticCodes.LoggerSentinel,
             result.ModuleName,
             result.ParsedFiles.Count,
             exitCode == ExitCodes.Success
-                ? "Pass 1-3 clean"
-                : "Pass 2/3 reported errors");
+                ? "Pass 1-4 clean"
+                : "Pass 2/3 reported errors",
+            tierTableWritten
+                ? $" (wrote {TierTablePartialFileName(result.ModuleName)})"
+                : string.Empty);
 
         return exitCode;
+    }
+
+    /// <summary>
+    /// The per-module partial TierTable filename per
+    /// <c>/Documents/XIL2CPP.html</c> Rev 4 Section 3.2 / 3.3:
+    /// <c>TierTable.partial.&lt;Module&gt;.json</c>.
+    /// </summary>
+    /// <param name="moduleName">The module the table classifies.</param>
+    /// <returns>The partial-table filename.</returns>
+    internal static string TierTablePartialFileName(string moduleName)
+        => $"TierTable.partial.{moduleName}.json";
+
+    /// <summary>
+    /// Write <paramref name="tierTable"/> to
+    /// <c>&lt;intermediateRoot&gt;/TierTable.partial.&lt;Module&gt;.json</c>
+    /// atomically (temp-file-then-rename). Returns false (with a logged
+    /// warning) when the intermediate root is unknown or the write fails; a
+    /// failed table write never changes the analysis exit code (the table is
+    /// a downstream-pass artifact, not an analysis verdict).
+    /// </summary>
+    /// <remarks>
+    /// The canonical doc path is
+    /// <c>Intermediate/Build/&lt;Target&gt;/&lt;Configuration&gt;/TierTable.partial.&lt;Module&gt;.json</c>.
+    /// This mode resolves the intermediate root exactly as the sibling modes do
+    /// (<see cref="ResolveIntermediateRoot"/> -&gt;
+    /// <c>Intermediate/Build/XIL2CPP</c>); the Target / Configuration
+    /// sub-directories are not threaded into the path yet (the mode does not
+    /// carry the resolved target / configuration), so the table is written
+    /// directly under that root. The <c>&lt;Module&gt;</c> is in the filename,
+    /// so per-module files never collide.
+    /// </remarks>
+    private static bool TryWriteTierTable(
+        TierTable tierTable, string? intermediateRoot, string moduleName)
+    {
+        if (string.IsNullOrEmpty(intermediateRoot))
+        {
+            Logger.Warning(
+                "warning {0}: transpile-module {1}: no intermediate root resolved "
+                + "(no ancestor with an Engine/ sibling); skipping TierTable write.",
+                DiagnosticCodes.LoggerSentinel,
+                moduleName);
+            return false;
+        }
+
+        string outputPath = Path.Combine(intermediateRoot, TierTablePartialFileName(moduleName));
+        try
+        {
+            byte[] bytes = tierTable.SerializeToUtf8Bytes();
+            WriteAtomic(outputPath, bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.Warning(
+                "warning {0}: transpile-module {1}: failed to write TierTable to '{2}': {3}.",
+                DiagnosticCodes.LoggerSentinel,
+                moduleName,
+                outputPath,
+                ex.Message);
+            return false;
+        }
+
+        Logger.Info(
+            "info {0}: transpile-module {1}: wrote partial TierTable to '{2}'.",
+            DiagnosticCodes.LoggerSentinel,
+            moduleName,
+            outputPath);
+        return true;
+    }
+
+    /// <summary>
+    /// Atomically write <paramref name="bytes"/> to
+    /// <paramref name="outputPath"/>: create the parent directory, write to a
+    /// uniquely-named sibling temp file, then rename over the target. The
+    /// rename is atomic on a single volume on both Windows and Linux, so a
+    /// reader never observes a partially-written TierTable. Mirrors
+    /// <c>RefonlyCompileMode.WriteAtomic</c>.
+    /// </summary>
+    private static void WriteAtomic(string outputPath, byte[] bytes)
+    {
+        string fullOutput = Path.GetFullPath(outputPath);
+        string? directory = Path.GetDirectoryName(fullOutput);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        string tempPath = fullOutput + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllBytes(tempPath, bytes);
+            File.Move(tempPath, fullOutput, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (IOException)
+                {
+                    // Best-effort cleanup; the temp file is uniquely named so a
+                    // leak does not corrupt the output.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
     }
 
     /// <summary>
