@@ -1,0 +1,35 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Analysis</RootNamespace>
+    <AssemblyName>XIL2CPP.Analysis</AssemblyName>
+    <Description>XIL2CPP Pass-3 semantic analysis + validation framework: the foundation later analyzers plug into. Pass 3 walks the Pass-2 NormalizedUnit (which wraps the still-authoritative Pass-1 binding info) gathering metadata for emit and emitting the XIL2CPP diagnostic catalog. Analyzers (reflection-discovered ISemanticAnalyzer implementations) append their own result types into a generic typed result bag and surface diagnostics. Includes AnalyzerHelpers (shared XObject-derivation + member-enumeration utilities). Per /Documents/XIL2CPP.html Rev 4 Section 3.1 + 3.2 (Pass 3) + Section 12.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Normalization\XIL2CPP.Normalization.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn ISymbol / SyntaxNode surface. Version is resolved centrally
+      from Directory.Packages.props (4.11.0). Per central package management
+      the Version attribute is omitted here.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The Pass-3 framework's internal seams (Pass3ResultBuilder.Build,
+      Pass3Driver discovery hooks) are exposed to XIL2CPP.Tests so the
+      foundation tests can drive reflection discovery and the generic
+      result-bag round-trip without going through the product CLI.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

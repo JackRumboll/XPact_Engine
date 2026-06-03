@@ -1,0 +1,36 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Normalization</RootNamespace>
+    <AssemblyName>XIL2CPP.Normalization</AssemblyName>
+    <Description>XIL2CPP Pass-2 AST normalization framework: the annotation-layer foundation later normalizers plug into. Pass 2 does NOT rewrite syntax trees; the Pass-1 CSharpCompilation + semantic models stay authoritative. Normalizers (reflection-discovered INormalizer implementations) record per-node lowering decisions as additive LoweredAnnotation metadata and attach per-symbol synthesized data into a generic typed bag, which Pass3 semantic analysis consumes alongside the still-valid binding info. Per /Documents/XIL2CPP.html Rev 4 Section 3.1 + 3.2 (Pass 2).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+    <ProjectReference Include="..\XIL2CPP.Frontend\XIL2CPP.Frontend.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn SyntaxNode / ISymbol surface. Version is resolved centrally
+      from Directory.Packages.props (4.11.0, pinned to match the XHT
+      parser). Per central package management the Version attribute is
+      omitted here.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The Pass-2 framework's internal seams (NormalizedUnitBuilder.Build,
+      Pass2Driver discovery hooks) are exposed to XIL2CPP.Tests so the
+      foundation tests can drive reflection discovery and the generic
+      annotation / synthesized-data round-trip without going through the
+      product CLI.
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

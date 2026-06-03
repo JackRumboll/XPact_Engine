@@ -41,13 +41,21 @@ public sealed class Pass1Result
     /// Roslyn syntax + binder diagnostics), in collection order. Must not be
     /// null.
     /// </param>
+    /// <param name="isSimPath">
+    /// True iff the module is a SimPath-determinism module (the manifest
+    /// <c>sim_path</c> flag). Pass 3's sim-path banned-API + non-determinism
+    /// analyzers gate on this per <c>/Documents/XIL2CPP.html</c> Rev 4
+    /// Section 3.2 + 7.4. Defaults to false so existing Pass-1 call sites and
+    /// tests that do not carry the flag keep their non-sim-path behaviour.
+    /// </param>
     /// <exception cref="ArgumentException">If <paramref name="moduleName"/> is null / empty / whitespace.</exception>
     /// <exception cref="ArgumentNullException">If <paramref name="parsedFiles"/>, <paramref name="compilation"/>, or <paramref name="diagnostics"/> is null.</exception>
     public Pass1Result(
         string moduleName,
         IReadOnlyList<ModuleParser.ParsedFile> parsedFiles,
         CSharpCompilation compilation,
-        IReadOnlyList<DiagnosticRecord> diagnostics)
+        IReadOnlyList<DiagnosticRecord> diagnostics,
+        bool isSimPath = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(moduleName);
         ArgumentNullException.ThrowIfNull(parsedFiles);
@@ -58,6 +66,7 @@ public sealed class Pass1Result
         ParsedFiles = parsedFiles;
         Compilation = compilation;
         Diagnostics = diagnostics;
+        IsSimPath = isSimPath;
         _semanticModels = new LazySemanticModel(compilation);
 
         bool hasErrors = false;
@@ -93,6 +102,14 @@ public sealed class Pass1Result
     /// error-severity. The CLI mode gates its exit code on this.
     /// </summary>
     public bool HasErrors { get; }
+
+    /// <summary>
+    /// True iff the module is a SimPath-determinism module (the manifest
+    /// <c>sim_path</c> flag). Pass 3's sim-path banned-API + non-determinism
+    /// analyzers gate on this per <c>/Documents/XIL2CPP.html</c> Rev 4
+    /// Section 3.2 + 7.4 (e.g., <c>XIL2CPP040</c> / <c>XIL2CPP044</c>).
+    /// </summary>
+    public bool IsSimPath { get; }
 
     /// <summary>
     /// Get (lazily, cached) the semantic model for one of the parsed trees.

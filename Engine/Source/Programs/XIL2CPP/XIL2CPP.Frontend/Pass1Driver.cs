@@ -4,11 +4,13 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Simgenics.XPact.XIL2CPP.Core;
 using Simgenics.XPact.XIL2CPP.Manifest;
 using DiagnosticSeverity = Simgenics.XPact.XIL2CPP.Core.DiagnosticSeverity;
+using RoslynDiagnostic = Microsoft.CodeAnalysis.Diagnostic;
 
 namespace Simgenics.XPact.XIL2CPP.Frontend;
 
@@ -164,14 +166,34 @@ public static class Pass1Driver
             CompilationBuilder.Build(module.Name, trees, referenceSet);
 
         // 6. Collect + translate the Roslyn diagnostics (syntax + binder).
-        // Compilation.GetDiagnostics() returns both in deterministic order.
+        // Compilation.GetDiagnostics() orders by tree + span, but its binder
+        // runs cross-tree analysis on the thread pool; under contention the
+        // relative order of two diagnostics in DIFFERENT trees can vary
+        // run-to-run. Sort by a stable location key (file path, then line,
+        // then column, then the Roslyn id) before translation so two runs
+        // over identical inputs produce a byte-identical list -- the
+        // determinism the spec requires (Section 9.9; gate
+        // X-IL2CPP-CSPATH-DET). The sort is a total order over the
+        // location-then-id key, and OrderBy is stable, so any residual ties
+        // keep Roslyn's own order.
+        List<RoslynDiagnostic> ordered = compilation.GetDiagnostics()
+            .OrderBy(d => d.Location.SourceTree?.FilePath ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(d => d.Location.SourceSpan.Start)
+            .ThenBy(d => d.Location.SourceSpan.Length)
+            .ThenBy(d => d.Id, StringComparer.Ordinal)
+            .ToList();
         IReadOnlyList<DiagnosticRecord> roslyn = RoslynDiagnosticTranslator.TranslateAll(
-            compilation.GetDiagnostics(),
+            ordered,
             module.Name,
             referenceSet);
         diagnostics.AddRange(roslyn);
 
-        return new Pass1Result(module.Name, parsedFiles, compilation, diagnostics);
+        return new Pass1Result(
+            module.Name,
+            parsedFiles,
+            compilation,
+            diagnostics,
+            isSimPath: module.SimPath);
     }
 
     private static DiagnosticRecord SourceReadFailure(string moduleName, string path, string detail)
