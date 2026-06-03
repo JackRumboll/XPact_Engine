@@ -1,0 +1,20 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Core</RootNamespace>
+    <AssemblyName>XIL2CPP.Core</AssemblyName>
+    <Description>XIL2CPP primitives: process-global structured logger, contract-imported exit-code surface, the XIL2CPP&lt;NNN&gt; diagnostic-code catalog, structured diagnostic records with MSBuild + JSON formatting, source-span value type, and the static version surface. No knowledge of Roslyn, manifests, or transpilation semantics. Per /Documents/XIL2CPP.html Rev 4 Section 12 + Section 15.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Test hooks (Logger.__SetStderrForTesting, etc.) are internal so
+      production callers don't see them. XIL2CPP.Tests needs access for
+      the stderr-capture-without-rebinding Console.Error pattern (mirrors
+      XHT.Core's InternalsVisibleTo entry).
+    -->
+    <InternalsVisibleTo Include="XIL2CPP.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,77 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Shared MSBuild properties for every XIL2CPP project (XIL2CPP.Core,
+    XIL2CPP.Manifest, XIL2CPP.Frontend, XIL2CPP.Entry, XIL2CPP.Tests).
+
+    Per /Documents/XIL2CPP.html Rev 4 Section 15 (Phase 6.a) + Section 9.9:
+    XIL2CPP is a .NET 8 standalone transpiler, mirroring the XHT sibling
+    tool's discipline at /Engine/Source/Programs/XHT/Directory.Build.props
+    and XBT's at /Engine/Source/Programs/XBT/Directory.Build.props.
+
+    This file is automatically imported by MSBuild from every .csproj
+    inside this directory tree. It must not import anything outside
+    /Engine/Source/Programs/XIL2CPP/.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      Reproducibility envelope mirroring XHT / XBT. Deterministic
+      compilation + embedded sources guarantees byte-identical output
+      across two clean builds on the same machine. Per XIL2CPP.html
+      Section 9.9 (the transpiler's own binary is built reproducibly)
+      and the X-IL2CPP-MANGLE-DET / X-IL2CPP-CSPATH-DET acceptance gates
+      (Section 11.2).
+    -->
+    <Deterministic>true</Deterministic>
+    <EmbedAllSources>true</EmbedAllSources>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <DebugType>portable</DebugType>
+
+    <!--
+      Allow running with a newer .NET runtime (we target net8.0 but the
+      host machine may only have .NET 9+). Mirrors XHT / XBT / Unreal's
+      RollForward pattern.
+    -->
+    <RollForward>LatestMajor</RollForward>
+
+    <!--
+      XML documentation generation. CS1591 (missing XML comment on
+      publicly visible type or member) is suppressed at the scaffold
+      stage so empty placeholder modules build clean; individual modules
+      re-enable it once their public surface is documented.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <Copyright>Copyright Simgenics. All Rights Reserved.</Copyright>
+    <Company>Simgenics</Company>
+    <Product>XPact IL2CPP Transpiler</Product>
+
+    <!--
+      Packing is disabled tool-wide; XIL2CPP ships as a single
+      self-contained executable via dotnet publish, not as NuGet packages.
+    -->
+    <IsPackable>false</IsPackable>
+
+    <!--
+      Source generators / analyzers are disabled engine-wide for XIL2CPP
+      (mirrors XHT / XBT). XIL2CPP hosts Roslyn only as a parse + semantic
+      library inside XIL2CPP.Frontend, never as an analyzer host (the
+      analyzer/IDE-plugin surface is the separate XPact.CSharp.Analyzer
+      NuGet, out of scope per XIL2CPP.html Section 1.3).
+    -->
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+</Project>

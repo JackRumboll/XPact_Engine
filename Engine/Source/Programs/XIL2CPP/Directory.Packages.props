@@ -1,0 +1,70 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project>
+
+  <!--
+    Central NuGet package version management for the XIL2CPP solution.
+
+    Per /Documents/XIL2CPP.html Rev 4 Section 15 (Phase 6.a): XIL2CPP pins
+    NuGet packages via Directory.Packages.props. Individual csproj files
+    reference packages with <PackageReference Include="..." /> (no Version
+    attribute); MSBuild resolves the version from <PackageVersion> entries
+    below. Mirrors the dotnet central package management convention used
+    by the XHT sibling tool.
+
+    Versions are pinned to match XHT / XBT exactly where the same package
+    is shared (Microsoft.CodeAnalysis.CSharp 4.11.0, FlatSharp 7.9.0,
+    xUnit 2.9.3, etc.) so the toolchain stays in lockstep. See
+    /Engine/Source/Programs/XHT/Directory.Packages.props for the
+    precedent.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Roslyn: XIL2CPP.Frontend hosts Microsoft.CodeAnalysis.CSharp for
+      parse + semantic analysis (CSharpSyntaxTree.ParseText +
+      CSharpCompilation per XIL2CPP.html Section 3 Pass 1). Pinned at
+      4.11.0 to match XHT's parser pin exactly; the spec asks v4.8+
+      (Section 15); 4.11.0 satisfies it and keeps both tools on a single
+      Roslyn surface. The Roslyn compiler version is a symbol-mangling
+      determinism input (Section 3.4 cache key), so it must be identical
+      across machines; central pinning is the lock.
+    -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+
+    <!--
+      FlatSharp: shared with XBT.Manifest (which pins 7.9.0). XIL2CPP.Manifest
+      reads the same Manifest.fbs schema XBT emits. Runtime is the public
+      link; Compiler is private (PrivateAssets=all) so downstream consumers
+      never pick it up transitively.
+    -->
+    <PackageVersion Include="FlatSharp.Runtime" Version="7.9.0" />
+    <PackageVersion Include="FlatSharp.Compiler" Version="7.9.0" />
+
+    <!--
+      xUnit + test infrastructure: mirrors XHT.Tests / XBT.Tests pins so a
+      single MSBuild upgrade across the Programs/ trees stays consistent.
+    -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.2" />
+
+    <!--
+      Test-only: Basic.Reference.Assemblies supplies a pinned, in-package
+      set of .NET 8 reference assemblies so XIL2CPP.Frontend tests can
+      build a CSharpCompilation with a deterministic BCL surface WITHOUT
+      depending on the build machine's installed SDK (which would break
+      the X-IL2CPP-CSPATH-DET cross-arch determinism gate). Product code
+      never references this; it targets the curated XPact.CSharp.BCL
+      reference DLL + per-module .refonly.dll instead (XIL2CPP.html
+      Section 9.8). Phase 6.a uses it only inside XIL2CPP.Tests.
+    -->
+    <PackageVersion Include="Basic.Reference.Assemblies.Net80" Version="1.7.9" />
+  </ItemGroup>
+
+</Project>

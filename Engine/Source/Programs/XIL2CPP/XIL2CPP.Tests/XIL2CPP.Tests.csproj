@@ -1,0 +1,34 @@
+<!-- Copyright Simgenics. All Rights Reserved. -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Simgenics.XPact.XIL2CPP.Tests</RootNamespace>
+    <AssemblyName>XIL2CPP.Tests</AssemblyName>
+    <Description>xUnit tests for every XIL2CPP module. Phase 6.a covers the Core primitives (logger, exit codes, diagnostics, version), the CLI scaffold, the manifest reader, and the Roslyn Pass-1 front-end + C# 12 syntax corpus. Per /Documents/XIL2CPP.html Rev 4 Section 15.</Description>
+
+    <!--
+      Test projects are not publishable; IsTestProject must be set for the
+      .NET test SDK to pick the project up. IsPackable is already false at
+      the Directory.Build.props level.
+    -->
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XIL2CPP.Core\XIL2CPP.Core.csproj" />
+  </ItemGroup>
+
+</Project>
