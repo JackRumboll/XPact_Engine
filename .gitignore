@@ -80,3 +80,4 @@ TestResults/
 *.trx
 *.coverage
 *.coveragexml
+/.claude/worktrees
